@@ -8,8 +8,10 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import re
 
 from ollama_bridge import BridgeHandler, fetch_local_ollama
+from common import ollama_json
 from openai_wire_probe import MAX_BYTES, payload, read_sse
 from pinned_inference import verify_model_digest
 
@@ -131,6 +133,77 @@ def pinned_tags_response(model: str, digest: str) -> bytes:
     return result
 
 
+def pinned_show_response(model: str, digest: str) -> bytes:
+    """Profile the exact pinned model without exposing Modelfile or host paths.
+
+    OpenCode's native Ollama discovery uses GET /api/tags then
+    POST /api/show {model: tag} and requires the completion capability.
+    """
+    if not verify_model_digest(model, digest):
+        raise ValueError("Pinned model changed before model profiling")
+    info = ollama_json("http://127.0.0.1:11434", "/api/show",
+                       {"model": model}, timeout=12)
+    if not isinstance(info, dict):
+        raise ValueError("Malformed Ollama model profile")
+    raw_caps = info.get("capabilities")
+    if (not isinstance(raw_caps, list) or len(raw_caps) > 16
+            or any(type(value) is not str or len(value) > 32 for value in raw_caps)
+            or "completion" not in raw_caps or "tools" not in raw_caps):
+        raise ValueError("Selected model does not advertise completion and tools")
+    capabilities = [name for name in ("completion", "tools", "vision", "thinking")
+                    if name in raw_caps]
+    details = info.get("details")
+    if details is not None:
+        if not isinstance(details, dict):
+            raise ValueError("Invalid Ollama profile details")
+        safe_details = {}
+        for name in _TAG_DETAIL_FIELDS:
+            if name not in details:
+                continue
+            value = details[name]
+            if name == "families":
+                if (not isinstance(value, list) or len(value) > 16 or
+                        any(type(s) is not str or len(s) > 80 for s in value)):
+                    raise ValueError("Invalid family list")
+            elif type(value) is not str or len(value) > 80:
+                raise ValueError("Invalid model detail")
+            safe_details[name] = value
+    else:
+        safe_details = {}
+    raw_model_info = info.get("model_info", {})
+    if not isinstance(raw_model_info, dict):
+        raise ValueError("Invalid model information")
+    context = {}
+    for name, value in raw_model_info.items():
+        if (isinstance(name, str) and
+                re.fullmatch(r"[A-Za-z0-9_.-]{1,80}\.context_length", name)):
+            if type(value) is not int or not 0 < value <= 1048576:
+                raise ValueError("Invalid model context length")
+            context[name] = value
+    if len(context) > 8:
+        raise ValueError("Too many model context values")
+    if not verify_model_digest(model, digest):
+        raise ValueError("Pinned model changed while profiling")
+    profile = {"capabilities": capabilities, "details": safe_details,
+               "model_info": context}
+    output = json.dumps(profile, separators=(",", ":")).encode("utf-8")
+    if len(output) > 4096:
+        raise ValueError("Selected model profile over budget")
+    return output
+
+
+def exact_show_request(data: bytes, model: str) -> bool:
+    """One exact JSON object; reject duplicates, aliases, options and other tags."""
+    if not 0 < len(data) <= 256:
+        return False
+    try:
+        return _same_types_and_values(
+            json.loads(data, object_pairs_hook=_reject_duplicates),
+            {"model": model})
+    except (UnicodeError, ValueError):
+        return False
+
+
 def pinned_openai_handler(model: str, digest: str) -> type[BridgeHandler]:
     if not model or not digest or "/" in model:
         raise ValueError("Missing model/digest pin")
@@ -158,18 +231,30 @@ def pinned_openai_handler(model: str, digest: str) -> type[BridgeHandler]:
             self._reply(200, json.dumps(public, separators=(",", ":")).encode())
 
         def do_POST(self) -> None:
-            if self.path != "/v1/chat/completions":
+            if self.path not in ("/api/show", "/v1/chat/completions"):
                 self._reply(403, b'{"error":"not permitted"}')
                 return
             length = self.headers.get("Content-Length")
             content_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+            limit = 256 if self.path == "/api/show" else MAX_REQUEST_BYTES
             if (not length or not length.isascii() or not length.isdecimal()
-                    or not 0 < int(length) <= MAX_REQUEST_BYTES
+                    or not 0 < int(length) <= limit
                     or content_type != "application/json"
                     or self.headers.get("Transfer-Encoding")):
                 self._reply(403, b'{"error":"invalid request framing"}')
                 return
             data = self.rfile.read(int(length))
+            if self.path == "/api/show":
+                if not exact_show_request(data, model):
+                    self._reply(403, b'{"error":"not permitted"}')
+                    return
+                try:
+                    profile = pinned_show_response(model, digest)
+                except (OSError, RuntimeError, ValueError, TypeError, http.client.HTTPException):
+                    self._reply(502, b'{"error":"pinned model profile unavailable"}')
+                    return
+                self._reply(200, profile)
+                return
             if not exact_request(data, model):
                 self._reply(403, b'{"error":"request does not match pinned probe"}')
                 return
