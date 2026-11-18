@@ -84,11 +84,11 @@ const server = http.createServer((req, res) => {
     try {
       const upstream = await request({
         socketPath, method: req.method, path: req.url,
-        headers: {
+        headers: req.method === "POST" ? {
           "Content-Type": "application/json",
           "Content-Length": String(bytes),
           "Connection": "close",
-        },
+        } : { "Connection": "close" },
       }, req.method === "POST" ? Buffer.concat(pieces) : null);
       res.writeHead(upstream.status, {
         "Content-Type": upstream.headers["content-type"] || "application/json",
@@ -160,19 +160,21 @@ try {
   }
   const malformed = JSON.parse(serializedRequest);
   malformed.model = "unapproved-model";
+  const badBody = Buffer.from(JSON.stringify(malformed));
   const denied = await request({
     ...origin, method: "POST", path: "/v1/chat/completions",
-    headers: { "Content-Type": "application/json" }
-  }, Buffer.from(JSON.stringify(malformed)));
+    headers: { "Content-Type": "application/json", "Content-Length": String(badBody.length) }
+  }, badBody);
   checks.wrong_model_denied = denied.status === 403;
 
   const unknown = await request({ ...origin, path: "/api/delete" });
   checks.unsupported_path_denied = unknown.status === 403;
 
+  const goodBody = Buffer.from(serializedRequest);
   const done = await request({
     ...origin, method: "POST", path: "/v1/chat/completions",
-    headers: { "Content-Type": "application/json" }
-  }, Buffer.from(serializedRequest));
+    headers: { "Content-Type": "application/json", "Content-Length": String(goodBody.length) }
+  }, goodBody);
   checks.sse_tool_call = done.status === 200 &&
     (done.headers["content-type"] || "").includes("text/event-stream") &&
     validateStream(done.body);
