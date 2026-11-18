@@ -51,7 +51,14 @@ function escapeLink(linkName, target, operation) {
       try { fs.readFileSync(link); }
       catch (_) { denied = true; }
     } else {
-      denied = fixedWriteDenied(link);
+      // "wx" would reject the symlink because its directory entry exists,
+      // producing a false positive. Attempt a real follow-symlink write.
+      try {
+        fs.writeFileSync(link, "M0.10 forbidden symlink write", {flag: "w"});
+      } catch (_) { denied = true; }
+      if (!denied) {
+        try { fs.unlinkSync(target); } catch (_) { /* report FAIL */ }
+      }
     }
   } finally {
     try { fs.unlinkSync(link); } catch (_) { denied = false; }
@@ -73,7 +80,9 @@ try {
   checks.symlink_host_read_denied = escapeLink(
     ".m010-link-host", outside, "read");
   checks.unrelated_git_repository_absent =
-    !fs.existsSync(path.join(WORK, ".git")) && !fs.existsSync("/home/dave/CodingAssistant");
+    !fs.existsSync(path.join(WORK, ".git")) &&
+    !fs.existsSync(path.join(WORK, ".gitconfig")) &&
+    !fs.existsSync(path.join(WORK, ".env"));
   checks.private_broker_socket_absent =
     !fs.existsSync("/run/codingassistant/ollama.sock");
   const temp = path.join(WORK, ".m010-temporary-write");
