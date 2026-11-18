@@ -55,7 +55,6 @@ const server = http.createServer((incoming, outgoing) => {
     deny(outgoing);
     return;
   }
-  checks.metadata_reached = true;
   const req = http.request({
     socketPath: "/run/codingassistant/ollama.sock",
     method: "GET", path: "/v1/models",
@@ -70,6 +69,16 @@ const server = http.createServer((incoming, outgoing) => {
     });
     reply.on("end", () => {
       const body = Buffer.concat(parts);
+      if (reply.statusCode === 200) {
+        try {
+          const listed = JSON.parse(body.toString("utf8"));
+          if (listed?.data?.length === 1 && listed.data[0]?.id === model) {
+            checks.metadata_reached = true;
+          }
+        } catch (_) {
+          // Invalid broker metadata never constitutes a discovery pass.
+        }
+      }
       outgoing.writeHead(reply.statusCode, {
         "Content-Type": "application/json",
         "Content-Length": String(body.length),
