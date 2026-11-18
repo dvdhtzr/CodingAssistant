@@ -48,6 +48,9 @@ class OfflineToolchainTests(unittest.TestCase):
         self.assertNotIn("--network=host", cmd)
         self.assertIn(id_, cmd)
         self.assertIn("HOME=/tmp", cmd)
+        self.assertIn("--tmpfs=/tmp:rw,nosuid,nodev,size=512m", cmd)
+        self.assertIn("--workdir=/tmp", cmd)
+        self.assertNotIn("--workdir=/workspace", cmd)
         self.assertEqual(cmd[-3], id_)
         self.assertEqual(cmd[-2], "-c")
 
