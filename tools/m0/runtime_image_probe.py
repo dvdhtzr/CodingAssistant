@@ -89,6 +89,19 @@ def check_versions(v: dict[str, str]) -> dict[str, bool]:
     }
 
 
+def toolchain_failure(exit_code: int, versions: dict[str, str],
+                      stdout: str, stderr: str) -> dict[str, Any]:
+    """Distinguish Podman launch problems from real tool version failures."""
+    if exit_code != 0 and not versions:
+        reason = f"Podman could not start the offline toolchain (exit {exit_code})"
+    elif exit_code != 0:
+        reason = f"Offline toolchain script failed partway through (exit {exit_code})"
+    else:
+        reason = "Version output incomplete or different from expected toolchain"
+    return {"reason": reason, "stderr_tail": stderr[-1200:],
+            "stdout_tail": stdout[-1200:]}
+
+
 def evaluate(build: bool, timeout: int) -> dict[str, Any]:
     result: dict[str, Any] = {
         "schema_version": 1, "recorded_at_utc": utcnow(),
@@ -143,8 +156,8 @@ def evaluate(build: bool, timeout: int) -> dict[str, Any]:
     checks = check_versions(versions)
     result["checks"] = checks
     if p.returncode != 0 or not all(checks.values()):
-        result["reason"] = "Toolchain is incomplete, mismatched or unable to start offline"
-        result["stderr_tail"] = p.stderr[-700:]
+        # Commands only print CLI versions/help, not env or source content.
+        result.update(toolchain_failure(p.returncode, versions, p.stdout, p.stderr))
         return result
     result["status"] = "TOOLCHAIN_PASS"
     return result
@@ -166,6 +179,14 @@ def main() -> int:
         print(f'  {key}: {"PASS" if ok else "FAIL"}')
     if result.get("reason"):
         print("Reason:", result["reason"])
+    if "run_exit_code" in result:
+        print("Container exit code:", result["run_exit_code"])
+    if result.get("stderr_tail"):
+        print("Container error output (last 1200 characters):")
+        print(result["stderr_tail"])
+    if result.get("stdout_tail"):
+        print("Container output (last 1200 characters):")
+        print(result["stdout_tail"])
     if result.get("build_log"):
         print("Build log:", result["build_log"])
     print("Evidence:", args.output)
