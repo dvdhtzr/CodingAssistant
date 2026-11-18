@@ -25,14 +25,26 @@ def _reject_duplicates(pairs: list[tuple[str, object]]) -> dict:
     return result
 
 
+def _same_types_and_values(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return (actual.keys() == expected.keys()
+                and all(_same_types_and_values(actual[k], expected[k]) for k in expected))
+    if isinstance(expected, list):
+        return (len(actual) == len(expected)
+                and all(_same_types_and_values(a, b) for a, b in zip(actual, expected)))
+    return actual == expected
+
+
 def exact_request(data: bytes, model: str) -> bool:
     if not 0 < len(data) <= MAX_REQUEST_BYTES:
         return False
     try:
         parsed = json.loads(data, object_pairs_hook=_reject_duplicates)
+        return _same_types_and_values(parsed, payload(model))
     except (UnicodeError, ValueError):
         return False
-    return type(parsed) is dict and parsed == payload(model)
 
 
 def request_pinned_stream(model: str, digest: str) -> bytes:
@@ -113,7 +125,7 @@ def pinned_openai_handler(model: str, digest: str) -> type[BridgeHandler]:
                 return
             try:
                 answer = request_pinned_stream(model, digest)
-            except (OSError, RuntimeError, ValueError, TypeError):
+            except (OSError, RuntimeError, ValueError, TypeError, http.client.HTTPException):
                 self._reply(502, b'{"error":"pinned local inference unavailable"}')
                 return
             self.send_response(200)
