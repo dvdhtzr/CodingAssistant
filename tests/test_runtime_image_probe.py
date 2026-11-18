@@ -51,11 +51,26 @@ class OfflineToolchainTests(unittest.TestCase):
         self.assertEqual(cmd[-3], id_)
         self.assertEqual(cmd[-2], "-c")
 
+    def test_bare_64_hex_podman_image_id_accepted(self):
+        # Podman's inspect .Id is normally bare hex, not sha256:-prefixed.
+        image_id = "a" * 64
+        argv = run_command(image_id, 1000, 1000)
+        self.assertEqual(argv[-3], image_id)
+        self.assertEqual(argv.count(image_id), 1)
+        self.assertIn("--pull=never", argv)
+        self.assertIn("--network=none", argv)
+
+    def test_prefixed_64_hex_image_id_accepted(self):
+        image_id = "sha256:" + "B" * 64
+        argv = run_command(image_id, 1000, 1000)
+        self.assertEqual(argv[-3], image_id)
+
     def test_mutable_image_tag_rejected(self):
-        with self.assertRaises(ValueError):
-            run_command(IMAGE, 1000, 1000)
-        with self.assertRaises(ValueError):
-            run_command("sha256:bad", 1000, 1000)
+        for invalid in (IMAGE, "sha256:bad", "a" * 12, "a" * 63,
+                        "a" * 65, "sha256:" + "g" * 64,
+                        " sha256:" + "a" * 64, ""):
+            with self.subTest(image_id=invalid), self.assertRaises(ValueError):
+                run_command(invalid, 1000, 1000)
 
     def test_versions_parse_and_accept_matching_toolchain(self):
         sample = "dotnet=10.0.101\nnode=v22.22.1\nnpm=10.9.3\ngit=git version 2.48\nopencode=opencode v2.3.0\nrun_help=ok\n"
