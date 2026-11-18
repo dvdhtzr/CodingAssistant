@@ -71,3 +71,7 @@ Expected: `M0.3 DISCOVERY PASS` and five `PASS` checks. The probe only runs `ope
 ## Rootless isolation negative checks (M0.4)
 
 After model discovery passes, follow [M0 isolation preflight](M0_ISOLATION.md) to install/configure **rootless** Podman if missing and verify `--network=none`, capability/privilege denial, read-only rootfs, and narrowly mounted disposable workspace. It does not launch OpenCode. Do not use `sudo podman run`.
+
+## M0.5 local Ollama IPC bridge
+
+Once M0.4 passed, run `cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/bridge_probe.py`. This test reuses the already-downloaded Python container, and does **not** execute OpenCode or generated code. See [M0.5 bridge details](M0_OLLAMA_BRIDGE.md). If `BRIDGE_ONLY` or `BLOCKED`, stop and provide its status; do not enable host networking to work around it.
