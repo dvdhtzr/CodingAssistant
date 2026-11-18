@@ -44,7 +44,7 @@ const server = http.createServer((incoming, outgoing) => {
   const method = incoming.method || "UNKNOWN";
   const path = incoming.url || "";
   const route = (method + " " + path.split("?")[0]).replace(/[^a-zA-Z0-9/_ .:-]/g, "_").slice(0, 96);
-  const allowed = method === "GET" && path === "/v1/models" &&
+  const allowed = method === "GET" && (path === "/v1/models" || path === "/api/tags") &&
       !incoming.headers["transfer-encoding"] && !incoming.headers["content-length"];
   if (captureCliRoutes) {
     if (routes.length < 16) routes.push(route);
@@ -57,7 +57,7 @@ const server = http.createServer((incoming, outgoing) => {
   }
   const req = http.request({
     socketPath: "/run/codingassistant/ollama.sock",
-    method: "GET", path: "/v1/models",
+    method: "GET", path,
     headers: { "Connection": "close" }, timeout: 10000,
   }, (reply) => {
     let count = 0;
@@ -72,9 +72,14 @@ const server = http.createServer((incoming, outgoing) => {
       if (reply.statusCode === 200) {
         try {
           const listed = JSON.parse(body.toString("utf8"));
-          if (listed?.data?.length === 1 && listed.data[0]?.id === model) {
-            checks.metadata_reached = true;
-          }
+          const pinned = path === "/api/tags"
+            ? (listed?.models?.length === 1 &&
+               listed.models[0]?.name === model &&
+               listed.models[0]?.model === model &&
+               typeof listed.models[0]?.digest === "string" &&
+               listed.models[0]?.digest.length > 0)
+            : (listed?.data?.length === 1 && listed.data[0]?.id === model);
+          if (pinned) checks.metadata_reached = true;
         } catch (_) {
           // Invalid broker metadata never constitutes a discovery pass.
         }
