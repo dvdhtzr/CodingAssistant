@@ -96,7 +96,7 @@ try {
     OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
   };
   const result = await new Promise(resolve => {
-    const child = spawn("opencode", ["models", "ollama"], {
+    const child = spawn("opencode", ["models"], {
       cwd: "/tmp", env, stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "", stderr = "", killed = false;
@@ -116,13 +116,14 @@ try {
   const listed = result.stdout.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
     .split(/\r?\n/).map(x => x.trim()).filter(Boolean);
   const expected = "ollama/" + model;
-  if (result.killed || result.code !== 0 || listed.length !== 1 ||
-      listed[0] !== expected || failed ||
+  const local = listed.filter(id => id.startsWith("ollama/"));
+  const pinned = local.length === 1 && local[0] === expected;
+  if (result.killed || result.code !== 0 || !pinned || failed ||
       !routes.includes("GET /api/tags") || !routes.includes("POST /api/show") ||
       routes.some(r => r !== "GET /api/tags" && r !== "POST /api/show")) {
     process.stderr.write("OpenCode discovery contract FAIL: " +
       JSON.stringify({ exit_code: result.code, killed: result.killed,
-                       listed_exactly_pinned_model: listed.length === 1 && listed[0] === expected,
+                       only_pinned_ollama_model_visible: pinned,
                        routes, route_error: failed,
                        stderr_tail: result.stderr.slice(-800).replace(/[\x00-\x1f\x7f]/g, " "),
                        stdout_tail: result.stdout.slice(-300).replace(/[\x00-\x1f\x7f]/g, " ") }) + "\n");
