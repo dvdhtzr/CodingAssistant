@@ -63,7 +63,7 @@ class ModelDiscoveryTests(unittest.TestCase):
 
     def test_cli_invocation_only_models_not_run(self):
         text = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('spawn("opencode", ["models", "ollama"]', text)
+        self.assertIn('spawn("opencode", ["models"]', text)
         self.assertNotIn('spawn("opencode", ["run"]', text)
         self.assertIn("OPENCODE_CONFIG_CONTENT:", text)
         self.assertIn('server.listen(0, "127.0.0.1"', text)
