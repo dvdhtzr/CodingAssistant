@@ -80,7 +80,7 @@ def check_versions(v: dict[str, str]) -> dict[str, bool]:
         "node_22": bool(re.fullmatch(r"v22\.\d+\.\d+", v.get("node", ""))),
         "npm_available": bool(re.fullmatch(r"\d+\.\d+\.\d+", v.get("npm", ""))),
         "git_available": v.get("git", "").startswith("git version "),
-        "opencode_pinned": v.get("opencode", "").strip() == VERSION_PIN,
+        "opencode_pinned": bool(re.fullmatch(r"(?:opencode v)?" + re.escape(VERSION_PIN), v.get("opencode", ""))),
         "opencode_run_help": v.get("run_help") == "ok"
     }
 
