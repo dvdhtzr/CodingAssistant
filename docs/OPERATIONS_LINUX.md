@@ -67,3 +67,7 @@ python3 tools/m0/opencode_probe.py --model qwen3.5:4b
 ```
 
 Expected: `M0.3 DISCOVERY PASS` and five `PASS` checks. The probe only runs `opencode models` and reads Ollama's local metadata; it doesn't execute agent code. Its evidence remains under ignored `artifacts/m0/`. If blocked, inspect `opencode models` and share only its `ollama/` lines.
+
+## Rootless isolation negative checks (M0.4)
+
+After model discovery passes, follow [M0 isolation preflight](M0_ISOLATION.md) to install/configure **rootless** Podman if missing and verify `--network=none`, capability/privilege denial, read-only rootfs, and narrowly mounted disposable workspace. It does not launch OpenCode. Do not use `sudo podman run`.

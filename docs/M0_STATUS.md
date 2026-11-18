@@ -15,3 +15,5 @@ Implemented: initial model-free evaluation tooling; host/Ollama inventory; singl
 Recommendation: keep M1 disabled until M0 model acceptance is proven. Do not equate unit tests with model qualification.
 
 **Operator update:** Dell prerequisite checks were reported green by the owner. Full raw machine output and independent benchmark evidence have not been received, so this is not an M0 exit pass. M0.3 discovery is a separate check.
+
+**Operator M0.3 report (Nov 18):** Dell `qwen3.5:4b` OpenCode discovery PASS on all five checks, including exact installed model ID and tool capability. Independent coding benchmarks have **not** run. Next: M0.4 rootless isolation negative preflight before any generated code execution.
