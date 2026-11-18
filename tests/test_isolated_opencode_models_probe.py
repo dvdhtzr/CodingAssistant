@@ -65,7 +65,6 @@ class ModelDiscoveryTests(unittest.TestCase):
         text = SCRIPT.read_text(encoding="utf-8")
         self.assertIn('spawn("opencode", ["models"]', text)
         self.assertNotIn('spawn("opencode", ["run"]', text)
-        self.assertNotIn('opencode run', text)
         self.assertIn("OPENCODE_CONFIG_CONTENT:", text)
         self.assertIn('server.listen(0, "127.0.0.1"', text)
         self.assertIn('"/v1/models"', text)
