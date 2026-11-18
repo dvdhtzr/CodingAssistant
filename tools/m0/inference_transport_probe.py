@@ -61,7 +61,7 @@ class LocalProxy(http.server.BaseHTTPRequestHandler):
         if self.command == "GET" and self.path == "/api/chat":
             self.send_error(403)
             return
-        data = self.rfile.read(int(length))
+        data = self.rfile.read(int(length)) if self.command == "POST" else None
         upstream = UnixConnection("local", timeout=255)
         try:
             upstream.request(self.command, self.path, body=data, headers={
