@@ -21,7 +21,7 @@ const checks = {
   wrong_show_model_denied: false,
   cli_exited_successfully: false,
   exact_model_visible: false,
-  only_local_provider: false,
+  only_pinned_ollama_model: false,
   unsupported_routes_denied: false,
   no_unexpected_cli_route: true,
 };
@@ -189,7 +189,7 @@ function runModels(port) {
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
     };
-    const child = spawn("opencode", ["models", "ollama"], {
+    const child = spawn("opencode", ["models"], {
       cwd: "/tmp", env, stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "", stderrBytes = 0, killed = false;
@@ -260,8 +260,11 @@ try {
   const identifiers = lines.filter(line =>
     /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.:/+-]+$/.test(line));
   checks.exact_model_visible = identifiers.includes("ollama/" + model);
-  checks.only_local_provider = identifiers.length > 0 &&
-    identifiers.every(line => line === "ollama/" + model);
+  // V2.3.0's model list includes other catalog providers. They are not
+  // usable without credentials/network. Verify ONLY the discovered Ollama ids.
+  const ollamaIDs = identifiers.filter(line => line.startsWith("ollama/"));
+  checks.only_pinned_ollama_model =
+    ollamaIDs.length === 1 && ollamaIDs[0] === "ollama/" + model;
 } catch (_) {
   // Fail closed. Only fixed boolean results and endpoint routes are disclosed.
 } finally {
