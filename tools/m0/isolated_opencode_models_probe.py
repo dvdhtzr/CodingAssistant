@@ -31,6 +31,7 @@ REQUIRED = frozenset({
     "root_read_only", "host_sentinel_hidden", "outbound_tcp_denied",
     "metadata_reached", "cli_exited_successfully", "exact_model_visible",
     "only_local_provider", "unsupported_routes_denied",
+    "no_unexpected_cli_route",
 })
 
 
