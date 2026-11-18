@@ -58,7 +58,7 @@ class OfflineToolchainTests(unittest.TestCase):
             run_command("sha256:bad", 1000, 1000)
 
     def test_versions_parse_and_accept_matching_toolchain(self):
-        sample = "dotnet=10.0.101\nnode=v22.22.1\nnpm=10.9.3\ngit=git version 2.48\nopencode=2.3.0\nrun_help=ok\n"
+        sample = "dotnet=10.0.101\nnode=v22.22.1\nnpm=10.9.3\ngit=git version 2.48\nopencode=opencode v2.3.0\nrun_help=ok\n"
         values = parse_versions(sample)
         self.assertEqual(len(values), 6)
         self.assertTrue(all(check_versions(values).values()))
