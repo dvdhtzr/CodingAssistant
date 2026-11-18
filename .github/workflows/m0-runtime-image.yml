@@ -9,6 +9,8 @@ on:
       - "tools/m0/isolated_opencode_models.mjs"
       - "tests/m0_opencode_discovery_smoke.mjs"
       - "tests/m0_opencode_inference_smoke.mjs"
+      - "tools/m0/disposable_workspace_client.mjs"
+      - "tools/m0/disposable_workspace_probe.py"
       - ".github/workflows/m0-runtime-image.yml"
   workflow_dispatch:
 
@@ -68,6 +70,29 @@ jobs:
             --workdir /tmp \
             --entrypoint node codingassistant-m0-runtime:ci \
             --input-type=module --eval "$(cat tests/m0_opencode_inference_smoke.mjs)"
+      - name: Test disposable fixture copy and fixed child-process isolation (no agent)
+        run: |
+          set -eu
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/workspace"
+          cp benchmarks/fixtures/02-build-repair/api/Program.cs "$tmp/workspace/"
+          cp benchmarks/fixtures/02-build-repair/api/Repair.csproj "$tmp/workspace/"
+          printf 'outside-only' > "$tmp/host-sentinel"
+          docker run --rm --pull never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 64 --memory 512m \
+            --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+            --user "$(id -u):$(id -g)" \
+            --volume "$tmp/workspace:/workspace:rw" \
+            --env HOME=/tmp --workdir /workspace \
+            --entrypoint node codingassistant-m0-runtime:ci \
+            --input-type=module --eval "$(cat tools/m0/disposable_workspace_client.mjs)" \
+            -- "$tmp/host-sentinel"
+          test ! -e "$tmp/workspace/.m0-9-fixed-write-check"
+          cmp benchmarks/fixtures/02-build-repair/api/Program.cs "$tmp/workspace/Program.cs"
+          cmp benchmarks/fixtures/02-build-repair/api/Repair.csproj "$tmp/workspace/Repair.csproj"
+          echo "M0.9 fixed disposable workspace smoke PASS"
       # The discovery contract exercises the actual OpenCode CLI against a
       # deterministic loopback-only mock, without host Ollama or code execution.
       # GitHub-hosted Docker smoke establishes package startup only.
