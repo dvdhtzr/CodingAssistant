@@ -25,3 +25,15 @@ If a compatible image has already been built, `python3 tools/m0/runtime_image_pr
 - We must still run the negative security and recovery tests and independent acceptance checks in an isolated disposable workspace before allowing generated code to execute. The old `tools/m0/benchmark.py --acknowledge-unisolated-m0-risk` is not a safe substitute.
 
 Official references: https://opencode.ai/docs/cli/commands, https://opencode.ai/docs/providers, https://dotnet.microsoft.com/download/dotnet/10.0, https://docs.podman.io/en/stable/markdown/podman-run.1.html.
+
+## Podman image ID compatibility (M0.7 corrective)
+
+Podman normally prints a bare 64-character hexadecimal image ID for `podman image inspect --format '{{.Id}}'`. The initial verifier accepted only `sha256:`-prefixed IDs and rejected a valid locally built image before running its tool checks. Both full-length immutable ID forms are now accepted, while short IDs, image tags, and malformed input remain blocked.
+
+**If your image was already built successfully and only image-ID validation failed, do not rebuild.** After pulling this fix, verify the existing local image with:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/runtime_image_probe.py
+```
+
+Only pass `--build` if the image genuinely does not exist or if you intentionally want to rebuild it.

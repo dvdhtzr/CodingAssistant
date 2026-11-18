@@ -29,3 +29,5 @@ Recommendation: keep M1 disabled until M0 model acceptance is proven. Do not equ
 **Owner-reported M0.6 evidence (Nov 18):** `M0.6 ISOLATED INFERENCE INFERENCE_PASS: qwen3.5:4b`. All eight checks passed on Dell: model-pinned inference, host sentinel hidden, loopback-to-Unix metadata, outbound TCP denial, read-only rootfs, non-root identity, denied unsupported endpoint, and denied wrong model. This was one fixed inference prompt, **not OpenCode or generated code execution**.
 
 **Next M0.7 gate:** build a local OpenCode 2.3.0 + .NET 10 + Node 22 + Git toolchain image with a restricted build context; verify CLI startup in rootless Podman with no network and no source mounts. Actual autonomous coding remains **disabled**.
+
+**Operator-reported M0.7 initial attempt (Nov 18):** container image build appears to have completed, but the local verifier rejected an unprefixed Podman image ID before toolchain execution. This is a verifier-format defect, **not evidence of toolchain failure**. Fix tested in PR; operator should rerun without `--build` after merge.

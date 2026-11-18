@@ -43,8 +43,12 @@ def build_command() -> list[str]:
 
 
 def run_command(image_id: str, uid: int, gid: int) -> list[str]:
-    if not re.fullmatch(r"sha256:[a-fA-F0-9]{64}", image_id):
-        raise ValueError("Require a verified local image ID, not a mutable tag")
+    # Podman image inspect --format '{{.Id}}' normally returns the bare
+    # 64-hex immutable image ID. Some engines add a 'sha256:' prefix.
+    # Both forms identify a specific local image; mutable tags and short IDs
+    # remain forbidden.
+    if not re.fullmatch(r"(?:sha256:)?[a-fA-F0-9]{64}", image_id):
+        raise ValueError("Require a full 64-hex local image ID, not a mutable tag")
     return [
         "podman", "run", "--rm", "--pull=never",
         "--network=none", "--read-only", "--cap-drop=all",
