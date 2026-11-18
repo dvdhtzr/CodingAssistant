@@ -8,6 +8,7 @@ on:
       - "tools/m0/pinned_openai.py"
       - "tools/m0/isolated_opencode_models.mjs"
       - "tests/m0_opencode_discovery_smoke.mjs"
+      - "tests/m0_opencode_inference_smoke.mjs"
       - ".github/workflows/m0-runtime-image.yml"
   workflow_dispatch:
 
@@ -53,6 +54,20 @@ jobs:
             --workdir /tmp \
             --entrypoint node codingassistant-m0-runtime:ci \
             --input-type=module --eval "$(cat tests/m0_opencode_discovery_smoke.mjs)"
+      - name: Verify actual OpenCode OpenAI streaming request offline (no tools)
+        run: |
+          docker run --rm --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 96 --memory 2g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+            --user 1001:1001 \
+            --env HOME=/tmp --env XDG_CONFIG_HOME=/tmp/.config \
+            --env XDG_DATA_HOME=/tmp/.local/share \
+            --env XDG_CACHE_HOME=/tmp/.cache \
+            --env OPENCODE_DISABLE_AUTOUPDATE=1 \
+            --workdir /tmp \
+            --entrypoint node codingassistant-m0-runtime:ci \
+            --input-type=module --eval "$(cat tests/m0_opencode_inference_smoke.mjs)"
       # The discovery contract exercises the actual OpenCode CLI against a
       # deterministic loopback-only mock, without host Ollama or code execution.
       # GitHub-hosted Docker smoke establishes package startup only.
