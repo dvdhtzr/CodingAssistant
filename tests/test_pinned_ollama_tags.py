@@ -111,7 +111,7 @@ class UnixHandlerTests(unittest.TestCase):
             ("GET", "/api/version"),
             ("GET", "/api/tags?debug=1"),
             ("GET", "/api/show"),
-            ("POST", "/api/show"),
+            ("POST", "/api/show?other=1"),
             ("GET", "/api/delete"),
             ("GET", "/v1/models?all=true"),
         ]:
