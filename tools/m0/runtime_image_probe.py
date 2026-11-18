@@ -54,7 +54,10 @@ def run_command(image_id: str, uid: int, gid: int) -> list[str]:
         "--network=none", "--read-only", "--cap-drop=all",
         "--security-opt=no-new-privileges", "--pids-limit=96",
         "--memory=2g", "--userns=keep-id", "--user", f"{uid}:{gid}",
-        "--tmpfs=/tmp:rw,nosuid,nodev,size=512m",
+        # Podman otherwise copies image /tmp contents into tmpfs at startup;
+        # this built toolchain image exceeded the default tmpfs copy-up budget.
+        # An empty disposable tmpfs preserves the existing isolation contract.
+        "--tmpfs=/tmp:rw,nosuid,nodev,size=512m,notmpcopyup",
         "--env", "HOME=/tmp",
         "--env", "DOTNET_CLI_HOME=/tmp",
         "--env", "XDG_CONFIG_HOME=/tmp/.config",
