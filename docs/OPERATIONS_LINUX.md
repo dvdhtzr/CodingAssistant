@@ -75,3 +75,13 @@ After model discovery passes, follow [M0 isolation preflight](M0_ISOLATION.md) t
 ## M0.5 local Ollama IPC bridge
 
 Once M0.4 passed, run `cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/bridge_probe.py`. This test reuses the already-downloaded Python container, and does **not** execute OpenCode or generated code. See [M0.5 bridge details](M0_OLLAMA_BRIDGE.md). If `BRIDGE_ONLY` or `BLOCKED`, stop and provide its status; do not enable host networking to work around it.
+
+## M0.6 model-pinned isolated inference
+
+Once M0.5 passed, run:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/inference_transport_probe.py --model qwen3.5:4b
+```
+
+This runs a **fixed** single-prompt Ollama inference request, not OpenCode or generated code. It reuses the already-pulled Python image, retains `--network=none` and all M0.4 restrictions, and records ignored local evidence. See [M0.6 requirements](M0_PINNED_INFERENCE.md). Any `BLOCKED` result means stop; do not weaken container isolation.

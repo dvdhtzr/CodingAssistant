@@ -96,7 +96,7 @@ class BridgeHandler(http.server.BaseHTTPRequestHandler):
 
 
 @contextmanager
-def serve_bridge(socket_path: pathlib.Path) -> Iterator[None]:
+def serve_bridge(socket_path: pathlib.Path, handler_class: type[BridgeHandler] = BridgeHandler) -> Iterator[None]:
     """Host process owns the socket; directory must be private to its user."""
     if os.name != "posix" or not hasattr(socket, "AF_UNIX"):
         raise RuntimeError("Unix-socket broker requires POSIX AF_UNIX support")
@@ -110,7 +110,7 @@ def serve_bridge(socket_path: pathlib.Path) -> Iterator[None]:
     class UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
         daemon_threads = True
 
-    server = UnixHTTPServer(str(socket_path), BridgeHandler)
+    server = UnixHTTPServer(str(socket_path), handler_class)
     try:
         os.chmod(socket_path, 0o600)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
