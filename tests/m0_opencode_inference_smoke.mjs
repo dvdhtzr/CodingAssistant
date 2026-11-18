@@ -10,7 +10,8 @@ const ID = "ollama/" + MODEL;
 const TASK = "Reply with the single word READY. Do not use any tools.";
 const routes = [];
 const stats = {tags: 0, show: 0, inference: 0, wrong: 0, request_model_pinned: false,
-               saw_task: false, streamed: false, generated_tool_calls: false};
+               saw_task: false, wire_schema_reconstructable: false,
+               streamed: false, generated_tool_calls: false};
 const MAX_REQUEST = 1048576;
 const details = {
   format: "gguf", family: "qwen3.5", families: ["qwen3.5"],
@@ -76,6 +77,13 @@ const server = http.createServer(async (req, res) => {
       typeof m?.content === "string" && m.content.includes(TASK) ||
       Array.isArray(m?.content) && m.content.some(p =>
         typeof p?.text === "string" && p.text.includes(TASK)));
+    const users = body.messages.filter(m => m?.role === "user");
+    const textOf = m => typeof m?.content === "string" ? m.content :
+      Array.isArray(m?.content) ? m.content
+        .filter(p => typeof p?.text === "string").map(p => p.text).join("\n") : "";
+    stats.wire_schema_reconstructable = users.length === 1 &&
+      textOf(users[0]).split(TASK).length === 2 &&
+      body.messages.every(m => ["system", "developer", "user"].includes(m?.role));
     const chunk = (delta, finish_reason = null) => ({
       id: "chatcmpl-m08b2b-fixed", object: "chat.completion.chunk",
       created: 1, model: MODEL,
@@ -156,6 +164,7 @@ try {
   const pass = cli.exit === 0 && !cli.killed && stats.tags >= 1 &&
     stats.show >= 1 && stats.inference === 1 && stats.wrong === 0 &&
     stats.request_model_pinned && stats.streamed && stats.saw_task &&
+    stats.wire_schema_reconstructable &&
     text.includes("READY");
   if (pass) {
     console.log("OPENCODE_INFERENCE_WIRE_CONTRACT_PASS: pinned Ollama, streaming text, no tools");
