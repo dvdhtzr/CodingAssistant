@@ -19,9 +19,13 @@ const checks = {
 };
 
 try {
-  fs.writeFileSync("/etc/codingassistant-m08b-write-denied", "forbidden");
+  const mounts = fs.readFileSync("/proc/self/mountinfo", "utf8").split("\n");
+  const rootMount = mounts.find((line) => line.split(" - ")[0].split(" ")[4] === "/");
+  const rootOptions = rootMount?.split(" - ")[0].split(" ")[5]?.split(",") || [];
+  // Report root read-only only when kernel mount metadata says "ro".
+  checks.root_read_only = rootOptions.includes("ro");
 } catch (_) {
-  checks.root_read_only = true;
+  checks.root_read_only = false;
 }
 
 function request(options, body = null) {
