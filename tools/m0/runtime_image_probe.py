@@ -62,7 +62,9 @@ def run_command(image_id: str, uid: int, gid: int) -> list[str]:
         "--env", "XDG_STATE_HOME=/tmp/.local/state",
         "--env", "XDG_CACHE_HOME=/tmp/.cache",
         "--env", "OPENCODE_DISABLE_AUTOUPDATE=1",
-        "--workdir=/workspace",
+        # M0.7 has no workspace mount. Use the pre-existing writable tmpfs;
+        # Podman cannot start if /workspace is absent in a local image.
+        "--workdir=/tmp",
         "--entrypoint=/bin/sh", image_id, "-c", VERSION_SCRIPT
     ]
 
