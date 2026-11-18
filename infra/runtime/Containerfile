@@ -1,0 +1,29 @@
+# M0.7 DEVELOPMENT image. Build with explicit operator action, not during runtime.
+# Node 22 is copied from its official Debian image into the official .NET 10
+# Ubuntu Noble SDK image (newer glibc). Versions and resulting local image ID
+# are captured by the verification runner. Do NOT mount user source here yet.
+FROM docker.io/library/node:22-bookworm-slim AS node
+FROM mcr.microsoft.com/dotnet/sdk:10.0-noble
+ARG OPENCODE_VERSION=2.3.0
+ENV DEBIAN_FRONTEND=noninteractive \
+    DOTNET_NOLOGO=true \
+    DOTNET_CLI_HOME=/tmp \
+    HOME=/tmp \
+    XDG_CONFIG_HOME=/tmp/.config \
+    XDG_DATA_HOME=/tmp/.local/share \
+    XDG_STATE_HOME=/tmp/.local/state \
+    XDG_CACHE_HOME=/tmp/.cache \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=node /usr/local/ /usr/local/
+RUN npm install -g --no-audit --no-fund "@opencode/cli@${OPENCODE_VERSION}" \
+    && opencode --version \
+    && dotnet --version \
+    && node --version \
+    && git --version
+WORKDIR /workspace
+USER 65532:65532
+CMD ["opencode", "--version"]

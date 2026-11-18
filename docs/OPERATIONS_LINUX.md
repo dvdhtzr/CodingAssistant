@@ -85,3 +85,13 @@ cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/inference_transpo
 ```
 
 This runs a **fixed** single-prompt Ollama inference request, not OpenCode or generated code. It reuses the already-pulled Python image, retains `--network=none` and all M0.4 restrictions, and records ignored local evidence. See [M0.6 requirements](M0_PINNED_INFERENCE.md). Any `BLOCKED` result means stop; do not weaken container isolation.
+
+## M0.7 offline toolchain image
+
+Once M0.6 passed, build and verify the OpenCode/.NET/Node/Git image:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/runtime_image_probe.py --build
+```
+
+This explicitly downloads build dependencies but runs the toolchain offline in **rootless** Podman. It does not execute OpenCode prompts, generated code or model inference. See [M0.7](M0_OFFLINE_RUNTIME.md). `BLOCKED` means stop; don't run the agent unsandboxed.

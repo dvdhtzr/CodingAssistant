@@ -1,0 +1,39 @@
+name: M0.7 Runtime Image Smoke
+
+on:
+  pull_request:
+    paths:
+      - "infra/runtime/**"
+      - "tools/m0/runtime_image_probe.py"
+      - ".github/workflows/m0-runtime-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-toolchain:
+    name: Build and check offline toolchain
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build image using only the runtime recipe directory
+        run: docker build --pull --progress=plain -t codingassistant-m0-runtime:ci -f infra/runtime/Containerfile infra/runtime
+      - name: Verify toolchain with no network or project mounts
+        run: |
+          docker run --rm --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 96 --memory 2g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+            --user 1001:1001 \
+            --env HOME=/tmp --env DOTNET_CLI_HOME=/tmp \
+            --env XDG_CONFIG_HOME=/tmp/.config \
+            --env XDG_DATA_HOME=/tmp/.local/share \
+            --env XDG_CACHE_HOME=/tmp/.cache \
+            --env OPENCODE_DISABLE_AUTOUPDATE=1 \
+            --entrypoint /bin/sh codingassistant-m0-runtime:ci \
+            -c 'set -eu; dotnet --version | grep "^10[.]"; node --version | grep "^v22[.]"; npm --version; git --version; opencode --version | grep -E "^(opencode v)?2[.]3[.]0$"; opencode run --help >/dev/null; echo "Offline toolchain smoke PASS"'
+      # GitHub-hosted Docker smoke establishes package startup only.
+      # The actual rootless Podman/host isolation gate still runs on Dell.

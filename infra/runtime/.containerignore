@@ -1,0 +1,4 @@
+# Ensure the build context never includes the checkout, .git, credentials or
+# local model evidence. This directory contains only the build recipe.
+**
+!Containerfile

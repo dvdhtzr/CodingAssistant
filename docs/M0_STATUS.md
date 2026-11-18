@@ -25,3 +25,7 @@ Recommendation: keep M1 disabled until M0 model acceptance is proven. Do not equ
 **Owner-reported M0.5 evidence (Nov 18):** Local Ollama metadata bridge PRECHECK_PASS on Dell; all seven checks passed and container loopback TCP was available. The container did not run an autonomous coding agent or model inference.
 
 **M0.6 next:** prove model-pinned, bounded Qwen inference through isolated loopback HTTP → AF_UNIX bridge without exposing host/public network. This does not authorize OpenCode or generated-code execution. See `docs/M0_PINNED_INFERENCE.md`.
+
+**Owner-reported M0.6 evidence (Nov 18):** `M0.6 ISOLATED INFERENCE INFERENCE_PASS: qwen3.5:4b`. All eight checks passed on Dell: model-pinned inference, host sentinel hidden, loopback-to-Unix metadata, outbound TCP denial, read-only rootfs, non-root identity, denied unsupported endpoint, and denied wrong model. This was one fixed inference prompt, **not OpenCode or generated code execution**.
+
+**Next M0.7 gate:** build a local OpenCode 2.3.0 + .NET 10 + Node 22 + Git toolchain image with a restricted build context; verify CLI startup in rootless Podman with no network and no source mounts. Actual autonomous coding remains **disabled**.
