@@ -17,3 +17,7 @@ Recommendation: keep M1 disabled until M0 model acceptance is proven. Do not equ
 **Operator update:** Dell prerequisite checks were reported green by the owner. Full raw machine output and independent benchmark evidence have not been received, so this is not an M0 exit pass. M0.3 discovery is a separate check.
 
 **Operator M0.3 report (Nov 18):** Dell `qwen3.5:4b` OpenCode discovery PASS on all five checks, including exact installed model ID and tool capability. Independent coding benchmarks have **not** run. Next: M0.4 rootless isolation negative preflight before any generated code execution.
+
+**Owner-reported M0.4 evidence (Nov 18):** rootless Podman isolation PRECHECK_PASS on Dell, all seven checks passed: no external networking, capabilities or new privileges, root filesystem read-only, no unmounted host file access, unprivileged identity, and writable disposable workspace. This is a **preflight only**; OpenCode, inference relay, independent safety tests and M0 benchmark are still pending.
+
+**Next:** M0.5 private AF_UNIX Ollama metadata bridge and loopback feasibility. No AI coding is authorized by the M0.4 result.

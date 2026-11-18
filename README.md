@@ -70,3 +70,13 @@ cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/sandbox_probe.py
 ```
 
 If Podman or its container image is not yet installed, follow the one-time setup instructions in the linked document. No agent executes during this test.
+
+## M0.5 — allowlisted local Ollama bridge feasibility
+
+The Dell passed M0.4's seven rootless Podman isolation checks (owner-provided evidence). Next, use the [M0.5 local inference IPC preflight](docs/M0_OLLAMA_BRIDGE.md) to prove a network-disabled container can reach **only** a local, read-only Ollama metadata broker via a private Unix socket. This still doesn't run OpenCode or generated code:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/bridge_probe.py
+```
+
+**M0 remains YELLOW.** A passing broker preflight is not an approved autonomous coding run.
