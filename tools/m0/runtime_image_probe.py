@@ -89,6 +89,19 @@ def check_versions(v: dict[str, str]) -> dict[str, bool]:
     }
 
 
+def toolchain_failure(exit_code: int, versions: dict[str, str],
+                      stdout: str, stderr: str) -> dict[str, Any]:
+    """Distinguish Podman launch problems from real tool version failures."""
+    if exit_code != 0 and not versions:
+        reason = f"Podman could not start the offline toolchain (exit {exit_code})"
+    elif exit_code != 0:
+        reason = f"Offline toolchain script failed partway through (exit {exit_code})"
+    else:
+        reason = "Version output incomplete or different from expected toolchain"
+    return {"reason": reason, "stderr_tail": stderr[-1200:],
+            "stdout_tail": stdout[-1200:]}
+
+
 def evaluate(build: bool, timeout: int) -> dict[str, Any]:
     result: dict[str, Any] = {
         "schema_version": 1, "recorded_at_utc": utcnow(),
@@ -143,18 +156,8 @@ def evaluate(build: bool, timeout: int) -> dict[str, Any]:
     checks = check_versions(versions)
     result["checks"] = checks
     if p.returncode != 0 or not all(checks.values()):
-        # These commands only print CLI versions/help. Never dump environments,
-        # mounted files, full logs, credentials or command line arguments.
-        # A Podman launch failure has no version output: do not misreport
-        # six absent development tools when the process never started.
-        if p.returncode != 0 and not versions:
-            result["reason"] = f"Podman could not start the offline toolchain (exit {p.returncode})"
-        elif p.returncode != 0:
-            result["reason"] = f"Offline toolchain script failed partway through (exit {p.returncode})"
-        else:
-            result["reason"] = "Version output incomplete or different from expected toolchain"
-        result["stderr_tail"] = p.stderr[-1200:]
-        result["stdout_tail"] = p.stdout[-1200:]
+        # Commands only print CLI versions/help, not env or source content.
+        result.update(toolchain_failure(p.returncode, versions, p.stdout, p.stderr))
         return result
     result["status"] = "TOOLCHAIN_PASS"
     return result
