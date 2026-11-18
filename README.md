@@ -48,3 +48,15 @@ Local results appear under `artifacts/m0/` (ignored by Git). Don't commit machin
 ## Approved constraints
 
 One active managed task initially; plan approval bound to version/hash; untrusted coding only after independent OS-enforced restrictions; evidence-based verification; no cloud AI requirement. Windows and Linux must pass their own acceptance gates before claiming support. GitHub operations for development of this repository may be performed under the owner's Nov 18, 2026 authorization; the **product's** future autonomous agents still require scope-bound approval for remote Git operations.
+
+## Next Dell check — OpenCode model discovery
+
+After the initial Dell prerequisites and Ollama tool-call probe pass, update your clone and run:
+
+```bash
+cd ~/CodingAssistant
+git pull --ff-only
+python3 tools/m0/opencode_probe.py --model qwen3.5:4b
+```
+
+The probe only checks whether OpenCode can **discover** your locally installed Qwen model. It does not ask an agent to write code, and it does not turn M0 GREEN. See [M0.3 discovery instructions](docs/M0_OPENCODE_DISCOVERY.md).
