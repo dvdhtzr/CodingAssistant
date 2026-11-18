@@ -21,3 +21,7 @@ Recommendation: keep M1 disabled until M0 model acceptance is proven. Do not equ
 **Owner-reported M0.4 evidence (Nov 18):** rootless Podman isolation PRECHECK_PASS on Dell, all seven checks passed: no external networking, capabilities or new privileges, root filesystem read-only, no unmounted host file access, unprivileged identity, and writable disposable workspace. This is a **preflight only**; OpenCode, inference relay, independent safety tests and M0 benchmark are still pending.
 
 **Next:** M0.5 private AF_UNIX Ollama metadata bridge and loopback feasibility. No AI coding is authorized by the M0.4 result.
+
+**Owner-reported M0.5 evidence (Nov 18):** Local Ollama metadata bridge PRECHECK_PASS on Dell; all seven checks passed and container loopback TCP was available. The container did not run an autonomous coding agent or model inference.
+
+**M0.6 next:** prove model-pinned, bounded Qwen inference through isolated loopback HTTP → AF_UNIX bridge without exposing host/public network. This does not authorize OpenCode or generated-code execution. See `docs/M0_PINNED_INFERENCE.md`.
