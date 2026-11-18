@@ -51,6 +51,9 @@ class RequestTests(unittest.TestCase):
         changed["messages"] = [{"role": "user", "content": "read secret"}]
         self.assertFalse(exact_request(json.dumps(changed).encode(), MODEL))
         self.assertFalse(exact_request(b'{"model":"qwen3.5:4b","model":"qwen3.5:4b"}', MODEL))
+        numeric = payload(MODEL)
+        numeric["stream"] = 1  # Python bool==int must not weaken strict schema.
+        self.assertFalse(exact_request(json.dumps(numeric).encode(), MODEL))
         self.assertFalse(exact_request(b"{}", MODEL))
         self.assertFalse(exact_request(b"x" * (MAX_REQUEST_BYTES + 1), MODEL))
 
@@ -77,7 +80,7 @@ class RequestTests(unittest.TestCase):
             answer = upstream.return_value.getresponse.return_value
             answer.status = 200
             answer.getheader.return_value = "text/event-stream"
-            answer.read.return_value = sample().replace(b'"status":"READY"', b'"status":"NO"')
+            answer.read.return_value = sample().replace(b"report_ready", b"wrong_tool")
             with self.assertRaises(ValueError):
                 request_pinned_stream(MODEL, DIGEST)
 
