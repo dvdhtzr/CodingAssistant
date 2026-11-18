@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 const [model, outside] = process.argv.slice(1);
 const MAX_REPLY = 131072;
 const routes = [];
+let captureCliRoutes = false;
 const checks = {
   unprivileged: typeof process.getuid === "function" && process.getuid() !== 0,
   no_new_privileges: false,
@@ -19,7 +20,8 @@ const checks = {
   cli_exited_successfully: false,
   exact_model_visible: false,
   only_local_provider: false,
-  unsupported_routes_denied: true,
+  unsupported_routes_denied: false,
+  no_unexpected_cli_route: true,
 };
 
 try {
@@ -41,11 +43,14 @@ function deny(response) {
 const server = http.createServer((incoming, outgoing) => {
   const method = incoming.method || "UNKNOWN";
   const path = incoming.url || "";
-  const route = (method + " " + path).replace(/[^a-zA-Z0-9/_?.:= -]/g, "_").slice(0, 96);
-  if (routes.length < 16) routes.push(route);
-  if (method !== "GET" || path !== "/v1/models" ||
-      incoming.headers["transfer-encoding"] || incoming.headers["content-length"]) {
-    checks.unsupported_routes_denied = checks.unsupported_routes_denied && true;
+  const route = (method + " " + path.split("?")[0]).replace(/[^a-zA-Z0-9/_ .:-]/g, "_").slice(0, 96);
+  const allowed = method === "GET" && path === "/v1/models" &&
+      !incoming.headers["transfer-encoding"] && !incoming.headers["content-length"];
+  if (captureCliRoutes) {
+    if (routes.length < 16) routes.push(route);
+    if (!allowed) checks.no_unexpected_cli_route = false;
+  }
+  if (!allowed) {
     incoming.resume();
     deny(outgoing);
     return;
@@ -159,7 +164,17 @@ try {
     server.listen(0, "127.0.0.1", resolve);
   });
   checks.outbound_tcp_denied = await externalDenied();
+  const denied = await new Promise(resolve => {
+    http.get({ hostname: "127.0.0.1", port: server.address().port,
+               path: "/api/delete", timeout: 3000 }, reply => {
+      reply.resume();
+      reply.on("end", () => resolve(reply.statusCode === 403));
+    }).on("error", () => resolve(false));
+  });
+  checks.unsupported_routes_denied = denied;
+  captureCliRoutes = true;
   const outcome = await runModels(server.address().port);
+  captureCliRoutes = false;
   checks.cli_exited_successfully = outcome.code === 0 && !outcome.killed;
 
   const lines = outcome.output.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "").split(/\r?\n/)
@@ -168,7 +183,7 @@ try {
     /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.:/+-]+$/.test(line));
   checks.exact_model_visible = identifiers.includes("ollama/" + model);
   checks.only_local_provider = identifiers.length > 0 &&
-    identifiers.every(line => line.startsWith("ollama/"));
+    identifiers.every(line => line === "ollama/" + model);
 } catch (_) {
   // Fail closed. Only fixed boolean results and endpoint routes are disclosed.
 } finally {
