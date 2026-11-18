@@ -20,7 +20,7 @@ class RootlessSandboxContractTests(unittest.TestCase):
                          "--cap-drop=all", "--security-opt=no-new-privileges",
                          "--userns=keep-id", "--user", "1000:1000"):
             self.assertIn(required, argv)
-        self.assertIn("/tmp/m0-workspace:/workspace:rw", argv)
+        self.assertIn(f"{pathlib.Path('/tmp/m0-workspace').resolve()}:/workspace:rw", argv)
         self.assertEqual([x for x in argv if x.startswith("--volume")], ["--volume"])
         self.assertEqual(argv[-4], "python3")
         self.assertNotIn("--privileged", argv)
