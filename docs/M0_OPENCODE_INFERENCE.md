@@ -23,3 +23,27 @@ No generated shell/file/Git tool is executed; an unexpected tool call must fail 
 GitHub CI success = the pinned OpenCode *client* can issue and consume the expected mocked streaming inference protocol. Dell M0.8b-2b requires independent real Ollama evidence. Neither alone makes M0 GREEN. M0 qualification still requires the independent three-tasks-by-three-repeats coding benchmarks and safety acceptance.
 
 **CI protocol finding:** The first mock run completed successfully but issued **two** model requests. The pinned OpenCode CLI supports setting the session title before prompting, so the smoke now specifies `--title` and maintains its strict one-inference-call budget. This is an observed run-mode behavior, not a security failure. An unexplained second call must be investigated before allowing the real model through the broker.
+
+## M0.8b-2b real Qwen acceptance candidate (pending CI and Dell)
+
+**The preceding real-CLI mock gate has passed in GitHub CI and was merged as PR #17.** It verified one pinned OpenCode streaming request after supplying an explicit `--title`. It did **not** call Ollama.
+
+This candidate adds `tools/m0/isolated_opencode_real_probe.py` and a distinct `pinned_real_text.py` broker. The new handler **does not broaden** the earlier fixed-tool-call broker. It reuses the already validated exact-model GET `/api/tags` / POST `/api/show` implementation, but accepts exactly one model-pinned `POST /v1/chat/completions` for this fixed CLI prompt:
+
+```text
+Reply with the single word READY. Do not use any tools.
+```
+
+OpenCode constructs its own system prompts and may advertise coding tools internally. The host broker **does not forward** any of those to Ollama. It validates the exact model, streaming mode and single fixed user prompt, then reconstructs a new upstream local-only request with no tool definitions and strictly bounded output tokens. The Ollama response is buffered with an event/byte/time budget and checked for model identity, a complete terminal event, the expected word and **zero function/tool calls**. Only real returned assistant text—not a synthetic READY response—is normalized into an OpenAI-style SSE response for OpenCode. **This does not prove real-time incremental stream forwarding**, nor does it establish safe coding worktree or autonomous execution.
+
+The isolated Podman process is non-root, network-disabled, has no effective capabilities or new privileges, uses a read-only root and a disposable writable `/tmp` tmpfs with `notmpcopyup`, and mounts only the private AF_UNIX socket directory. The broker refuses a second inference and unrelated model tags/methods. It records only bounded status, routes and model digest, **not prompt bodies or raw model output**. The model does not receive any host files or OpenCode's broad tool catalog.
+
+### Dell command — only after CI and PR merge
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/isolated_opencode_real_probe.py --model qwen3.5:4b
+```
+
+Expected if all validations pass: `M0.8b-2b REAL ISOLATED OPENCODE INFERENCE REAL_INFERENCE_PASS: qwen3.5:4b`, all fourteen security/transport checks PASS, container exit 0, pinned model requests = 1 and completed = 1. Local ignored evidence: `artifacts/m0/opencode-real-inference.json`. If BLOCKED, share only the printed statuses/reason. **Never** rerun with public networking, sudo, arbitrary repository mounts, an unpinned model or broader permissions to force success.
+
+This gate is **not** a model qualification or code-writing benchmark. Independent OS-negative/security and model coding task acceptance remain mandatory before M0/M1 can advance.
