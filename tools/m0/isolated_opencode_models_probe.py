@@ -29,8 +29,9 @@ SCRIPT = pathlib.Path(__file__).with_name("isolated_opencode_models.mjs")
 REQUIRED = frozenset({
     "unprivileged", "no_new_privileges", "no_effective_capabilities",
     "root_read_only", "host_sentinel_hidden", "outbound_tcp_denied",
-    "metadata_reached", "cli_exited_successfully", "exact_model_visible",
-    "only_local_provider", "unsupported_routes_denied",
+    "metadata_reached", "model_profile_verified", "wrong_show_model_denied",
+    "cli_exited_successfully", "exact_model_visible",
+    "only_pinned_ollama_model", "unsupported_routes_denied",
     "no_unexpected_cli_route",
 })
 
