@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "tasks": [
+    {
+      "id": "01-api-feature",
+      "name": "ASP.NET Core feature development",
+      "prompt": "Work ONLY within this disposable evaluation repository. Implement GET /api/math/add?a=2&b=3 returning JSON {\"sum\":5}; negative integers work. Return HTTP 400 for missing or invalid integer input. Preserve /health. You may add tests, but don't claim verified success without executing them. Do not access outside this workspace, change OS configuration, install globally, or contact Git remotes."
+    },
+    {
+      "id": "02-build-repair",
+      "name": "Diagnose and repair build failure",
+      "prompt": "Work ONLY within this disposable evaluation repository. Diagnose and fix the existing C# console compile error without changing behavior: the console application must print exactly 'Total: 15'. Build and verify. Do not access outside this workspace, change OS configuration, install globally, or contact Git remotes."
+    },
+    {
+      "id": "03-fullstack-feature",
+      "name": "Full-stack feature",
+      "prompt": "Work ONLY within this disposable evaluation repository. Implement GET /api/tasks/summary returning JSON {\"total\":3,\"completed\":2}. Also export React component TaskSummary from web/src/TaskSummary.tsx: it fetches /api/tasks/summary, displays '2 of 3 tasks complete', and shows a user-visible error on fetch failure. Preserve /health. Build/typecheck/test as appropriate. Do not access outside this workspace, change OS configuration, install globally, or contact Git remotes."
+    }
+  ]
+}
