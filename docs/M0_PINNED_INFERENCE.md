@@ -37,4 +37,4 @@ Private evidence is written under ignored `artifacts/m0/inference-transport.json
 
 M0 remains **YELLOW** until coding benchmark evidence and security requirements are satisfied.
 
-References: citeturn289848search1turn289848search2
+References: https://docs.ollama.com/api and https://opencode.ai/docs/providers
