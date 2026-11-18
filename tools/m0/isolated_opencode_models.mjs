@@ -17,6 +17,8 @@ const checks = {
   host_sentinel_hidden: !fs.existsSync(outside),
   outbound_tcp_denied: false,
   metadata_reached: false,
+  model_profile_verified: false,
+  wrong_show_model_denied: false,
   cli_exited_successfully: false,
   exact_model_visible: false,
   only_local_provider: false,
@@ -44,8 +46,15 @@ const server = http.createServer((incoming, outgoing) => {
   const method = incoming.method || "UNKNOWN";
   const path = incoming.url || "";
   const route = (method + " " + path.split("?")[0]).replace(/[^a-zA-Z0-9/_ .:-]/g, "_").slice(0, 96);
-  const allowed = method === "GET" && (path === "/v1/models" || path === "/api/tags") &&
-      !incoming.headers["transfer-encoding"] && !incoming.headers["content-length"];
+  const metadataGet = method === "GET" && (path === "/api/tags" || path === "/v1/models")
+    && !incoming.headers["transfer-encoding"] && !incoming.headers["content-length"];
+  const rawLength = incoming.headers["content-length"];
+  const metadataShow = method === "POST" && path === "/api/show" &&
+    incoming.headers["content-type"]?.split(";")[0].trim().toLowerCase() === "application/json" &&
+    typeof rawLength === "string" && /^\d+$/.test(rawLength) &&
+    Number(rawLength) > 0 && Number(rawLength) <= 256 &&
+    !incoming.headers["transfer-encoding"];
+  const allowed = metadataGet || metadataShow;
   if (captureCliRoutes) {
     if (routes.length < 16) routes.push(route);
     if (!allowed) checks.no_unexpected_cli_route = false;
@@ -55,49 +64,89 @@ const server = http.createServer((incoming, outgoing) => {
     deny(outgoing);
     return;
   }
-  const req = http.request({
-    socketPath: "/run/codingassistant/ollama.sock",
-    method: "GET", path,
-    headers: { "Connection": "close" }, timeout: 10000,
-  }, (reply) => {
-    let count = 0;
-    const parts = [];
-    reply.on("data", chunk => {
-      count += chunk.length;
-      if (count > MAX_REPLY) req.destroy(new Error("response budget"));
-      else parts.push(chunk);
-    });
-    reply.on("end", () => {
-      const body = Buffer.concat(parts);
-      if (reply.statusCode === 200) {
-        try {
-          const listed = JSON.parse(body.toString("utf8"));
-          const pinned = path === "/api/tags"
-            ? (listed?.models?.length === 1 &&
-               listed.models[0]?.name === model &&
-               listed.models[0]?.model === model &&
-               typeof listed.models[0]?.digest === "string" &&
-               listed.models[0]?.digest.length > 0)
-            : (listed?.data?.length === 1 && listed.data[0]?.id === model);
-          if (pinned) checks.metadata_reached = true;
-        } catch (_) {
-          // Invalid broker metadata never constitutes a discovery pass.
+
+  const pieces = [];
+  let bytes = 0;
+  let exceeded = false;
+  incoming.on("data", chunk => {
+    bytes += chunk.length;
+    if (bytes > 256) exceeded = true;
+    else pieces.push(chunk);
+  });
+  incoming.on("end", () => {
+    if (exceeded || (metadataGet && bytes !== 0) ||
+        (metadataShow && bytes !== Number(rawLength))) {
+      deny(outgoing);
+      return;
+    }
+    const body = metadataShow ? Buffer.concat(pieces) : null;
+    if (metadataShow) {
+      try {
+        const parsed = JSON.parse(body);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+            Object.keys(parsed).length !== 1 || parsed.model !== model) {
+          deny(outgoing);
+          return;
         }
+      } catch (_) {
+        deny(outgoing);
+        return;
       }
-      outgoing.writeHead(reply.statusCode, {
-        "Content-Type": "application/json",
-        "Content-Length": String(body.length),
-        "Cache-Control": "no-store",
+    }
+    const req = http.request({
+      socketPath: "/run/codingassistant/ollama.sock",
+      method, path, timeout: 10000,
+      headers: metadataShow ?
+        { "Content-Type": "application/json", "Content-Length": String(body.length),
+          "Connection": "close" } :
+        { "Connection": "close" },
+    }, (reply) => {
+      let count = 0;
+      const parts = [];
+      reply.on("data", chunk => {
+        count += chunk.length;
+        if (count > MAX_REPLY) req.destroy(new Error("response budget"));
+        else parts.push(chunk);
       });
-      outgoing.end(body);
+      reply.on("end", () => {
+        const data = Buffer.concat(parts);
+        if (reply.statusCode === 200) {
+          try {
+            const listed = JSON.parse(data.toString("utf8"));
+            const tags = path === "/api/tags" &&
+              listed?.models?.length === 1 &&
+              listed.models[0]?.name === model &&
+              listed.models[0]?.model === model &&
+              typeof listed.models[0]?.digest === "string" &&
+              listed.models[0]?.digest.length > 0;
+            const catalog = path === "/v1/models" &&
+              listed?.data?.length === 1 && listed.data[0]?.id === model;
+            const show = path === "/api/show" &&
+              Array.isArray(listed?.capabilities) &&
+              listed.capabilities.includes("completion") &&
+              listed.capabilities.includes("tools");
+            if (tags || catalog) checks.metadata_reached = true;
+            if (show) checks.model_profile_verified = true;
+          } catch (_) {
+            // Malformed broker response never qualifies.
+          }
+        }
+        outgoing.writeHead(reply.statusCode, {
+          "Content-Type": "application/json",
+          "Content-Length": String(data.length),
+          "Cache-Control": "no-store",
+        });
+        outgoing.end(data);
+      });
     });
+    req.on("timeout", () => req.destroy(new Error("proxy timeout")));
+    req.on("error", () => {
+      if (!outgoing.headersSent) outgoing.writeHead(502);
+      outgoing.end();
+    });
+    if (body !== null) req.write(body);
+    req.end();
   });
-  req.on("timeout", () => req.destroy(new Error("proxy timeout")));
-  req.on("error", () => {
-    if (!outgoing.headersSent) outgoing.writeHead(502);
-    outgoing.end();
-  });
-  req.end();
 });
 
 async function externalDenied() {
@@ -140,7 +189,7 @@ function runModels(port) {
       OPENCODE_DISABLE_AUTOUPDATE: "1",
       OPENCODE_CONFIG_CONTENT: JSON.stringify(config),
     };
-    const child = spawn("opencode", ["models"], {
+    const child = spawn("opencode", ["models", "ollama"], {
       cwd: "/tmp", env, stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "", stderrBytes = 0, killed = false;
@@ -186,6 +235,21 @@ try {
     }).on("error", () => resolve(false));
   });
   checks.unsupported_routes_denied = denied;
+  const wrongShow = await new Promise(resolve => {
+    const body = Buffer.from(JSON.stringify({ model: "foreign-model:1" }));
+    const req = http.request({
+      hostname: "127.0.0.1", port: server.address().port,
+      path: "/api/show", method: "POST", timeout: 3000,
+      headers: { "Content-Type": "application/json",
+                 "Content-Length": String(body.length) },
+    }, reply => {
+      reply.resume();
+      reply.on("end", () => resolve(reply.statusCode === 403));
+    });
+    req.on("error", () => resolve(false));
+    req.end(body);
+  });
+  checks.wrong_show_model_denied = wrongShow;
   captureCliRoutes = true;
   const outcome = await runModels(server.address().port);
   captureCliRoutes = false;
