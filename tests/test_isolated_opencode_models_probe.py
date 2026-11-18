@@ -63,12 +63,15 @@ class ModelDiscoveryTests(unittest.TestCase):
 
     def test_cli_invocation_only_models_not_run(self):
         text = SCRIPT.read_text(encoding="utf-8")
-        self.assertIn('spawn("opencode", ["models"]', text)
+        self.assertIn('spawn("opencode", ["models", "ollama"]', text)
         self.assertNotIn('spawn("opencode", ["run"]', text)
         self.assertIn("OPENCODE_CONFIG_CONTENT:", text)
         self.assertIn('server.listen(0, "127.0.0.1"', text)
         self.assertIn('"/v1/models"', text)
         self.assertIn('"/api/tags"', text)
+        self.assertIn('"/api/show"', text)
+        self.assertIn('checks.model_profile_verified = true', text)
+        self.assertIn('checks.wrong_show_model_denied = wrongShow', text)
         self.assertIn('path === "/api/tags"', text)
         self.assertIn("checks.no_unexpected_cli_route = false", text)
         self.assertIn('checks.unsupported_routes_denied = denied;', text)
