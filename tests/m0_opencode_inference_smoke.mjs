@@ -128,6 +128,7 @@ try {
   };
   cli = await new Promise(resolve => {
     const child = spawn("opencode", ["run", "--standalone", "--model", ID,
+                                    "--title", "M0 wire-only session",
                                     "--format", "default", TASK], {
       cwd: "/tmp", env, stdio: ["ignore", "pipe", "pipe"],
     });
