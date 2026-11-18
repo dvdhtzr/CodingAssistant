@@ -68,6 +68,8 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertIn("OPENCODE_CONFIG_CONTENT:", text)
         self.assertIn('server.listen(0, "127.0.0.1"', text)
         self.assertIn('"/v1/models"', text)
+        self.assertIn('"/api/tags"', text)
+        self.assertIn('path === "/api/tags"', text)
         self.assertIn("checks.no_unexpected_cli_route = false", text)
         self.assertIn('checks.unsupported_routes_denied = denied;', text)
         self.assertIn('outbound_tcp_denied', text)
