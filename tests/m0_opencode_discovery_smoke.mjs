@@ -123,7 +123,9 @@ try {
     process.stderr.write("OpenCode discovery contract FAIL: " +
       JSON.stringify({ exit_code: result.code, killed: result.killed,
                        listed_exactly_pinned_model: listed.length === 1 && listed[0] === expected,
-                       routes, route_error: failed }) + "\n");
+                       routes, route_error: failed,
+                       stderr_tail: result.stderr.slice(-800).replace(/[\x00-\x1f\x7f]/g, " "),
+                       stdout_tail: result.stdout.slice(-300).replace(/[\x00-\x1f\x7f]/g, " ") }) + "\n");
     process.exitCode = 2;
   } else {
     console.log("OPENCODE_DISCOVERY_CONTRACT_PASS: exact model, GET tags, POST show");
