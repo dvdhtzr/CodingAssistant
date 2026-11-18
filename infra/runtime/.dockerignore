@@ -1,0 +1,3 @@
+# Same minimum context as .containerignore; no user or repository files.
+**
+!Containerfile

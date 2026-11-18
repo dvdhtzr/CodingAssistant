@@ -90,3 +90,13 @@ cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/inference_transpo
 ```
 
 M0 remains **YELLOW** until independent safe coding-evaluation evidence is available.
+
+## M0.7 — offline development toolchain image (Dell)
+
+M0.6 **isolated, model-pinned inference PASS** was reported on the Dell with all eight checks. Next, verify that OpenCode, .NET 10, Node and Git can **start without networking** inside an isolated container. The toolchain build intentionally downloads official dependencies, then executes its checks with `--network=none`. No coding agent or model call occurs.
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/runtime_image_probe.py --build
+```
+
+Details and expected results: [M0.7 runtime image](docs/M0_OFFLINE_RUNTIME.md). **M0 remains YELLOW** pending full safe coding and model qualification.
