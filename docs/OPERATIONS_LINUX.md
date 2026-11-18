@@ -55,3 +55,15 @@ Check `node --version` and `npm --version`. OpenClaw later needs a currently sup
 ## Stop before benchmark
 
 Do not run `benchmark.py` as a normal, privileged or credential-bearing desktop user. It executes agent-generated shell commands and code. Read `docs/SECURITY.md`; only run in a verified disposable isolated environment.
+ 
+## OpenCode model discovery (M0.3)
+
+Once the other checks are green:
+
+```bash
+cd ~/CodingAssistant
+git pull --ff-only
+python3 tools/m0/opencode_probe.py --model qwen3.5:4b
+```
+
+Expected: `M0.3 DISCOVERY PASS` and five `PASS` checks. The probe only runs `opencode models` and reads Ollama's local metadata; it doesn't execute agent code. Its evidence remains under ignored `artifacts/m0/`. If blocked, inspect `opencode models` and share only its `ollama/` lines.
