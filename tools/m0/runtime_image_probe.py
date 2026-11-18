@@ -143,8 +143,18 @@ def evaluate(build: bool, timeout: int) -> dict[str, Any]:
     checks = check_versions(versions)
     result["checks"] = checks
     if p.returncode != 0 or not all(checks.values()):
-        result["reason"] = "Toolchain is incomplete, mismatched or unable to start offline"
-        result["stderr_tail"] = p.stderr[-700:]
+        # These commands only print CLI versions/help. Never dump environments,
+        # mounted files, full logs, credentials or command line arguments.
+        # A Podman launch failure has no version output: do not misreport
+        # six absent development tools when the process never started.
+        if p.returncode != 0 and not versions:
+            result["reason"] = f"Podman could not start the offline toolchain (exit {p.returncode})"
+        elif p.returncode != 0:
+            result["reason"] = f"Offline toolchain script failed partway through (exit {p.returncode})"
+        else:
+            result["reason"] = "Version output incomplete or different from expected toolchain"
+        result["stderr_tail"] = p.stderr[-1200:]
+        result["stdout_tail"] = p.stdout[-1200:]
         return result
     result["status"] = "TOOLCHAIN_PASS"
     return result
@@ -166,6 +176,14 @@ def main() -> int:
         print(f'  {key}: {"PASS" if ok else "FAIL"}')
     if result.get("reason"):
         print("Reason:", result["reason"])
+    if "run_exit_code" in result:
+        print("Container exit code:", result["run_exit_code"])
+    if result.get("stderr_tail"):
+        print("Container error output (last 1200 characters):")
+        print(result["stderr_tail"])
+    if result.get("stdout_tail"):
+        print("Container output (last 1200 characters):")
+        print(result["stdout_tail"])
     if result.get("build_log"):
         print("Build log:", result["build_log"])
     print("Evidence:", args.output)
