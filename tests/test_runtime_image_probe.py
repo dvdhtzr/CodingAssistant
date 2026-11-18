@@ -7,7 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools" / "m0"))
 from runtime_image_probe import (
     CONTEXT, IMAGE, VERSION_PIN, build_command, run_command, check_versions,
-    parse_versions
+    parse_versions, toolchain_failure
 )
 
 class OfflineToolchainTests(unittest.TestCase):
@@ -71,6 +71,26 @@ class OfflineToolchainTests(unittest.TestCase):
                         " sha256:" + "a" * 64, ""):
             with self.subTest(image_id=invalid), self.assertRaises(ValueError):
                 run_command(invalid, 1000, 1000)
+
+    def test_podman_launch_failure_not_reported_as_six_missing_tools(self):
+        failure = toolchain_failure(125, {}, "", "Error: container start denied")
+        self.assertIn("could not start", failure["reason"])
+        self.assertIn("exit 125", failure["reason"])
+        self.assertEqual(failure["stderr_tail"], "Error: container start denied")
+
+    def test_tool_script_failure_distinguished_from_launch_failure(self):
+        failure = toolchain_failure(2, {"dotnet": "10.0.404"}, "dotnet=10.0.404\n", "permission denied")
+        self.assertIn("failed partway", failure["reason"])
+        self.assertEqual(failure["stdout_tail"], "dotnet=10.0.404\n")
+
+    def test_version_mismatch_reports_error_without_tool_absence_claim(self):
+        failure = toolchain_failure(0, {"dotnet": "10.0.404"}, "dotnet=10.0.404\n", "")
+        self.assertIn("Version output", failure["reason"])
+
+    def test_diagnostics_are_bounded(self):
+        failure = toolchain_failure(125, {}, "a" * 5000, "b" * 5000)
+        self.assertEqual(len(failure["stdout_tail"]), 1200)
+        self.assertEqual(len(failure["stderr_tail"]), 1200)
 
     def test_versions_parse_and_accept_matching_toolchain(self):
         sample = "dotnet=10.0.101\nnode=v22.22.1\nnpm=10.9.3\ngit=git version 2.48\nopencode=opencode v2.3.0\nrun_help=ok\n"
