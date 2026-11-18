@@ -34,6 +34,6 @@ jobs:
             --env XDG_CACHE_HOME=/tmp/.cache \
             --env OPENCODE_DISABLE_AUTOUPDATE=1 \
             --entrypoint /bin/sh codingassistant-m0-runtime:ci \
-            -c 'set -eu; dotnet --version | grep "^10[.]"; node --version | grep "^v22[.]"; npm --version; git --version; opencode --version | grep "^2[.]3[.]0$"; opencode run --help >/dev/null; echo "Offline toolchain smoke PASS"'
+            -c 'set -eu; dotnet --version | grep "^10[.]"; node --version | grep "^v22[.]"; npm --version; git --version; opencode --version | grep -E "^(opencode v)?2[.]3[.]0$"; opencode run --help >/dev/null; echo "Offline toolchain smoke PASS"'
       # GitHub-hosted Docker smoke establishes package startup only.
       # The actual rootless Podman/host isolation gate still runs on Dell.
