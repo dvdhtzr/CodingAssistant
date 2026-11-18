@@ -80,3 +80,13 @@ cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/bridge_probe.py
 ```
 
 **M0 remains YELLOW.** A passing broker preflight is not an approved autonomous coding run.
+
+## M0.6 — pinned inference inside the isolated Dell container
+
+M0.5's seven broker checks and loopback were **reported PASS on the Dell**. The next step is a single bounded, model-pinned Ollama inference call over container-local HTTP → private Unix socket; it is **not** OpenCode execution and does not run AI-generated code. See [M0.6 instructions](docs/M0_PINNED_INFERENCE.md).
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/inference_transport_probe.py --model qwen3.5:4b
+```
+
+M0 remains **YELLOW** until independent safe coding-evaluation evidence is available.
