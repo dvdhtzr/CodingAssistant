@@ -60,3 +60,13 @@ python3 tools/m0/opencode_probe.py --model qwen3.5:4b
 ```
 
 The probe only checks whether OpenCode can **discover** your locally installed Qwen model. It does not ask an agent to write code, and it does not turn M0 GREEN. See [M0.3 discovery instructions](docs/M0_OPENCODE_DISCOVERY.md).
+
+## M0.4 — rootless isolation preflight (Dell)
+
+Model discovery passed on the Dell (owner-reported). **Before running any model-generated code**, [check Podman rootless isolation](docs/M0_ISOLATION.md). This is a negative-test preflight, not full M1 security authorization.
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/sandbox_probe.py
+```
+
+If Podman or its container image is not yet installed, follow the one-time setup instructions in the linked document. No agent executes during this test.
