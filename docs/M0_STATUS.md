@@ -31,3 +31,5 @@ Recommendation: keep M1 disabled until M0 model acceptance is proven. Do not equ
 **Next M0.7 gate:** build a local OpenCode 2.3.0 + .NET 10 + Node 22 + Git toolchain image with a restricted build context; verify CLI startup in rootless Podman with no network and no source mounts. Actual autonomous coding remains **disabled**.
 
 **Operator-reported M0.7 initial attempt (Nov 18):** container image build appears to have completed, but the local verifier rejected an unprefixed Podman image ID before toolchain execution. This is a verifier-format defect, **not evidence of toolchain failure**. Fix tested in PR; operator should rerun without `--build` after merge.
+
+**Owner-reported M0.7 follow-up (Nov 18):** Docker CI image build/start passed, but Dell rootless Podman reported six version-check FAILs with generic error. This is unresolved pending local `run_exit_code` and `stderr_tail` evidence. A diagnostic PR improves error reporting without changing sandbox policies or triggering new package downloads.
