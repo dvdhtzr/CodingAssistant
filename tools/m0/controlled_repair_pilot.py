@@ -61,8 +61,6 @@ def evaluator_command(image_id: str, uid: int, gid: int,
     args[args.index("--memory=512m")] = "--memory=2g"
     args[args.index("--tmpfs=/tmp:rw,nosuid,nodev,size=64m,notmpcopyup")] = (
         "--tmpfs=/tmp:rw,nosuid,nodev,size=512m,notmpcopyup")
-    args.extend(["--fixed-evaluator"]) if False else None
-    args.extend([""])
     return args
 
 
