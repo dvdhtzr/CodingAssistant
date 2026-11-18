@@ -37,3 +37,7 @@ cd ~/CodingAssistant && git pull --ff-only && python3 tools/m0/runtime_image_pro
 ```
 
 Only pass `--build` if the image genuinely does not exist or if you intentionally want to rebuild it.
+
+## M0.7 diagnostic follow-up
+
+A Dell operator run found all six version checks marked FAIL after a built image was accepted. That does **not** prove all six executables are missing: a container startup error can produce zero version output. The CLI now reports the Podman process exit code and bounded stdout/stderr to distinguish container launch failure, partial toolchain command execution, and malformed version responses. It does **not** automatically retry with weaker security settings. If the image is already built, rerun **without** `--build`.
