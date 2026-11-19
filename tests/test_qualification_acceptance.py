@@ -49,7 +49,7 @@ class IndependentAcceptanceContracts(unittest.TestCase):
         good["checks"]["offline_build"] = False
         self.assertTrue(q.validate_result(good, task))
         for bad_value in (
-            ["CS0246: test\\nsecret"],
+            ["CS0246: test\nsecret"],
             ["not-an-error"],
             ["CS0246: " + "x" * 250],
             ["CS0001: OK"] * 6,
