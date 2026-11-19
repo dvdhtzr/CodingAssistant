@@ -14,6 +14,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import re
 import secrets
 import subprocess
 import sys
@@ -77,7 +78,7 @@ def registry_command(image_id: str, uid: int, gid: int) -> list[str]:
 
 
 def rpc_command(name: str) -> list[str]:
-    if not name.startswith("ca-m15-acpx-") or len(name) > 42:
+    if not re.fullmatch(r"ca-m15-acpx-[0-9a-f]{12}", name):
         raise ValueError("Unapproved transient container name")
     # Uses the freshly generated token already in the disposable guest's
     # environment. Never send token as a CLI arg, read its value, or log it.
