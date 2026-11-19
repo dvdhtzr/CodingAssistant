@@ -16,6 +16,16 @@ cd ~/CodingAssistant && git pull --ff-only && python3 tools/mvp/assist.py --demo
 
 The built-in demo asks Qwen 4B to fix the frozen C# compile-error fixture. **It shows the actual proposed diff first.** Type `APPLY` only if the change looks correct. The optional `--build` uses the existing immutable local M0.7 toolchain image in a rootless network-disabled Podman container for fixed .NET restore/build; for this demo it also runs the repaired app. A successful demo should print `Total: 15`. If Qwen returns an unusable suggestion, reject it; do not force success or modify the fixture.
 
+### Retry a compiler error without starting over
+
+If a previously approved C# change fails to compile, keep its run ID and run:
+
+```bash
+python3 tools/mvp/assist.py --retry <RUN_ID> --file Program.cs --run
+```
+
+The CLI rechecks the **existing disposable copy** inside rootless, offline Podman, supplies the bounded compiler errors to your local model, shows a NEW diff, and asks you to type `APPLY` again. It writes the new change only into **another** disposable copy; both the original project and the prior failed copy remain unchanged. After a successful build, `--run` runs the repaired sample inside the same isolated environment. A missing container image or other infrastructure failure stops the retry rather than giving Qwen invented compiler errors.
+
 For your own project (one source file at a time):
 
 ```bash

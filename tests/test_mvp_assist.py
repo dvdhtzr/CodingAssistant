@@ -123,6 +123,57 @@ class MvpTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 assist.propose("qwen3.5:4b", "Program.cs", "old", "Fix")
 
+    def test_retry_uses_compiler_feedback_and_stages_a_new_approved_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "artifacts"
+            old = root / "20261119T010319Z-9726f2d8" / "project"
+            old.mkdir(parents=True)
+            (old / "Program.cs").write_text(
+                "int x = 1;\nusing System.Linq;\nConsole.WriteLine(x);\n")
+            (old / "Repair.csproj").write_text("<Project/>")
+            patched = "using System.Linq;\nint x = 1;\nConsole.WriteLine(x);\n"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=None, file="Program.cs",
+                                      task=None, build=False, run=True,
+                                      retry="20261119T010319Z-9726f2d8")
+            def build(*args, **kwargs):
+                if kwargs.get("feedback") is not None:
+                    kwargs["feedback"].append(
+                        "error CS1529: using directives must precede statements")
+                    return False
+                return True
+            with mock.patch.object(assist, "ARTIFACTS", root), \
+                 mock.patch.object(assist, "isolated_build", side_effect=build) as build_mock, \
+                 mock.patch.object(assist, "propose", return_value=patched) as proposed, \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 0)
+            self.assertIn("CS1529", proposed.call_args.args[3])
+            self.assertIn("implicit usings", proposed.call_args.args[3])
+            self.assertEqual(build_mock.call_count, 2)
+            self.assertIn("using System.Linq;\nConsole", (old / "Program.cs").read_text())
+            copies = [p for p in root.iterdir() if p.name != args.retry]
+            self.assertEqual(len(copies), 1)
+            self.assertEqual((copies[0] / "project/Program.cs").read_text(), patched)
+            self.assertTrue((copies[0] / "change.patch").is_file())
+
+    def test_retry_without_compiler_diagnostics_refuses_inference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "artifacts"
+            old = root / "20261119T010319Z-9726f2d8" / "project"
+            old.mkdir(parents=True)
+            (old / "Program.cs").write_text("some text")
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=None, file="Program.cs",
+                                      task=None, build=False, run=True,
+                                      retry="20261119T010319Z-9726f2d8")
+            with mock.patch.object(assist, "ARTIFACTS", root), \
+                 mock.patch.object(assist, "isolated_build", return_value=False), \
+                 mock.patch.object(assist, "propose") as model:
+                with self.assertRaises(ValueError):
+                    assist.run(args)
+            model.assert_not_called()
+
     def test_build_command_is_immutable_and_network_denied(self):
         with tempfile.TemporaryDirectory() as directory:
             for step in ("restore", "build", "run"):

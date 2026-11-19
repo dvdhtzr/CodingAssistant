@@ -36,6 +36,7 @@ MAX_PROJECT = 4_000_000
 MAX_FILES = 250
 MAX_RESPONSE = 120_000
 MAX_DIFF_LINES = 300
+RETRY_ID_RE = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{8}\Z")
 
 
 def json_http(path: str, post: dict | None = None, timeout: int = 180) -> dict:
@@ -198,7 +199,7 @@ def _container_command(workspace: Path, image_id: str, project_file: str,
                      "--no-build", "-c", "Release"]
 
 
-def isolated_build(workspace: Path, demo: bool) -> bool:
+def isolated_build(workspace: Path, demo: bool, *, feedback: list[str] | None = None) -> bool:
     """Fixed dotnet commands only, in a rootless network-denied Podman container."""
     if sys.platform != "linux" or not hasattr(os, "getuid") or shutil.which("podman") is None:
         print("Isolated build is currently Linux/Podman only; no host build was run.")
@@ -228,6 +229,8 @@ def isolated_build(workspace: Path, demo: bool) -> bool:
             timeout=120, check=False,
         )
         summary = (result.stdout + "\n" + result.stderr).strip().splitlines()
+        if feedback is not None and result.returncode != 0:
+            feedback.extend(line[:300] for line in summary[-24:])
         print(f"\nIsolated dotnet {operation}: {'PASS' if result.returncode == 0 else 'FAIL'}")
         for line in summary[-12:]:
             print("  " + line[:200])
@@ -240,11 +243,40 @@ def run(args: argparse.Namespace) -> int:
     if not MODEL_RE.fullmatch(args.model):
         raise ValueError("Specify an exact local Ollama model tag, e.g. qwen3.5:4b")
     demo_project = ROOT / "benchmarks/fixtures/02-build-repair/api"
-    project = demo_project if args.demo else Path(args.project).expanduser().resolve()
-    relative = "Program.cs" if args.demo else args.file
-    task = "Fix the C# compile error. Preserve output Total: 15." if args.demo else args.task
-    if not isinstance(task, str) or not 0 < len(task) <= 1000:
-        raise ValueError("Supply a short task description")
+    retry = getattr(args, "retry", None)
+    if retry:
+        if not RETRY_ID_RE.fullmatch(retry):
+            raise ValueError("Retry must name one exact previously approved MVP run ID")
+        run_directory = ARTIFACTS / retry
+        if run_directory.is_symlink() or not run_directory.is_dir():
+            raise ValueError("Approved disposable run directory was not found")
+        project = run_directory / "project"
+        relative = args.file or "Program.cs"
+        print(f"Rechecking existing disposable copy: {project}")
+        compiler_errors: list[str] = []
+        if isolated_build(project, False, feedback=compiler_errors):
+            print("Existing disposable copy already builds. No retry needed.")
+            if getattr(args, "run", False):
+                return 0 if isolated_build(project, True) else 2
+            return 0
+        if not compiler_errors:
+            raise ValueError("No compiler diagnostics available; check rootless Podman before retrying")
+        task = (
+            "Fix these C# compiler errors in the previously approved file. "
+            "Preserve the intended bug fix and behavior. "
+            "All using directives must precede top-level statements; "
+            "avoid unnecessary imports when implicit usings are enabled. "
+            "Return only the COMPLETE corrected source. Compiler output:\n"
+            + "\n".join(compiler_errors)[-2500:]
+        )
+        if getattr(args, "task", None):
+            task += "\nAdditional instruction: " + args.task
+    else:
+        project = demo_project if args.demo else Path(args.project).expanduser().resolve()
+        relative = "Program.cs" if args.demo else args.file
+        task = "Fix the C# compile error. Preserve output Total: 15. Do not add unnecessary using directives; this project enables implicit usings." if args.demo else args.task
+    if not isinstance(task, str) or not 0 < len(task) <= 4000:
+        raise ValueError("Supply a task description within 4000 characters")
     rel, selected = select_source(project, relative)
     original = selected.read_text(encoding="utf-8")
     print(f"Local model: {args.model}\nFile: {rel}\nTask: {task}")
@@ -277,9 +309,9 @@ def run(args: argparse.Namespace) -> int:
     print(f"\nApplied to COPY: {output}")
     print(f"Saved patch:     {workspace.parent / 'change.patch'}")
     print(f"Original left unchanged: {selected}")
-    if args.build and output.suffix.lower() == ".cs":
+    if (args.build or retry or getattr(args, "run", False)) and output.suffix.lower() == ".cs":
         print("\nRunning fixed .NET checks inside rootless, no-network Podman.")
-        if not isolated_build(workspace, args.demo):
+        if not isolated_build(workspace, args.demo or getattr(args, "run", False)):
             print("Isolated build did not pass. Keep the diff for review.")
             return 2
     return 0
@@ -290,14 +322,22 @@ def main() -> int:
     parser.add_argument("--demo", action="store_true",
                         help="Use frozen C# compile-error fixture")
     parser.add_argument("--project", help="Path to local project directory")
+    parser.add_argument("--retry", metavar="RUN_ID",
+                        help="Use approved disposable MVP run, compile it, then ask Qwen to fix build errors")
     parser.add_argument("--file", help="One relative source file to edit")
     parser.add_argument("--task", help="Plain-English change request")
     parser.add_argument("--model", default="qwen3.5:4b")
     parser.add_argument("--build", action="store_true",
                         help="After approval, use isolated Podman for fixed dotnet build")
+    parser.add_argument("--run", action="store_true",
+                        help="After successful isolated build, run the approved C# copy inside Podman")
     args = parser.parse_args()
-    if not args.demo and not all((args.project, args.file, args.task)):
-        parser.error("Use --demo or supply --project, --file, and --task")
+    if sum((bool(args.demo), bool(args.project), bool(args.retry))) != 1:
+        parser.error("Choose --demo, --retry RUN_ID, or --project with --file and --task")
+    if args.project and not (args.file and args.task):
+        parser.error("For --project, supply --file and --task")
+    if args.run and not (args.demo or args.retry):
+        parser.error("For custom projects, --run is not yet offered; use --build")
     try:
         return run(args)
     except (OSError, ValueError, UnicodeError, urllib.error.URLError,
