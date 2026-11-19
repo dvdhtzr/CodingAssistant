@@ -1,0 +1,73 @@
+name: Order pricing static acceptance
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/fixtures/04-order-pricing/**"
+      - "tools/mvp/assist.py"
+      - "tests/test_mvp_assist.py"
+      - ".github/workflows/order-pricing-acceptance.yml"
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/fixtures/04-order-pricing/**"
+      - "tools/mvp/assist.py"
+      - "tests/test_mvp_assist.py"
+      - ".github/workflows/order-pricing-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-fixture-acceptance:
+    name: Frozen defect fails / fixed copy passes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Verify frozen defect and known-good correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/empty-nuget-feed"
+          fixture="benchmarks/fixtures/04-order-pricing"
+          dotnet restore "$fixture/OrderPricing.csproj" \
+            --source "$RUNNER_TEMP/empty-nuget-feed" \
+            -p:NuGetAudit=false --disable-parallel
+          dotnet build "$fixture/OrderPricing.csproj" -c Release --no-restore -warnaserror
+
+          # The pre-repair source MUST compile yet fail the executable oracle.
+          if dotnet run --project "$fixture/OrderPricing.csproj" -c Release \
+              --no-build > "$RUNNER_TEMP/order-pricing-baseline.log" 2>&1; then
+            cat "$RUNNER_TEMP/order-pricing-baseline.log"
+            echo "ERROR: the known-defective fixture unexpectedly passed"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/order-pricing-baseline.log"
+          grep -q "ORDER-PRICING ACCEPTANCE FAILED" "$RUNNER_TEMP/order-pricing-baseline.log"
+          grep -q "FAIL: mixed taxable" "$RUNNER_TEMP/order-pricing-baseline.log"
+
+          # Static, model-free correction is applied ONLY to a throwaway CI copy.
+          cp -R "$fixture" "$RUNNER_TEMP/order-pricing-fixed"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          path = Path(os.environ["RUNNER_TEMP"]) / "order-pricing-fixed" / "PricingCalculator.cs"
+          before = path.read_text(encoding="utf-8")
+          target = "decimal tax = Money(taxableSubtotal * salesTaxRate);"
+          replacement = ("decimal taxableDiscount = Money(taxableSubtotal * discountRate);\n"
+                         "        decimal tax = Money((taxableSubtotal - taxableDiscount) * salesTaxRate);")
+          assert before.count(target) == 1, "frozen fixture has changed"
+          path.write_text(before.replace(target, replacement), encoding="utf-8")
+          PY
+          fixed="$RUNNER_TEMP/order-pricing-fixed/OrderPricing.csproj"
+          dotnet restore "$fixed" --source "$RUNNER_TEMP/empty-nuget-feed" \
+            -p:NuGetAudit=false --disable-parallel
+          dotnet build "$fixed" -c Release --no-restore -warnaserror
+          dotnet run --project "$fixed" -c Release --no-build | tee "$RUNNER_TEMP/order-pricing-fixed.log"
+          grep -q "ORDER-PRICING ACCEPTANCE: 10/10 checks passed" "$RUNNER_TEMP/order-pricing-fixed.log"
+          grep -q "ORDER-PRICING ACCEPTANCE PASS" "$RUNNER_TEMP/order-pricing-fixed.log"

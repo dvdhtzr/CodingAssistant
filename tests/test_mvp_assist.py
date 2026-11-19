@@ -394,5 +394,69 @@ class MvpTests(unittest.TestCase):
                 model.assert_not_called()
 
 
+    def test_custom_project_run_executes_isolated_acceptance_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            (project / "PricingCalculator.cs").write_text("public class PricingCalculator {}\n")
+            (project / "OrderPricing.csproj").write_text("<Project/>")
+            (project / "Program.cs").write_text("System.Console.WriteLine(\"PASS\");\n")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=str(project), file="PricingCalculator.cs",
+                                      task="Fix pricing", build=False, run=True)
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose",
+                                   return_value="public class PricingCalculator { }\n"), \
+                 mock.patch.object(assist, "isolated_build",
+                                   return_value=True) as isolated, \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 0)
+            self.assertEqual(isolated.call_count, 1)
+            self.assertTrue(isolated.call_args.args[1])
+            staged = isolated.call_args.args[0]
+            self.assertNotEqual(staged, project)
+            self.assertTrue((staged / "OrderPricing.csproj").is_file())
+            self.assertTrue((staged / "Program.cs").is_file())
+            self.assertEqual((project / "PricingCalculator.cs").read_text(),
+                             "public class PricingCalculator {}\n")
+            result = __import__("json").loads((staged.parent / "result.json").read_text())
+            self.assertEqual(result["status"], "run_passed")
+
+    def test_custom_project_runtime_failure_does_not_trigger_compiler_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            (project / "PricingCalculator.cs").write_text("class P {}\n")
+            (project / "OrderPricing.csproj").write_text("<Project/>")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=str(project), file="PricingCalculator.cs",
+                                      task="Fix pricing", build=False, run=True)
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose",
+                                   return_value="class P { }\n") as model, \
+                 mock.patch.object(assist, "isolated_build", return_value=False), \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(assist.run(args), 2)
+            self.assertEqual(model.call_count, 1)
+            self.assertIn("no automatic retry", output.getvalue())
+            result_file = next(artifacts.iterdir()) / "result.json"
+            record = __import__("json").loads(result_file.read_text())
+            self.assertEqual(record["status"], "verification_failed")
+
+    def test_cli_allows_custom_project_explicit_run(self):
+        command = ["assist.py", "--project", "/tmp/example", "--file",
+                   "PricingCalculator.cs", "--task", "Correct tax", "--run"]
+        with mock.patch.object(assist.sys, "argv", command), \
+             mock.patch.object(assist, "run", return_value=0) as run:
+            self.assertEqual(assist.main(), 0)
+            self.assertTrue(run.call_args.args[0].run)
+
+
 if __name__ == "__main__":
     unittest.main()

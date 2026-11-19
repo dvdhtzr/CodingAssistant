@@ -394,7 +394,14 @@ def run(args: argparse.Namespace) -> int:
             workspace, args.demo or getattr(args, "run", False),
             feedback=compiler_errors,
         )
-        record["status"] = "build_passed" if passed else "build_failed"
+        # A passing build alone does not prove executable acceptance checks passed.
+        if passed:
+            record["status"] = ("run_passed"
+                                if args.demo or getattr(args, "run", False)
+                                else "build_passed")
+        else:
+            record["status"] = ("build_failed" if compiler_errors
+                                else "verification_failed")
         record["compiler_diagnostics"] = compiler_errors
         save_result(workspace.parent, record)
         if passed:
@@ -441,8 +448,6 @@ def main() -> int:
         parser.error("Choose --demo, --retry RUN_ID, or --project with --file and --task")
     if args.project and not (args.file and args.task):
         parser.error("For --project, supply --file and --task")
-    if args.run and not (args.demo or args.retry):
-        parser.error("For custom projects, --run is not yet offered; use --build")
     try:
         return run(args)
     except (OSError, ValueError, UnicodeError, urllib.error.URLError,
