@@ -465,7 +465,7 @@ Local results appear under `artifacts/m0/` (ignored by Git). Don't commit machin
 | Milestone | Description | Status |
 | --- | --- | --- |
 | M0 | Host inventory, Ollama/OpenCode model feasibility, repeatable 3×3 benchmarks | GREEN on Dell; Windows separate gate |
-| M1 | OpenClaw → ACP → OpenCode, externally enforced security boundary and approvals | YELLOW — M1.11 RPC correction merged; actual Dell Gateway RPC unverified |
+| M1 | OpenClaw → ACP → OpenCode, externally enforced security boundary and approvals | YELLOW — M1.11 Gateway/ACPX doctor GREEN on Dell; approved coding turn unverified |
 | M2 | ASP.NET Core API, auth, SQLite, state machine, reconciliation | NOT STARTED |
 | M3 | React Mission Control, SignalR, supervision and evidence UI | NOT STARTED |
 
