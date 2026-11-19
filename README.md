@@ -317,6 +317,25 @@ or published port is permitted. A missing OpenCode adapter is a useful
 result, **not** an ACP session PASS. See
 [the M1 integration gates](docs/M1_GATEWAY_DISCOVERY.md).
 
+### M1.6 Gateway/ACPX metadata GREEN; M1.7 offline OpenCode integration
+
+The Dell's real Gateway→ACPX read-only RPC passed; both ACPX and its
+independent registry found the OpenCode adapter but not the executable
+within the gateway image. Our already-qualified M0 image includes
+OpenCode **2.3.0**, so we can copy that runtime into a third local image
+without downloads or modifying the host:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_opencode_image_probe.py --prepare
+```
+
+The opt-in operation builds entirely from local immutable Podman images
+with `--network=none --pull=never`. It only runs CLI help/version,
+ACPX registry inspection and a read-only authenticated Gateway metadata
+request in temporary sealed containers. **No ACP session, model inference,
+agent action or host project access is authorized.**
+See [M1 gated integration](docs/M1_GATEWAY_DISCOVERY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
