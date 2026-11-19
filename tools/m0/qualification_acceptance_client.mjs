@@ -32,7 +32,6 @@ const SOURCE_NAMES = {
   "03-fullstack-feature": [
     "api/Api.csproj", "api/Program.cs",
     "web/package.json", "web/tsconfig.json", "web/src/App.tsx",
-    "web/src/TaskSummary.tsx",
   ],
 };
 
