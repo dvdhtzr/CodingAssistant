@@ -115,7 +115,10 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual((status, calls), (403, 0))
 
     def test_unsupported_post_path_denied(self):
-        status, calls = self.request(encoded(), path="/api/delete")
+        # The handler rejects unknown routes before consuming the body.
+        # Send no body here: a rejected concurrent upload can legitimately
+        # close the Unix socket while the client writes and raise BrokenPipe.
+        status, calls = self.request(b"", path="/api/delete")
         self.assertEqual((status, calls), (403, 0))
 
 
