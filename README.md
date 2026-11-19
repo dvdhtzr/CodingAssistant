@@ -373,6 +373,22 @@ container cleanup blocks M1. The twelve checks are not complete M1
 security qualification: approval-scoped worktrees, Git remotes and
 child-process delegation still require later gates.
 
+### M1.9: 12/12 negative security tests GREEN — M1.10 writable fixture next
+
+The Dell's real rootless Podman test denied all 12 attacks, including
+child-process attempts. The next gate verifies that the **only**
+writable host mount can be an approved, freshly generated disposable
+project, with independent host-side checks of its unmounted sibling:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/scoped_worktree_probe.py
+```
+
+No real repository, `.git`, host secrets, Ollama, Gateway coding
+session or model is mounted or executed. Both the guest and the temporary
+fixture must be removed. This does not approve a real coding run; see
+[M1 security limits](docs/SECURITY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
