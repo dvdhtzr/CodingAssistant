@@ -26,6 +26,6 @@ jobs:
         with:
           python-version: "3.13"
       - name: Compile Python tools
-        run: python -m compileall -q tools/m0 benchmarks/acceptance tests
+        run: python -m compileall -q tools/m0 tools/mvp benchmarks/acceptance tests
       - name: Model-free tests
         run: python -m unittest discover -s tests -v
