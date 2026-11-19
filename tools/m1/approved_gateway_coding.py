@@ -452,7 +452,12 @@ def execute(prepare: bool) -> dict[str, object]:
                 sealed_snapshot(FIXTURES / TASK, TASK) == base_hash)
             if not result["verified"] or not report["fixture_unchanged"]:
                 raise ValueError("Independent offline acceptance failed")
-            scan_workspace(project, TASK, allow_build_outputs=True)
+            post_evaluator_sources = scan_workspace(
+                project, TASK, allow_build_outputs=True)
+            if post_evaluator_sources != report["source_after"]:
+                raise ValueError("Offline evaluator changed approved source")
+            if sibling.read_text(encoding="utf-8") != "UNMOUNTED-DO-NOT-TOUCH":
+                raise ValueError("Independent evaluator touched unmounted sibling")
             report["status"] = "GATEWAY_APPROVED_CODING_PASS"
     except (OSError, RuntimeError, ValueError, TypeError, KeyError,
             AssertionError, subprocess.TimeoutExpired,
