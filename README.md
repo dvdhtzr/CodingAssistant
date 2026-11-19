@@ -38,13 +38,32 @@ python3 tools/mvp/assist.py --retry <RUN_ID> --file Program.cs --run
 
 The CLI rechecks the **existing disposable copy** inside rootless, offline Podman, supplies the bounded compiler errors to your local model, shows a NEW diff, and asks you to type `APPLY` again. It writes the new change only into **another** disposable copy; both the original project and the prior failed copy remain unchanged. After a successful build, `--run` runs the repaired sample inside the same isolated environment. A missing container image or other infrastructure failure stops the retry rather than giving Qwen invented compiler errors.
 
+## Next challenge — real order-pricing business logic
+
+The `benchmarks/fixtures/04-order-pricing/` project contains a small, multi-class
+.NET 10 application with a defect that **compiles successfully** but computes
+discounted sales tax incorrectly. Its fixed executable acceptance harness runs
+10 independent checks. On the Dell, run:
+
+```bash
+python3 tools/mvp/assist.py --project benchmarks/fixtures/04-order-pricing --file PricingCalculator.cs --task "Fix SAVE10 tax: discount all merchandise, then tax only taxable items after their proportional discount; preserve cent rounding, shipping exclusions, signatures and validation." --model qwen3.5:4b --run
+```
+
+Review each proposed diff and type `APPLY` only if you approve it. The original
+project and its acceptance oracle remain unchanged. `--run` uses the same fixed
+rootless, network-disabled Podman restore/build/run commands as the demo.
+The result must include `ORDER-PRICING ACCEPTANCE PASS` and
+`10/10 checks passed`. If acceptance fails despite a successful compilation,
+the tool stops and saves evidence; automatic retries currently handle **compiler
+errors**, not failing business-rule assertions. See the fixture README.
+
 For your own project (one source file at a time):
 
 ```bash
 python3 tools/mvp/assist.py --project /path/to/project --file Program.cs --task "Fix the null handling"
 ```
 
-The workflow copies selected non-secret source/project files into `artifacts/mvp/<run>/project/` (Git ignored), writes the approved replacement there, and saves `change.patch` alongside it. It does not copy Git history, `.env`, `appsettings.json`, dependencies, build outputs or symlinks. Only the explicitly selected file content and task are sent to Ollama. Add `--build` for a Linux-only, fixed offline .NET compile check when a single top-level `.csproj` is present. No code is merged, committed, or pushed.
+The workflow copies selected non-secret source/project files into `artifacts/mvp/<run>/project/` (Git ignored), writes the approved replacement there, and saves `change.patch` alongside it. It does not copy Git history, `.env`, `appsettings.json`, dependencies, build outputs or symlinks. Only the explicitly selected file content and task are sent to Ollama. Add `--build` for a Linux-only, fixed offline .NET compile check when a single top-level `.csproj` is present; add `--run` to also execute that project's approved disposable copy inside the same restricted Podman container. No code is merged, committed, or pushed.
 
 **Deliberate shortcut:** this interactive MVP's proposal stage uses Ollama's local OpenAI-compatible API **directly**; it does not start an OpenCode agent. The already validated isolated OpenCode work remains in `tools/m0/`, and the later autonomous workflow will reintegrate it. This first command is meant to produce a useful, reviewable edit now—not claim M0 qualification or production-grade autonomous coding.
 
