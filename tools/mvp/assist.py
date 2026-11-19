@@ -143,7 +143,8 @@ def _ollama_call(path: str, post: dict | None = None, *, timeout: int) -> dict:
                  else "request")
         raise TimeoutError(
             f"Ollama {phase} timed out (socket inactivity limit: {timeout}s). "
-            "No proposal was approved or written. Check 'ollama ps' and "
+            "The timed-out response was not applied; previously approved copies "
+            "are unchanged. Check 'ollama ps' and "
             "local model availability; rerun the same command or increase "
             "--inference-timeout for a slow CPU model."
         ) from exc
