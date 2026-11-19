@@ -83,3 +83,56 @@ Keep deferred pluggable skills design in the backlog; don't let untrusted
 skill prompts or scripts bypass owner approval, exact file scope, or OS
 enforcement. No .NET API server, SQLite database, Mission Control UI,
 or distributed runner is introduced in M1.0.
+
+## Owner M1.0 outcome — November 19, 2026
+
+The Dell reported `M1.0 PREREQUISITES_BLOCKED`: host Node `v22.22.1`
+(unsupported), OpenClaw absent, host OpenCode `v2.3.2`, Podman `5.7.0`.
+This is an expected M1 host-compatibility blocker, **not an M0 regression**.
+The M0 qualified image retains its own pinned OpenCode/runtime.
+
+### M1.1 — official versioned Gateway image probe (no Gateway startup)
+
+To leave host Node and OpenClaw untouched, this probe uses the official
+`ghcr.io/openclaw/openclaw:2026.11.5` image, never moving `latest`.
+The official Podman setup requires a host OpenClaw CLI; our initial
+**version-only** probe deliberately checks the image without that CLI.
+
+Run on the Dell, after this change is merged:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_image_probe.py --prepare
+```
+
+Explicit `--prepare` pulls only this single official versioned image into
+the user-owned rootless Podman store. Host Node/OpenClaw packages are NOT
+installed or modified. The probe then verifies an immutable image ID and
+official GHCR repository digest, and executes only `node --version` and
+`node /app/openclaw.mjs --version` with network disabled, no host mounts,
+read-only root filesystem, non-root identity, no capabilities and no-new-privileges.
+It requires recommended security-patched Node and exact OpenClaw 2026.11.5.
+No Gateway/ACP session/model inference is launched. Model state, secrets,
+original projects, and worktrees are not mounted or inspected.
+
+After the image is available, an offline rerun needs no pull:
+
+```bash
+python3 tools/m1/gateway_image_probe.py
+```
+
+Results go into Git-ignored `artifacts/m1/gateway-image-probe.json`.
+A `RUNTIME_IMAGE_PASS` only certifies the image's version/startup discovery;
+it is NOT a working OpenClaw Gateway or ACP session. If blocked, stop;
+do not widen networking or replace host Node merely to get a green probe.
+
+Next M1 stages must start and verify an isolated Gateway using explicitly
+reviewed local-only configuration, then validate its embedded ACPX plugin
+and the external OpenCode harness. Independent execution-plane isolation,
+exact owner plan/hash approval, negative tests and Windows acceptance
+remain mandatory.
+
+Current primary references:
+- https://docs.openclaw.ai/install/podman
+- https://docs.openclaw.ai/install/node
+- https://docs.openclaw.ai/tools/acp-agents-setup
+- https://github.com/openclaw/openclaw/pkgs/container/openclaw

@@ -215,6 +215,23 @@ report is expected and safe; we will decide whether to use a separate
 rootless Gateway runtime rather than modifying the working M0 toolchain.
 See [M1 read-only discovery](docs/M1_GATEWAY_DISCOVERY.md).
 
+### M1.0 Dell findings and M1.1 isolated Gateway preflight
+
+The Dell's version-only discovery found host Node `22.22.1` (below
+OpenClaw's supported runtime), no host OpenClaw, and working Podman
+`5.7.0`. We **do not** replace host Node or install OpenClaw globally.
+The next M1 check uses the official pinned Gateway image **only** for
+an isolated, network-disabled runtime/version check:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_image_probe.py --prepare
+```
+
+The explicit `--prepare` downloads one versioned official GHCR image
+into the rootless user image store, not the host's Node installation.
+No Gateway, ACP, Ollama or coding session runs. See
+[M1 discovery and safety boundaries](docs/M1_GATEWAY_DISCOVERY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.

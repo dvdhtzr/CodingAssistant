@@ -59,3 +59,18 @@ autonomous execution on that host. No M1 completion claims before all gates.
 
 See `docs/IMPLEMENTATION_PLAN.md`, `docs/INTEGRATION.md`,
 `docs/SECURITY.md`, and `docs/M1_GATEWAY_DISCOVERY.md`.
+
+**M1.0 owner Dell discovery (2026-11-19):** `PREREQUISITES_BLOCKED` as
+expected: host Node `v22.22.1` unsupported; host OpenClaw absent;
+host OpenCode `v2.3.2` informational; Podman `5.7.0` available.
+No Gateway, ACP or agent execution occurred. M0 remains GREEN.
+
+**M1.1 next:** Prefer separately pinned official image
+`ghcr.io/openclaw/openclaw:2026.11.5` in rootless Podman rather than
+upgrading installed host Node/OpenClaw. Owner explicitly executes
+`python3 tools/m1/gateway_image_probe.py --prepare` to download the
+one official image, then validate its immutable identity and patched
+Node/OpenClaw versions with fixed no-network, no-mount version probes.
+No Gateway or ACP is started and no host packages are installed.
+This is an isolated runtime **preflight**, not M1 qualification.
+See `docs/M1_GATEWAY_DISCOVERY.md`. M1 remains YELLOW.
