@@ -389,6 +389,22 @@ session or model is mounted or executed. Both the guest and the temporary
 fixture must be removed. This does not approve a real coding run; see
 [M1 security limits](docs/SECURITY.md).
 
+### M1.11 — Gateway-owned ACPX diagnostic (model-free)
+
+M1.9's 12/12 OS negatives passed on Dell. M1.10 adds an independently
+gated disposable scoped-worktree test. The next probe exercises the
+Gateway's own ACP backend doctor in the same sealed image:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_acp_doctor_probe.py
+```
+
+This may create temporary Gateway session bookkeeping, but does not
+ask for an ACP coding session, prompt, Ollama or project access.
+Both provider and host network are disabled. The diagnostic must
+return a strict real ACPX/OpenCode protocol-1 result or fail closed.
+See [M1 status](docs/M1_STATUS.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.

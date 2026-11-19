@@ -690,3 +690,56 @@ turns, or model connectivity. Product M1 still needs exact
 plan-version/hash approval, model network segregation, durable run
 state/crash recovery, and independent Windows acceptance. M1 stays
 **YELLOW** until those gates pass.
+
+
+## M1.11 — authenticated Gateway-owned ACPX/OpenCode doctor (no coding session)
+
+M1.9 (12/12 negative OS tests) is verified GREEN on the Dell.
+M1.10 (one writable disposable project with independent sibling
+integrity audit) was merged as PR #52; owner Dell runtime acceptance
+remains independently gated. The doctor test does not rely on or
+mount that writable project.
+
+Review of pinned OpenClaw `v2026.11.5` code confirms built-in
+`/acp doctor` dispatches to the **Gateway's registered ACPX runtime**
+`doctor()`, which initializes the installed OpenCode ACP server, then
+closes it. It does not request an ACP coding session/prompt. This is
+different from M1.8's standalone doctor and M1.6's metadata-only RPC.
+
+The M1.11 probe launches one disposable Gateway with the exact M1.7
+combined immutable image ID. It uses rootless non-root Podman,
+`--network=none`, read-only root, no host mounts or published ports,
+and one-time owner-only token. After all health endpoints report 200,
+it sends exactly this fixed **Gateway-backed**, not `--local`,
+CLI command:
+
+```bash
+openclaw agent --session-key agent:main:ca-m111-doctor-<nonce> --message '/acp doctor' --timeout 45 --json
+```
+
+An ordinary OpenClaw agent CLI command may create temporary
+Gateway conversation bookkeeping within isolated `/tmp`; this
+does not imply an ACP coding session. No provider endpoint or
+host Ollama is reachable, no project mount or provider key exists,
+and no autonomous code modification is requested. The test
+accepts only a genuine structured doctor result containing
+`ACP doctor:`, `registeredBackend: acpx`,
+`runtimeDoctor: ok (embedded ACP runtime ready)`,
+`runtimeDoctorDetail: protocolVersion=1`, and zero active ACP
+sessions and turns. A misrouted request, model-generated prose,
+invalid response, nonzero exit or cleanup failure blocks PASS.
+Only sanitized protocol/health metadata is recorded; raw Gateway
+output, logs, tokens and session identifiers are discarded.
+
+**Next Dell command after M1.11 PR GREEN/merged:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_acp_doctor_probe.py
+```
+
+Potential result: `M1.11 GATEWAY_OWNED_ACP_DOCTOR_PASS`.
+Even success establishes only the Gateway-owned diagnostic path.
+Actual coding still requires exact plan/version/hash owner approval,
+scoped writable worktree gates, local-only inference route, Git
+restrictions, recovery and independent Windows-host runtime tests.
+Overall M1 remains YELLOW.
