@@ -194,5 +194,169 @@ class MvpTests(unittest.TestCase):
                                           "Repair.csproj", "build")
 
 
+    def test_automatic_compiler_repair_succeeds_after_one_approved_correction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "original"
+            original.mkdir()
+            (original / "Program.cs").write_text("int x = 0;\n")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=str(original), file="Program.cs",
+                                      task="Assign x correctly", build=True, run=False)
+
+            proposals = ["int x = 1;\n", "int x = 2;\n"]
+            def fake_propose(*args, **kwargs):
+                kwargs["metadata"]["digest"] = "pinned-model-digest"
+                return proposals.pop(0)
+
+            def fake_build(*args, **kwargs):
+                if not proposals:
+                    return True
+                kwargs["feedback"].append(
+                    "/workspace/Program.cs(1,1): error CS1002: ; expected"
+                )
+                return False
+
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose", side_effect=fake_propose) as model, \
+                 mock.patch.object(assist, "isolated_build", side_effect=fake_build) as build, \
+                 mock.patch("builtins.input", side_effect=["APPLY", "APPLY"]) as approval, \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(assist.run(args), 0)
+
+            self.assertEqual(model.call_count, 2)
+            self.assertEqual(build.call_count, 2)
+            self.assertEqual(approval.call_count, 2)
+            self.assertEqual(model.call_args_list[1].kwargs["expected_digest"],
+                             "pinned-model-digest")
+            self.assertIn("CS1002", model.call_args_list[1].args[3])
+            self.assertIn("Assign x correctly", model.call_args_list[1].args[3])
+            self.assertIn("correction 1/2", output.getvalue())
+            self.assertEqual((original / "Program.cs").read_text(), "int x = 0;\n")
+            runs = sorted(artifacts.iterdir())
+            self.assertEqual(len(runs), 2)
+            results = [
+                __import__("json").loads((item / "result.json").read_text())
+                for item in runs
+            ]
+            self.assertEqual({item["status"] for item in results},
+                             {"build_failed", "build_passed"})
+            for item in results:
+                self.assertEqual(item["model_digest"], "pinned-model-digest")
+                self.assertTrue((artifacts / item["run_id"] / "change.patch").is_file())
+            self.assertTrue(any(item["parent_run_id"] in
+                                {other["run_id"] for other in results}
+                                for item in results))
+
+    def test_automatic_correction_rejection_keeps_approved_failed_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "src"
+            original.mkdir()
+            (original / "Program.cs").write_text("original\n")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=str(original), file="Program.cs",
+                                      task="Repair", build=True, run=False)
+            def fails(*args, **kwargs):
+                kwargs["feedback"].append("error CS1529: misplaced using")
+                return False
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose",
+                                   side_effect=["first\n", "second\n"]) as model, \
+                 mock.patch.object(assist, "isolated_build", side_effect=fails), \
+                 mock.patch("builtins.input", side_effect=["APPLY", "NO"]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 1)
+            self.assertEqual(model.call_count, 2)
+            self.assertEqual((original / "Program.cs").read_text(), "original\n")
+            runs = list(artifacts.iterdir())
+            self.assertEqual(len(runs), 1)
+            self.assertEqual((runs[0] / "project/Program.cs").read_text(), "first\n")
+
+    def test_automatic_retry_blocks_on_infrastructure_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "src"
+            original.mkdir()
+            (original / "Program.cs").write_text("original\n")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=str(original), file="Program.cs",
+                                      task="Repair", build=True, run=False)
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose", return_value="new\n") as model, \
+                 mock.patch.object(assist, "isolated_build", return_value=False), \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(assist.run(args), 2)
+            self.assertEqual(model.call_count, 1)
+            self.assertEqual(len(list(artifacts.iterdir())), 1)
+            self.assertIn("without C# compiler diagnostics", output.getvalue())
+
+    def test_automatic_retry_stops_when_errors_repeat(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "src"
+            original.mkdir()
+            (original / "Program.cs").write_text("original\n")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=str(original), file="Program.cs",
+                                      task="Repair", build=True, run=False)
+            def fails(*args, **kwargs):
+                kwargs["feedback"].append("error CS1002: same error")
+                return False
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose",
+                                   side_effect=["first\n", "second\n"]) as model, \
+                 mock.patch.object(assist, "isolated_build", side_effect=fails), \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(assist.run(args), 2)
+            self.assertEqual(model.call_count, 2)
+            self.assertIn("repeated without progress", output.getvalue())
+            self.assertEqual(len(list(artifacts.iterdir())), 2)
+
+    def test_automatic_retry_is_bounded_to_two_corrections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = root / "src"
+            original.mkdir()
+            (original / "Program.cs").write_text("original\n")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=str(original), file="Program.cs",
+                                      task="Repair", build=True, run=False)
+            errors = iter(["error CS1001: first", "error CS1002: second",
+                           "error CS1003: third"])
+            def fails(*args, **kwargs):
+                kwargs["feedback"].append(next(errors))
+                return False
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose",
+                                   side_effect=["first\n", "second\n",
+                                                "third\n"]) as model, \
+                 mock.patch.object(assist, "isolated_build", side_effect=fails) as build, \
+                 mock.patch("builtins.input", return_value="APPLY") as approval, \
+                 contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(assist.run(args), 2)
+            self.assertEqual(model.call_count, 3)
+            self.assertEqual(build.call_count, 3)
+            self.assertEqual(approval.call_count, 3)
+            self.assertEqual(len(list(artifacts.iterdir())), 3)
+            self.assertIn("limit of 2", output.getvalue())
+            self.assertEqual((original / "Program.cs").read_text(), "original\n")
+
+    def test_model_digest_must_remain_pinned_between_proposals(self):
+        catalog = {"models": [{"name": "qwen3.5:4b", "digest": "new-digest"}]}
+        with mock.patch.object(assist, "json_http", return_value=catalog) as request:
+            with self.assertRaisesRegex(ValueError, "digest changed"):
+                assist.propose("qwen3.5:4b", "Program.cs", "old", "Fix",
+                               expected_digest="old-digest")
+        self.assertEqual(request.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()
