@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -210,7 +211,9 @@ def propose(model: str, filename: str, source: str, task: str, *,
             expected_digest: str | None = None,
             metadata: dict | None = None,
             inference_timeout: int = DEFAULT_INFERENCE_TIMEOUT,
-            context: str = "") -> str:
+            context: str = "", reasoning_effort: str = "auto") -> str:
+    if reasoning_effort not in ("auto", "none"):
+        raise ValueError("--reasoning-effort must be auto or none")
     if not 30 <= inference_timeout <= MAX_INFERENCE_TIMEOUT:
         raise ValueError(
             f"--inference-timeout must be 30–{MAX_INFERENCE_TIMEOUT} seconds"
@@ -243,19 +246,45 @@ def propose(model: str, filename: str, source: str, task: str, *,
                     "Respond with only the full replacement file."},
                    {"role": "user", "content": prompt},
                ]}
+    if reasoning_effort != "auto":
+        # Ollama OpenAI-compatible API: "none" disables thinking in Qwen 3.5.
+        # This is deliberately opt-out-able, since reasoning can aid correctness.
+        request["reasoning_effort"] = reasoning_effort
     print(f"Waiting for Ollama to generate a complete replacement "
-          f"(socket inactivity timeout: {inference_timeout}s).", flush=True)
+          f"(reasoning: {reasoning_effort}; socket inactivity timeout: "
+          f"{inference_timeout}s).", flush=True)
+    started = time.monotonic()
     answer = _ollama_call("/v1/chat/completions", request,
                           timeout=inference_timeout)
+    elapsed = time.monotonic() - started
+    usage = answer.get("usage", {})
+    tokens = (usage.get("completion_tokens")
+              if isinstance(usage, dict) else None)
+    token_note = (f", {tokens} completion tokens"
+                  if type(tokens) is int and 0 <= tokens < 1_000_000 else "")
+    print(f"Ollama completed in {elapsed:.1f}s{token_note}.", flush=True)
     if answer.get("model") != model:
         raise ValueError("Ollama returned a different model; refusing proposal")
     choices = answer.get("choices", [])
     if not isinstance(choices, list) or len(choices) != 1:
         raise ValueError("Expected one model response")
     message = choices[0].get("message", {})
-    if (not isinstance(message, dict) or message.get("tool_calls")
-            or choices[0].get("finish_reason") not in ("stop", None)):
-        raise ValueError("Model returned incomplete output or attempted a tool call")
+    if not isinstance(message, dict):
+        raise ValueError("Ollama returned malformed message; nothing applied")
+    if message.get("tool_calls"):
+        raise ValueError("Ollama attempted an unapproved tool call; nothing applied")
+    finish_reason = choices[0].get("finish_reason")
+    if finish_reason == "length":
+        raise ValueError(
+            f"Ollama output truncated (finish_reason=length{token_note}). "
+            "No code applied. Try --reasoning-effort none to avoid spending "
+            "the output budget on thinking."
+        )
+    if finish_reason not in ("stop", None):
+        raise ValueError(
+            f"Ollama returned unfinished output (finish_reason="
+            f"{str(finish_reason)[:32]}); nothing applied"
+        )
     content = message.get("content")
     if not isinstance(content, str):
         raise ValueError("Model returned no source text")
@@ -480,12 +509,15 @@ def run(args: argparse.Namespace) -> int:
             for rel, selected in selected_sources
         }
         proposals: dict[str, str] = {}
+        reasoning_effort = getattr(args, "reasoning_effort", None)
+        if reasoning_effort is None:
+            reasoning_effort = "none" if len(selected_sources) > 1 else "auto"
         for rel, selected in selected_sources:
             name = str(rel)
             print(f"Local model: {args.model}\nFile: {name}\nTask: {task}")
             print("Requesting a replacement from local Ollama (no coding tools)...")
             model_info: dict = {}
-            options: dict = {}
+            options: dict = {"reasoning_effort": reasoning_effort}
             if len(selected_sources) > 1:
                 options["context"] = related_source_context(
                     project, original_files, proposals, name
@@ -637,6 +669,11 @@ def main() -> int:
                         help="2-3 explicit existing source files to edit atomically")
     parser.add_argument("--task", help="Plain-English change request")
     parser.add_argument("--model", default="qwen3.5:4b")
+    parser.add_argument(
+        "--reasoning-effort", choices=("auto", "none"), default=None,
+        help="Ollama thinking: default none for multi-file, auto for single-file. "
+             "Choose auto to restore model-default thinking."
+    )
     parser.add_argument(
         "--inference-timeout", type=int, default=DEFAULT_INFERENCE_TIMEOUT,
         metavar="SECONDS",
