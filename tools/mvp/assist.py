@@ -627,6 +627,7 @@ def run(args: argparse.Namespace) -> int:
                     "before_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
                     "after_sha256": hashlib.sha256(proposals[name].encode("utf-8")).hexdigest(),
                 } for name, source in original_files.items()
+                if name in proposals
             },
             "before_sha256": hashlib.sha256(
                 original_files[str(selected_sources[0][0])].encode("utf-8")
