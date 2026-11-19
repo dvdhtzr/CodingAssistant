@@ -408,3 +408,74 @@ Official source basis: pinned ACPX v0.21.0 agent registry uses installed
 `@opencode/cli@2.3.0`. Source references:
 - `infra/runtime/Containerfile`
 - `https://github.com/openclaw/acpx/blob/v0.21.0/src/agent-registry.ts`
+
+## M1.7 Dell real outcome — November 19, 2026
+
+**M1.7 ACPX_OPENCODE_INSTALLED_DISCOVERY_PASS.** The owner ran
+`tools/m1/acpx_opencode_image_probe.py --prepare`, which composed the
+already-qualified M0 OpenCode image and M1.4 ACPX Gateway image entirely
+offline. Parent M0 image:
+`3731c286c18c8ea8befd886a24016e197a084f391e3c1c4d95c2d86421502a81`.
+New derived immutable image:
+`023bf9411fe23045dbdea9c777ed8618dec6553a81417c9aec2d15f7cf5b99ea`.
+
+Offline guest checks confirmed Node `v24.22.1`, OpenClaw
+`2026.11.5`, OpenCode `v2.3.0`, `opencode acp --help`, and ACPX
+registry `installation:installed`. The actual no-network Gateway
+returned HTTP 200 health/readiness and its authenticated
+`acpx.agents.list` method independently reported OpenCode
+`installation:installed`. The disposable Gateway was removed.
+No ACP session, model call, source modification or external network
+access occurred. Local evidence:
+`artifacts/m1/acpx-opencode-installed-1642a6de841b.json`.
+**M1.7 GREEN; overall M1 remains YELLOW.**
+
+## M1.8 — real ACPX-to-OpenCode ACP initialize, no coding session
+
+The pinned upstream ACPX `v0.21.0` runtime's `doctor()` calls its
+actual `probeRuntime`, which creates an ACP client, starts the pinned
+adapter, sends the ACP `initialize` request, records the negotiated
+protocol version, then **closes the process**. It does **not** request
+`session/new` or `session/prompt` (source:
+`openclaw/acpx@v0.21.0/src/runtime/public/probe.ts`).
+This is not a synthetic protocol mock.
+
+The new one-shot probe
+`tools/m1/acpx_initialize_probe.py` verifies the exact local
+M1.7 immutable image ID, parent provenance, OpenCode version, and
+installed adapter registry; then launches the ACPX official runtime
+inside a disposable rootless, no-network, no-mount, no-ports,
+read-only guest with strict memory/PID/CPU budgets. The ACP runtime
+is configured `permissionMode:deny-all`, `nonInteractivePermissions:deny`,
+`fs:false`, `terminal:false`, no MCP servers, and no inherited
+AI/provider credentials. Its `onBeforeSpawn` process admission hook
+permits exactly one executable and argument pair:
+`/usr/local/bin/opencode acp` in the runtime-probe scope. Any
+unexpected process or new session request is out of scope.
+
+For PASS, the real ACPX `doctor` must confirm
+`embedded ACP runtime ready`, a bounded negotiated
+`protocolVersion`, exactly one admitted/spawned child, successful
+runtime shutdown, and verified removal of the entire temporary
+Podman guest. No Ollama connection, cloud model, prompt, ACP
+coding session, actual worktree, or original source file is used.
+Raw CLI output, trace content and credentials are NOT persisted;
+only bounded status fields are saved in append-only ignored
+`artifacts/m1/acpx-initialize-*.json`.
+
+**Next Dell command after this PR GREEN and merged:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_initialize_probe.py
+```
+
+Potential success: `M1.8 ACPX_OPENCODE_INITIALIZE_PASS`.
+If BLOCKED, keep M1 YELLOW and examine the saved reason before
+changing adapter, container or authorization settings.
+
+**Important scope:** This confirms ACPX ↔ OpenCode initialization
+in a sealed process, **not yet a Gateway-delegated coding session**.
+The next gated work is true Gateway-owned ACP orchestration,
+read-only plan generation with exact owner approval version/hash,
+enforced external child-process sandboxing, ten negative security
+cases, durable recovery and independent Windows-host acceptance.
