@@ -283,6 +283,23 @@ All post-build checks run in separate *offline* containers.
 Even `ACPX_IMAGE_PACKAGED_PASS` means packaging only, not ACP readiness.
 See [M1 Gateway/ACPX plan](docs/M1_GATEWAY_DISCOVERY.md).
 
+### M1.4 packaged ACPX; M1.5 verify real plugin registration
+
+The Dell successfully built an ACPX-enabled OpenClaw image from
+`v2026.11.5`; **M1.4 ACPX_IMAGE_PACKAGED_PASS**. The next gate
+temporarily starts that exact verified image with no network, host
+mounts, or port publication. It checks the three Gateway health
+endpoints and the ACPX plugin's lazy-registration signal:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_gateway_activation_probe.py
+```
+
+No coding agent, ACP session, Ollama request, cloud provider or host
+source file is involved. This is plugin activation only, **not**
+Gateway-to-OpenCode functional qualification. See
+[the M1 Gateway and ACPX plan](docs/M1_GATEWAY_DISCOVERY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.

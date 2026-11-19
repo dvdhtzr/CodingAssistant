@@ -275,3 +275,65 @@ References:
 - https://github.com/openclaw/openclaw/blob/v2026.11.5/Dockerfile
 - https://github.com/openclaw/openclaw/blob/v2026.11.5/extensions/acpx/package.json
 - https://docs.openclaw.ai/tools/acp-agents-setup
+
+
+## M1.4 owner Dell result — November 19, 2026
+
+**M1.4 ACPX_IMAGE_PACKAGED_PASS.** The approved official source
+`v2026.11.5` at commit `e13cf15ece9bbd969b7362927c315362c90c97ff`
+was built with `OPENCLAW_EXTENSIONS=acpx`. Offline inspection of the
+derived image confirmed packaged ACPX runtime components and the pinned
+dependency; Gateway/ACP/Ollama were not executed.
+
+Derived immutable image ID:
+`5aa8b2911525ccf1d5af5ba73ae4bc5f219cdf2a7c91bdf6cfee7208941c5f0c`
+
+Append-only evidence:
+`artifacts/m1/acpx-image-8ec14fd482c4.json`.
+Private build log:
+`artifacts/m1/acpx-build-19a72f809ab9.log`.
+
+The original official Gateway image, host Node installation and M0
+baseline remain unchanged. **M1.4 packaging GREEN; M1 overall YELLOW.**
+
+## M1.5 — Real ACPX lazy-registration smoke (not an ACP session)
+
+The pinned upstream plugin entry at
+`extensions/acpx/index.ts` registers its backend **lazily** during
+Gateway startup and writes the exact log marker
+`embedded acpx runtime backend registered lazily`. The marker is a
+gateway-side plugin activation signal; the actual ACP backend and the
+OpenCode adapter are NOT initialized or invoked by this test. The
+plugin's agent harness lists require broader tool admissions than our
+product allows, so **do not dispatch any agent session until the child
+process sandbox and tool permissions are independently enforced**.
+
+Next owner command after this PR is GREEN and merged:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_gateway_activation_probe.py
+```
+
+This checks the exact owner-built immutable image ID, the unchanged official
+base image provenance, and the packaged plugin version in three offline
+guests. It then starts a real temporary OpenClaw Gateway using a disposable,
+owner-only token file. The rootless Gateway has network disabled, no host
+mounts or published ports, read-only root with disposable tmpfs state,
+zero capabilities and no-new-privileges. Channel/canvas integration and
+ACPX startup adapter probing are disabled; the plugin itself is *not*
+skipped. The test requires `/healthz`, `/startupz`, and `/readyz`
+to return HTTP 200 and the exact plugin lazy-registration signal to
+appear in the captured logs. Only the boolean observation is saved;
+logs and the token are never echoed or persisted as audit evidence.
+The disposable container must be fully removed for PASS.
+
+Possible results: `M1.5 ACPX_LAZY_REGISTRATION_PASS` or `M1.5 BLOCKED`.
+Neither result grants permission to start an ACP session, install any
+adapter, access a real source workspace, use cloud models, or consider M1
+complete. If BLOCKED, investigate the specific recorded reason without
+enabling network, widening mounts or making changes outside GitHub PRs.
+
+After a PASS, the next gate is the **real Gateway → ACPX → OpenCode
+adapter compatibility** on a disposable no-network, no-project container,
+followed by explicit local Ollama model pinning and separate OS-enforced
+child-process controls before any autonomous source edits.
