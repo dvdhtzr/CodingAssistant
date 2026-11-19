@@ -59,16 +59,16 @@ class ReadonlyAcpxRpcTest(unittest.TestCase):
             p.registry_command(p.IMAGE_ID, 0, 1000)
 
     def test_gateway_cli_rpc_is_single_readonly_plugin_method(self):
-        cmd = p.rpc_command("ca-m15-acpx-sample")
+        cmd = p.rpc_command("ca-m15-acpx-012345abcdef")
         self.assertEqual(cmd, [
-            "podman", "exec", "--interactive=false", "ca-m15-acpx-sample",
+            "podman", "exec", "--interactive=false", "ca-m15-acpx-012345abcdef",
             "node", "/app/openclaw.mjs", "gateway", "call",
             "acpx.agents.list", "--params", "{}", "--json",
             "--timeout", "15000"])
         self.assertNotIn("--token", cmd)
         self.assertNotIn("npx", cmd)
         self.assertNotIn("sessions_spawn", cmd)
-        for name in ("evil-container", "ca-m15-acpx-evil"):
+        for name in ("evil-container", "ca-m16-acpx-012345abcdef", "ca-m15-acpx-evil"):
             with self.assertRaises(ValueError):
                 p.rpc_command(name)
 
