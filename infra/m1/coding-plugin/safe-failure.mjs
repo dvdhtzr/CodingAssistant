@@ -19,9 +19,19 @@ export const FAILURE_CODES = Object.freeze([
 export const MODEL_REASONS = Object.freeze([
   "missing-capability", "unadvertised-model",
 ]);
+export const EXIT_SIGNALS = Object.freeze([
+  "SIGKILL", "SIGTERM", "SIGABRT", "SIGSEGV", "SIGBUS", "SIGILL",
+  "SIGHUP", "SIGINT",
+]);
+export const SYSTEM_CODES = Object.freeze([
+  "ENOENT", "EACCES", "EPERM", "ENOMEM", "EAGAIN", "EMFILE",
+  "ENFILE", "ETIMEDOUT", "ECONNREFUSED", "EPIPE",
+]);
 const safeKinds = new Set(FAILURE_KINDS);
 const safeCodes = new Set(FAILURE_CODES);
 const safeModelReasons = new Set(MODEL_REASONS);
+const safeExitSignals = new Set(EXIT_SIGNALS);
+const safeSystemCodes = new Set(SYSTEM_CODES);
 const safeDetailCodes = new Set([
   "AGENT_STARTUP_FAILED", "AGENT_SPAWN_ENOENT", "AGENT_DISCONNECTED",
   "SESSION_OWNER_UNSUPPORTED", "SESSION_OWNER_MIGRATION_REQUIRED",
@@ -90,6 +100,8 @@ export function classifyAcpSessionFailure(value) {
   let errorCode = "NONE";
   let modelReason = null;
   let exitCode = null;
+  let signal = null;
+  let systemCode = null;
   const seen = new Set();
   let error = candidate(value);
   for (let depth = 0; error && depth < 4 && !seen.has(error); depth++) {
@@ -105,6 +117,8 @@ export function classifyAcpSessionFailure(value) {
     if (!modelReason) modelReason = safeWord(error.reason, safeModelReasons);
     if (exitCode === null && Number.isInteger(error.exitCode) &&
         error.exitCode >= 0 && error.exitCode <= 255) exitCode = error.exitCode;
+    if (!signal) signal = safeWord(error.signal, safeExitSignals);
+    if (!systemCode) systemCode = safeWord(error.code, safeSystemCodes);
     error = candidate(error.cause);
   }
   return {
@@ -112,5 +126,7 @@ export function classifyAcpSessionFailure(value) {
     errorCode: safeCodes.has(errorCode) ? errorCode : "NONE",
     modelReason,
     exitCode,
+    signal,
+    systemCode,
   };
 }

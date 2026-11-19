@@ -80,6 +80,14 @@ SAFE_FAILURE_CODES = frozenset((
     "EPIPE", "ACP_REQUEST_INVALID", "ACP_REQUEST_INTERNAL",
 ))
 SAFE_MODEL_REASONS = frozenset(("missing-capability", "unadvertised-model"))
+SAFE_EXIT_SIGNALS = frozenset((
+    "SIGKILL", "SIGTERM", "SIGABRT", "SIGSEGV", "SIGBUS", "SIGILL",
+    "SIGHUP", "SIGINT",
+))
+SAFE_SYSTEM_CODES = frozenset((
+    "ENOENT", "EACCES", "EPERM", "ENOMEM", "EAGAIN", "EMFILE",
+    "ENFILE", "ETIMEDOUT", "ECONNREFUSED", "EPIPE",
+))
 TASK = "02-build-repair"
 MODEL = "qwen3.5:4b"
 HEX64 = re.compile(r"(?:sha256:)?([a-f0-9]{64})\Z")
@@ -304,6 +312,11 @@ def container_command(image_id: str, name: str, env: pathlib.Path,
         "--volume", str(workspace.resolve()) + ":/workspace:rw,nosuid,nodev",
         "--volume", str(socket_dir.resolve()) + ":/run/codingassistant:ro,nosuid,nodev",
         "--env=OPENCLAW_CONFIG_PATH=/app/codingassistant-coding-config.json",
+        # Mirror M0's independently qualified writable OpenCode directories
+        # under the existing, isolated /tmp tmpfs. No additional host mounts.
+        "--env=XDG_DATA_HOME=/tmp/.local/share",
+        "--env=XDG_STATE_HOME=/tmp/.local/state",
+        "--env=XDG_CACHE_HOME=/tmp/.cache",
     ]
     args[args.index("--memory=2g")] = "--memory=3g"
     args[args.index("--tmpfs=/tmp:rw,nosuid,nodev,size=512m,notmpcopyup")] = (
@@ -357,10 +370,13 @@ def parse_gateway_status(raw: str) -> dict[str, object]:
     failure = value["lastFailure"]
     if failure is not None:
         if (type(failure) is not dict or
-                set(failure) != {"kind", "errorCode", "modelReason", "exitCode"} or
+                set(failure) != {"kind", "errorCode", "modelReason",
+                                 "exitCode", "signal", "systemCode"} or
                 failure.get("kind") not in SAFE_FAILURE_KINDS or
                 failure.get("errorCode") not in SAFE_FAILURE_CODES or
                 failure.get("modelReason") not in SAFE_MODEL_REASONS | {None} or
+                failure.get("signal") not in SAFE_EXIT_SIGNALS | {None} or
+                failure.get("systemCode") not in SAFE_SYSTEM_CODES | {None} or
                 (failure.get("exitCode") is not None and
                  (type(failure["exitCode"]) is not int or
                   not 0 <= failure["exitCode"] <= 255))):

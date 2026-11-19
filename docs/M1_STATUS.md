@@ -908,3 +908,38 @@ introduced. If the next owner-approved attempt fails, the combined
 bounded plugin stage + typed error is the acceptance evidence to use
 for a *specific* root-cause correction. A CI-green classifier is
 only a diagnostic regression gate, not an M1.12 PASS.
+
+
+## M1.12 — actual approved Dell result: OpenCode agent startup failed
+
+At main commit `3b7262f`, the owner approved the fixed disposable C#
+repair plan. The registered coding Gateway plugin was invoked and
+failed at `ensureSession` with a typed
+`lastFailure.kind=AGENT_STARTUP_FAILED`,
+`errorCode=AGENT_STARTUP_FAILED`, `exitCode=null`.
+Gateway health was 3/3 HTTP 200; Podman removed the container; the
+host Ollama broker saw **zero requests**. No agent prompt, model
+inference, source repair or evaluator passed. M1.12 remains **BLOCKED**.
+
+Review of the **actual** M0 successful OpenCode launch environment
+found its child was given explicit XDG data/state/cache paths under
+the isolated writable `/tmp` tmpfs. M1.12's Gateway launch inherited
+`HOME=/tmp` and `XDG_CONFIG_HOME=/tmp/config`, but did **not**
+provide those other three explicit XDG paths. This is a confirmed
+environmental difference, **not** a confirmed causal explanation for
+the startup failure. The follow-up makes all three explicit using the
+already-mounted disposable `/tmp` tmpfs, preserving all containment
+and model/provider restrictions.
+
+Pinned ACPX 0.21.0 constructs `AgentStartupError` with a possibly
+null `exitCode` and a separate OS signal or nested spawn error.
+Previous diagnostics dropped both. The read-only exact-plan status
+now exposes *only allowlisted* `signal` and `systemCode` (or null)
+alongside the existing enum fields; raw stderr, messages, stacks,
+source paths and environment are still excluded. If a future
+owner-approved attempt is blocked, use those typed observations
+before changing quotas or model configuration.
+
+GitHub's Ubuntu/Windows model-free checks do not prove the Dell's
+real ACPX startup or C# repair. User approval of each fresh plan
+remains mandatory.
