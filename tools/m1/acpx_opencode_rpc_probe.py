@@ -35,8 +35,14 @@ PORT = 18789
 RPC_METHOD = "acpx.agents.list"
 REGISTRY_JS = r"""
 (async () => {
-  const { createAgentRegistry } = await import('acpx/agent-registry');
+  const { createRequire } = await import('node:module');
+  const { pathToFileURL } = await import('node:url');
   const { basename } = await import('node:path');
+  // Resolve from the pinned plugin location. The production build can
+  // place acpx under the plugin or the root node_modules directory.
+  const requirePlugin = createRequire('/app/dist/extensions/acpx/package.json');
+  const registryPath = requirePlugin.resolve('acpx/agent-registry');
+  const { createAgentRegistry } = await import(pathToFileURL(registryPath).href);
   const inspection = createAgentRegistry().inspect('opencode');
   if (!inspection || inspection.id !== 'opencode') {
     process.stdout.write(JSON.stringify({id:'opencode',installation:'unverified',expectedCommand:false})+'\n');
@@ -71,7 +77,7 @@ def registry_command(image_id: str, uid: int, gid: int) -> list[str]:
 
 
 def rpc_command(name: str) -> list[str]:
-    if not name.startswith("ca-m16-acpx-") or len(name) > 42:
+    if not name.startswith("ca-m15-acpx-") or len(name) > 42:
         raise ValueError("Unapproved transient container name")
     # Uses the freshly generated token already in the disposable guest's
     # environment. Never send token as a CLI arg, read its value, or log it.
@@ -136,7 +142,7 @@ def run() -> dict:
         evidence["reason"] = "Linux non-root rootless Podman required"
         return evidence
 
-    name = "ca-m16-acpx-" + secrets.token_hex(6)
+    name = "ca-m15-acpx-" + secrets.token_hex(6)
     try:
         verify_prerequisites()
         image_id = inspect_derived()
