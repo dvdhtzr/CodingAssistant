@@ -30,7 +30,9 @@ def parse_semver(value: str | None) -> tuple[int, int, int] | None:
 
 def node_compat(version: str | None) -> dict[str, bool]:
     parsed = parse_semver(version)
-    if parsed is None:
+    # Node's supported 24/26 stable releases explicitly exclude prerelease
+    # versions even if their numeric components meet the production floor.
+    if parsed is None or re.search(r"v?\\d+\\.\\d+\\.\\d+-", version or ""):
         return {"supported": False, "patched_recommended": False}
     major, minor, patch = parsed
     supported = ((major == 24 and (minor, patch) >= (16, 0)) or
