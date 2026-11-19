@@ -13,7 +13,7 @@ const PATHS = {
   "03-fullstack-feature": ["api/Program.cs", "web/src/TaskSummary.tsx"],
 };
 const allowed = PATHS[TASK];
-const stats = {chat: 0, denied: 0, metadata: 0, show: 0};
+const stats = {chat: 0, denied: 0, metadata: 0, show: 0, rejectionCodes: []};
 const checks = {
   non_root: false, no_new_privileges: false, zero_capabilities: false,
   root_read_only: false, external_tcp_denied: false,
@@ -131,12 +131,22 @@ const server = http.createServer(async (req, res) => {
         const native = request.tools?.filter(t =>
           t?.type === "function" && t?.function?.name === "write");
         const schema = native?.[0]?.function?.parameters;
-        if (users.length !== 1 || !textOf(users[0]).includes(PROMPT) ||
-            native?.length !== 1 ||
-            !["filePath", "content"].every(key =>
-              schema?.required?.includes(key) &&
-              Object.hasOwn(schema?.properties || {}, key))) {
+        const promptMatched = users.length === 1 && textOf(users[0]).includes(PROMPT);
+        const schemaOK = ["filePath", "content"].every(key =>
+          schema?.required?.includes(key) &&
+          Object.hasOwn(schema?.properties || {}, key));
+        if (!promptMatched || native?.length !== 1 || !schemaOK) {
           if (active) stats.denied++;
+          // Bounded shape-only diagnostics: never log prompt, source, secrets
+          // or native tool bodies from OpenCode.
+          if (stats.rejectionCodes.length < 3) stats.rejectionCodes.push({
+            promptMatched, userCount: users.length,
+            nativeWriteCount: native?.length ?? 0,
+            nativeNames: (request.tools || []).slice(0, 15)
+              .map(t => String(t?.function?.name || "").slice(0, 30)),
+            required: (schema?.required || []).slice(0, 8),
+            fields: Object.keys(schema?.properties || {}).slice(0, 8),
+          });
           deny(res); return;
         }
         stats.chat++;
@@ -269,7 +279,7 @@ try {
   checks.chat_bounded = stats.chat <= allowed.length + 1 && stats.denied === 0;
   checks.native_cli_complete = cli.exit === 0 && !cli.timedOut && cli.complete;
   console.log(JSON.stringify({task: TASK, checks, cli,
-    chat_requests: stats.chat}));
+    chat_requests: stats.chat, rejectionCodes: stats.rejectionCodes}));
   if (!Object.values(checks).every(Boolean)) process.exitCode = 2;
 } catch (e) {
   console.log(JSON.stringify({task: TASK, checks,
