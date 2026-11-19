@@ -1,0 +1,7 @@
+{
+  "name": "@codingassistant/approved-disposable-turn",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "openclaw": {"extensions": ["./index.mjs"]}
+}
