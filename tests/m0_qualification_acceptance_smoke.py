@@ -150,7 +150,7 @@ app.Run();
             raise RuntimeError("Missing FromQuery namespace was not diagnosed: " +
                                json.dumps(observed)[:1400])
         print("M0.17 OWNER_API_COMPILER_DIAGNOSTIC_CAPTURED", flush=True)
-        source.write_text("using Microsoft.AspNetCore.Mvc;\\n" + broken_api,
+        source.write_text("using Microsoft.AspNetCore.Mvc;\n" + broken_api,
                           encoding="utf-8")
         repaired = docker_check(image, "01-api-feature", workspace, sentinel)
         if not repaired["verified"] or repaired["compiler_errors"]:
