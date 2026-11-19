@@ -59,7 +59,11 @@ def gateway_command(image_id: str, name: str, uid: int, gid: int,
         raise ValueError("Gateway image differs from M1.1 immutable local image")
     if not name.startswith("ca-m12-gateway-") or len(name) > 45:
         raise ValueError("Invalid disposable container name")
-    if not env_path.is_file() or (env_path.stat().st_mode & 0o077):
+    # Windows model-free CI can mock the Linux Podman call contract, but
+    # NTFS's stat() permission bits are not an authoritative POSIX 0600
+    # permission check. On actual Linux, require strict owner-only modes.
+    if not env_path.is_file() or (
+            os.name == "posix" and (env_path.stat().st_mode & 0o077)):
         raise ValueError("Temporary gateway environment is not private")
     return [
         "podman", "run", "--detach", "--rm", "--pull=never",
