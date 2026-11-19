@@ -51,7 +51,8 @@ CONFIG = CONTEXT / "coding-config.json"
 LAUNCHER = CONTEXT / "coding-runner.mjs"
 PLUGIN = CONTEXT / "coding-plugin"
 SOURCES = (CONTAINERFILE, CONFIG, LAUNCHER, PLUGIN / "index.mjs",
-           PLUGIN / "openclaw.plugin.json", PLUGIN / "package.json")
+           PLUGIN / "openclaw.plugin.json", PLUGIN / "package.json",
+           pathlib.Path(__file__).resolve())
 IMAGE_TAG = "localhost/codingassistant-m112-approved-coding:2026.11.5"
 METHOD = "codingassistant.coding.run"
 TASK = "02-build-repair"
@@ -135,8 +136,9 @@ def inspect_image(source_hash: str) -> str | None:
     return match.group(1)
 
 def build_approved_plan(base_hash: str, image_id: str, model_digest: str,
-                        manifest_hash: str) -> tuple[dict[str, object], str]:
-    for value in (base_hash, image_id, model_digest, manifest_hash):
+                        manifest_hash: str, evaluator_id: str
+                        ) -> tuple[dict[str, object], str]:
+    for value in (base_hash, image_id, model_digest, manifest_hash, evaluator_id):
         if HEX64.fullmatch(value) is None:
             raise ValueError("Incomplete plan provenance")
     plan = {"schema_version": 1, "stage": "M1.12",
@@ -144,6 +146,7 @@ def build_approved_plan(base_hash: str, image_id: str, model_digest: str,
             "fixture": TASK, "fixture_sha256": base_hash,
             "manifest_sha256": manifest_hash, "model": MODEL,
             "model_digest": model_digest, "image_id": image_id,
+            "evaluator_image_id": evaluator_id,
             "source_sha256": fingerprint(),
             "writable_files": ["api/Program.cs"],
             "gateway_method": METHOD, "no_cloud": True, "no_git_remote": True}
@@ -395,7 +398,7 @@ def execute(prepare: bool) -> dict[str, object]:
             raise ValueError("Derived image absent; opt in with --prepare")
         report["derived_image"] = image
         plan, plan_hash = build_approved_plan(
-            base_hash, image, digest, manifest_hash)
+            base_hash, image, digest, manifest_hash, eval_img["image_id"])
         report["plan_hash"] = plan_hash
         print("Approved-scope preview:", plan["assignment"])
         print("  fixture:", TASK, "model:", MODEL)
