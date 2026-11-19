@@ -178,16 +178,18 @@ function reactChecks() {
   try {
     fs.symlinkSync(TRUSTED_NODE_MODULES, modules, "dir");
     linked = true;
-    fs.copyFileSync(TRUSTED_REACT_TEST, trustedTest, fs.constants.COPYFILE_EXCL);
-    injected = true;
     checks.offline_node_dependencies =
       fs.realpathSync(modules) === TRUSTED_NODE_MODULES &&
       fs.existsSync(path.join(modules, ".bin/tsc")) &&
       fs.existsSync(path.join(modules, ".bin/vitest"));
     if (!checks.offline_node_dependencies) return;
+    // Match the original frozen acceptance contract: typecheck generated
+    // application source before introducing the externally authored test.
     checks.frontend_typecheck = fixed(path.join(modules, ".bin/tsc"),
       ["--noEmit"], web, 60000).ok;
     if (!checks.frontend_typecheck) return;
+    fs.copyFileSync(TRUSTED_REACT_TEST, trustedTest, fs.constants.COPYFILE_EXCL);
+    injected = true;
     checks.frontend_behavior = fixed(path.join(modules, ".bin/vitest"), [
       "run", "--environment", "jsdom", "--maxWorkers", "1",
       "--no-file-parallelism", "src/TaskSummary.acceptance.test.tsx",
