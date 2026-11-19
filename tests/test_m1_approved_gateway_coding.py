@@ -78,16 +78,17 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
 
     def test_exact_approval_plan_changes_with_image_and_digest(self):
         plan, digest = m.build_approved_plan(MOCK_BASE, MOCK_IMAGE, MOCK_DIGEST,
-                                             MOCK_MANIFEST)
+                                             MOCK_MANIFEST, "f" * 64)
         self.assertEqual(len(digest), 64)
         self.assertEqual(plan["writable_files"], ["api/Program.cs"])
         self.assertEqual(plan["model"], "qwen3.5:4b")
+        self.assertEqual(plan["evaluator_image_id"], "f" * 64)
         self.assertTrue(plan["no_cloud"] and plan["no_git_remote"])
         _, other = m.build_approved_plan(MOCK_BASE, MOCK_IMAGE, "e" * 64,
-                                         MOCK_MANIFEST)
+                                         MOCK_MANIFEST, "f" * 64)
         self.assertNotEqual(digest, other)
         with self.assertRaises(ValueError):
-            m.build_approved_plan(MOCK_BASE, "latest", MOCK_DIGEST, MOCK_MANIFEST)
+            m.build_approved_plan(MOCK_BASE, "latest", MOCK_DIGEST, MOCK_MANIFEST, "f" * 64)
 
     def test_rpc_exact_output_and_rejects_false_success(self):
         item = dict(m.EXPECTED_RPC, eventsObserved=8, toolCallsObserved=3)
