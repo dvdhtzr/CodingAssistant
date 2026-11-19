@@ -95,3 +95,67 @@ Gateway-to-ACP session/plan approval workflows, Ollama socket
 boundaries, or Windows-host controls are safe. All still require
 targeted tests and explicit authorization before autonomous coding.
 Overall M1 remains **YELLOW**.
+
+
+## Owner M1.9 — twelve adversarial OS negative tests: GREEN
+
+Owner Dell ran `tools/m1/os_negative_boundary_probe.py` against immutable
+`023bf9411fe23045dbdea9c777ed8618dec6553a81417c9aec2d15f7cf5b99ea`.
+Result: `M1.9 NEGATIVE_SECURITY_PASS`, **12/12** denials, including
+child process network/writes, privilege escalation, OS credentials,
+symlink/traversal writes and outbound/host Ollama connections.
+Disposable guest removed. No Gateway, ACP session, model, or host
+project access occurred. Evidence:
+`artifacts/m1/os-negative-audit-a80a37fa58d7.json`.
+This establishes an image-specific OS boundary, NOT complete M1 safety
+for approved worktrees, networked Ollama, Git remotes or Windows host.
+
+## M1.10 — Gateway-owned ACP backend doctor (no coding session)
+
+Pinned OpenClaw v2026.11.5 implements `/acp doctor` in
+`src/auto-reply/reply/commands-acp/diagnostics.ts`. Unlike the prior
+read-only `acpx.agents.list` metadata RPC, this **built-in command**
+calls the actual Gateway-registered ACPX runtime backend's `doctor()`.
+That method performs the real adapter `initialize`, then closes it.
+It does not request `session/new` or `session/prompt`.
+
+The M1.10 probe starts a temporary Gateway from the OWNER-VERIFIED
+combined immutable image in rootless non-root no-network, no-mount,
+no-published-port, no-capability, read-only-root Podman. It uses
+a disposable owner-only token, all three HTTP 200 health checks,
+and only ONE Gateway-backed (never `--local`) CLI agent command:
+
+```bash
+openclaw agent --session-key agent:main:ca-m110-doctor-<nonce> --message '/acp doctor' --timeout 45 --json
+```
+
+The CLI may create **ephemeral Gateway session bookkeeping** inside
+its isolated `/tmp` state; that is not an ACP coding session.
+No provider credentials, network service, Ollama, host workspace,
+coding prompt, agent worktree or source file are accessible.
+A blocked or misrouted command cannot produce a qualifying result.
+
+PASS requires an actual structured doctor response with
+`ACP doctor:`, `registeredBackend: acpx`,
+`runtimeDoctor: ok (embedded ACP runtime ready)`,
+`runtimeDoctorDetail: protocolVersion=1`,
+`activeRuntimeSessions: 0` and `activeTurns: 0`.
+Raw response/trace/credentials are discarded; only sanitized
+observations saved under ignored append-only 0600 evidence files.
+Disposal of the entire temporary Gateway is mandatory.
+
+**Next Dell command, after this PR is GREEN and merged:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_acp_doctor_probe.py
+```
+
+Expected outcome if actual pinned Gateway command semantics agree:
+`M1.10 GATEWAY_OWNED_ACP_DOCTOR_PASS`.
+Otherwise `BLOCKED` with an explicit sanitized reason. Never enable
+network, host mounts, provider keys or unrestricted package fallbacks
+to force a PASS. Even a PASS confirms a Gateway-owned diagnostic
+path only—**not authorized code edits**. M1 still needs exact plan
+hash/version owner approvals, scoped worktrees with OS isolation,
+local-only inference transport, Git constraints, durable recovery
+and independent Windows-host gates.
