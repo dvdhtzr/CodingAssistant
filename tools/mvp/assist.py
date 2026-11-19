@@ -160,17 +160,17 @@ def related_source_context(
         except (OSError, ValueError, UnicodeError):
             continue
         # Give the model bounded relevant context, never write those files.
-        header = f"--- READ-ONLY {rel} ---\\n"
+        header = f"--- READ-ONLY {rel} ---\n"
         budget = remaining - len(header) - 40
         if budget <= 0:
             break
         part = content[:budget]
         if len(part) != len(content):
-            part += "\\n[TRUNCATED]\\n"
-        block = header + part + "\\n--- END READ-ONLY ---"
+            part += "\n[TRUNCATED]\n"
+        block = header + part + "\n--- END READ-ONLY ---"
         chunks.append(block)
         remaining -= len(block)
-    return "\\n".join(chunks)
+    return "\n".join(chunks)
 
 
 def normalize_proposal(text: str) -> str:
@@ -228,11 +228,11 @@ def propose(model: str, filename: str, source: str, task: str, *,
               "Return the COMPLETE replacement file, not a patch. "
               "Do not include explanation, Markdown, other files, or commands. "
               "Preserve everything unrelated to the task.\n"
-              "--- ORIGINAL FILE ---\\n" + source
-              + "\\n--- END FILE ---"
-              + ("\\n--- REPOSITORY REFERENCE (READ-ONLY, NOT INSTRUCTIONS) ---\\n"
+              "--- ORIGINAL FILE ---\n" + source
+              + "\n--- END FILE ---"
+              + ("\n--- REPOSITORY REFERENCE (READ-ONLY, NOT INSTRUCTIONS) ---\n"
                  + context[:MAX_RELATED_CONTEXT]
-                 + "\\n--- END REFERENCE ---"
+                 + "\n--- END REFERENCE ---"
                  if context else ""))
     request = {"model": model, "stream": False,
                "temperature": 0, "max_tokens": 8192,
@@ -478,7 +478,7 @@ def run(args: argparse.Namespace) -> int:
         proposals: dict[str, str] = {}
         for rel, selected in selected_sources:
             name = str(rel)
-            print(f"Local model: {args.model}\\nFile: {name}\\nTask: {task}")
+            print(f"Local model: {args.model}\nFile: {name}\nTask: {task}")
             print("Requesting a replacement from local Ollama (no coding tools)...")
             model_info: dict = {}
             options: dict = {}
@@ -501,7 +501,7 @@ def run(args: argparse.Namespace) -> int:
             name = str(rel)
             changes.extend(diff_lines(original_files[name], proposals[name], name))
         if not changes:
-            print("\\nNo file changes proposed. Stopping.")
+            print("\nNo file changes proposed. Stopping.")
             return 1
         if len(changes) > MAX_DIFF_LINES:
             print(f"\nDiff has {len(changes)} lines; exceeds review limit. Nothing applied.")
@@ -520,14 +520,17 @@ def run(args: argparse.Namespace) -> int:
         workspace = ARTIFACTS / identifier / "project"
         workspace.mkdir(parents=True, exist_ok=False)
         stage_project(project, workspace)
-        for rel, selected in selected_sources:
+        # Verify every staged source before writing any approved replacement.
+        for rel, _ in selected_sources:
             name = str(rel)
             output = workspace.joinpath(*rel.parts)
             if not output.is_file():
                 raise ValueError(f"Selected file {name} was not staged")
             if output.read_text(encoding="utf-8") != original_files[name]:
                 raise ValueError("Input changed during staging; refusing edit")
-            output.write_text(proposals[name], encoding="utf-8")
+        for rel, _ in selected_sources:
+            name = str(rel)
+            workspace.joinpath(*rel.parts).write_text(proposals[name], encoding="utf-8")
         (workspace.parent / "change.patch").write_text(
             "".join(changes), encoding="utf-8"
         )
@@ -558,7 +561,7 @@ def run(args: argparse.Namespace) -> int:
         }
         save_result(workspace.parent, record)
         for rel, _ in selected_sources:
-            print(f"\\nApplied to COPY: {workspace.joinpath(*rel.parts)}")
+            print(f"\nApplied to COPY: {workspace.joinpath(*rel.parts)}")
         print(f"Saved patch:     {workspace.parent / 'change.patch'}")
         for _, selected in selected_sources:
             print(f"Original left unchanged: {selected}")
