@@ -169,6 +169,18 @@ def parse_write_sse(data: bytes, model: str) -> dict[str, str]:
         raise ValueError("Model write arguments rejected")
     return args
 
+def authorize_write(args: object, task: str,
+                    done: list[dict[str, str]]) -> bool:
+    if type(args) is not dict or set(args) != {"filePath", "content"}:
+        return False
+    if type(args["filePath"]) is not str or type(args["content"]) is not str:
+        return False
+    remaining = set(FILES[task]) - {x["filePath"] for x in done}
+    data = args["content"].encode("utf-8")
+    return (args["filePath"] in remaining and
+            0 < len(data) <= MAX_CODE and "\\x00" not in args["content"])
+
+
 def request_model_write(model: str, digest: str, task: str,
                         stage: int, done: list[dict[str, str]]) -> dict[str, str]:
     if not verify_model_digest(model, digest):
@@ -224,7 +236,7 @@ def request_model_write(model: str, digest: str, task: str,
     finally:
         conn.close()
     args = parse_write_sse(stream, model)
-    if args["filePath"] not in remaining or not verify_model_digest(model, digest):
+    if not authorize_write(args, task, done) or not verify_model_digest(model, digest):
         raise ValueError("Model chose unauthorized path or digest changed")
     return args
 
@@ -296,6 +308,8 @@ def pinned_qualification_handler(model: str, digest: str, task: str,
                     try:
                         args = request_model_write(model, digest, task, stage,
                                                    state["writes"])
+                        if not authorize_write(args, task, state["writes"]):
+                            raise ValueError("Unauthorized model source target")
                     except (OSError, RuntimeError, ValueError, TypeError,
                             http.client.HTTPException):
                         state["model_failures"] += 1
