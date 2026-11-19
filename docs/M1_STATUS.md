@@ -878,3 +878,33 @@ This change does not relax model selection, user approval, Podman isolation,
 or workspace permissions. **Runtime behavior after this correction is not
 yet proven**; an exact fresh owner-approved Dell disposable coding run must
 pass before M1.12 can be marked GREEN.
+
+
+## M1.12 — repeatable ACPX session initialization failure (November 19)
+
+Two owner-approved identical real Dell attempts at commit `bb47a44`
+returned `CODING_RPC_NONZERO` while Gateway health was **3/3 200**,
+`claimed=true`, plugin phase `failed` and
+`failureAt=session_initialize`; both disposed of their Gateway
+containers. The host-local model broker recorded **zero attempts**.
+Neither the ACP prompt nor the independent .NET evaluator was reached.
+This narrows the failure to **ACPX `ensureSession`**, which covers
+OpenCode agent startup, `session/new`/catalog loading and exact model
+selection. It does **not** identify which operation failed.
+
+The pinned ACPX 0.21.0 source uses typed process, timeout and model
+rejection errors, but M1.12 previously discarded the error object
+inside its Gateway plugin. The present fix introduces a bounded
+`lastFailure` response with only fixed enum values (model unsupported,
+catalog empty, agent exit/spawn, file denied/missing, timeout, generic
+session initialization), a numeric process exit code (if known), and
+optional fixed model-reason token. Raw exception messages,
+provider responses, stderr, source paths, prompts and credentials
+are **never** returned or saved. The exact source/plan hash changes,
+so a fresh user approval is required for the next real disposable run.
+
+No automatic fallback model or unapproved `ensureSession` retry was
+introduced. If the next owner-approved attempt fails, the combined
+bounded plugin stage + typed error is the acceptance evidence to use
+for a *specific* root-cause correction. A CI-green classifier is
+only a diagnostic regression gate, not an M1.12 PASS.
