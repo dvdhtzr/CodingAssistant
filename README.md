@@ -264,6 +264,25 @@ model, project files, package install or network access. A missing
 optional plugin is a discovery outcome, **not** M1 qualification.
 See [M1 discovery and safety boundaries](docs/M1_GATEWAY_DISCOVERY.md).
 
+### M1.3 finding: ACPX is not bundled; M1.4 pinned build
+
+Dell's offline image inventory confirmed `NOT_BUNDLED`: the normal
+OpenClaw `2026.11.5` image starts correctly but lacks ACPX.
+Our next **explicit opt-in** step builds a new plugin-enabled image
+from the exact reviewed upstream release commit, not the moving `main`:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_source_image.py --prepare
+```
+
+**This operation downloads public GitHub source and build dependencies**
+and executes upstream build scripts in rootless Podman. It does not
+install host Node, use any paid AI endpoint, modify the original verified
+OpenClaw image, or run a model or coding agent. Build logs remain local.
+All post-build checks run in separate *offline* containers.
+Even `ACPX_IMAGE_PACKAGED_PASS` means packaging only, not ACP readiness.
+See [M1 Gateway/ACPX plan](docs/M1_GATEWAY_DISCOVERY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
