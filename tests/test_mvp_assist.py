@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -456,6 +457,224 @@ class MvpTests(unittest.TestCase):
              mock.patch.object(assist, "run", return_value=0) as run:
             self.assertEqual(assist.main(), 0)
             self.assertTrue(run.call_args.args[0].run)
+
+
+    def test_failed_executable_assertions_are_captured_without_compiler_noise(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "OrderPricing.csproj").write_text("<Project/>")
+            image = subprocess.CompletedProcess([], 0, "a" * 64, "")
+            restore = subprocess.CompletedProcess([], 0, "Restore succeeded", "")
+            build = subprocess.CompletedProcess([], 0, "Build succeeded", "")
+            run = subprocess.CompletedProcess([], 1,
+                "PASS: quantity\n"
+                "FAIL: tax: InvalidOperationException: expected 3.15, got 3.50\n"
+                "ORDER-PRICING ACCEPTANCE: 9/10 checks passed\n", 
+                "An issue was encountered verifying workloads.\n")
+            with mock.patch.object(assist.shutil, "which", return_value="/usr/bin/podman"), \
+                 mock.patch.object(assist.os, "getuid", return_value=1000, create=True), \
+                 mock.patch.object(assist.os, "getgid", return_value=1000, create=True), \
+                 mock.patch.object(assist.sys, "platform", "linux"), \
+                 mock.patch.object(assist.subprocess, "run",
+                                   side_effect=[image, restore, build, run]) as process, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                compiler, failed = [], []
+                self.assertFalse(assist.isolated_build(project, True,
+                                   feedback=compiler, test_feedback=failed))
+            self.assertEqual(compiler, [])
+            self.assertEqual(failed, [
+                "FAIL: tax: InvalidOperationException: expected 3.15, got 3.50",
+                "ORDER-PRICING ACCEPTANCE: 9/10 checks passed"])
+            self.assertEqual(process.call_count, 4)
+
+    def test_non_test_runtime_failure_does_not_generate_model_feedback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "OrderPricing.csproj").write_text("<Project/>")
+            results = [
+                subprocess.CompletedProcess([], 0, "a" * 64, ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 1, "", "Process crashed without tests"),
+            ]
+            with mock.patch.object(assist.shutil, "which", return_value="podman"), \
+                 mock.patch.object(assist.os, "getuid", return_value=1000, create=True), \
+                 mock.patch.object(assist.os, "getgid", return_value=1000, create=True), \
+                 mock.patch.object(assist.sys, "platform", "linux"), \
+                 mock.patch.object(assist.subprocess, "run", side_effect=results), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                failed = []
+                self.assertFalse(assist.isolated_build(project, True,
+                                                       test_feedback=failed))
+            self.assertEqual(failed, [])
+
+    def test_acceptance_failures_trigger_automatic_approved_correction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (source / "PricingCalculator.cs").write_text("class Pricing { /*old*/ }\n")
+            (source / "OrderPricing.csproj").write_text("<Project/>")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(source), file="PricingCalculator.cs",
+                task="Correct tax; subtotal must remain undiscounted.",
+                build=False, run=True)
+            proposals = iter(["class Pricing { /*wrong*/ }\n",
+                              "class Pricing { /*correct*/ }\n"])
+            def model(*a, **k):
+                k["metadata"]["digest"] = "pinned"
+                return next(proposals)
+            attempts = iter([False, True])
+            def build(*a, **k):
+                if not next(attempts):
+                    k["test_feedback"].extend([
+                        "FAIL: subtotal: expected 54.98, got 49.48",
+                        "FAIL: tax: expected 3.15, got 3.50"])
+                    return False
+                return True
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose", side_effect=model) as proposed, \
+                 mock.patch.object(assist, "isolated_build", side_effect=build) as isolated, \
+                 mock.patch("builtins.input", side_effect=["APPLY", "APPLY"]) as approval, \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(assist.run(args), 0)
+            self.assertEqual(approval.call_count, 2)
+            self.assertEqual(proposed.call_count, 2)
+            self.assertEqual(isolated.call_count, 2)
+            self.assertIn("expected 54.98", proposed.call_args_list[1].args[3])
+            self.assertIn("subtotal must remain undiscounted",
+                          proposed.call_args_list[1].args[3])
+            self.assertEqual(proposed.call_args_list[1].kwargs["expected_digest"],
+                             "pinned")
+            self.assertIn("acceptance tests failed", out.getvalue())
+            self.assertEqual((source / "PricingCalculator.cs").read_text(),
+                             "class Pricing { /*old*/ }\n")
+            records = [__import__("json").loads((p / "result.json").read_text())
+                       for p in artifacts.iterdir()]
+            self.assertEqual({r["status"] for r in records},
+                             {"verification_failed", "run_passed"})
+            self.assertEqual(sum(len(r["test_failures"]) for r in records), 2)
+            self.assertEqual(sum(bool(r["parent_run_id"]) for r in records), 1)
+
+    def test_manual_retry_resumes_previous_test_failure_in_new_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            artifacts = Path(directory) / "artifacts"
+            run_id = "20261119T032101Z-1cb9e2cf"
+            prior = artifacts / run_id
+            (prior / "project").mkdir(parents=True)
+            (prior / "project/PricingCalculator.cs").write_text(
+                "class Pricing { /*incorrect*/ }\n")
+            (prior / "project/OrderPricing.csproj").write_text("<Project/>")
+            (prior / "result.json").write_text(
+                '{"model":"qwen3.5:4b","model_digest":"pinned","file":'
+                '"PricingCalculator.cs","status":"verification_failed"}')
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=None, retry=run_id, file="PricingCalculator.cs",
+                task="Keep the pre-discount subtotal; only discount taxable base for tax.",
+                build=False, run=True)
+            calls = iter(["compiles", "fails-tests", "passes"])
+            def build(*a, **k):
+                state = next(calls)
+                if state == "fails-tests":
+                    k["test_feedback"].append(
+                        "FAIL: subtotal: expected 54.98, got 49.48")
+                    return False
+                return True
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "isolated_build", side_effect=build) as isolated, \
+                 mock.patch.object(assist, "propose",
+                     return_value="class Pricing { /*correct*/ }\n") as proposed, \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 0)
+            self.assertEqual(isolated.call_count, 3)
+            self.assertIn("expected 54.98", proposed.call_args.args[3])
+            self.assertEqual(proposed.call_args.kwargs["expected_digest"], "pinned")
+            self.assertIn("/*incorrect*/",
+                          (prior / "project/PricingCalculator.cs").read_text())
+            copies = [p for p in artifacts.iterdir() if p.name != run_id]
+            self.assertEqual(len(copies), 1)
+            record = __import__("json").loads((copies[0] / "result.json").read_text())
+            self.assertEqual(record["parent_run_id"], run_id)
+            self.assertEqual(record["status"], "run_passed")
+
+    def test_test_feedback_never_overrides_rejection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "src"
+            project.mkdir()
+            (project / "PricingCalculator.cs").write_text("old\n")
+            (project / "OrderPricing.csproj").write_text("<Project/>")
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(project), file="PricingCalculator.cs",
+                task="Repair logic", build=False, run=True)
+            def fails(*a, **k):
+                k["test_feedback"].append("FAIL: tax: expected 3.15, got 3.50")
+                return False
+            with mock.patch.object(assist, "ARTIFACTS", root / "artifacts"), \
+                 mock.patch.object(assist, "isolated_build", side_effect=fails), \
+                 mock.patch.object(assist, "propose",
+                                   side_effect=["wrong\n", "better\n"]) as model, \
+                 mock.patch("builtins.input", side_effect=["APPLY", "NO"]), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 1)
+            self.assertEqual(model.call_count, 2)
+            self.assertEqual((project / "PricingCalculator.cs").read_text(), "old\n")
+            self.assertEqual(len(list((root / "artifacts").iterdir())), 1)
+
+    def test_repeated_test_failures_stop_bounded_recovery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "src"
+            project.mkdir()
+            (project / "PricingCalculator.cs").write_text("old\n")
+            (project / "OrderPricing.csproj").write_text("<Project/>")
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(project), file="PricingCalculator.cs",
+                task="Fix", build=False, run=True)
+            def fails(*a, **k):
+                k["test_feedback"].append("FAIL: tax: expected 3.15, got 3.50")
+                return False
+            with mock.patch.object(assist, "ARTIFACTS", root / "artifacts"), \
+                 mock.patch.object(assist, "isolated_build", side_effect=fails), \
+                 mock.patch.object(assist, "propose",
+                                   side_effect=["wrong\n", "still wrong\n"]) as model, \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(assist.run(args), 2)
+            self.assertEqual(model.call_count, 2)
+            self.assertIn("repeated without progress", out.getvalue())
+
+
+    def test_test_feedback_is_bounded_to_two_automatic_corrections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "src"
+            project.mkdir()
+            (project / "PricingCalculator.cs").write_text("original\n")
+            (project / "OrderPricing.csproj").write_text("<Project/>")
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(project), file="PricingCalculator.cs",
+                task="Correct pricing", build=False, run=True)
+            cases = iter([1, 2, 3])
+            def fails(*a, **k):
+                attempt = next(cases)
+                k["test_feedback"].append(
+                    f"FAIL: scenario {attempt}: expected 3.15, got {3 + attempt}")
+                return False
+            with mock.patch.object(assist, "ARTIFACTS", root / "artifacts"), \
+                 mock.patch.object(assist, "isolated_build", side_effect=fails) as build, \
+                 mock.patch.object(assist, "propose",
+                     side_effect=["first\n", "second\n", "third\n"]) as model, \
+                 mock.patch("builtins.input", return_value="APPLY") as approval, \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(assist.run(args), 2)
+            self.assertEqual(model.call_count, 3)
+            self.assertEqual(build.call_count, 3)
+            self.assertEqual(approval.call_count, 3)
+            self.assertIn("limit of 2", out.getvalue())
+            self.assertEqual((project / "PricingCalculator.cs").read_text(), "original\n")
 
 
 if __name__ == "__main__":
