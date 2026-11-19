@@ -92,6 +92,41 @@ response; it prints a phase-specific timeout message and leaves the
 unmodified original and previously approved disposable copies intact.
 No background retries, no remote-model fallback, and no changed Podman privileges.
 
+## Next milestone — bounded repository-aware multi-file editing
+
+The MVP now has an explicit **2–3 file** mode (`--files`) for small C# changes
+that genuinely span classes. The owner names every editable source file. For
+each selected file, the local model receives its full current contents plus
+bounded read-only neighboring C# context (including earlier proposals in the
+same batch). Unselected neighbor files are never edited; the executable
+`Program.cs` acceptance harness is excluded from automatic neighbor discovery.
+
+On the Dell, use the new two-file checkout benchmark:
+
+```bash
+cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/mvp/assist.py --project benchmarks/fixtures/05-multifile-checkout --files DiscountPolicy.cs CheckoutCalculator.cs --task "Support MEMBER20 only for members, retain SAVE10 for everyone, apply coupons once to total merchandise and round the order-wide discount once, then tax only taxable merchandise after its proportional discount. Preserve validation, shipping exclusions and public signatures. Repair both selected classes." --model qwen3.5:4b --inference-timeout 900 --run
+```
+
+The separate model proposals appear together as **one combined diff**. The
+entire batch needs one explicit `APPLY` before any file is edited, and edits
+are made together only to a **new disposable project copy**. If the second
+model call times out or you reject the combined diff, no batch is staged.
+The same fixed rootless/no-network Podman build and executable acceptance
+verification is used. Build or recognizable test failures can trigger at most
+two additional batch proposals with fresh approval each time. A saved
+multi-file run can be resumed via `--retry RUN_ID --model ... --run`.
+
+`05-multifile-checkout` contains two deliberate defects in separate classes:
+missing member-only `MEMBER20` support and tax incorrectly computed before a
+coupon. Its independent executable contract has **9 checks**.
+Deterministic GitHub CI proves that the frozen fixture fails and a known-good
+two-file correction passes 9/9. This is **not** proof that Qwen will pass it
+until the real Dell run is observed.
+
+**Current limits:** only existing owner-selected source files, 2–3 files per
+batch, no new-file generation, no Git commits/merges, no general autonomous
+file selection. Single-file `--file` and all earlier behavior remain available.
+
 For your own project (one source file at a time):
 
 ```bash

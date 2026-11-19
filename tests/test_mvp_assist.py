@@ -758,5 +758,188 @@ class MvpTests(unittest.TestCase):
                          assist.DEFAULT_INFERENCE_TIMEOUT)
 
 
+    def test_multifile_approval_stages_two_atomic_changes_with_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (source / "Policy.cs").write_text("class Policy { /*old*/ }\n")
+            (source / "Service.cs").write_text("class Service { /*old*/ }\n")
+            (source / "Domain.cs").write_text("class Domain {}\n")
+            (source / "Program.cs").write_text("throw new Exception(\"fixture tests\");\n")
+            (source / "App.csproj").write_text("<Project/>")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(source), file=None, files=["Policy.cs", "Service.cs"],
+                task="Repair policy and service together", build=False, run=True)
+            requests = []
+            def model(model, filename, content, task, **kwargs):
+                requests.append((filename, kwargs.get("context")))
+                kwargs["metadata"]["digest"] = "same-digest"
+                return f"class {filename.removesuffix('.cs')} {{ /*fixed*/ }}\n"
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose", side_effect=model), \
+                 mock.patch.object(assist, "isolated_build", return_value=True) as check, \
+                 mock.patch("builtins.input", return_value="APPLY") as approval, \
+                 contextlib.redirect_stdout(io.StringIO()) as stdout:
+                self.assertEqual(assist.run(args), 0)
+            self.assertEqual(approval.call_count, 1)
+            self.assertEqual(check.call_count, 1)
+            self.assertTrue(check.call_args.args[1])
+            self.assertEqual([row[0] for row in requests],
+                             ["Policy.cs", "Service.cs"])
+            self.assertIn("READ-ONLY Service.cs", requests[0][1])
+            self.assertIn("READ-ONLY Domain.cs", requests[0][1])
+            self.assertNotIn("fixture tests", requests[0][1])
+            self.assertIn("/*fixed*/", requests[1][1])
+            self.assertEqual((source / "Policy.cs").read_text(),
+                             "class Policy { /*old*/ }\n")
+            self.assertEqual((source / "Service.cs").read_text(),
+                             "class Service { /*old*/ }\n")
+            run_dir = next(artifacts.iterdir())
+            self.assertEqual((run_dir / "project/Policy.cs").read_text(),
+                             "class Policy { /*fixed*/ }\n")
+            self.assertEqual((run_dir / "project/Service.cs").read_text(),
+                             "class Service { /*fixed*/ }\n")
+            self.assertIn("original/Service.cs",
+                          (run_dir / "change.patch").read_text())
+            self.assertIn("original/Policy.cs",
+                          (run_dir / "change.patch").read_text())
+            record = __import__("json").loads((run_dir / "result.json").read_text())
+            self.assertEqual(record["files"], ["Policy.cs", "Service.cs"])
+            self.assertEqual(set(record["edits"]), {"Policy.cs", "Service.cs"})
+            self.assertEqual(record["status"], "run_passed")
+            self.assertEqual(record["model_digest"], "same-digest")
+            self.assertIn("Policy.cs", stdout.getvalue())
+
+    def test_multifile_rejection_leaves_original_and_no_staged_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (source / "A.cs").write_text("A\n")
+            (source / "B.cs").write_text("B\n")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(source), file=None, files=["A.cs", "B.cs"],
+                task="Change both", build=False, run=False)
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose",
+                                   side_effect=["AA\n", "BB\n"]) as model, \
+                 mock.patch("builtins.input", return_value="no"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 1)
+            self.assertEqual(model.call_count, 2)
+            self.assertFalse(artifacts.exists())
+            self.assertEqual((source / "A.cs").read_text(), "A\n")
+            self.assertEqual((source / "B.cs").read_text(), "B\n")
+
+    def test_multifile_model_timeout_cannot_stage_partial_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (source / "A.cs").write_text("A\n")
+            (source / "B.cs").write_text("B\n")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(source), file=None, files=["A.cs", "B.cs"],
+                task="Change both", build=False, run=False)
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose",
+                     side_effect=["AA\n", TimeoutError("timed out")]), \
+                 mock.patch("builtins.input") as approval, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(TimeoutError, "timed out"):
+                    assist.run(args)
+            approval.assert_not_called()
+            self.assertFalse(artifacts.exists())
+            self.assertEqual((source / "A.cs").read_text(), "A\n")
+            self.assertEqual((source / "B.cs").read_text(), "B\n")
+
+    def test_multifile_manifest_retry_preserves_selection_and_prior_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / "artifacts"
+            run_id = "20261119T111140Z-4657f6de"
+            old = artifacts / run_id
+            (old / "project").mkdir(parents=True)
+            (old / "project/A.cs").write_text("oldA\n")
+            (old / "project/B.cs").write_text("oldB\n")
+            (old / "project/Project.csproj").write_text("<Project/>")
+            (old / "result.json").write_text(__import__("json").dumps({
+                "model":"qwen3.5:4b", "model_digest":"pinned",
+                "files":["A.cs", "B.cs"], "status":"verification_failed",
+                "objective":"Fix both files",
+            }))
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=None, file=None, retry=run_id, task=None, build=False,
+                run=True)
+            attempts = iter(["build-ok", "test-failed", "fixed"])
+            def isolated(*a, **k):
+                phase = next(attempts)
+                if phase == "test-failed":
+                    k["test_feedback"].append("FAIL: contract: expected fixed")
+                    return False
+                return True
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose",
+                                   side_effect=["newA\n", "newB\n"]) as model, \
+                 mock.patch.object(assist, "isolated_build",
+                                   side_effect=isolated) as checks, \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 0)
+            self.assertEqual(model.call_count, 2)
+            self.assertEqual(checks.call_count, 3)
+            self.assertEqual(model.call_args_list[0].kwargs["expected_digest"], "pinned")
+            self.assertIn("expected fixed", model.call_args_list[0].args[3])
+            self.assertEqual((old / "project/A.cs").read_text(), "oldA\n")
+            self.assertEqual((old / "project/B.cs").read_text(), "oldB\n")
+            new_runs = [p for p in artifacts.iterdir() if p.name != run_id]
+            self.assertEqual(len(new_runs), 1)
+            record = __import__("json").loads((new_runs[0] / "result.json").read_text())
+            self.assertEqual(record["parent_run_id"], run_id)
+            self.assertEqual(record["files"], ["A.cs", "B.cs"])
+
+    def test_multifile_selection_rejects_duplicates_and_traversal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            src = Path(directory)
+            (src / "A.cs").write_text("A\n")
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(src), file=None, files=["A.cs", "A.cs"],
+                task="Change", build=False, run=False)
+            with mock.patch.object(assist, "propose") as model:
+                with self.assertRaisesRegex(ValueError, "unique existing"):
+                    assist.run(args)
+                args.files = ["A.cs", "../outside.cs"]
+                with self.assertRaises(ValueError):
+                    assist.run(args)
+                args.files = ["A.cs", "other.py"]
+                with self.assertRaisesRegex(ValueError, "only C#"):
+                    assist.run(args)
+            model.assert_not_called()
+
+    def test_multifile_cli_validates_explicit_selection(self):
+        valid = ["assist.py", "--project", "/tmp/example", "--files",
+                 "A.cs", "B.cs", "--task", "Fix both", "--run"]
+        with mock.patch.object(assist.sys, "argv", valid), \
+             mock.patch.object(assist, "run", return_value=0) as run:
+            self.assertEqual(assist.main(), 0)
+        self.assertEqual(run.call_args.args[0].files, ["A.cs", "B.cs"])
+        for invalid in (
+            ["assist.py", "--project", "/tmp/example", "--files", "A.cs", "--task", "Fix"],
+            ["assist.py", "--project", "/tmp/example", "--files",
+             "A.cs", "B.cs", "C.cs", "D.cs", "--task", "Fix"],
+            ["assist.py", "--project", "/tmp/example", "--file", "A.cs",
+             "--files", "A.cs", "B.cs", "--task", "Fix"],
+        ):
+            with self.subTest(invalid=invalid), \
+                 mock.patch.object(assist.sys, "argv", invalid), \
+                 contextlib.redirect_stderr(io.StringIO()), \
+                 self.assertRaises(SystemExit):
+                assist.main()
+
+
 if __name__ == "__main__":
     unittest.main()
