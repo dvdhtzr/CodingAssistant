@@ -1,0 +1,6 @@
+{
+  "id": "codingassistant-m112",
+  "name": "CodingAssistant approved disposable ACP coding turn",
+  "description": "One approved isolated C# repair through Gateway ACPX OpenCode",
+  "configSchema": {"type": "object", "additionalProperties": false}
+}
