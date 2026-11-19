@@ -211,6 +211,8 @@ def normalize_proposal(text: str, *, filename: str = "") -> str:
     # a complete C# type, which is not valid source code. Normalize only
     # this exact trailing marker following a closing brace. Log the action.
     lines = result.splitlines()
+    if filename.lower().endswith(".cs") and result == "--- END ---":
+        raise ValueError("C# model response contains only a non-code delimiter")
     if (filename.lower().endswith(".cs") and len(lines) >= 2
             and lines[-1].strip() == "--- END ---"
             and lines[-2].rstrip().endswith("}")):
