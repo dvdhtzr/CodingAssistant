@@ -259,6 +259,8 @@ def run(args: argparse.Namespace) -> int:
             if getattr(args, "run", False):
                 return 0 if isolated_build(project, True) else 2
             return 0
+        if not compiler_errors:
+            raise ValueError("No compiler diagnostics available; check rootless Podman before retrying")
         task = (
             "Fix these C# compiler errors in the previously approved file. "
             "Preserve the intended bug fix and behavior. "
