@@ -261,3 +261,73 @@ After a PASS, the next gate is the **real Gateway → ACPX → OpenCode
 adapter compatibility** on a disposable no-network, no-project container,
 followed by explicit local Ollama model pinning and separate OS-enforced
 child-process controls before any autonomous source edits.
+
+
+## M1.5 owner verification — November 19, 2026
+
+Owner ran the merged M1.5 activation smoke against the exact
+official-source-derived Gateway+ACPX image:
+
+```text
+M1.5 ACPX_LAZY_REGISTRATION_PASS
+  verified image: 5aa8b2911525ccf1d5af5ba73ae4bc5f219cdf2a7c91bdf6cfee7208941c5f0c
+  offline ACPX metadata recheck: True
+  Gateway started: True
+  health: {'/healthz': 200, '/startupz': 200, '/readyz': 200}
+  plugin backend registered lazily: True
+  disposable Gateway removed: True
+  ACP session / model / adapter launch: NOT_ATTEMPTED
+```
+
+Append-only local evidence:
+`artifacts/m1/acpx-lazy-gateway-0b65fa412450.json`.
+
+**M1.5 GREEN** confirms genuine Gateway plugin registration, but it
+does **not** prove ACPX can invoke OpenCode, nor that the external adapter
+would inherit OpenClaw's own sandboxing. **M1 remains YELLOW.**
+
+## M1.6 — Real read-only Gateway/ACPX OpenCode discovery
+
+Review of **pinned** OpenClaw tag `v2026.11.5` and its `acpx@0.21.0`
+dependency established two exact contracts:
+
+- The plugin registers Gateway RPC **`acpx.agents.list`** with
+  `operator.read` scope and no parameters; this is a metadata-only
+  request and does not create an ACP session.
+- The pinned ACPX agent registry selects an installed
+  **`opencode acp`** binary if available but has an unsafe-for-us
+  package-exec fallback `npx -y opencode-ai acp`. **This workflow
+  NEVER runs the fallback** and will not grant runtime network access
+  or implicitly install OpenCode.
+
+The next test starts one short-lived Gateway from the already verified
+immutable image under the same rootless/no-network/no-host-mount/no-port
+controls. It independently inspects the actual pinned agent registry via
+read-only Node imports, then invokes **only the approved
+`acpx.agents.list` RPC** using the bundled Gateway CLI and a private
+disposable token. It confirms that the Gateway-reported `opencode`
+installation matches the independent registry's installation status.
+Only sanitized metadata is recorded; raw CLI output, token, logs and
+device metadata are never retained. The container is always removed.
+No ACP session, adapter spawn, model inference, provider configuration,
+source modification, or internet access is allowed.
+
+**Run on the Dell once PR is GREEN and merged:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_opencode_rpc_probe.py
+```
+
+`M1.6 ACPX_OPENCODE_DISCOVERY_PASS` means the real Gateway's
+authenticated plugin metadata path works; it will also report whether
+OpenCode is **`missing`** or **`installed`** in this image.
+A missing adapter is a **valid discovery**, not a successful ACP
+handshake and not permission to enable `npx`. If blocked, examine the
+recorded reason before changing Gateway credentials or permissions.
+Actual ACP initialize/session operations and OS-constrained OpenCode
+child process are still future gated work.
+
+Source references:
+- `https://github.com/openclaw/openclaw/blob/v2026.11.5/extensions/acpx/index.ts`
+- `https://github.com/openclaw/acpx/blob/v0.21.0/src/agent-registry.ts`
+- `https://github.com/openclaw/openclaw/blob/v2026.11.5/docs/cli/gateway/query.md`
