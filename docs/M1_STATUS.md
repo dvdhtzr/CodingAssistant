@@ -667,3 +667,42 @@ Actual coding still requires exact plan/version/hash owner approval,
 scoped writable worktree gates, local-only inference route, Git
 restrictions, recovery and independent Windows-host runtime tests.
 Overall M1 remains YELLOW.
+
+
+## M1.11 owner Dell outcome — BLOCKED; sanitized exit diagnosis
+
+Owner ran `tools/m1/gateway_acp_doctor_probe.py` after PR #54 merge.
+The exact pinned composed image and adapter preflight passed, Gateway
+health endpoints `/healthz`, `/startupz`, `/readyz` were all HTTP 200,
+and the temporary Gateway was verified removed. The fixed Gateway-backed
+`/acp doctor` CLI exited **nonzero**, so no Gateway-owned ACP doctor
+response was accepted; **M1.11 remains BLOCKED**. The known outcome
+does not invalidate M1.8 standalone ACP initialization or M1.10
+disposable scoped-worktree verification.
+
+Local ignored failure evidence:
+`artifacts/m1/gateway-acp-doctor-2b64833ae071.json`.
+
+The earlier script intentionally discarded all CLI stdout/stderr,
+leaving us unable to distinguish CLI parsing, auth/pairing, Gateway
+request admission, provider/model configuration, or runtime failure.
+**No workaround to credentials, model inference, network, or host mounts
+is permitted before diagnosing this exact path.**
+
+This PR adds a bounded, fixed-label `doctor_failure_diagnostic` on
+nonzero exit: status code, output shape, known error family, and
+presence-only markers. The classifier emits NO raw strings, paths,
+device IDs, tokens, stderr, CLI output, user text, or freeform
+external error values. Unknown error returns `unclassified`.
+Nonzero results always remain BLOCKED; cleanup is still mandatory.
+New mocked tests deliberately inject secrets and assert no leaks.
+
+**After PR is GREEN and merged, rerun exact safe M1.11 command:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_acp_doctor_probe.py
+```
+
+The next result may still be BLOCKED. Use its *sanitized* category
+to decide a narrowly scoped upstream-compatible fix. Do not paste
+raw OpenClaw or Podman logs. M1 overall remains YELLOW.
