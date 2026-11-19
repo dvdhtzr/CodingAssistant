@@ -16,9 +16,9 @@ cd ~/CodingAssistant && git pull --ff-only && python3 tools/mvp/assist.py --demo
 
 The built-in demo asks Qwen 4B to fix the frozen C# compile-error fixture. **It shows the actual proposed diff first.** Type `APPLY` only if the change looks correct. The optional `--build` uses the existing immutable local M0.7 toolchain image in a rootless network-disabled Podman container for fixed .NET restore/build; for this demo it also runs the repaired app. A successful demo should print `Total: 15`. If Qwen returns an unusable suggestion, reject it; do not force success or modify the fixture.
 
-### Automatic compiler-feedback correction (interactive)
+### Automatic compiler- and acceptance-feedback correction (interactive)
 
-When `--build` is requested for a C# file, a failed isolated **C# compilation** now triggers up to **two automatic correction proposals** in the same CLI session. Each proposal shows a new diff and requires another exact `APPLY` response. Corrections build on the *last approved disposable copy*, never the original or a failed copy in place. A successful build stops the loop; repeated compiler diagnostics or the two-correction limit also stop it.
+When `--build` is requested for a C# file, a failed isolated **C# compilation** triggers a correction. With explicit `--run`, a compiled program that exits nonzero and emits recognizable `FAIL:` acceptance assertions can also trigger a correction. Up to **two automatic correction proposals** are permitted per session. Each proposal shows a new diff and requires another exact `APPLY` response. Corrections build on the *last approved disposable copy*, never the original or a failed copy in place. A successful build stops the loop; repeated compiler diagnostics or the two-correction limit also stop it.
 
 For example:
 
@@ -26,17 +26,17 @@ For example:
 python3 tools/mvp/assist.py --demo --build
 ```
 
-If restore, the container image, Podman, or app execution fails without actual C# compiler diagnostics, the tool stops rather than guessing a repair. Each approved copy keeps its `change.patch` plus `result.json` with its parent run, model and model digest, source hashes, compiler diagnostics and build outcome. All history remains under ignored `artifacts/mvp/`. No model-generated command is ever run on the host. This is a controlled interactive feature, **not autonomous model qualification**.
+If restore, the container image, Podman, or app execution fails without actual compiler diagnostics or recognizable failed-test assertions, the tool stops rather than guessing a repair. Each approved copy keeps its `change.patch` plus `result.json` with its parent run, model and model digest, source hashes, compiler diagnostics, failed-test assertions, and verification outcome. All history remains under ignored `artifacts/mvp/`. No model-generated command is ever run on the host. This is a controlled interactive feature, **not autonomous model qualification**.
 
 ### Manual retry of a previous run (still supported)
 
-If a previously approved C# change fails to compile, keep its run ID and run:
+If a previously approved C# change fails to compile **or fails executable acceptance**, keep its run ID and run:
 
 ```bash
 python3 tools/mvp/assist.py --retry <RUN_ID> --file Program.cs --run
 ```
 
-The CLI rechecks the **existing disposable copy** inside rootless, offline Podman, supplies the bounded compiler errors to your local model, shows a NEW diff, and asks you to type `APPLY` again. It writes the new change only into **another** disposable copy; both the original project and the prior failed copy remain unchanged. After a successful build, `--run` runs the repaired sample inside the same isolated environment. A missing container image or other infrastructure failure stops the retry rather than giving Qwen invented compiler errors.
+The CLI rechecks the **existing disposable copy** inside rootless, offline Podman, supplies bounded compiler errors or genuine failed acceptance assertions to your local model, shows a NEW diff, and asks you to type `APPLY` again. For a failed acceptance run, use `--file <source-file>` and `--run`; optionally give `--task` to restate the original business objective. The pinned local model identity is preserved. It writes the new change only into **another** disposable copy; both the original project and the prior failed copy remain unchanged. After a successful build, `--run` runs the repaired sample inside the same isolated environment. A missing container image or other infrastructure failure stops the retry rather than giving Qwen invented compiler errors.
 
 ## Next challenge — real order-pricing business logic
 
@@ -53,9 +53,22 @@ Review each proposed diff and type `APPLY` only if you approve it. The original
 project and its acceptance oracle remain unchanged. `--run` uses the same fixed
 rootless, network-disabled Podman restore/build/run commands as the demo.
 The result must include `ORDER-PRICING ACCEPTANCE PASS` and
-`10/10 checks passed`. If acceptance fails despite a successful compilation,
-the tool stops and saves evidence; automatic retries currently handle **compiler
-errors**, not failing business-rule assertions. See the fixture README.
+`10/10 checks passed`. If acceptance fails despite successful compilation, the tool captures bounded
+failed assertions and offers up to two corrective proposals, **each needing a
+new APPLY**. Non-test runtime failures remain blocked. See the fixture README.
+
+#### Resume the failed order-pricing run
+
+To retry the first real Qwen attempt, whose existing approved copy compiled but
+passed only 5/10 checks:
+
+```bash
+python3 tools/mvp/assist.py --retry 20261119T032101Z-1cb9e2cf --file PricingCalculator.cs --task "Preserve the original pre-discount Subtotal, apply SAVE10 once to total merchandise, then compute tax on taxable merchandise after its share of the discount. Keep validation, shipping and rounding behavior." --model qwen3.5:4b --run
+```
+
+This reuses the **failed approved copy** as input, rereads live acceptance
+failures, and asks for a new diff. The failed copy and the frozen fixture remain
+unchanged. The 5/10 result is a real model outcome, not a qualification pass.
 
 For your own project (one source file at a time):
 
