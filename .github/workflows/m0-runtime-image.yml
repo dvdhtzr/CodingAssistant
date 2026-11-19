@@ -19,6 +19,11 @@ on:
       - "tools/m0/qualification_fixture_client.mjs"
       - "tests/test_qualification_isolation.py"
       - "tests/m0_qualification_fixture_smoke.py"
+      - "infra/qualification/**"
+      - "tools/m0/qualification_acceptance_client.mjs"
+      - "tools/m0/qualification_acceptance_probe.py"
+      - "tests/m0_qualification_acceptance_smoke.py"
+      - "benchmarks/acceptance/**"
       - "benchmarks/tasks.json"
       - "benchmarks/fixtures/01-api-feature/**"
       - "benchmarks/fixtures/03-fullstack-feature/**"
@@ -208,6 +213,18 @@ jobs:
           node --check tools/m0/qualification_fixture_client.mjs
           python3 -m py_compile tools/m0/qualification_isolation_probe.py
           python3 tests/m0_qualification_fixture_smoke.py --image codingassistant-m0-runtime:ci
+      - name: M0.15 build trusted offline full-stack acceptance image
+        run: |
+          docker build --pull=false --progress=plain \
+            --build-arg BASE_IMAGE=codingassistant-m0-runtime:ci \
+            -t codingassistant-m0-qualification:ci \
+            -f infra/qualification/Containerfile .
+      - name: M0.15 independently verify C# API, repair and React (NO MODEL)
+        run: |
+          node --check tools/m0/qualification_acceptance_client.mjs
+          python3 -m py_compile tools/m0/qualification_acceptance_probe.py
+          python3 tests/m0_qualification_acceptance_smoke.py \
+            --image codingassistant-m0-qualification:ci
       # The discovery contract exercises the actual OpenCode CLI against a
       # deterministic loopback-only mock, without host Ollama or code execution.
       # GitHub-hosted Docker smoke establishes package startup only.

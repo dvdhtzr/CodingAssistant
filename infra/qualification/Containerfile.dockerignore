@@ -1,0 +1,8 @@
+**
+!benchmarks/
+!benchmarks/acceptance/
+!benchmarks/acceptance/TaskSummary.acceptance.test.tsx
+!benchmarks/fixtures/
+!benchmarks/fixtures/03-fullstack-feature/
+!benchmarks/fixtures/03-fullstack-feature/web/
+!benchmarks/fixtures/03-fullstack-feature/web/package.json
