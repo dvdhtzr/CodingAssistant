@@ -13,7 +13,7 @@ Architecture v1.0 (2026-11-18), decisions 0–39 approved. Owner granted impleme
 
 **Dell M0 exit — GREEN (November 19, 2026).** Local `qwen3.5:4b` using pinned OpenCode and rootless/offline Podman achieved **9/9** original frozen functional verifications. The owner then ran independent M0.18 review against all nine saved workspaces: `EVIDENCE_REVIEW_PASS`, nine `EVIDENCE_PASS` results, and independently derived `QUALIFIED`. Raw historical benchmark results remain unchanged; the independent audit is an append-only sidecar. This is a **recorded-evidence-level qualification** and not a cryptographically attested execution transcript or an unconditional security guarantee. Windows-host M0 runtime acceptance was not demonstrated by Dell results and is separately gated. See `docs/M0_INDEPENDENT_EVIDENCE_AUDIT.md` and `docs/M0_STATUS.md`.
 
-## M1 — Secure orchestration (IN PROGRESS: M1.0 read-only discovery only)
+## M1 — Secure orchestration (YELLOW: M1.11 Gateway RPC correction merged; live Dell acceptance pending)
 
 Validate real OpenClaw Gateway → ACP → OpenCode integration. Read-only planning; exact plan-version/hash owner approval; worktree-scoped coding; OS-enforced file/process/network restrictions including children; 10 required negative security tests; durable run state and crash/reconnect reconciliation. Linux and Windows independently gated.
 
