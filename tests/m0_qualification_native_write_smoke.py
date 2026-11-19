@@ -82,15 +82,15 @@ def smoke(runtime: str, evaluator: str) -> None:
                      "followups": 0, "model_failures": 0,
                      "rejected": 0, "writes": []}
             if task == TASKS[0]:
-                answers = [{"filePath": FILES[task][0], "content": GOOD_API}]
+                answers = [{"path": FILES[task][0], "content": GOOD_API}]
             elif task == TASKS[1]:
                 original = (workspace / "api/Program.cs").read_text()
-                answers = [{"filePath": FILES[task][0],
+                answers = [{"path": FILES[task][0],
                             "content": original.replace("values.Summ()",
                                                         "values.Sum()")}]
             else:
-                answers = [{"filePath": FILES[task][0], "content": GOOD_SUMMARY},
-                           {"filePath": FILES[task][1], "content": GOOD_REACT}]
+                answers = [{"path": FILES[task][0], "content": GOOD_SUMMARY},
+                           {"path": FILES[task][1], "content": GOOD_REACT}]
 
             def fake_decision(model: str, digest: str, actual_task: str,
                               stage: int, done: list) -> dict:
@@ -130,7 +130,7 @@ def smoke(runtime: str, evaluator: str) -> None:
                                    ": " + str(state)[:500])
             scan_workspace(workspace, task)
             for answer in answers:
-                file = workspace / answer["filePath"].removeprefix("/workspace/")
+                file = workspace / answer["path"].removeprefix("/workspace/")
                 if file.read_text(encoding="utf-8") != answer["content"]:
                     raise RuntimeError("Native write did not perform source edit")
             acceptance = docker_accept(evaluator, task, workspace, sentinel)
