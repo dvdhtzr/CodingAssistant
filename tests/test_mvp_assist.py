@@ -359,5 +359,40 @@ class MvpTests(unittest.TestCase):
         self.assertEqual(request.call_count, 1)
 
 
+    def test_manual_retry_rejects_symlinked_saved_project_and_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / "artifacts"
+            run_id = "20261119T010319Z-9726f2d8"
+            run_dir = artifacts / run_id
+            run_dir.mkdir(parents=True)
+            external = root / "outside"
+            external.mkdir()
+            (external / "Program.cs").write_text("keep\n")
+            (run_dir / "project").symlink_to(external, target_is_directory=True)
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                                      project=None, file="Program.cs", task=None,
+                                      build=False, run=False, retry=run_id)
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "isolated_build") as build, \
+                 mock.patch.object(assist, "propose") as model:
+                with self.assertRaisesRegex(ValueError, "ordinary directory"):
+                    assist.run(args)
+                build.assert_not_called()
+                model.assert_not_called()
+
+            (run_dir / "project").unlink()
+            (run_dir / "project").mkdir()
+            (run_dir / "project/Program.cs").write_text("old\n")
+            (run_dir / "result.json").symlink_to(external / "Program.cs")
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "isolated_build") as build, \
+                 mock.patch.object(assist, "propose") as model:
+                with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+                    assist.run(args)
+                build.assert_not_called()
+                model.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
