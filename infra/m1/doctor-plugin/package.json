@@ -1,0 +1,11 @@
+{
+  "name": "@codingassistant/openclaw-acp-doctor",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.mjs"
+    ]
+  }
+}
