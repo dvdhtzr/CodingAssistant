@@ -49,7 +49,7 @@ class AcpxInitializeContract(unittest.TestCase):
             "--network=host", "--device", "--env-file",
         ):
             self.assertNotIn(denied, cmd)
-        self.assertEqual(cmd[-4:-2], ["--input-type=module", "-e"])
+        self.assertEqual(cmd[-3:-1], ["--input-type=module", "-e"])
         self.assertEqual(cmd[cmd.index("--entrypoint=node") + 1], p.OWNER_IMAGE_ID)
         self.assertIn("instance.doctor()", cmd[-1])
         self.assertIn("await instance.shutdown()", cmd[-1])
