@@ -187,6 +187,97 @@ def provision_evaluator() -> dict[str, Any]:
             "evaluator_image_id": result["image_id"]}
 
 
+def attempt_compile_repair(
+        task: str, model: str, context: dict[str, Any],
+        parent: pathlib.Path, workspace: pathlib.Path,
+        sentinel: pathlib.Path, compiler_errors: tuple[str, ...],
+        agent_timeout: int) -> tuple[dict[str, Any], bool]:
+    """One extra model-authored native write, never shell or host build.
+
+    A repair is part of the SAME benchmark attempt and is possible only
+    after a failed independent C# compilation and validated diagnostics.
+    Returns (bounded evidence, fatal_security_or_infra_failure).
+    """
+    repair: dict[str, Any] = {
+        "attempted": True, "compiler_errors": list(compiler_errors),
+        "status": "MODEL_FAILED",
+    }
+    if task not in ("01-api-feature", "02-build-repair"):
+        raise ValueError("Only single-file C# repair is currently supported")
+    socket_dir = parent / "repair-socket"
+    socket_dir.mkdir(mode=0o700)
+    container_id = parent / "repair-container-id"
+    container_id.mkdir(mode=0o700)
+    state: dict[str, Any] = {
+        "requests": 0, "attempts": 0, "completed": 0,
+        "followups": 0, "model_failures": 0, "rejected": 0, "writes": [],
+    }
+    try:
+        with serve_bridge(socket_dir / "ollama.sock",
+                pinned_qualification_handler(
+                    model, context["model_digest"], task,
+                    workspace, state, compiler_errors)):
+            cmd = qualification_command(
+                context["runtime_image_id"], os.getuid(), os.getgid(),
+                socket_dir, workspace, sentinel, model, task,
+                compiler_errors)
+            completed = run_podman(cmd, container_id, agent_timeout)
+    except (OSError, RuntimeError, ValueError,
+            subprocess.TimeoutExpired) as exc:
+        repair["status"] = "ENVIRONMENT_BLOCKED"
+        repair["reason"] = type(exc).__name__
+        return repair, True
+    repair["opencode_exit_code"] = completed.returncode
+    repair["requests"] = state["requests"]
+    repair["model_attempts"] = state["attempts"]
+    repair["model_completed"] = state["completed"]
+    repair["model_failures"] = state["model_failures"]
+    repair["route_rejections"] = state["rejected"]
+    repair["writes"] = [{
+        "path": item["path"],
+        "bytes": len(item["content"].encode("utf-8")),
+        "sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest()
+    } for item in state["writes"]]
+    try:
+        data = json.loads(completed.stdout.strip())
+        guards = data["checks"]
+        if (data.get("task") != task or type(guards) is not dict or
+                set(guards) != CHECKS or
+                any(type(v) is not bool for v in guards.values())):
+            raise ValueError("Invalid guest evidence")
+    except (ValueError, TypeError, KeyError, AttributeError):
+        repair["status"] = "ENVIRONMENT_BLOCKED"
+        repair["reason"] = "INVALID_GUEST_EVIDENCE"
+        return repair, True
+    repair["checks"] = guards
+    security = CHECKS - {"metadata_pinned", "chat_bounded", "native_cli_complete"}
+    if (any(not guards[key] for key in security) or
+            sentinel.read_text(encoding="utf-8") != "not mounted"):
+        repair["status"] = "SECURITY_BLOCKED"
+        return repair, True
+    try:
+        sources = scan_workspace(workspace, task, allow_build_outputs=True)
+        repair["source_sha256"] = sources
+        if (sealed_snapshot(FIXTURES / task, task) !=
+                context["fixture_sha256"][task]):
+            raise ValueError("Frozen baseline changed")
+    except (OSError, ValueError):
+        repair["status"] = "SECURITY_BLOCKED"
+        repair["reason"] = "WORKSPACE_OR_ORIGINAL_INTEGRITY"
+        return repair, True
+    target = FILES[task][0]
+    repair["completed"] = (
+        completed.returncode == 0 and all(guards.values()) and
+        state["requests"] == 2 and state["attempts"] == 1 and
+        state["completed"] == 1 and state["followups"] == 1 and
+        state["rejected"] == 0 and state["model_failures"] == 0 and
+        len(state["writes"]) == 1 and
+        state["writes"][0]["path"] == target and
+        verify_model_digest(model, context["model_digest"]))
+    repair["status"] = "MODEL_WRITE_COMPLETE" if repair["completed"] else "MODEL_FAILED"
+    return repair, False
+
+
 def eval_case(task: str, repeat: int, model: str, context: dict[str, Any],
               root: pathlib.Path, agent_timeout: int,
               eval_timeout: int) -> tuple[dict[str, Any], bool]:
