@@ -189,8 +189,8 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
             completed(),  # podman rm -f
             completed(code=1),  # podman container exists
         ])
-        with mock.patch.object(m, "fixed", side_effect=lambda *a, **kw: next(calls)), \\
-             mock.patch.object(m, "container_command", return_value=["podman", "run"]), \\
+        with mock.patch.object(m, "fixed", side_effect=lambda *a, **kw: next(calls)), \
+             mock.patch.object(m, "container_command", return_value=["podman", "run"]), \
              mock.patch.object(m, "query_gateway_status", return_value=expected):
             with self.assertRaises(m.SafeGateBlocked) as captured:
                 m.run_gateway(MOCK_IMAGE, pathlib.Path("/disposable"),
