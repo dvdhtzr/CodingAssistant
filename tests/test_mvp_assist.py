@@ -941,5 +941,109 @@ class MvpTests(unittest.TestCase):
                 assist.main()
 
 
+    def test_no_thinking_sent_through_ollama_openai_compat(self):
+        catalog = {"models": [{"name": "qwen3.5:4b", "digest": "fixed"}]}
+        answer = {
+            "model": "qwen3.5:4b",
+            "usage": {"completion_tokens": 36},
+            "choices": [{"finish_reason": "stop",
+                         "message": {"content": "class P {}\n"}}],
+        }
+        with mock.patch.object(assist, "json_http",
+                               side_effect=[catalog, answer, catalog]) as http, \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(
+                assist.propose("qwen3.5:4b", "P.cs", "class P { }",
+                               "Fix", reasoning_effort="none"),
+                "class P {}\n")
+        self.assertEqual(http.call_args_list[1].args[1]["reasoning_effort"], "none")
+        self.assertEqual(http.call_args_list[1].args[0], "/v1/chat/completions")
+        self.assertNotIn("tools", http.call_args_list[1].args[1])
+        self.assertIn("36 completion tokens", out.getvalue())
+
+    def test_existing_single_file_proposal_uses_model_default_reasoning(self):
+        catalog = {"models": [{"name": "qwen3.5:4b", "digest": "fixed"}]}
+        answer = {"model": "qwen3.5:4b",
+                  "choices": [{"finish_reason": "stop",
+                               "message": {"content": "class P {}\n"}}]}
+        with mock.patch.object(assist, "json_http",
+                               side_effect=[catalog, answer, catalog]) as http, \
+             contextlib.redirect_stdout(io.StringIO()):
+            assist.propose("qwen3.5:4b", "P.cs", "class P { }", "Fix")
+        self.assertNotIn("reasoning_effort", http.call_args_list[1].args[1])
+
+    def test_ollama_output_budget_exhaustion_reports_finish_reason(self):
+        catalog = {"models": [{"name": "qwen3.5:4b", "digest": "fixed"}]}
+        answer = {"model": "qwen3.5:4b",
+                  "usage": {"completion_tokens": 8192},
+                  "choices": [{"finish_reason": "length",
+                               "message": {"content": "", "reasoning": "hidden"}}]}
+        with mock.patch.object(assist, "json_http",
+                               side_effect=[catalog, answer]) as http, \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError,
+                "output truncated .*8192 completion tokens"):
+                assist.propose("qwen3.5:4b", "P.cs", "class P { }", "Fix",
+                               reasoning_effort="none")
+        self.assertEqual(http.call_count, 2)
+
+    def test_multifile_default_disables_reasoning_and_supports_auto_override(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "Policy.cs").write_text("old policy\n")
+            (source / "Calculator.cs").write_text("old calculator\n")
+            args = argparse.Namespace(
+                model="qwen3.5:4b", demo=False, project=str(source),
+                file=None, files=["Policy.cs", "Calculator.cs"],
+                task="Fix two classes", build=False, run=False)
+            for explicit, expected in ((None, "none"), ("auto", "auto")):
+                with self.subTest(explicit=explicit):
+                    args.reasoning_effort = explicit
+                    with mock.patch.object(assist, "ARTIFACTS", root / "artifacts"), \
+                         mock.patch.object(assist, "propose",
+                             side_effect=["new policy\n", "new calculator\n"]) as model, \
+                         mock.patch("builtins.input", return_value="NO"), \
+                         contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(assist.run(args), 1)
+                    self.assertEqual(
+                        [call.kwargs["reasoning_effort"] for call in model.call_args_list],
+                        [expected, expected])
+            self.assertEqual((source / "Policy.cs").read_text(), "old policy\n")
+            self.assertFalse((root / "artifacts").exists())
+
+    def test_explicit_single_file_non_thinking_is_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "Policy.cs").write_text("old\n")
+            args = argparse.Namespace(
+                model="qwen3.5:4b", demo=False, project=str(source),
+                file="Policy.cs", task="Fix it", build=False, run=False,
+                reasoning_effort="none")
+            with mock.patch.object(assist, "ARTIFACTS", root / "artifacts"), \
+                 mock.patch.object(assist, "propose", return_value="new\n") as model, \
+                 mock.patch("builtins.input", return_value="NO"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 1)
+            self.assertEqual(model.call_args.kwargs["reasoning_effort"], "none")
+
+    def test_cli_reasoning_flag_and_invalid_values(self):
+        valid = ["assist.py", "--project", "fixtures", "--files",
+                 "Policy.cs", "Calculator.cs", "--task", "Fix",
+                 "--reasoning-effort", "none", "--run"]
+        with mock.patch.object(assist.sys, "argv", valid), \
+             mock.patch.object(assist, "run", return_value=0) as run:
+            self.assertEqual(assist.main(), 0)
+            self.assertEqual(run.call_args.args[0].reasoning_effort, "none")
+        invalid = valid[:-3] + ["--reasoning-effort", "high"]
+        with mock.patch.object(assist.sys, "argv", invalid), \
+             contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit):
+            assist.main()
+
+
 if __name__ == "__main__":
     unittest.main()
