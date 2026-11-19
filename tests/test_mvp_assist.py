@@ -129,9 +129,9 @@ class MvpTests(unittest.TestCase):
             old = root / "20261119T010319Z-9726f2d8" / "project"
             old.mkdir(parents=True)
             (old / "Program.cs").write_text(
-                "int x = 1;\\nusing System.Linq;\\nConsole.WriteLine(x);\\n")
+                "int x = 1;\nusing System.Linq;\nConsole.WriteLine(x);\n")
             (old / "Repair.csproj").write_text("<Project/>")
-            patched = "using System.Linq;\\nint x = 1;\\nConsole.WriteLine(x);\\n"
+            patched = "using System.Linq;\nint x = 1;\nConsole.WriteLine(x);\n"
             args = argparse.Namespace(model="qwen3.5:4b", demo=False,
                                       project=None, file="Program.cs",
                                       task=None, build=False, run=True,
@@ -151,7 +151,7 @@ class MvpTests(unittest.TestCase):
             self.assertIn("CS1529", proposed.call_args.args[3])
             self.assertIn("implicit usings", proposed.call_args.args[3])
             self.assertEqual(build_mock.call_count, 2)
-            self.assertIn("using System.Linq;\\nConsole", (old / "Program.cs").read_text())
+            self.assertIn("using System.Linq;\nConsole", (old / "Program.cs").read_text())
             copies = [p for p in root.iterdir() if p.name != args.retry]
             self.assertEqual(len(copies), 1)
             self.assertEqual((copies[0] / "project/Program.cs").read_text(), patched)
