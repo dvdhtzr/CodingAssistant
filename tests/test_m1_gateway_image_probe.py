@@ -77,7 +77,7 @@ class GatewayImageContracts(unittest.TestCase):
     @mock.patch.object(probe.os, "geteuid", return_value=1000, create=True)
     @mock.patch.object(probe.os, "getuid", return_value=1000, create=True)
     @mock.patch.object(probe.os, "getgid", return_value=1000, create=True)
-    def test_preparation_is_opt_in_and_runtime_does_not_start_gateway(self):
+    def test_preparation_is_opt_in_and_runtime_does_not_start_gateway(self, *_platform_mocks):
         calls = []
 
         def fake(argv, timeout=50):
@@ -116,7 +116,7 @@ class GatewayImageContracts(unittest.TestCase):
     @mock.patch.object(probe.os, "geteuid", return_value=1000, create=True)
     @mock.patch.object(probe.os, "getuid", return_value=1000, create=True)
     @mock.patch.object(probe.os, "getgid", return_value=1000, create=True)
-    def test_fails_closed_on_old_node_and_wrong_cli_version(self):
+    def test_fails_closed_on_old_node_and_wrong_cli_version(self, *_platform_mocks):
         def fake(argv, timeout=50):
             if argv[1] == "info":
                 return completed(argv, output="true")
@@ -144,7 +144,7 @@ class GatewayImageContracts(unittest.TestCase):
 
     @mock.patch.object(probe.sys, "platform", "linux")
     @mock.patch.object(probe.os, "geteuid", return_value=1000, create=True)
-    def test_missing_image_does_not_implicitly_pull(self):
+    def test_missing_image_does_not_implicitly_pull(self, *_platform_mocks):
         paths = []
         def fake(argv, timeout=50):
             paths.append(tuple(argv))
