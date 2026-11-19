@@ -43,7 +43,8 @@ The CLI rechecks the **existing disposable copy** inside rootless, offline Podma
 The `benchmarks/fixtures/04-order-pricing/` project contains a small, multi-class
 .NET 10 application with a defect that **compiles successfully** but computes
 discounted sales tax incorrectly. Its fixed executable acceptance harness runs
-10 independent checks. On the Dell, run:
+11 independent checks, including a half-cent boundary that prevents rounding
+taxable and exempt discounts separately. On the Dell, run:
 
 ```bash
 python3 tools/mvp/assist.py --project benchmarks/fixtures/04-order-pricing --file PricingCalculator.cs --task "Fix SAVE10 tax: discount all merchandise, then tax only taxable items after their proportional discount; preserve cent rounding, shipping exclusions, signatures and validation." --model qwen3.5:4b --run
@@ -53,14 +54,14 @@ Review each proposed diff and type `APPLY` only if you approve it. The original
 project and its acceptance oracle remain unchanged. `--run` uses the same fixed
 rootless, network-disabled Podman restore/build/run commands as the demo.
 The result must include `ORDER-PRICING ACCEPTANCE PASS` and
-`10/10 checks passed`. If acceptance fails despite successful compilation, the tool captures bounded
+`11/11 checks passed`. If acceptance fails despite successful compilation, the tool captures bounded
 failed assertions and offers up to two corrective proposals, **each needing a
 new APPLY**. Non-test runtime failures remain blocked. See the fixture README.
 
 #### Resume the failed order-pricing run
 
-To retry the first real Qwen attempt, whose existing approved copy compiled but
-passed only 5/10 checks:
+To retry the first real Qwen attempt against its historical frozen copy,
+which compiled but passed only 5/10 checks:
 
 ```bash
 python3 tools/mvp/assist.py --retry 20261119T032101Z-1cb9e2cf --file PricingCalculator.cs --task "Preserve the original pre-discount Subtotal, apply SAVE10 once to total merchandise, then compute tax on taxable merchandise after its share of the discount. Keep validation, shipping and rounding behavior." --model qwen3.5:4b --run
