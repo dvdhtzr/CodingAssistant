@@ -232,6 +232,22 @@ into the rootless user image store, not the host's Node installation.
 No Gateway, ACP, Ollama or coding session runs. See
 [M1 discovery and safety boundaries](docs/M1_GATEWAY_DISCOVERY.md).
 
+### M1.1 verified official Gateway runtime / M1.2 next check
+
+Dell M1.1 passed with OpenClaw `2026.11.5` and patched Node
+`24.22.1` inside rootless Podman; host Node 22 and host OpenCode
+were unchanged. The next gate **temporarily starts a real Gateway**
+in a no-network, no-mount, loopback-only container and verifies
+its documented HTTP health endpoints, then destroys the guest:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_loopback_probe.py
+```
+
+No ACP agent, model, cloud AI, Git operation or host source is involved.
+This is not yet a production Gateway, an approved coding workflow or
+Windows M1 qualification. See `docs/M1_GATEWAY_DISCOVERY.md`.
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
