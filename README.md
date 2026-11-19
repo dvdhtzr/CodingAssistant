@@ -2,7 +2,7 @@
 
 Cross-platform, **local-first** autonomous software engineering assistant. OpenClaw orchestrates; OpenCode does coding; Ollama serves local Qwen models. The approved target is a .NET 10 Minimal API plus React/TypeScript Mission Control, SQLite, SignalR, and Git worktrees.
 
-> **Current status (Nov 19, 2026): M0 GREEN on Dell at the independently reviewed evidence-assurance level.** The local `qwen3.5:4b` / OpenCode runner completed **9/9** frozen coding attempts, followed by M0.18 independent review and nine separate offline acceptance rechecks: **EVIDENCE_REVIEW_PASS / QUALIFIED**. This is *not* a production-grade autonomous developer, a cryptographic historical attestation, or a Windows-host security qualification. **M1 secure orchestration is now in read-only discovery; autonomous execution remains gated.**
+> **Current status (Nov 19, 2026): M0 GREEN on Dell at the independently reviewed evidence-assurance level.** The local `qwen3.5:4b` / OpenCode runner completed **9/9** frozen coding attempts, followed by M0.18 independent review and nine separate offline acceptance rechecks: **EVIDENCE_REVIEW_PASS / QUALIFIED**. This is *not* a production-grade autonomous developer, a cryptographic historical attestation, or a Windows-host security qualification. **M1 secure orchestration is YELLOW: isolated infrastructure tests have passed, but actual Gateway-owned coding and its security approval path remain unqualified.** See [current handoff](docs/CURRENT_HANDOFF.md).
 
 ## Try the interactive MVP today
 
@@ -465,7 +465,7 @@ Local results appear under `artifacts/m0/` (ignored by Git). Don't commit machin
 | Milestone | Description | Status |
 | --- | --- | --- |
 | M0 | Host inventory, Ollama/OpenCode model feasibility, repeatable 3×3 benchmarks | GREEN on Dell; Windows separate gate |
-| M1 | OpenClaw → ACP → OpenCode, externally enforced security boundary and approvals | M1.0 discovery only |
+| M1 | OpenClaw → ACP → OpenCode, externally enforced security boundary and approvals | YELLOW — M1.11 RPC correction merged; actual Dell Gateway RPC unverified |
 | M2 | ASP.NET Core API, auth, SQLite, state machine, reconciliation | NOT STARTED |
 | M3 | React Mission Control, SignalR, supervision and evidence UI | NOT STARTED |
 
