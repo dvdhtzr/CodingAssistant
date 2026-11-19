@@ -453,8 +453,12 @@ and CI GREEN, run on Dell:
 cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/m1/approved_gateway_coding.py --prepare
 ```
 
-Read the full plan SHA256 printed before typing `APPROVE <hash>`. No approval,
-no coding session. A mocked CI success is **not** a real M1.12 runtime pass.
+After reviewing the fixed disposable task, **copy and paste the entire
+`APPROVE <full 64-character plan hash>` line printed by the tool**.
+Typing `APPROVE` alone intentionally results in `NOT_APPROVED` and starts
+no coding session. Press Enter to decline. The exact plan hash may change
+after a runner/image update, so always use the currently printed line.
+A mocked CI success is **not** a real M1.12 runtime pass.
 See [M1 current status](docs/M1_STATUS.md).
 
 ## Quick start: safe checks
