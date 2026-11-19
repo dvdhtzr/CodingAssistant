@@ -266,9 +266,16 @@ def inspect_run(row: dict[str, Any], report: dict[str, Any],
          "Unexpected model/terminal verification claim")
     must(type(stderr) is str and len(stderr) <= 500,
          "Unbounded agent terminal output")
-    expected = root / "workspaces" / f"{task}-{repeat}"
-    must(row.get("workspace") == str(expected) and expected.exists() and
-         not expected.is_symlink(), "Benchmark workspace relocated/linked")
+    # The CLI accepts a relative results.json path, but the original M0.16
+    # runner saved ABSOLUTE workspace paths. Anchor the expected location to
+    # the current working directory before comparing it to the immutable
+    # recorded path. Reject symlinks in ANY ancestor, not just the leaf.
+    expected = (root / "workspaces" / f"{task}-{repeat}").absolute()
+    must(type(row.get("workspace")) is str and
+         row["workspace"] == str(expected) and
+         expected.is_dir() and
+         expected.resolve(strict=True) == expected,
+         "Benchmark workspace relocated/linked")
     source_map, hash_current = current_source_hash(expected, task)
     must(row.get("source_files_sha256") == source_map and
          row.get("finished_at_hash") == hash_current,

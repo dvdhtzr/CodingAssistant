@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import pathlib
 import shutil
 import sys
@@ -137,6 +138,42 @@ class IndependentEvidenceAuditTests(unittest.TestCase):
         original = json.loads(self.path.read_text(encoding="utf-8"))
         self.assertTrue(all(row["false_verification_claim"] is None
                             for row in original["runs"]))
+
+    def test_relative_results_path_matches_absolute_recorded_workspaces(self):
+        # Owner ran: python3 .../independent_qualification_audit.py
+        #   artifacts/m0/evaluation-.../results.json
+        # M0.16 records absolute paths. Both must identify the same copy,
+        # without relaxing the existing anti-relocation policy.
+        relative = pathlib.Path(os.path.relpath(self.path, pathlib.Path.cwd()))
+        self.assertFalse(relative.is_absolute())
+        result = audit.audit(relative, reverify=self.fake_rerun)
+        self.assertEqual(result["status"], "EVIDENCE_REVIEW_PASS",
+                         result.get("findings"))
+        self.assertEqual(len(result["reviewed_runs"]), 9)
+        self.assertEqual(result["qualification"]["status"], "QUALIFIED")
+
+    def test_relative_path_still_rejects_relocated_workspace(self):
+        relative = pathlib.Path(os.path.relpath(self.path, pathlib.Path.cwd()))
+        self.rewrite(lambda data: data["runs"][0].update(
+            workspace=str(self.root / "workspaces" / "02-build-repair-1")))
+        result = audit.audit(relative, reverify=self.fake_rerun)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("Benchmark workspace relocated/linked",
+                      " ".join(result["findings"]))
+
+    def test_relative_path_still_rejects_symlinked_workspace(self):
+        original = self.root / "workspaces" / "01-api-feature-1"
+        relocated = self.root / "workspaces" / "01-api-feature-1-moved"
+        original.rename(relocated)
+        try:
+            original.symlink_to(relocated, target_is_directory=True)
+        except OSError:
+            self.skipTest("Workspace symlinks unavailable")
+        relative = pathlib.Path(os.path.relpath(self.path, pathlib.Path.cwd()))
+        result = audit.audit(relative, reverify=self.fake_rerun)
+        self.assertEqual(result["status"], "BLOCKED")
+        self.assertIn("Benchmark workspace relocated/linked",
+                      " ".join(result["findings"]))
 
     def rewrite(self, action):
         data = json.loads(self.path.read_text(encoding="utf-8"))

@@ -108,3 +108,22 @@ useful for diagnostics but **not sufficient to close M0**.
 Do **not** run the legacy unisolated `benchmark.py`, overwrite any
 `results.json`, or patch source manually. If the independent audit fails,
 review its explicit blocker before attempting further changes.
+
+## M0.18 audit-path correction (November 19, 2026)
+
+The first owner audit of the successful 9/9 run returned `M0.18 BLOCKED`
+with `Benchmark workspace relocated/linked` for all nine cases. This was
+an audit-path normalization defect: the owner supplied a **relative**
+`results.json` path while the original runner stored **absolute** workspace
+paths. The independent auditor compared those unnormalized strings, failing
+before re-executing any acceptance checks. This is **not** evidence of a
+security violation or moved files. The original functional 9/9 record and
+blocked audit sidecar are retained unchanged.
+
+The corrected auditor anchors each expected workspace to the current working
+directory and still requires an exact match with the original absolute
+workspace field. It also rejects symlinks in any parent component using
+strict path resolution; changed paths or moved sources still fail closed.
+Unit regressions cover the original relative path, a relocated field, and a
+symlinked workspace. Run the same documented audit command again; its next
+sidecar is append-only and cannot replace the prior blocked report.
