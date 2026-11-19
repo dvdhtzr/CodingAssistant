@@ -336,6 +336,24 @@ request in temporary sealed containers. **No ACP session, model inference,
 agent action or host project access is authorized.**
 See [M1 gated integration](docs/M1_GATEWAY_DISCOVERY.md).
 
+### M1.7 installed OpenCode GREEN; M1.8 ACP initialize next
+
+The Dell composed the no-network OpenCode 2.3.0 + ACPX Gateway image.
+Both the pinned ACPX registry and the real Gateway RPC now report the
+OpenCode executable as `installed`. The next test uses **the actual
+ACPX runtime** to start `opencode acp`, perform the ACP `initialize`
+request and negotiate the protocol version, then stop the child:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_initialize_probe.py
+```
+
+This executes in a disposable rootless/no-network/no-host-workspace
+container. It never requests an ACP coding session or sends a prompt;
+no model, Ollama or cloud endpoint is involved. A passing initialization
+is **not** approval to edit projects; see
+[the M1 integration gates](docs/M1_GATEWAY_DISCOVERY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
