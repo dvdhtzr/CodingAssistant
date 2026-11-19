@@ -39,7 +39,7 @@ REGISTRY_JS = r"""
   const { basename } = await import('node:path');
   const inspection = createAgentRegistry().inspect('opencode');
   if (!inspection || inspection.id !== 'opencode') {
-    process.stdout.write(JSON.stringify({id:'opencode',installation:'unverified',expectedCommand:false})+'\\n');
+    process.stdout.write(JSON.stringify({id:'opencode',installation:'unverified',expectedCommand:false})+'\n');
     return;
   }
   const launch = inspection.launch;
@@ -50,7 +50,7 @@ REGISTRY_JS = r"""
         item => item.kind === 'command' && item.name === 'opencode');
   process.stdout.write(JSON.stringify({
     id:'opencode', installation:launch.kind, expectedCommand:Boolean(expectedCommand)
-  })+'\\n');
+  })+'\n');
 })().catch(() => { process.exitCode = 2; });
 """
 
@@ -162,9 +162,9 @@ def run() -> dict:
             fd = os.open(envfile, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write("OPENCLAW_GATEWAY_TOKEN=" +
-                             secrets.token_hex(32) + "\\n")
-                handle.write("OPENCLAW_SKIP_CHANNELS=1\\n")
-                handle.write("OPENCLAW_SKIP_CANVAS_HOST=1\\n")
+                             secrets.token_hex(32) + "\n")
+                handle.write("OPENCLAW_SKIP_CHANNELS=1\n")
+                handle.write("OPENCLAW_SKIP_CANVAS_HOST=1\n")
             start = fixed(gateway_command(
                 image_id, name, os.getuid(), os.getgid(), envfile), timeout=40)
             if start.returncode != 0:
@@ -233,7 +233,7 @@ def main() -> int:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(result, handle, indent=2, sort_keys=True)
-        handle.write("\\n")
+        handle.write("\n")
     print("M1.6", result["status"])
     print("  image:", result["image_id"] or "NOT_VERIFIED")
     print("  offline registry:", result["registry"])
