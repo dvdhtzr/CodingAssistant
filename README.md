@@ -405,6 +405,21 @@ Both provider and host network are disabled. The diagnostic must
 return a strict real ACPX/OpenCode protocol-1 result or fail closed.
 See [M1 status](docs/M1_STATUS.md).
 
+### M1.11: diagnose Gateway ACP doctor CLI failure safely
+
+Owner Dell verified the Gateway healthy on all three endpoints, but
+the fixed Gateway-owned `/acp doctor` command returned a nonzero
+exit. Container cleanup passed; M1.11 is still **BLOCKED**.
+The updated probe records only a classified failure category and
+exit code, never raw token-bearing logs or CLI output:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_acp_doctor_probe.py
+```
+
+Do not enable networking, cloud models, host worktrees or unrestricted
+adapter downloads to bypass this issue.
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
