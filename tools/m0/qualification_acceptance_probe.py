@@ -71,6 +71,14 @@ def validate_result(report: object, task: str) -> bool:
         return False
     if any(type(checks[key]) is not bool for key in CHECKS):
         return False
+    diagnostics = report.get("compiler_errors")
+    if (type(diagnostics) is not list or len(diagnostics) > 5 or any(
+            type(item) is not str or len(item) > 208 or
+            not re.fullmatch(r"CS[0-9]{4}: [ -~]{1,200}", item)
+            for item in diagnostics)):
+        return False
+    if checks["offline_build"] and diagnostics:
+        return False
     expected = all(guards.values()) and all(checks.values())
     return report["verified"] is expected
 
@@ -103,4 +111,5 @@ def run_evaluator(image_id: str, task: str, workspace: pathlib.Path,
     return {"status": status, "verified": status == "VERIFIED",
             "exit_code": result.returncode,
             "guards": output["guards"], "checks": output["checks"],
+            "compiler_errors": output["compiler_errors"],
             "notes": output.get("notes", [])}

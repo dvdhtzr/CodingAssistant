@@ -99,7 +99,8 @@ def scan_workspace(path: pathlib.Path, task: str,
 def qualification_command(image_id: str, uid: int, gid: int,
                           private: pathlib.Path, workspace: pathlib.Path,
                           sentinel: pathlib.Path, model: str,
-                          task: str) -> list[str]:
+                          task: str,
+                          compile_feedback: tuple[str, ...] = ()) -> list[str]:
     """Only two host mounts: the private model socket and disposable copy."""
     if task not in TASKS or workspace.is_symlink() or not workspace.is_dir():
         raise ValueError("Invalid workspace")
@@ -114,7 +115,14 @@ def qualification_command(image_id: str, uid: int, gid: int,
         "--tmpfs=/tmp:rw,nosuid,nodev,size=768m,notmpcopyup")
     if args[-3] != "--" or args[-2] != model:
         raise ValueError("Pinned OpenCode command changed")
-    args[-1:] = [task, task_prompt(task), str(sentinel.resolve())]
+    prompt = task_prompt(task)
+    if compile_feedback:
+        if task not in ("01-api-feature", "02-build-repair"):
+            raise ValueError("Repair only supported for bounded single-file tasks")
+        prompt += ("\nA separate, offline .NET build failed with: " +
+                   json.dumps(compile_feedback) +
+                   "\nRepair the original task in the same disposable source file.")
+    args[-1:] = [task, prompt, str(sentinel.resolve())]
     return args
 
 
@@ -177,6 +185,97 @@ def provision_evaluator() -> dict[str, Any]:
         raise RuntimeError("Built image lacks immutable inspected ID")
     return {"status": "PROVISIONED", "runtime_image_id": base["image_id"],
             "evaluator_image_id": result["image_id"]}
+
+
+def attempt_compile_repair(
+        task: str, model: str, context: dict[str, Any],
+        parent: pathlib.Path, workspace: pathlib.Path,
+        sentinel: pathlib.Path, compiler_errors: tuple[str, ...],
+        agent_timeout: int) -> tuple[dict[str, Any], bool]:
+    """One extra model-authored native write, never shell or host build.
+
+    A repair is part of the SAME benchmark attempt and is possible only
+    after a failed independent C# compilation and validated diagnostics.
+    Returns (bounded evidence, fatal_security_or_infra_failure).
+    """
+    repair: dict[str, Any] = {
+        "attempted": True, "compiler_errors": list(compiler_errors),
+        "status": "MODEL_FAILED",
+    }
+    if task not in ("01-api-feature", "02-build-repair"):
+        raise ValueError("Only single-file C# repair is currently supported")
+    socket_dir = parent / "repair-socket"
+    socket_dir.mkdir(mode=0o700)
+    container_id = parent / "repair-container-id"
+    container_id.mkdir(mode=0o700)
+    state: dict[str, Any] = {
+        "requests": 0, "attempts": 0, "completed": 0,
+        "followups": 0, "model_failures": 0, "rejected": 0, "writes": [],
+    }
+    try:
+        with serve_bridge(socket_dir / "ollama.sock",
+                pinned_qualification_handler(
+                    model, context["model_digest"], task,
+                    workspace, state, compiler_errors)):
+            cmd = qualification_command(
+                context["runtime_image_id"], os.getuid(), os.getgid(),
+                socket_dir, workspace, sentinel, model, task,
+                compiler_errors)
+            completed = run_podman(cmd, container_id, agent_timeout)
+    except (OSError, RuntimeError, ValueError,
+            subprocess.TimeoutExpired) as exc:
+        repair["status"] = "ENVIRONMENT_BLOCKED"
+        repair["reason"] = type(exc).__name__
+        return repair, True
+    repair["opencode_exit_code"] = completed.returncode
+    repair["requests"] = state["requests"]
+    repair["model_attempts"] = state["attempts"]
+    repair["model_completed"] = state["completed"]
+    repair["model_failures"] = state["model_failures"]
+    repair["route_rejections"] = state["rejected"]
+    repair["writes"] = [{
+        "path": item["path"],
+        "bytes": len(item["content"].encode("utf-8")),
+        "sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest()
+    } for item in state["writes"]]
+    try:
+        data = json.loads(completed.stdout.strip())
+        guards = data["checks"]
+        if (data.get("task") != task or type(guards) is not dict or
+                set(guards) != CHECKS or
+                any(type(v) is not bool for v in guards.values())):
+            raise ValueError("Invalid guest evidence")
+    except (ValueError, TypeError, KeyError, AttributeError):
+        repair["status"] = "ENVIRONMENT_BLOCKED"
+        repair["reason"] = "INVALID_GUEST_EVIDENCE"
+        return repair, True
+    repair["checks"] = guards
+    security = CHECKS - {"metadata_pinned", "chat_bounded", "native_cli_complete"}
+    if (any(not guards[key] for key in security) or
+            sentinel.read_text(encoding="utf-8") != "not mounted"):
+        repair["status"] = "SECURITY_BLOCKED"
+        return repair, True
+    try:
+        sources = scan_workspace(workspace, task, allow_build_outputs=True)
+        repair["source_sha256"] = sources
+        if (sealed_snapshot(FIXTURES / task, task) !=
+                context["fixture_sha256"][task]):
+            raise ValueError("Frozen baseline changed")
+    except (OSError, ValueError):
+        repair["status"] = "SECURITY_BLOCKED"
+        repair["reason"] = "WORKSPACE_OR_ORIGINAL_INTEGRITY"
+        return repair, True
+    target = FILES[task][0]
+    repair["completed"] = (
+        completed.returncode == 0 and all(guards.values()) and
+        state["requests"] == 2 and state["attempts"] == 1 and
+        state["completed"] == 1 and state["followups"] == 1 and
+        state["rejected"] == 0 and state["model_failures"] == 0 and
+        len(state["writes"]) == 1 and
+        state["writes"][0]["path"] == target and
+        verify_model_digest(model, context["model_digest"]))
+    repair["status"] = "MODEL_WRITE_COMPLETE" if repair["completed"] else "MODEL_FAILED"
+    return repair, False
 
 
 def eval_case(task: str, repeat: int, model: str, context: dict[str, Any],
@@ -309,6 +408,64 @@ def eval_case(task: str, repeat: int, model: str, context: dict[str, Any],
             record["reason"] = "INDEPENDENT_EVALUATOR_CHANGED_SOURCE"
             record["status"] = "SECURITY_BLOCKED"
             return record, True
+        # A compile-error retry is NOT another independent benchmark run.
+        # It is a single, bounded correction within this original attempt.
+        # Never attempt retry on security failure, transport failure, or an
+        # unverified initial OpenCode source write.
+        repair_allowed = (
+            model_complete and not evaluator["verified"] and
+            task in ("01-api-feature", "02-build-repair") and
+            evaluator["checks"]["offline_restore"] is True and
+            evaluator["checks"]["offline_build"] is False and
+            bool(evaluator["compiler_errors"]))
+        record["repair_attempted"] = repair_allowed
+        if repair_allowed:
+            feedback = tuple(evaluator["compiler_errors"])
+            record["initial_acceptance"] = evaluator
+            repair, fatal = attempt_compile_repair(
+                task, model, context, parent, work, sentinel,
+                feedback, agent_timeout)
+            record["repair"] = repair
+            if fatal:
+                record["status"] = repair["status"]
+                record["reason"] = repair.get("reason", repair["status"])
+                return record, True
+            # The independent verifier's first build may have written bin/obj.
+            # Snapshot only approved source files before and after every
+            # subsequent verification; no generated source may be modified
+            # by the independent evaluator.
+            observed = repair["source_sha256"]
+            try:
+                second = run_evaluator(
+                    context["evaluator_image_id"], task, work, sentinel,
+                    parent / "repaired-evaluator-id", timeout=eval_timeout)
+            except (OSError, RuntimeError, ValueError,
+                    subprocess.TimeoutExpired) as exc:
+                record["reason"] = "REPAIR_EVALUATOR_" + type(exc).__name__
+                record["status"] = "ENVIRONMENT_BLOCKED"
+                return record, True
+            record["acceptance"] = second
+            repair["acceptance_status"] = second["status"]
+            if second["status"] in ("SECURITY_BLOCKED", "INVALID_EVIDENCE",
+                                    "ENVIRONMENT_BLOCKED", "INVALID_EXIT_CONTRACT"):
+                record["status"] = second["status"]
+                return record, True
+            if sealed_snapshot(FIXTURES / task, task) != original_hash:
+                record["reason"] = "FROZEN_SOURCE_TAMPERED_AFTER_REPAIR"
+                record["status"] = "SECURITY_BLOCKED"
+                return record, True
+            try:
+                if scan_workspace(work, task, allow_build_outputs=True) != observed:
+                    raise ValueError("Evaluator modified repaired source")
+            except (ValueError, OSError):
+                record["reason"] = "REPAIR_EVALUATOR_CHANGED_SOURCE"
+                record["status"] = "SECURITY_BLOCKED"
+                return record, True
+            record["source_files_sha256"] = observed
+            record["finished_at_hash"] = source_hash(work)
+            record["verified"] = (model_complete and
+                                  repair.get("completed") is True and
+                                  second["verified"] is True)
         record["status"] = "VERIFIED" if record["verified"] else "MODEL_FAILED"
         record["duration_seconds"] = round(time.monotonic() - start_at, 2)
         return record, False

@@ -122,6 +122,41 @@ def smoke(image: str) -> None:
         observed = docker_check(image, "02-build-repair", workspace, sentinel)
         if observed["verified"] or observed["checks"]["offline_build"]:
             raise RuntimeError("Known broken C# repair incorrectly passed")
+    # Reproduce the owner's three independent failed API attempts WITHOUT
+    # running the model: [FromQuery] was generated without its namespace.
+    broken_api = """var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/api/math/add", ([FromQuery] int? a, [FromQuery] int? b) =>
+{
+    if (a == null || b == null) return Results.BadRequest("Missing input");
+    return Results.Ok(new { sum = a + b });
+});
+app.Run();
+"""
+    with tempfile.TemporaryDirectory(prefix="ca-m017-compiler-") as temp:
+        base = pathlib.Path(temp)
+        workspace = base / "workspace"
+        shutil.copytree(FIXTURES / "01-api-feature", workspace)
+        sentinel = base / "host-only"
+        sentinel.write_text("hidden", encoding="utf-8")
+        source = workspace / "api/Program.cs"
+        source.write_text(broken_api, encoding="utf-8")
+        observed = docker_check(image, "01-api-feature", workspace, sentinel)
+        errors = observed["compiler_errors"]
+        if (observed["verified"] or observed["checks"]["offline_build"] or
+                not any(item.startswith("CS0246:") and "FromQuery" in item
+                        for item in errors)):
+            raise RuntimeError("Missing FromQuery namespace was not diagnosed: " +
+                               json.dumps(observed)[:1400])
+        print("M0.17 OWNER_API_COMPILER_DIAGNOSTIC_CAPTURED", flush=True)
+        source.write_text("using Microsoft.AspNetCore.Mvc;\n" + broken_api,
+                          encoding="utf-8")
+        repaired = docker_check(image, "01-api-feature", workspace, sentinel)
+        if not repaired["verified"] or repaired["compiler_errors"]:
+            raise RuntimeError("Correct namespace must restore API behavior: " +
+                               json.dumps(repaired)[:1500])
+        print("M0.17 OWNER_API_NAMESPACE_FIX_CONFIRMED", flush=True)
     print("M0.15 KNOWN_BAD_BUILD_DENIED")
     print("M0.15 INDEPENDENT_OFFLINE_ACCEPTANCE_CI_PASS (NO MODEL)")
 

@@ -21,7 +21,7 @@ class IndependentAcceptanceContracts(unittest.TestCase):
             success = {"task": task,
                        "guards": {name: True for name in q.GUARDS},
                        "checks": {name: True for name in q.CHECKS},
-                       "verified": True}
+                       "verified": True, "compiler_errors": []}
             self.assertTrue(q.validate_result(success, task))
             false = dict(success)
             false["checks"] = dict(success["checks"])
@@ -38,16 +38,39 @@ class IndependentAcceptanceContracts(unittest.TestCase):
             failure["verified"] = True
             self.assertFalse(q.validate_result(failure, task))
 
+    def test_compiler_error_boundary(self):
+        task = "01-api-feature"
+        good = {"task": task,
+                "guards": {name: True for name in q.GUARDS},
+                "checks": {name: True for name in q.CHECKS},
+                "verified": False, "compiler_errors": [
+                    "CS0246: The type or namespace name 'FromQuery' could not be found"
+                ]}
+        good["checks"]["offline_build"] = False
+        self.assertTrue(q.validate_result(good, task))
+        for bad_value in (
+            ["CS0246: test\nsecret"],
+            ["not-an-error"],
+            ["CS0246: " + "x" * 250],
+            ["CS0001: OK"] * 6,
+            "CS0246: not an array",
+        ):
+            self.assertFalse(q.validate_result(
+                dict(good, compiler_errors=bad_value), task))
+        with_build = dict(good)
+        with_build["checks"] = dict(good["checks"], offline_build=True)
+        self.assertFalse(q.validate_result(with_build, task))
+
     def test_unsafe_or_malformed_json_contract_fails_closed(self):
         self.assertFalse(q.validate_result(None, TASKS[0]))
         self.assertFalse(q.validate_result({}, TASKS[0]))
         self.assertFalse(q.validate_result({
             "task": TASKS[0], "guards": {}, "checks": {},
-            "verified": True}, TASKS[0]))
+            "verified": True, "compiler_errors": []}, TASKS[0]))
         good = {"task": TASKS[0],
                 "guards": {name: True for name in q.GUARDS},
                 "checks": {name: True for name in q.CHECKS},
-                "verified": True}
+                "verified": True, "compiler_errors": []}
         for variant in ("true", 1, None, []):
             bad = dict(good, verified=variant)
             self.assertFalse(q.validate_result(bad, TASKS[0]))

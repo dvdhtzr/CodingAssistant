@@ -108,6 +108,36 @@ class QualificationBrokerTests(unittest.TestCase):
             self.assertEqual(cmd[-2], q.task_prompt(TASKS[2]))
             self.assertEqual(cmd[-1], str(sentinel.resolve()))
 
+    def test_bounded_compiler_repair_command_and_reject_mutation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / "workspace").mkdir()
+            (root / "private").mkdir()
+            sentinel = root / "host-only"
+            sentinel.write_text("hidden")
+            errors = ("CS0246: The type or namespace name 'FromQuery' could not be found",)
+            cmd = runner.qualification_command(
+                "a" * 64, 1001, 1001, root / "private",
+                root / "workspace", sentinel, "qwen3.5:4b", TASKS[0],
+                errors)
+            self.assertEqual(cmd.count("--volume"), 2)
+            self.assertEqual(cmd[-3], TASKS[0])
+            self.assertIn(q.task_prompt(TASKS[0]), cmd[-2])
+            self.assertIn("CS0246", cmd[-2])
+            with self.assertRaises(ValueError):
+                runner.qualification_command(
+                    "a" * 64, 1001, 1001, root / "private",
+                    root / "workspace", sentinel, "qwen3.5:4b", TASKS[2],
+                    errors)
+            self.assertTrue(q.authorize_write({
+                "path": q.FILES[TASKS[0]][0],
+                "content": "var app = 1;"}, TASKS[0], []))
+            self.assertFalse(q.authorize_write({
+                "path": "/etc/passwd", "content": "x"}, TASKS[0], []))
+            self.assertFalse(q.authorize_write({
+                "path": q.FILES[TASKS[0]][0], "content": "x"}, TASKS[0],
+                [{"path": q.FILES[TASKS[0]][0], "content": "old"}]))
+
     def test_workspace_extra_files_symlinks_and_outside_dirs_denied(self):
         with tempfile.TemporaryDirectory() as temp:
             folder = pathlib.Path(temp) / "source"
