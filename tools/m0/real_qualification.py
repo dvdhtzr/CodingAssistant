@@ -232,7 +232,7 @@ def eval_case(task: str, repeat: int, model: str, context: dict[str, Any],
         record["model_rejections"] = state["model_failures"]
         record["route_rejections"] = state["rejected"]
         record["write_evidence"] = [{
-            "filePath": x["filePath"],
+            "path": x["path"],
             "sha256": hashlib.sha256(x["content"].encode("utf-8")).hexdigest(),
             "bytes": len(x["content"].encode("utf-8"))}
             for x in state["writes"]]
@@ -271,7 +271,7 @@ def eval_case(task: str, repeat: int, model: str, context: dict[str, Any],
             record["status"] = "SECURITY_BLOCKED"
             return record, True
         expected = set(FILES[task])
-        actual = {x["filePath"] for x in state["writes"]}
+        actual = {x["path"] for x in state["writes"]}
         model_complete = (
             result.returncode == 0 and all(guards.values()) and
             state["attempts"] == len(expected) and
