@@ -408,6 +408,64 @@ def eval_case(task: str, repeat: int, model: str, context: dict[str, Any],
             record["reason"] = "INDEPENDENT_EVALUATOR_CHANGED_SOURCE"
             record["status"] = "SECURITY_BLOCKED"
             return record, True
+        # A compile-error retry is NOT another independent benchmark run.
+        # It is a single, bounded correction within this original attempt.
+        # Never attempt retry on security failure, transport failure, or an
+        # unverified initial OpenCode source write.
+        repair_allowed = (
+            model_complete and not evaluator["verified"] and
+            task in ("01-api-feature", "02-build-repair") and
+            evaluator["checks"]["offline_restore"] is True and
+            evaluator["checks"]["offline_build"] is False and
+            bool(evaluator["compiler_errors"]))
+        record["repair_attempted"] = repair_allowed
+        if repair_allowed:
+            feedback = tuple(evaluator["compiler_errors"])
+            record["initial_acceptance"] = evaluator
+            repair, fatal = attempt_compile_repair(
+                task, model, context, parent, work, sentinel,
+                feedback, agent_timeout)
+            record["repair"] = repair
+            if fatal:
+                record["status"] = repair["status"]
+                record["reason"] = repair.get("reason", repair["status"])
+                return record, True
+            # The independent verifier's first build may have written bin/obj.
+            # Snapshot only approved source files before and after every
+            # subsequent verification; no generated source may be modified
+            # by the independent evaluator.
+            observed = repair["source_sha256"]
+            try:
+                second = run_evaluator(
+                    context["evaluator_image_id"], task, work, sentinel,
+                    parent / "repaired-evaluator-id", timeout=eval_timeout)
+            except (OSError, RuntimeError, ValueError,
+                    subprocess.TimeoutExpired) as exc:
+                record["reason"] = "REPAIR_EVALUATOR_" + type(exc).__name__
+                record["status"] = "ENVIRONMENT_BLOCKED"
+                return record, True
+            record["acceptance"] = second
+            repair["acceptance_status"] = second["status"]
+            if second["status"] in ("SECURITY_BLOCKED", "INVALID_EVIDENCE",
+                                    "ENVIRONMENT_BLOCKED", "INVALID_EXIT_CONTRACT"):
+                record["status"] = second["status"]
+                return record, True
+            if sealed_snapshot(FIXTURES / task, task) != original_hash:
+                record["reason"] = "FROZEN_SOURCE_TAMPERED_AFTER_REPAIR"
+                record["status"] = "SECURITY_BLOCKED"
+                return record, True
+            try:
+                if scan_workspace(work, task, allow_build_outputs=True) != observed:
+                    raise ValueError("Evaluator modified repaired source")
+            except (ValueError, OSError):
+                record["reason"] = "REPAIR_EVALUATOR_CHANGED_SOURCE"
+                record["status"] = "SECURITY_BLOCKED"
+                return record, True
+            record["source_files_sha256"] = observed
+            record["finished_at_hash"] = source_hash(work)
+            record["verified"] = (model_complete and
+                                  repair.get("completed") is True and
+                                  second["verified"] is True)
         record["status"] = "VERIFIED" if record["verified"] else "MODEL_FAILED"
         record["duration_seconds"] = round(time.monotonic() - start_at, 2)
         return record, False
