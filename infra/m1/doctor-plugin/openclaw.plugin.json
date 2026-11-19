@@ -1,0 +1,15 @@
+{
+  "id": "codingassistant-acp-doctor",
+  "name": "CodingAssistant pinned ACP doctor diagnostic",
+  "description": "One read-only operator RPC that checks the registered ACPX backend",
+  "categories": [
+    "developer-tools"
+  ],
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}
