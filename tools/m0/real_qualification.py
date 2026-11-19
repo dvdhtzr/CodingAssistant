@@ -119,9 +119,9 @@ def qualification_command(image_id: str, uid: int, gid: int,
     if compile_feedback:
         if task not in ("01-api-feature", "02-build-repair"):
             raise ValueError("Repair only supported for bounded single-file tasks")
-        prompt += ("\\nA separate, offline .NET build failed with: " +
+        prompt += ("\nA separate, offline .NET build failed with: " +
                    json.dumps(compile_feedback) +
-                   "\\nRepair the original task in the same disposable source file.")
+                   "\nRepair the original task in the same disposable source file.")
     args[-1:] = [task, prompt, str(sentinel.resolve())]
     return args
 
