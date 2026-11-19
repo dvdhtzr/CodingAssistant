@@ -50,12 +50,11 @@ def evaluator_command(image_id: str, uid: int, gid: int,
     args[args.index("--pids-limit=64")] = "--pids-limit=96"
     args[args.index("--tmpfs=/tmp:rw,nosuid,nodev,size=64m,notmpcopyup")] = (
         "--tmpfs=/tmp:rw,nosuid,nodev,size=768m,notmpcopyup")
-    args[-1:] = ["--", task, str(sentinel.resolve())] if args[-2] != "--" else [
-        task, str(sentinel.resolve())]
-    # sandbox_command already provides '--' and one sentinel; replace just
-    # that sentinel with the two fixed evaluator arguments.
-    if args.count("--") != 1:
-        raise ValueError("Guest arguments malformed")
+    # The fixed sandbox CLI ends in ["--", sentinel]. Append the frozen
+    # task ID between those entries. No model-supplied arguments are accepted.
+    if args[-2:] != ["--", str(sentinel.resolve())]:
+        raise ValueError("Sandbox guest argument contract changed")
+    args.insert(-1, task)
     return args
 
 
@@ -93,11 +92,15 @@ def run_evaluator(image_id: str, task: str, workspace: pathlib.Path,
         return {"status": "INVALID_EVIDENCE", "verified": False,
                 "exit_code": result.returncode,
                 "stderr_tail": result.stderr[-240:]}
-    if result.returncode not in (0, 2):
-        return {"status": "ENVIRONMENT_BLOCKED", "verified": False,
+    if result.returncode not in (0, 2) or (result.returncode == 0) != output["verified"]:
+        return {"status": "INVALID_EXIT_CONTRACT", "verified": False,
                 "exit_code": result.returncode}
-    return {"status": "VERIFIED" if output["verified"] and result.returncode == 0
-            else "ACCEPTANCE_FAILED", "verified": output["verified"]
-            and result.returncode == 0, "exit_code": result.returncode,
+    guards_passed = all(output["guards"].values())
+    if not guards_passed:
+        status = "SECURITY_BLOCKED"
+    else:
+        status = "VERIFIED" if output["verified"] else "ACCEPTANCE_FAILED"
+    return {"status": status, "verified": status == "VERIFIED",
+            "exit_code": result.returncode,
             "guards": output["guards"], "checks": output["checks"],
             "notes": output.get("notes", [])}
