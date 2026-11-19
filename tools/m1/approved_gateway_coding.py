@@ -95,6 +95,25 @@ LABEL = "io.github.dvdhtzr.codingassistant.m112"
 MAX_CHAT = 262144
 MAX_RESPONSE = 8 * 1024 * 1024
 MAX_REQUESTS = 10
+# Explicitly capped: this container hosts both OpenClaw and Bun/OpenCode.
+# The M1.8 standalone ACP test ran with only one Node parent and 96 PIDs.
+COMBINED_PIDS_LIMIT = 256
+COMBINED_CPU_LIMIT = 2
+# All data collected here is numeric kernel cgroup accounting only.
+# The script reads no process command lines, env, application files or logs.
+CGROUP_PIDS_JS = r"""
+const fs = require("node:fs");
+const read = path => fs.readFileSync("/sys/fs/cgroup/" + path, "utf8").trim();
+const events = read("pids.events").split(/\n/);
+const max = events.find(line => /^max [0-9]+$/.test(line));
+const limit = read("pids.max");
+const peak = read("pids.peak");
+if (!max || !/^[0-9]+$/.test(limit) || !/^[0-9]+$/.test(peak)) process.exit(78);
+process.stdout.write(JSON.stringify({
+  limit: Number(limit), peak: Number(peak),
+  max_events: Number(max.slice(4)),
+}) + "\n");
+"""
 EXPECTED_RPC = {
     "backend": "acpx", "turnCompleted": True,
     "promptSent": True, "sessionCreated": True,
@@ -319,11 +338,48 @@ def container_command(image_id: str, name: str, env: pathlib.Path,
         "--env=XDG_CACHE_HOME=/tmp/.cache",
     ]
     args[args.index("--memory=2g")] = "--memory=3g"
+    # Bun may abort on EAGAIN when a shared Node+OpenCode cgroup exhausts
+    # its thread/PID cap. Enlarge the bound, never remove it; constrain CPU
+    # availability to the same two CPUs used in the successful M1.8 ACP test.
+    args[args.index("--pids-limit=96")] = (
+        "--pids-limit=" + str(COMBINED_PIDS_LIMIT))
+    args.insert(args.index("--pids-limit=" + str(COMBINED_PIDS_LIMIT)) + 1,
+                "--cpus=" + str(COMBINED_CPU_LIMIT))
     args[args.index("--tmpfs=/tmp:rw,nosuid,nodev,size=512m,notmpcopyup")] = (
         "--tmpfs=/tmp:rw,nosuid,nodev,size=768m,notmpcopyup")
     start = args.index(image_id)
     args[start + 1:] = ["/app/codingassistant-coding-runner.mjs"]
     return args
+
+def parse_cgroup_pids(raw: str) -> dict[str, int]:
+    """Never accept nonnumeric cgroup information into evidence."""
+    if not 0 < len(raw) <= 160:
+        raise ValueError("Invalid bounded pids result")
+    item = json.loads(raw)
+    if (type(item) is not dict or
+            set(item) != {"limit", "peak", "max_events"} or
+            any(type(value) is not int or not 0 <= value <= 10**9
+                for value in item.values()) or
+            item["limit"] != COMBINED_PIDS_LIMIT or
+            item["peak"] > item["limit"] or
+            item["max_events"] > 10**6):
+        raise ValueError("Unexpected guest cgroup accounting")
+    return item
+
+
+def query_cgroup_pids(name: str) -> dict[str, int] | None:
+    """Read kernel cgroup numeric counters only, before disposable cleanup."""
+    if re.fullmatch(r"ca-m17-acpx-[0-9a-f]{12}", name) is None:
+        return None
+    try:
+        result = fixed([
+            "podman", "exec", "--interactive=false", name,
+            "node", "-e", CGROUP_PIDS_JS,
+        ], timeout=15)
+        return parse_cgroup_pids(result.stdout) if result.returncode == 0 else None
+    except (ValueError, TypeError, OSError, subprocess.TimeoutExpired):
+        return None
+
 
 def gateway_rpc_command(name: str, plan_hash: str,
                         method: str = METHOD) -> list[str]:
@@ -404,7 +460,7 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
     status.update({
         "phase": "gateway_start", "health": None, "rpc": None,
         "plugin": None, "removed": False, "container_started": False,
-        "rpc_nonzero": False,
+        "rpc_nonzero": False, "cgroup_pids": None,
     })
     with tempfile.TemporaryDirectory(prefix="ca-m112-credentials-") as temporary:
         env = pathlib.Path(temporary) / "gateway.env"
@@ -450,6 +506,10 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
                 raise SafeGateBlocked("CODING_RPC_INVALID_RESULT")
             status["phase"] = "coding_rpc_complete"
         finally:
+            # An observed pids.events.max > 0 proves that the cgroup
+            # reached its task limit. A zero counter does not prove an
+            # unrelated Bun abort cause. Never retain raw logs.
+            status["cgroup_pids"] = query_cgroup_pids(name)
             try:
                 fixed(["podman", "rm", "-f", name], timeout=30)
                 check = fixed(["podman", "container", "exists", name], timeout=15)

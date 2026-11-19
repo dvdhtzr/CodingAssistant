@@ -943,3 +943,43 @@ before changing quotas or model configuration.
 GitHub's Ubuntu/Windows model-free checks do not prove the Dell's
 real ACPX startup or C# repair. User approval of each fresh plan
 remains mandatory.
+
+
+## M1.12 — SIGABRT on Dell; bounded combined PID allowance
+
+On the real owner-approved Dell run at `3fe8c9e`, the Gateway
+passed all three health endpoints and invoked the coding method, but
+ACPX reported `failureAt=session_initialize`,
+`lastFailure.kind=AGENT_STARTUP_FAILED`,
+`lastFailure.signal=SIGABRT`, `exitCode=null` and no typed OS
+error. The inference broker recorded **zero requests**; independent
+C# evaluation never started. The container was removed safely.
+The previous XDG-directory adjustment did **not** resolve startup.
+
+Review of the repository's actual Podman options found that M1.12
+launches **two Node runtimes (relay and Gateway) plus Bun/OpenCode**
+within `--pids-limit=96`. M1.8's successful standalone ACP initialize
+used the same 96-task cap but **only its single probe process plus
+OpenCode**, under `--cpus=2`. The pinned Bun/OpenCode runtime has a
+documented `SIGABRT` failure mode on thread creation exhaustion (for
+example Bun issue `oven-sh/bun#44787`). This supports a **specific
+PID-pressure hypothesis**, **not** proof that the observed abort was
+caused by this cap.
+
+The combined-session fix increases the still-enforced container
+task/PID limit to **256**, adds the previously qualified CPU quota
+`--cpus=2`, and keeps `--memory=3g`, rootless, `--network=none`,
+read-only root, fixed workspace access, and private local-model relay
+unchanged. Before disposable cleanup, it attempts a read-only query
+of kernel cgroup `pids.max`, `pids.peak`, and
+`pids.events.max`. The evidence parser accepts **only three bounded
+nonnegative integers**, and discards missing/errorful/raw output.
+`max_events>0` would prove saturation was reached **during that
+container's lifetime**, while zero or unavailable values cannot
+exclude all other thread-failure causes. No system logs or credentials
+are exposed.
+
+A fresh exact owner approval is required because the source
+fingerprint and derived immutable image change. **M1.12 remains
+BLOCKED until live local-model activity and independently evaluated
+C# repair actually pass.** GitHub model-free CI is not that proof.

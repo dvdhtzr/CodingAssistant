@@ -143,6 +143,7 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
                     MOCK_IMAGE, "ca-m17-acpx-012345abcdef", env, workspace, ipc)
         for item in ("--network=none", "--read-only", "--cap-drop=all",
                      "--security-opt=no-new-privileges", "--memory=3g",
+                     "--pids-limit=256", "--cpus=2",
                      "--env=OPENCLAW_CONFIG_PATH=/app/codingassistant-coding-config.json",
                      "--env=XDG_DATA_HOME=/tmp/.local/share",
                      "--env=XDG_STATE_HOME=/tmp/.local/state",
@@ -153,6 +154,42 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
         self.assertIn(":/run/codingassistant:ro,nosuid,nodev", " ".join(result))
         self.assertNotIn("--publish", result)
         self.assertNotIn("--privileged", result)
+
+    def test_numeric_cgroup_saturation_evidence_is_strict_and_never_raw(self):
+        self.assertEqual(m.parse_cgroup_pids(
+            '{"limit":256,"peak":96,"max_events":0}'),
+            {"limit": 256, "peak": 96, "max_events": 0})
+        self.assertEqual(m.parse_cgroup_pids(
+            '{"limit":256,"peak":256,"max_events":3}')["max_events"], 3)
+        for bad in (
+            '{"limit":96,"peak":96,"max_events":2}',
+            '{"limit":256,"peak":257,"max_events":0}',
+            '{"limit":256,"peak":true,"max_events":0}',
+            '{"limit":256,"peak":4,"max_events":-1}',
+            '{"limit":256,"peak":4,"max_events":0,"secret":"token"}',
+            "pids.max=256 /home/secret",
+            "[]", "", "x" * 200,
+        ):
+            with self.subTest(raw=bad), self.assertRaises((ValueError, TypeError)):
+                m.parse_cgroup_pids(bad)
+
+    def test_numeric_cgroup_probe_does_not_keep_untrusted_output(self):
+        name = "ca-m17-acpx-012345abcdef"
+        with mock.patch.object(m, "fixed",
+                               return_value=completed(out='{"limit":256,"peak":90,"max_events":0}')) as fake:
+            result = m.query_cgroup_pids(name)
+        self.assertEqual(result["peak"], 90)
+        command = fake.call_args.args[0]
+        self.assertEqual(command[:5], [
+            "podman", "exec", "--interactive=false", name, "node"])
+        self.assertEqual(command[5], "-e")
+        self.assertIn("pids.events", command[6])
+        self.assertIn("pids.peak", command[6])
+        self.assertNotIn("proc/self/environ", command[6])
+        self.assertIsNone(m.query_cgroup_pids("untrusted-container-name"))
+        with mock.patch.object(m, "fixed",
+                               return_value=completed(code=1, out="PRIVATE RAW OUTPUT")):
+            self.assertIsNone(m.query_cgroup_pids(name))
 
     def test_rpc_request_only_fixed_method_and_plan_hash(self):
         name = "ca-m17-acpx-012345abcdef"
@@ -227,7 +264,9 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
         ])
         with mock.patch.object(m, "fixed", side_effect=lambda *a, **kw: next(calls)), \
              mock.patch.object(m, "container_command", return_value=["podman", "run"]), \
-             mock.patch.object(m, "query_gateway_status", return_value=expected):
+             mock.patch.object(m, "query_gateway_status", return_value=expected), \
+             mock.patch.object(m, "query_cgroup_pids", return_value={
+                 "limit": 256, "peak": 180, "max_events": 0}):
             with self.assertRaises(m.SafeGateBlocked) as captured:
                 m.run_gateway(MOCK_IMAGE, pathlib.Path("/disposable"),
                               pathlib.Path("/ipc"), MOCK_BASE, evidence)
@@ -235,6 +274,8 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
         self.assertEqual(evidence["phase"], "coding_rpc")
         self.assertTrue(evidence["removed"])
         self.assertTrue(evidence["container_started"])
+        self.assertEqual(evidence["cgroup_pids"],
+                         {"limit": 256, "peak": 180, "max_events": 0})
         self.assertTrue(evidence["rpc_nonzero"])
         self.assertEqual(evidence["health"]["/readyz"], 200)
         self.assertEqual(evidence["plugin"], expected)
