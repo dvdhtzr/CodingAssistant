@@ -115,13 +115,90 @@ def parse_doctor(raw: str) -> dict[str, object]:
     }
 
 
+def classify_doctor_exit(response: subprocess.CompletedProcess[str]) -> dict[str, object]:
+    """Summarize a failed CLI request without recording any raw output.
+
+    Strictly bounded, fixed-label classification only. Error text may include
+    device IDs, gateway tokens, config values, paths, or provider secrets.
+    Neither a substring nor a JSON field value is ever emitted verbatim.
+    All unknown errors remain BLOCKED and are not evidence of ACP success.
+    """
+    if type(response.returncode) is not int or response.returncode == 0:
+        raise ValueError("Expected nonzero Gateway doctor exit")
+    out = response.stdout if type(response.stdout) is str else ""
+    err = response.stderr if type(response.stderr) is str else ""
+    combined = (err[:12000] + "\n" + out[:12000]).lower()
+    # Ordered from specific to general so a CLI error containing words like
+    # "gateway" or "agent" is not prematurely classified as generic.
+    categories = (
+        ("cli_usage_or_option", (
+            "unknown option", "unknown argument", "unrecognized option",
+            "invalid option", "required option", "missing required argument",
+            "unknown command", "too many arguments")),
+        ("device_pairing_required", (
+            "pairing required", "device pairing", "device not paired",
+            "device approval required")),
+        ("authentication_or_scope", (
+            "unauthorized", "forbidden", "invalid token", "authentication failed",
+            "missing scope", "permission denied", "not authorized",
+            "authentication required", "device token")),
+        ("gateway_connection", (
+            "econnrefused", "connection refused", "gateway closed", "gateway unavailable",
+            "websocket closed", "websocket connection", "handshake failed")),
+        ("agent_or_session_config", (
+            "unknown agent", "agent not found", "session key", "no agent",
+            "unconfigured", "agent config", "workspace not configured")),
+        ("provider_or_model_config", (
+            "api key missing", "no api key", "missing api key",
+            "model not found", "no model configured", "provider not configured",
+            "auth profile", "model provider")),
+        ("acp_backend", (
+            "acp runtime failed", "acpx runtime failed", "acp backend",
+            "acp doctor failed", "protocol version mismatch")),
+        ("request_timeout", (
+            "timed out", "timeout exceeded", "deadline exceeded")),
+        ("container_or_process", (
+            "container state improper", "container is not running",
+            "executable file not found", "no such file or directory")),
+        ("gateway_request_rejected", (
+            "gateway request failed", "request rejected", "invalid request",
+            "internal error", "not implemented")),
+    )
+    category = next(
+        (label for label, needles in categories if any(n in combined for n in needles)),
+        "unclassified",
+    )
+    shape = "non_json"
+    try:
+        payload = json.loads(out[:40000]) if len(out) <= 40000 else None
+        if type(payload) is dict:
+            shape = "json_object"
+        elif type(payload) is list:
+            shape = "json_array"
+        elif payload is not None:
+            shape = "json_scalar"
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return {
+        "exit_code": response.returncode if -128 <= response.returncode <= 255 else None,
+        "category": category,
+        "stdout_shape": shape,
+        "stdout_present": bool(out.strip()),
+        "stderr_present": bool(err.strip()),
+        "doctor_header_seen": "ACP doctor:" in out,
+        "doctor_ok_marker_seen": EXPECTED_DOCTOR in out,
+        "raw_output_retained": False,
+    }
+
+
 def run() -> dict[str, object]:
     report: dict[str, object] = {
         "schema_version": 1, "stage": "M1.11-gateway-owned-acp-doctor",
         "recorded_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "BLOCKED", "image_id": None, "package_preflight": False,
         "gateway_started": False, "gateway_health": None,
-        "authenticated_doctor": None, "gateway_removed": False,
+        "authenticated_doctor": None, "doctor_failure_diagnostic": None,
+        "gateway_removed": False,
         "network_disabled": True, "host_mounts": False,
         "published_ports": False, "acp_coding_session_created": False,
         "coding_prompt_sent": False, "source_modified": False,
@@ -181,8 +258,12 @@ def run() -> dict[str, object]:
 
             response = fixed(doctor_command(name, session_key), timeout=90)
             if response.returncode != 0:
-                raise ValueError("Gateway ACP doctor command returned nonzero; "
-                                 "no raw output retained")
+                diagnostic = classify_doctor_exit(response)
+                report["doctor_failure_diagnostic"] = diagnostic
+                raise ValueError(
+                    "Gateway ACP doctor command returned nonzero; safe category: " +
+                    str(diagnostic["category"]) + "; no raw output retained"
+                )
             report["authenticated_doctor"] = parse_doctor(response.stdout)
             report["status"] = "GATEWAY_OWNED_ACP_DOCTOR_PASS"
     except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError,
@@ -219,6 +300,8 @@ def main() -> int:
     print("  package preflight:", result["package_preflight"])
     print("  Gateway health:", result["gateway_health"])
     print("  Gateway-owned ACP doctor:", result["authenticated_doctor"])
+    if result["doctor_failure_diagnostic"]:
+        print("  sanitized CLI failure:", result["doctor_failure_diagnostic"])
     print("  disposable Gateway removed:", result["gateway_removed"])
     print("  ACP coding session / prompt / model: NOT_REQUESTED")
     if result["reason"]:
