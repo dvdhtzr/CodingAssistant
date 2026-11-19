@@ -14,6 +14,7 @@ on:
       - "tools/m0/isolated_real_edit.mjs"
       - "tools/m0/real_opencode_edit_probe.py"
       - "tests/test_real_opencode_edit.py"
+      - "tests/m0_real_edit_socket_smoke.py"
       - "tools/m0/disposable_workspace_client.mjs"
       - "tools/m0/disposable_workspace_probe.py"
       - "tools/m0/workspace_attack_client.mjs"
@@ -192,6 +193,9 @@ jobs:
           node --check tools/m0/isolated_real_edit.mjs
           python3 -m py_compile tools/m0/pinned_real_edit.py tools/m0/real_opencode_edit_probe.py
           echo "M0.13 real-model client and broker syntax PASS (no inference)"
+      - name: M0.13 real broker, Unix socket and native OpenCode edit smoke (MOCK Qwen)
+        run: |
+          python3 tests/m0_real_edit_socket_smoke.py --image codingassistant-m0-runtime:ci
       # The discovery contract exercises the actual OpenCode CLI against a
       # deterministic loopback-only mock, without host Ollama or code execution.
       # GitHub-hosted Docker smoke establishes package startup only.
