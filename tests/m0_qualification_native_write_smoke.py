@@ -93,7 +93,10 @@ def smoke(runtime: str, evaluator: str) -> None:
                            {"path": FILES[task][1], "content": GOOD_REACT}]
 
             def fake_decision(model: str, digest: str, actual_task: str,
-                              stage: int, done: list) -> dict:
+                              stage: int, done: list,
+                              compile_feedback: tuple[str, ...] = ()) -> dict:
+                if compile_feedback:
+                    raise ValueError("Initial generator must have no feedback")
                 if model != MODEL or digest != DIGEST or actual_task != task:
                     raise ValueError("Mock model identity rejected")
                 if stage != len(done) or stage >= len(answers):
