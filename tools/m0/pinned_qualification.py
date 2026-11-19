@@ -182,7 +182,8 @@ def authorize_write(args: object, task: str,
 
 
 def request_model_write(model: str, digest: str, task: str,
-                        stage: int, done: list[dict[str, str]]) -> dict[str, str]:
+                        stage: int, done: list[dict[str, str]],
+                        compile_feedback: tuple[str, ...] = ()) -> dict[str, str]:
     if not verify_model_digest(model, digest):
         raise ValueError("Model digest drift")
     remaining = [p for p in FILES[task] if p not in {w["path"] for w in done}]
@@ -199,6 +200,13 @@ def request_model_write(model: str, digest: str, task: str,
         file = CURRENT_WORKSPACE.get() / path.removeprefix("/workspace/")
         if file.is_file():
             sources[path] = file.read_text(encoding="utf-8")
+    if compile_feedback and (
+            task not in ("01-api-feature", "02-build-repair") or
+            len(compile_feedback) > 5 or any(
+                type(line) is not str or len(line) > 208 or
+                not __import__("re").fullmatch(r"CS[0-9]{4}: [ -~]{1,200}", line)
+                for line in compile_feedback)):
+        raise ValueError("Untrusted compiler diagnostics rejected")
     prompt = (
         "Implement the following ORIGINAL benchmark request without claiming tests ran. "
         "Use ONLY the native write tool (path, content) once this turn. "
@@ -208,6 +216,14 @@ def request_model_write(model: str, digest: str, task: str,
         "Current disposable project files: " + json.dumps(sources) + "\n"
         "Choose ONE remaining path, fully implement its source. "
         "For full-stack implement both Program.cs and TaskSummary.tsx in separate turns.")
+    if compile_feedback:
+        prompt += (
+            "\\nA prior independent sandboxed .NET build of THIS disposable copy "
+            "failed with these compiler diagnostics: " +
+            json.dumps(compile_feedback) +
+            "\\nREPAIR THE SOURCE to resolve the compiler errors and satisfy "
+            "the ORIGINAL task. Write the COMPLETE corrected allowed file. "
+            "Do not claim that you ran any tests.")
     tool = {"type": "function", "function": {
         "name": "write", "description": "Replace one complete approved source file.",
         "parameters": {"type": "object",
@@ -267,7 +283,8 @@ def final_response(model: str) -> bytes:
 
 def pinned_qualification_handler(model: str, digest: str, task: str,
                                  workspace: pathlib.Path,
-                                 state: dict[str, Any]) -> type[BridgeHandler]:
+                                 state: dict[str, Any],
+                                 compile_feedback: tuple[str, ...] = ()) -> type[BridgeHandler]:
     if task not in FILES or workspace.is_symlink() or not workspace.is_dir():
         raise ValueError("Unapproved workspace")
     base = pinned_openai_handler(model, digest)
@@ -307,7 +324,8 @@ def pinned_qualification_handler(model: str, digest: str, task: str,
                     token = CURRENT_WORKSPACE.set(workspace)
                     try:
                         args = request_model_write(model, digest, task, stage,
-                                                   state["writes"])
+                                                   state["writes"],
+                                                   compile_feedback)
                         if not authorize_write(args, task, state["writes"]):
                             raise ValueError("Unauthorized model source target")
                     except (OSError, RuntimeError, ValueError, TypeError,
