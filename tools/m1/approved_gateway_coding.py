@@ -348,6 +348,24 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
                 raise ValueError("Isolated coding Gateway cleanup failed")
     return status
 
+def request_exact_approval(plan_hash: str) -> bool:
+    """Show a complete pasteable authorization, never accept a bare APPROVE."""
+    if not HEX64.fullmatch(plan_hash):
+        raise ValueError("Invalid plan fingerprint")
+    approval = "APPROVE " + plan_hash
+    print("\nTo authorize only this exact disposable coding plan,")
+    print("copy and paste the FULL line below (including the hash):")
+    print()
+    print("  " + approval)
+    print()
+    print("Press Enter without typing anything to decline safely.")
+    try:
+        response = input("Approval (full line): ")
+    except EOFError:
+        return False
+    return response.strip() == approval
+
+
 def execute(prepare: bool) -> dict[str, object]:
     report: dict[str, object] = {
         "schema_version": 1, "stage": "M1.12-approved-gateway-coding",
@@ -404,12 +422,9 @@ def execute(prepare: bool) -> dict[str, object]:
         print("  fixture:", TASK, "model:", MODEL)
         print("  disposable writable file:", "api/Program.cs")
         print("  exact plan SHA256:", plan_hash)
-        try:
-            response = input("Type APPROVE <64-character plan hash> to run real isolated coding: ")
-        except EOFError:
-            response = ""
-        if response.strip() != "APPROVE " + plan_hash:
+        if not request_exact_approval(plan_hash):
             report["status"] = "NOT_APPROVED"
+            print("Approval declined or incomplete; no coding session was started.")
             return report
         report["approved"] = True
 

@@ -154,6 +154,25 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             m.gateway_rpc_command("other", MOCK_BASE)
 
+    def test_approval_prompt_displays_copyable_exact_line_and_stays_fail_closed(self):
+        import contextlib
+        import io
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), \
+             mock.patch.object(builtins, "input", return_value="APPROVE"):
+            self.assertFalse(m.request_exact_approval(MOCK_BASE))
+        self.assertIn("APPROVE " + MOCK_BASE, output.getvalue())
+        self.assertIn("FULL line", output.getvalue())
+        with mock.patch.object(builtins, "input", return_value="APPROVE wrong"):
+            self.assertFalse(m.request_exact_approval(MOCK_BASE))
+        with mock.patch.object(builtins, "input",
+                               return_value="APPROVE " + MOCK_BASE):
+            self.assertTrue(m.request_exact_approval(MOCK_BASE))
+        with mock.patch.object(builtins, "input", side_effect=EOFError):
+            self.assertFalse(m.request_exact_approval(MOCK_BASE))
+        with self.assertRaises(ValueError):
+            m.request_exact_approval("invalid")
+
     def test_preflight_rejects_windows_without_starting_podman(self):
         with mock.patch.object(m.sys, "platform", "win32"), \
              mock.patch.object(m, "fixed") as runner:
