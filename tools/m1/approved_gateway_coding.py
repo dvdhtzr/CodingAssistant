@@ -78,8 +78,9 @@ def fingerprint() -> str:
             raise ValueError("Coding slice source outside size bound")
         digest.update(file.relative_to(ROOT).as_posix().encode() + b"\0" + data + b"\0")
     config = json.loads(CONFIG.read_text(encoding="utf-8"))
-    assert config["acp"] == {
-        "enabled": True, "backend": "acpx", "allowedAgents": ["opencode"]}
+    if config.get("acp") != {
+            "enabled": True, "backend": "acpx", "allowedAgents": ["opencode"]}:
+        raise ValueError("Unapproved ACP execution configuration")
     acpx = config["plugins"]["entries"]["acpx"]["config"]
     if (acpx["cwd"] != "/workspace" or acpx["probeAgent"] != "opencode" or
             acpx["permissionMode"] != "approve-all" or
@@ -267,7 +268,6 @@ def container_command(image_id: str, name: str, env: pathlib.Path,
     args[args.index("--memory=2g")] = "--memory=3g"
     args[args.index("--tmpfs=/tmp:rw,nosuid,nodev,size=512m,notmpcopyup")] = (
         "--tmpfs=/tmp:rw,nosuid,nodev,size=768m,notmpcopyup")
-    args[at + 6:] = [] if False else args[at + 6:]  # no host-side argument mutation
     start = args.index(image_id)
     args[start + 1:] = ["/app/codingassistant-coding-runner.mjs"]
     return args
@@ -345,7 +345,7 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
                 raise ValueError("Isolated coding Gateway cleanup failed")
     return status
 
-def execute(prepare: bool, approve: bool = False) -> dict[str, object]:
+def execute(prepare: bool) -> dict[str, object]:
     report: dict[str, object] = {
         "schema_version": 1, "stage": "M1.12-approved-gateway-coding",
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -401,13 +401,11 @@ def execute(prepare: bool, approve: bool = False) -> dict[str, object]:
         print("  fixture:", TASK, "model:", MODEL)
         print("  disposable writable file:", "api/Program.cs")
         print("  exact plan SHA256:", plan_hash)
-        if not approve:
-            try:
-                response = input("Type APPROVE <64-character plan hash> to run real isolated coding: ")
-            except EOFError:
-                response = ""
-            approve = response.strip() == "APPROVE " + plan_hash
-        if not approve:
+        try:
+            response = input("Type APPROVE <64-character plan hash> to run real isolated coding: ")
+        except EOFError:
+            response = ""
+        if response.strip() != "APPROVE " + plan_hash:
             report["status"] = "NOT_APPROVED"
             return report
         report["approved"] = True
