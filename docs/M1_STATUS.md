@@ -1,6 +1,6 @@
 # M1 secure orchestration — status
 
-**Status (November 19, 2026): YELLOW / actual Gateway-owned coding integration NOT YET QUALIFIED.** The historical sections below record individual stages. PR #56 replaced the blocked M1.11 CLI slash-command probe with a registered Gateway RPC; model-free CI passed, but the new diagnostic still needs owner Dell runtime acceptance. See `docs/CURRENT_HANDOFF.md`.
+**Status (November 19, 2026): YELLOW / Gateway-owned ACPX diagnostic GREEN on Dell; full coding integration NOT YET QUALIFIED.** M1.11's corrected registered Gateway RPC passed real Dell runtime acceptance after PR #56; see last section and `docs/CURRENT_HANDOFF.md`. Earlier sections preserve historical failures.
 
 ## Accepted M0 baseline
 
