@@ -300,6 +300,23 @@ source file is involved. This is plugin activation only, **not**
 Gateway-to-OpenCode functional qualification. See
 [the M1 Gateway and ACPX plan](docs/M1_GATEWAY_DISCOVERY.md).
 
+### M1.5 Gateway ACPX activation GREEN; read-only adapter discovery next
+
+M1.5 passed on the Dell: real Gateway health 200, plugin's own lazy
+backend registration observed, and disposable container removed. No
+ACP session or model ran. The next test queries a **read-only official
+Gateway RPC** for the actual OpenCode adapter installation status and
+cross-checks the pinned local agent registry:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_opencode_rpc_probe.py
+```
+
+No `npx` download fallback, model inference, agent spawn, host project,
+or published port is permitted. A missing OpenCode adapter is a useful
+result, **not** an ACP session PASS. See
+[the M1 integration gates](docs/M1_GATEWAY_DISCOVERY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
