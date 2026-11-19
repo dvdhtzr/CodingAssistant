@@ -854,3 +854,27 @@ The owner must review and paste the **fresh entire** `APPROVE <hash>`
 line for the same fixed disposable repair. Report `M1.12` status, `phase`,
 `reason_code`, Gateway flags/stage and broker counts. Neither CI nor a
 failed attempt may mark M1.12 GREEN.
+
+
+## M1.12 — Gateway coding RPC rejected before inference: startup activation omission
+
+On the second owner-approved Dell run, the Gateway passed `/healthz`,
+`/startupz`, and `/readyz` (all HTTP 200), and its disposable container
+was removed. The coding RPC returned nonzero, the plugin's read-only status
+RPC was unavailable, and the host model broker recorded **zero attempts**.
+The independent evaluator was not reached. **M1.12 remains BLOCKED.**
+
+Root cause identified by comparing M1.12's manifest against the
+owner-qualified M1.11 diagnostic plugin and pinned OpenClaw v2026.11.5
+startup activation contract: `infra/m1/coding-plugin/openclaw.plugin.json`
+omitted `activation.onStartup`. In the pinned version, merely enabling
+a manifest-bearing plugin in config does not cause it to be imported at
+Gateway startup without an activation trigger; consequently its registered
+RPC methods were absent. The corrected manifest declares
+`"activation": {"onStartup": true}`. Model-free CI tests now enforce that
+manifest contract.
+
+This change does not relax model selection, user approval, Podman isolation,
+or workspace permissions. **Runtime behavior after this correction is not
+yet proven**; an exact fresh owner-approved Dell disposable coding run must
+pass before M1.12 can be marked GREEN.
