@@ -677,5 +677,86 @@ class MvpTests(unittest.TestCase):
             self.assertEqual((project / "PricingCalculator.cs").read_text(), "original\n")
 
 
+    def test_ollama_completion_timeout_identifies_phase_and_preserves_no_edit(self):
+        catalog = {"models": [{"name": "qwen3.5:4b", "digest": "fixed"}]}
+        with mock.patch.object(assist, "json_http",
+                               side_effect=[catalog, TimeoutError("timed out")]) as http:
+            with self.assertRaisesRegex(TimeoutError, "chat completion timed out"):
+                assist.propose("qwen3.5:4b", "PricingCalculator.cs",
+                               "class P {}\n", "Fix prices",
+                               inference_timeout=900)
+        self.assertEqual(http.call_count, 2)
+        self.assertEqual(http.call_args.kwargs["timeout"], 900)
+
+    def test_ollama_model_catalog_timeout_is_distinguished(self):
+        with mock.patch.object(assist, "json_http",
+                               side_effect=TimeoutError("timed out")) as http:
+            with self.assertRaisesRegex(TimeoutError, "model catalog timed out"):
+                assist.propose("qwen3.5:4b", "PricingCalculator.cs",
+                               "class P {}\n", "Fix prices",
+                               inference_timeout=900)
+        self.assertEqual(http.call_count, 1)
+        self.assertEqual(http.call_args.kwargs["timeout"], assist.CATALOG_TIMEOUT)
+
+    def test_inference_timeout_does_not_request_approval_or_stage_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "project"
+            source.mkdir()
+            (source / "PricingCalculator.cs").write_text("class Original {}\n")
+            (source / "OrderPricing.csproj").write_text("<Project/>")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(
+                model="qwen3.5:4b", demo=False,
+                project=str(source), file="PricingCalculator.cs",
+                task="Correct tax", build=False, run=True,
+                inference_timeout=900,
+            )
+            catalog = {"models": [{"name": "qwen3.5:4b", "digest": "fixed"}]}
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "json_http",
+                                   side_effect=[catalog, TimeoutError("timed out")]), \
+                 mock.patch("builtins.input") as approval, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(TimeoutError, "chat completion"):
+                    assist.run(args)
+            approval.assert_not_called()
+            self.assertFalse(artifacts.exists())
+            self.assertEqual((source / "PricingCalculator.cs").read_text(),
+                             "class Original {}\n")
+
+    def test_inference_timeout_cli_flag_reaches_run(self):
+        command = ["assist.py", "--project", "/tmp/example", "--file",
+                   "PricingCalculator.cs", "--task", "Correct tax", "--run",
+                   "--inference-timeout", "900"]
+        with mock.patch.object(assist.sys, "argv", command), \
+             mock.patch.object(assist, "run", return_value=0) as run:
+            self.assertEqual(assist.main(), 0)
+        self.assertEqual(run.call_args.args[0].inference_timeout, 900)
+
+    def test_inference_timeout_range_is_bounded(self):
+        for timeout in (0, 29, 1201):
+            with self.subTest(timeout=timeout):
+                with mock.patch.object(assist, "json_http") as http, \
+                     self.assertRaisesRegex(ValueError, "inference-timeout"):
+                    assist.propose("qwen3.5:4b", "Program.cs", "class P {}",
+                                   "Fix", inference_timeout=timeout)
+                http.assert_not_called()
+
+    def test_propose_uses_default_local_completion_timeout(self):
+        catalog = {"models": [{"name": "qwen3.5:4b", "digest": "fixed"}]}
+        response = {"model": "qwen3.5:4b",
+                    "choices": [{"finish_reason": "stop",
+                                 "message": {"content": "class P {}\n"}}]}
+        with mock.patch.object(assist, "json_http",
+                               side_effect=[catalog, response, catalog]) as http, \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(assist.propose("qwen3.5:4b", "Program.cs",
+                                            "class P {}",
+                                            "Fix"), "class P {}\n")
+        self.assertEqual(http.call_args_list[1].kwargs["timeout"],
+                         assist.DEFAULT_INFERENCE_TIMEOUT)
+
+
 if __name__ == "__main__":
     unittest.main()
