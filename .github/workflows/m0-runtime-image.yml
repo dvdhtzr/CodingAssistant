@@ -9,6 +9,7 @@ on:
       - "tools/m0/isolated_opencode_models.mjs"
       - "tests/m0_opencode_discovery_smoke.mjs"
       - "tests/m0_opencode_inference_smoke.mjs"
+      - "tests/m0_opencode_edit_smoke.mjs"
       - "tools/m0/disposable_workspace_client.mjs"
       - "tools/m0/disposable_workspace_probe.py"
       - "tools/m0/workspace_attack_client.mjs"
@@ -147,6 +148,41 @@ jobs:
           cmp benchmarks/fixtures/02-build-repair/api/Repair.csproj "$tmp/workspace/Repair.csproj"
           test ! -e "$tmp/workspace/.git"
           echo "M0.11 static known-good offline evaluator smoke PASS"
+      - name: Verify native OpenCode edit tool on disposable C# fixture (deterministic mock)
+        run: |
+          set -eu
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          mkdir -p "$tmp/workspace"
+          cp benchmarks/fixtures/02-build-repair/api/Program.cs "$tmp/workspace/"
+          cp benchmarks/fixtures/02-build-repair/api/Repair.csproj "$tmp/workspace/"
+          docker run --rm --pull never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 96 --memory 2g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+            --user "$(id -u):$(id -g)" \
+            --volume "$tmp/workspace:/workspace:rw" \
+            --env HOME=/tmp --workdir /workspace \
+            --entrypoint node codingassistant-m0-runtime:ci \
+            --input-type=module --eval "$(cat tests/m0_opencode_edit_smoke.mjs)"
+          sed 's/values.Summ()/values.Sum()/' \
+            benchmarks/fixtures/02-build-repair/api/Program.cs | cmp - "$tmp/workspace/Program.cs"
+          cmp benchmarks/fixtures/02-build-repair/api/Repair.csproj "$tmp/workspace/Repair.csproj"
+          test "$(find "$tmp/workspace" -mindepth 1 -maxdepth 1 | wc -l)" -eq 2
+          # Verification runs independently with no model endpoint or socket.
+          docker run --rm --pull never --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 64 --memory 2g \
+            --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+            --user "$(id -u):$(id -g)" \
+            --volume "$tmp/workspace:/workspace:rw" \
+            --env HOME=/tmp --env DOTNET_CLI_HOME=/tmp \
+            --workdir /workspace --entrypoint node \
+            codingassistant-m0-runtime:ci \
+            --input-type=module --eval "$(cat tools/m0/isolated_repair_evaluator.mjs)"
+          cmp benchmarks/fixtures/02-build-repair/api/Repair.csproj "$tmp/workspace/Repair.csproj"
+          test ! -e "$tmp/workspace/.git"
+          echo "M0.12 deterministic native OpenCode edit and independent C# verification PASS"
       # The discovery contract exercises the actual OpenCode CLI against a
       # deterministic loopback-only mock, without host Ollama or code execution.
       # GitHub-hosted Docker smoke establishes package startup only.
