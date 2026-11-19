@@ -13,6 +13,7 @@ import http.client
 import io
 import json
 import pathlib
+import re
 import threading
 from typing import Any
 
@@ -204,7 +205,7 @@ def request_model_write(model: str, digest: str, task: str,
             task not in ("01-api-feature", "02-build-repair") or
             len(compile_feedback) > 5 or any(
                 type(line) is not str or len(line) > 208 or
-                not __import__("re").fullmatch(r"CS[0-9]{4}: [ -~]{1,200}", line)
+                not re.fullmatch(r"CS[0-9]{4}: [ -~]{1,200}", line)
                 for line in compile_feedback)):
         raise ValueError("Untrusted compiler diagnostics rejected")
     prompt = (
@@ -218,10 +219,10 @@ def request_model_write(model: str, digest: str, task: str,
         "For full-stack implement both Program.cs and TaskSummary.tsx in separate turns.")
     if compile_feedback:
         prompt += (
-            "\\nA prior independent sandboxed .NET build of THIS disposable copy "
+            "\nA prior independent sandboxed .NET build of THIS disposable copy "
             "failed with these compiler diagnostics: " +
             json.dumps(compile_feedback) +
-            "\\nREPAIR THE SOURCE to resolve the compiler errors and satisfy "
+            "\nREPAIR THE SOURCE to resolve the compiler errors and satisfy "
             "the ORIGINAL task. Write the COMPLETE corrected allowed file. "
             "Do not claim that you ran any tests.")
     tool = {"type": "function", "function": {
