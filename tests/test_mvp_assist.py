@@ -472,8 +472,8 @@ class MvpTests(unittest.TestCase):
                 "ORDER-PRICING ACCEPTANCE: 9/10 checks passed\n", 
                 "An issue was encountered verifying workloads.\n")
             with mock.patch.object(assist.shutil, "which", return_value="/usr/bin/podman"), \
-                 mock.patch.object(assist.os, "getuid", return_value=1000), \
-                 mock.patch.object(assist.os, "getgid", return_value=1000), \
+                 mock.patch.object(assist.os, "getuid", return_value=1000, create=True), \
+                 mock.patch.object(assist.os, "getgid", return_value=1000, create=True), \
                  mock.patch.object(assist.sys, "platform", "linux"), \
                  mock.patch.object(assist.subprocess, "run",
                                    side_effect=[image, restore, build, run]) as process, \
@@ -498,8 +498,8 @@ class MvpTests(unittest.TestCase):
                 subprocess.CompletedProcess([], 1, "", "Process crashed without tests"),
             ]
             with mock.patch.object(assist.shutil, "which", return_value="podman"), \
-                 mock.patch.object(assist.os, "getuid", return_value=1000), \
-                 mock.patch.object(assist.os, "getgid", return_value=1000), \
+                 mock.patch.object(assist.os, "getuid", return_value=1000, create=True), \
+                 mock.patch.object(assist.os, "getgid", return_value=1000, create=True), \
                  mock.patch.object(assist.sys, "platform", "linux"), \
                  mock.patch.object(assist.subprocess, "run", side_effect=results), \
                  contextlib.redirect_stdout(io.StringIO()):
