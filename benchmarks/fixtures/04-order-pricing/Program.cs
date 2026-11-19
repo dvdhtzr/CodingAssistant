@@ -80,6 +80,21 @@ Check("money rounds away from zero at the cent", () =>
     Equal(4.99m, quote.Total, "total");
 });
 
+Check("coupon rounds once across taxable and exempt merchandise", () =>
+{
+    // Each category contributes half a cent of discount. The order-wide
+    // SAVE10 discount is 1 cent, NOT 2 cents from separately rounded parts.
+    var order = new OrderRequest("ROUND-CATEGORIES",
+        [new OrderLine("TAXABLE", 1, 0.05m, true),
+         new OrderLine("EXEMPT", 1, 0.05m, false)],
+        "SAVE10", 0m);
+    PriceQuote quote = calculator.Calculate(order, 0.10m);
+    Equal(0.10m, quote.Subtotal, "pre-discount subtotal");
+    Equal(0.01m, quote.Discount, "order-level discount rounds once");
+    Equal(0.00m, quote.Tax, "tax after taxable share of discount");
+    Equal(0.09m, quote.Total, "total");
+});
+
 Check("shipping stays outside the tax and coupon bases", () =>
 {
     var order = new OrderRequest("E",

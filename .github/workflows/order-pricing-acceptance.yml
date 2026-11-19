@@ -69,5 +69,5 @@ jobs:
             -p:NuGetAudit=false --disable-parallel
           dotnet build "$fixed" -c Release --no-restore -warnaserror
           dotnet run --project "$fixed" -c Release --no-build | tee "$RUNNER_TEMP/order-pricing-fixed.log"
-          grep -q "ORDER-PRICING ACCEPTANCE: 10/10 checks passed" "$RUNNER_TEMP/order-pricing-fixed.log"
+          grep -q "ORDER-PRICING ACCEPTANCE: 11/11 checks passed" "$RUNNER_TEMP/order-pricing-fixed.log"
           grep -q "ORDER-PRICING ACCEPTANCE PASS" "$RUNNER_TEMP/order-pricing-fixed.log"
