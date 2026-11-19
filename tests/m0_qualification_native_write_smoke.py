@@ -50,9 +50,9 @@ def docker_write(image: str, task: str, workspace: pathlib.Path,
            "--workdir", "/workspace", "--entrypoint", "node",
            image, "--input-type=module", "--eval",
            CLIENT.read_text(encoding="utf-8"), "--", MODEL, task,
-           (task_prompt(task) + ("\\nA separate, offline .NET build failed with: " +
+           (task_prompt(task) + ("\nA separate, offline .NET build failed with: " +
                                  json.dumps(compile_feedback) +
-                                 "\\nRepair the original task in the same disposable source file.")
+                                 "\nRepair the original task in the same disposable source file.")
                                 if compile_feedback else ""), str(sentinel.resolve())]
     return subprocess.run(cmd, stdin=subprocess.DEVNULL,
                           capture_output=True, encoding="utf-8", text=True,
