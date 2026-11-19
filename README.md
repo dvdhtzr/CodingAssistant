@@ -71,6 +71,27 @@ This reuses the **failed approved copy** as input, rereads live acceptance
 failures, and asks for a new diff. The failed copy and the frozen fixture remain
 unchanged. The 5/10 result is a real model outcome, not a qualification pass.
 
+### Handling slow local Ollama completions
+
+A Dell CPU may take longer than the earlier fixed 300-second socket timeout to
+generate a **complete C# replacement**. The CLI now uses a 600-second default
+**socket inactivity** limit for the completion request and accepts
+`--inference-timeout 900` (valid range 30–1200 seconds) when the model is slow.
+A timeout during the model catalog request is labeled separately. This is not a
+total wall-clock deadline and is not proof the model is unhealthy.
+
+For the stronger eleven-check order-pricing benchmark, use:
+
+```bash
+python3 tools/mvp/assist.py --project benchmarks/fixtures/04-order-pricing --file PricingCalculator.cs --task "Fix SAVE10 tax: apply the coupon to all merchandise once, round the order-wide discount once, tax only taxable merchandise after its proportional discount, and preserve subtotal, shipping, validation and public signatures." --model qwen3.5:4b --inference-timeout 900 --run
+```
+
+If the local server stalls, `ollama ps` shows currently loaded models, and
+`ollama list` shows installed models. The CLI never applies an incomplete
+response; it prints a phase-specific timeout message and leaves the
+unmodified original and previously approved disposable copies intact.
+No background retries, no remote-model fallback, and no changed Podman privileges.
+
 For your own project (one source file at a time):
 
 ```bash
