@@ -11,9 +11,9 @@ so a build-only check cannot discover the problem.
 
 The model is permitted to replace **only `PricingCalculator.cs`**. The independent
 acceptance harness in `Program.cs` exercises mixed taxable/exempt merchandise,
-cent rounding, tax exclusions, coupon and input validation, and repository
+cent rounding (including cross-category half-cent boundaries), tax exclusions, coupon and input validation, and repository
 idempotence. A passing result must include
-`ORDER-PRICING ACCEPTANCE PASS` and `10/10 checks passed`.
+`ORDER-PRICING ACCEPTANCE PASS` and `11/11 checks passed`.
 
 Run the CodingAssistant CLI from the repository root on the Dell:
 
@@ -25,10 +25,14 @@ Every generated diff requires explicit `APPLY`, and all source changes and
 execution occur in an approved disposable copy under `artifacts/mvp/`.
 The original fixture and acceptance tests remain unchanged. `--run` performs
 fixed restore/build/run commands in the existing offline, rootless,
-network-denied Podman container. A test failure does **not** automatically
-authorize an AI retry; automatic retries remain limited to compiler diagnostics.
+network-denied Podman container. A test failure triggers at most two additional model proposals when the `--run`
+command observes recognizable failed acceptance assertions. Each proposal needs
+fresh human `APPLY` approval. Infrastructure failures are not model-retried.
 
 The frozen fixture should fail acceptance before repair and pass with the
-known-good discounted-tax formula. GitHub CI checks both cases using a static
+known-good discounted-tax formula. A previous Qwen 4B attempt passed the original
+10 checks, but rounded taxable and exempt discounts separately. That can turn
+one cent of order-level savings into two cents. The eleventh check guards this
+edge case; prior historical 10/10 evidence remains valid for the older oracle. GitHub CI checks both cases using a static
 known-good patch, not a model-generated edit. This does not count as an M0
 model qualification run.
