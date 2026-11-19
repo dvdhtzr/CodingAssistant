@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import difflib
+import hashlib
 import json
 import os
 from pathlib import Path, PurePath
@@ -36,6 +37,8 @@ MAX_PROJECT = 4_000_000
 MAX_FILES = 250
 MAX_RESPONSE = 120_000
 MAX_DIFF_LINES = 300
+MAX_AUTO_RETRIES = 2
+COMPILER_ERROR_RE = re.compile(r"\berror\s+CS\d+\b", re.IGNORECASE)
 RETRY_ID_RE = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{8}\Z")
 
 
@@ -123,13 +126,17 @@ def normalize_proposal(text: str) -> str:
     return result.rstrip("\r\n") + "\n"
 
 
-def propose(model: str, filename: str, source: str, task: str) -> str:
+def propose(model: str, filename: str, source: str, task: str, *,
+            expected_digest: str | None = None,
+            metadata: dict | None = None) -> str:
     catalog = json_http("/api/tags")
     matches = [m for m in catalog.get("models", [])
                if isinstance(m, dict) and m.get("name") == model and m.get("digest")]
     if len(matches) != 1:
         raise ValueError(f"Exact local model {model!r} is not installed")
     digest = matches[0]["digest"]
+    if expected_digest is not None and digest != expected_digest:
+        raise ValueError("Local model digest changed between correction attempts")
     prompt = (f"Programming task: {task}\n"
               f"File: {filename}\n"
               "Return the COMPLETE replacement file, not a patch. "
@@ -160,6 +167,8 @@ def propose(model: str, filename: str, source: str, task: str) -> str:
     if not any(m.get("name") == model and m.get("digest") == digest
                for m in after.get("models", []) if isinstance(m, dict)):
         raise ValueError("Local model digest changed during proposal")
+    if metadata is not None:
+        metadata["digest"] = digest
     return normalize_proposal(content)
 
 
@@ -229,8 +238,11 @@ def isolated_build(workspace: Path, demo: bool, *, feedback: list[str] | None = 
             timeout=120, check=False,
         )
         summary = (result.stdout + "\n" + result.stderr).strip().splitlines()
-        if feedback is not None and result.returncode != 0:
-            feedback.extend(line[:300] for line in summary[-24:])
+        if feedback is not None and operation == "build" and result.returncode != 0:
+            # A failed restore, missing image or a failing program is not a
+            # C# compiler diagnostic and must never trigger model inference.
+            feedback.extend(line[:300] for line in summary[-48:]
+                            if COMPILER_ERROR_RE.search(line))
         print(f"\nIsolated dotnet {operation}: {'PASS' if result.returncode == 0 else 'FAIL'}")
         for line in summary[-12:]:
             print("  " + line[:200])
@@ -239,18 +251,52 @@ def isolated_build(workspace: Path, demo: bool, *, feedback: list[str] | None = 
     return True
 
 
+def repair_task(compiler_errors: list[str], objective: str) -> str:
+    """Give the model only actual bounded C# errors and the original objective."""
+    return (
+        "Fix these C# compiler errors in the previously approved file. "
+        "Preserve the intended behavior and original programming objective. "
+        "All using directives must precede top-level statements; "
+        "avoid unnecessary imports when implicit usings are enabled. "
+        "Return only the COMPLETE corrected source.\n"
+        "Original objective: " + objective[:1200] + "\n"
+        "Compiler output:\n" + "\n".join(compiler_errors)[-2500:]
+    )
+
+
+def save_result(run_dir: Path, record: dict) -> None:
+    (run_dir / "result.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
 def run(args: argparse.Namespace) -> int:
     if not MODEL_RE.fullmatch(args.model):
         raise ValueError("Specify an exact local Ollama model tag, e.g. qwen3.5:4b")
+
     demo_project = ROOT / "benchmarks/fixtures/02-build-repair/api"
     retry = getattr(args, "retry", None)
+    pinned_digest: str | None = None
+    parent_run_id: str | None = retry
     if retry:
         if not RETRY_ID_RE.fullmatch(retry):
             raise ValueError("Retry must name one exact previously approved MVP run ID")
         run_directory = ARTIFACTS / retry
         if run_directory.is_symlink() or not run_directory.is_dir():
             raise ValueError("Approved disposable run directory was not found")
+        previous_result = run_directory / "result.json"
+        if previous_result.is_symlink():
+            raise ValueError("Recorded result must not be a symlink")
+        if previous_result.is_file():
+            previous = json.loads(previous_result.read_text(encoding="utf-8"))
+            if previous.get("model") != args.model:
+                raise ValueError(
+                    "Retry model differs from recorded model; use the original --model"
+                )
+            pinned_digest = previous.get("model_digest")
         project = run_directory / "project"
+        if project.is_symlink() or not project.is_dir():
+            raise ValueError("Approved disposable project must be an ordinary directory")
         relative = args.file or "Program.cs"
         print(f"Rechecking existing disposable copy: {project}")
         compiler_errors: list[str] = []
@@ -261,60 +307,119 @@ def run(args: argparse.Namespace) -> int:
             return 0
         if not compiler_errors:
             raise ValueError("No compiler diagnostics available; check rootless Podman before retrying")
-        task = (
-            "Fix these C# compiler errors in the previously approved file. "
-            "Preserve the intended bug fix and behavior. "
-            "All using directives must precede top-level statements; "
-            "avoid unnecessary imports when implicit usings are enabled. "
-            "Return only the COMPLETE corrected source. Compiler output:\n"
-            + "\n".join(compiler_errors)[-2500:]
-        )
-        if getattr(args, "task", None):
-            task += "\nAdditional instruction: " + args.task
+        objective = args.task or "Preserve the intended C# repair and behavior."
+        task = repair_task(compiler_errors, objective)
     else:
         project = demo_project if args.demo else Path(args.project).expanduser().resolve()
         relative = "Program.cs" if args.demo else args.file
-        task = "Fix the C# compile error. Preserve output Total: 15. Do not add unnecessary using directives; this project enables implicit usings." if args.demo else args.task
-    if not isinstance(task, str) or not 0 < len(task) <= 4000:
+        objective = (
+            "Fix the C# compile error. Preserve output Total: 15. "
+            "Do not add unnecessary using directives; this project enables implicit usings."
+        ) if args.demo else args.task
+        task = objective
+
+    if not isinstance(objective, str) or not 0 < len(objective) <= 4000:
         raise ValueError("Supply a task description within 4000 characters")
-    rel, selected = select_source(project, relative)
-    original = selected.read_text(encoding="utf-8")
-    print(f"Local model: {args.model}\nFile: {rel}\nTask: {task}")
-    print("Requesting a replacement from local Ollama (no coding tools)...")
-    proposed = propose(args.model, str(rel), original, task)
-    changes = diff_lines(original, proposed, str(rel))
-    if not changes:
-        print("\nNo file changes proposed.")
-        return 1
-    if len(changes) > MAX_DIFF_LINES:
-        print(f"\nDiff has {len(changes)} lines; exceeds review limit. Nothing applied.")
-        return 2
-    print("\n" + "".join(changes))
-    decision = input("\nApply this diff to a DISPOSABLE COPY only? Type APPLY: ").strip()
-    if decision != "APPLY":
-        print("Rejected. Original project unchanged.")
-        return 1
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    identifier = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8]
-    workspace = ARTIFACTS / identifier / "project"
-    workspace.mkdir(parents=True, exist_ok=False)
-    stage_project(project, workspace)
-    output = workspace.joinpath(*rel.parts)
-    if not output.is_file():
-        raise ValueError("Selected file was not staged")
-    if output.read_text(encoding="utf-8") != original:
-        raise ValueError("Input changed during staging; refusing edit")
-    output.write_text(proposed, encoding="utf-8")
-    (workspace.parent / "change.patch").write_text("".join(changes), encoding="utf-8")
-    print(f"\nApplied to COPY: {output}")
-    print(f"Saved patch:     {workspace.parent / 'change.patch'}")
-    print(f"Original left unchanged: {selected}")
-    if (args.build or retry or getattr(args, "run", False)) and output.suffix.lower() == ".cs":
-        print("\nRunning fixed .NET checks inside rootless, no-network Podman.")
-        if not isolated_build(workspace, args.demo or getattr(args, "run", False)):
-            print("Isolated build did not pass. Keep the diff for review.")
+
+    verify = bool(args.build or retry or getattr(args, "run", False))
+    seen_failures: set[tuple[str, ...]] = set()
+
+    # The initial proposal is not an automatic retry. Up to two *additional*
+    # corrections may follow real C# compiler failures, always with approval.
+    for correction in range(MAX_AUTO_RETRIES + 1):
+        rel, selected = select_source(project, relative)
+        original = selected.read_text(encoding="utf-8")
+        print(f"Local model: {args.model}\nFile: {rel}\nTask: {task}")
+        print("Requesting a replacement from local Ollama (no coding tools)...")
+        model_info: dict = {}
+        proposed = propose(
+            args.model, str(rel), original, task,
+            expected_digest=pinned_digest, metadata=model_info,
+        )
+        if model_info.get("digest"):
+            pinned_digest = model_info["digest"]
+        changes = diff_lines(original, proposed, str(rel))
+        if not changes:
+            print("\nNo file changes proposed. Stopping.")
+            return 1
+        if len(changes) > MAX_DIFF_LINES:
+            print(f"\nDiff has {len(changes)} lines; exceeds review limit. Nothing applied.")
             return 2
-    return 0
+        print("\n" + "".join(changes))
+        decision = input("\nApply this diff to a DISPOSABLE COPY only? Type APPLY: ").strip()
+        if decision != "APPLY":
+            print("Rejected. Original project and earlier approved copies unchanged.")
+            return 1
+
+        ARTIFACTS.mkdir(parents=True, exist_ok=True)
+        identifier = (
+            dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            + "-" + uuid.uuid4().hex[:8]
+        )
+        workspace = ARTIFACTS / identifier / "project"
+        workspace.mkdir(parents=True, exist_ok=False)
+        stage_project(project, workspace)
+        output = workspace.joinpath(*rel.parts)
+        if not output.is_file():
+            raise ValueError("Selected file was not staged")
+        if output.read_text(encoding="utf-8") != original:
+            raise ValueError("Input changed during staging; refusing edit")
+        output.write_text(proposed, encoding="utf-8")
+        (workspace.parent / "change.patch").write_text(
+            "".join(changes), encoding="utf-8"
+        )
+        record = {
+            "run_id": identifier,
+            "parent_run_id": parent_run_id,
+            "correction_attempt": correction,
+            "model": args.model,
+            "model_digest": pinned_digest,
+            "file": str(rel),
+            "before_sha256": hashlib.sha256(original.encode("utf-8")).hexdigest(),
+            "after_sha256": hashlib.sha256(proposed.encode("utf-8")).hexdigest(),
+            "status": "approved",
+            "compiler_diagnostics": [],
+        }
+        save_result(workspace.parent, record)
+        print(f"\nApplied to COPY: {output}")
+        print(f"Saved patch:     {workspace.parent / 'change.patch'}")
+        print(f"Original left unchanged: {selected}")
+
+        if not verify or output.suffix.lower() != ".cs":
+            return 0
+
+        print("\nRunning fixed .NET checks inside rootless, no-network Podman.")
+        compiler_errors = []
+        passed = isolated_build(
+            workspace, args.demo or getattr(args, "run", False),
+            feedback=compiler_errors,
+        )
+        record["status"] = "build_passed" if passed else "build_failed"
+        record["compiler_diagnostics"] = compiler_errors
+        save_result(workspace.parent, record)
+        if passed:
+            print("Verified .NET checks passed.")
+            return 0
+        if not compiler_errors:
+            print("Build or runtime verification failed without C# compiler diagnostics; "
+                  "no automatic retry.")
+            return 2
+        signature = tuple(compiler_errors)
+        if signature in seen_failures:
+            print("Compiler diagnostics repeated without progress; stopping.")
+            return 2
+        seen_failures.add(signature)
+        if correction >= MAX_AUTO_RETRIES:
+            print(f"Reached the limit of {MAX_AUTO_RETRIES} automatic corrections.")
+            return 2
+
+        print(f"\nC# compilation failed. Preparing correction "
+              f"{correction + 1}/{MAX_AUTO_RETRIES}; the next diff still needs APPLY.")
+        parent_run_id = identifier
+        project = workspace
+        task = repair_task(compiler_errors, objective)
+
+    return 2
 
 
 def main() -> int:
