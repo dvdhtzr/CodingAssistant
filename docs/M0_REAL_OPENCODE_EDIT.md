@@ -1,6 +1,6 @@
 # M0.13 — First real local Qwen native OpenCode edit (narrow pilot)
 
-**Status: pending GitHub CI and owner-run Dell evidence. Overall M0 remains YELLOW.**
+**Status: GREEN on Dell for this constrained real-Qwen edit pilot (owner-reported, November 19, 2026). Overall M0 remains YELLOW.**
 
 M0.12 demonstrated that pinned OpenCode v2.3.0 can execute one native
 `edit` tool call against a disposable C# fixture with a deterministic model
@@ -80,6 +80,27 @@ Ignored local evidence:
 If blocked, share only the printed checks and reason. Do not change
 container network permissions, use sudo, add general shell/edit privileges,
 mount the source checkout, or use a model fallback to force a pass.
+
+## Dell acceptance evidence — November 19, 2026
+
+The owner reported a real local run after PR #34 (`4ee1de3`) merged,
+with this exact banner:
+
+`M0.13 REAL OPENCODE EDIT REAL_EDIT_PASS: qwen3.5:4b`
+
+All 16 native edit checks and all 10 independent evaluation checks passed.
+The edit and evaluator exited `0`; `provider_requests=1`,
+`provider_completed=1`, `chat_requests=2`, `chat_followups=1`.
+`original_fixture_unchanged=True`, `exact_disposable_edit=True`
+and `sentinel_untouched=True`. The reported local JSON evidence remains
+ignored under `artifacts/m0/real-opencode-edit.json` and was not
+independently examined or uploaded.
+
+**Interpretation:** A real local Qwen function decision was validated by
+the narrow broker and resulted in one native OpenCode edit to a disposable
+C# source file, followed by independent compilation and functional checks.
+The final acknowledgement was controller-generated. This is a successful
+specific pilot, not a multi-task or general-purpose autonomous agent pass.
 
 ## Exit criteria still outstanding
 
