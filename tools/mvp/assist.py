@@ -149,8 +149,9 @@ def propose(model: str, filename: str, source: str, task: str) -> str:
     if not isinstance(choices, list) or len(choices) != 1:
         raise ValueError("Expected one model response")
     message = choices[0].get("message", {})
-    if not isinstance(message, dict) or message.get("tool_calls"):
-        raise ValueError("Model attempted a tool call")
+    if (not isinstance(message, dict) or message.get("tool_calls")
+            or choices[0].get("finish_reason") not in ("stop", None)):
+        raise ValueError("Model returned incomplete output or attempted a tool call")
     content = message.get("content")
     if not isinstance(content, str):
         raise ValueError("Model returned no source text")
@@ -169,7 +170,7 @@ def diff_lines(before: str, after: str, name: str) -> list[str]:
 
 
 def _container_command(workspace: Path, image_id: str, project_file: str,
-                       operation: str) -> list[str]:
+                       operation: str, *, uid: int = 1000, gid: int = 1000) -> list[str]:
     if operation not in ("restore", "build", "run"):
         raise ValueError("Unsupported fixed build step")
     if not re.fullmatch(r"(?:sha256:)?[a-fA-F0-9]{64}", image_id):
@@ -178,7 +179,7 @@ def _container_command(workspace: Path, image_id: str, project_file: str,
         "podman", "run", "--rm", "--pull=never", "--network=none",
         "--read-only", "--cap-drop=all", "--security-opt=no-new-privileges",
         "--pids-limit=64", "--memory=2g", "--userns=keep-id",
-        "--user", f"{os.getuid()}:{os.getgid()}",
+        "--user", f"{uid}:{gid}",
         "--tmpfs=/tmp:rw,nosuid,nodev,size=512m,notmpcopyup",
         "--volume", f"{workspace.resolve()}:/workspace:rw",
         "--env", "HOME=/tmp", "--env", "DOTNET_CLI_HOME=/tmp",
@@ -199,8 +200,11 @@ def _container_command(workspace: Path, image_id: str, project_file: str,
 
 def isolated_build(workspace: Path, demo: bool) -> bool:
     """Fixed dotnet commands only, in a rootless network-denied Podman container."""
-    if sys.platform != "linux" or shutil.which("podman") is None:
+    if sys.platform != "linux" or not hasattr(os, "getuid") or shutil.which("podman") is None:
         print("Isolated build is currently Linux/Podman only; no host build was run.")
+        return False
+    if os.getuid() == 0:
+        print("Isolated build refuses root execution; use normal rootless Podman.")
         return False
     projects = list(workspace.glob("*.csproj"))
     if len(projects) != 1:
@@ -218,7 +222,8 @@ def isolated_build(workspace: Path, demo: bool) -> bool:
     (workspace / ".mvp-empty-feed").mkdir(exist_ok=True)
     for operation in (["restore", "build", "run"] if demo else ["restore", "build"]):
         result = subprocess.run(
-            _container_command(workspace, image_id, projects[0].name, operation),
+            _container_command(workspace, image_id, projects[0].name, operation,
+                               uid=os.getuid(), gid=os.getgid()),
             stdin=subprocess.DEVNULL, capture_output=True, text=True,
             timeout=120, check=False,
         )
