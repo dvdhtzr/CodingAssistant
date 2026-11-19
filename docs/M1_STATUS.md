@@ -126,3 +126,76 @@ Official version-tagged implementation evidence:
 - `https://github.com/openclaw/openclaw/blob/v2026.11.5/extensions/acpx/package.json`
 - `https://github.com/openclaw/openclaw/blob/v2026.11.5/extensions/acpx/openclaw.plugin.json`
 - `https://docs.openclaw.ai/tools/acp-agents-setup`
+
+
+## M1.3 owner Dell inventory — 2026-11-19
+
+Actual M1.3 output: `INVENTORY_COMPLETE`, plugin distribution
+`NOT_BUNDLED`. Manifest, plugin entry, plugin package.json, and the
+`acpx` dependency were absent in official image
+`405dcc682726f127d316d435e29d3c5d0cdecb502aef6d74384ce6dd4ffe2700`.
+The official Gateway M1.2 liveness/readiness GREEN is unaffected.
+No plugin install, ACP, model or Gateway launch occurred during M1.3.
+Evidence: `artifacts/m1/acpx-image-inventory.json`.
+
+## M1.4 — explicit reviewed official-source ACPX build
+
+Source inspection of tag `v2026.11.5` found ACPX plugin
+`@openclaw/acpx@2026.11.5` with `acpx@0.21.0`. OpenClaw's official
+Dockerfile supports `--build-arg OPENCLAW_EXTENSIONS=acpx`, which
+retains the selected plugin runtime/dependencies in the production image.
+The reviewed annotated tag currently points to full source commit
+`e13cf15ece9bbd969b7362927c315362c90c97ff`.
+
+**Run on Dell after this PR is GREEN and merged:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_source_image.py --prepare
+```
+
+This is an **explicitly networked build operation**, unlike our previous
+offline runtime checks. It fetches *only* the official GitHub source
+tag by HTTPS; verifies the expected full commit SHA, clean checkout,
+official Dockerfile and ACPX package/dependency versions; then calls
+rootless `podman build` with only the official source as build context.
+The official Dockerfile will download public build images and package
+dependencies (including plugin-declared adapter platform packages).
+No cloud AI, Ollama, paid API, token, host npm installation, or execution
+of Claude/Codex/OpenCode agents occurs. Public upstream build scripts
+DO execute in build containers; this has real supply-chain/compute/disk
+risk, and its network access is permitted for this **opt-in build only**.
+Allow >=20 GiB free disk; on slower hardware compilation may be substantial.
+Build output is saved in a private 0600 ignored log file; original working
+repo and official prebuilt Gateway image remain unmodified.
+
+The new image is tagged locally (never pushed) as
+`localhost/codingassistant-openclaw-acpx:2026.11.5-e13cf15e`.
+The script requires source/revision/ACPX selection labels and an immutable
+local image ID. It then uses three fresh **no-network/no-mount/read-only-root**
+Podman guests to verify security-patched Node, exact OpenClaw version,
+packaged ACPX entry/manifest/package, and pinned `acpx@0.21.0` dependency.
+Only then is `M1.4 ACPX_IMAGE_PACKAGED_PASS` reported.
+
+If the image already exists, omit `--prepare` to verify it offline:
+
+```bash
+python3 tools/m1/acpx_source_image.py
+```
+
+The script keeps append-only audit JSON and a separate local build log
+in `artifacts/m1/`, all ignored by Git. A failure is `BLOCKED` with
+a precise reason/log location; **do not** patch the upstream checkout,
+disable isolation or install arbitrary plugins into the running Gateway.
+
+**Packaging is not activation.** This step does NOT launch a Gateway,
+ACP session, plugin service or model, and cannot claim a working OpenCode
+adapter. After PASS, next M1 work is to activate the pinned plugin with
+strict explicit local-only settings, verify the ACPX/OpenCode adapter command
+and enforce a separate OS boundary for every child process. Owner plan
+approvals and all M1 negative security tests remain outstanding.
+
+References:
+- https://docs.openclaw.ai/docker
+- https://github.com/openclaw/openclaw/blob/v2026.11.5/Dockerfile
+- https://github.com/openclaw/openclaw/blob/v2026.11.5/extensions/acpx/package.json
+- https://docs.openclaw.ai/tools/acp-agents-setup
