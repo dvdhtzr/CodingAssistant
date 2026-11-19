@@ -4,6 +4,28 @@ Cross-platform, **local-first** autonomous software engineering assistant. OpenC
 
 > **Current status: M0 IN PROGRESS (not GREEN).** This repository currently contains the model/hardware feasibility and evaluation foundation, not a running autonomous developer. No model or platform has qualified.
 
+## Try the interactive MVP today
+
+**First usable vertical slice:** choose one source file and a task, get a proposal from your installed **local Ollama** model, inspect the diff, and explicitly type `APPLY` to save it **only in a disposable copy**. There is no automatic modification of your original project, no autonomous tool execution, and no network service beyond `127.0.0.1:11434`.
+
+On the Dell with Ollama running:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/mvp/assist.py --demo --build
+```
+
+The built-in demo asks Qwen 4B to fix the frozen C# compile-error fixture. **It shows the actual proposed diff first.** Type `APPLY` only if the change looks correct. The optional `--build` uses the existing immutable local M0.7 toolchain image in a rootless network-disabled Podman container for fixed .NET restore/build; for this demo it also runs the repaired app. A successful demo should print `Total: 15`. If Qwen returns an unusable suggestion, reject it; do not force success or modify the fixture.
+
+For your own project (one source file at a time):
+
+```bash
+python3 tools/mvp/assist.py --project /path/to/project --file Program.cs --task "Fix the null handling"
+```
+
+The workflow copies selected non-secret source/project files into `artifacts/mvp/<run>/project/` (Git ignored), writes the approved replacement there, and saves `change.patch` alongside it. It does not copy Git history, `.env`, `appsettings.json`, dependencies, build outputs or symlinks. Only the explicitly selected file content and task are sent to Ollama. Add `--build` for a Linux-only, fixed offline .NET compile check when a single top-level `.csproj` is present. No code is merged, committed, or pushed.
+
+**Deliberate shortcut:** this interactive MVP's proposal stage uses Ollama's local OpenAI-compatible API **directly**; it does not start an OpenCode agent. The already validated isolated OpenCode work remains in `tools/m0/`, and the later autonomous workflow will reintegrate it. This first command is meant to produce a useful, reviewable edit now—not claim M0 qualification or production-grade autonomous coding.
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
