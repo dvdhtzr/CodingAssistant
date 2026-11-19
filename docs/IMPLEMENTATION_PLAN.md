@@ -28,3 +28,17 @@ React/Vite/TypeScript UI for project/model selection, objective entry, plan revi
 Never introduce speculative microservices, Redis, Kubernetes, distributed runners, or an additional orchestration engine.
 
 Milestone outcomes: GREEN, YELLOW, RED, BLOCKED; missing evidence never implies success.
+
+## Deferred capability — pluggable engineering skills (owner request, 2026-11-19)
+
+Preserve a future **versioned, pluggable skills** interface for engineering
+workflows such as refactoring, code review, test creation and testing.
+Investigate compatibility with commonly distributed external skills,
+including Anthropic-style skill packages, when the core milestones are ready.
+Treat externally sourced skill descriptions, prompts, scripts and tools as
+**untrusted inputs**, never as authority to bypass exact owner approval,
+scoped permissions, model/provider pinning or OS-enforced isolation.
+Explicit install/review, provenance, declared capabilities, per-skill
+approval and audit evidence will be mandatory. No skills loader or
+third-party execution is authorized in M0. This is a backlog requirement,
+not a change to approved M0–M3 acceptance criteria.
