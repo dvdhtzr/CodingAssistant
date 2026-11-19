@@ -182,6 +182,92 @@ class GatewayAcpDoctorContract(unittest.TestCase):
         self.assertEqual(result["status"],"BLOCKED")
         self.assertFalse(any(argv[1]=="run" for argv in calls))
 
+    def test_failure_classification_never_persists_raw_errors_or_secrets(self):
+        cases = (
+            ("error: unknown option --session-key; token=TOP-SECRET",
+             "cli_usage_or_option"),
+            ("Gateway connection failed: pairing required device SECRET-ID",
+             "device_pairing_required"),
+            ("Authentication failed: invalid token SECRET-TOKEN",
+             "authentication_or_scope"),
+            ("Error: ECONNREFUSED 127.0.0.1:18789",
+             "gateway_connection"),
+            ("Unconfigured agent config /SECRET/PATH",
+             "agent_or_session_config"),
+            ("No API key for model provider; key=TOP-SECRET",
+             "provider_or_model_config"),
+            ("ACP backend failed in /SECRET/PATH",
+             "acp_backend"),
+            ("Request timed out; key=TOP-SECRET",
+             "request_timeout"),
+            ("container is not running; token=TOP-SECRET",
+             "container_or_process"),
+            ("unrelated failure with TOP-SECRET",
+             "unclassified"),
+        )
+        for message, expected in cases:
+            with self.subTest(expected=expected):
+                response=subprocess.CompletedProcess(
+                    ["podman","exec"],1,"",message)
+                diagnosis=p.classify_doctor_exit(response)
+                self.assertEqual(diagnosis["category"],expected)
+                self.assertEqual(diagnosis["exit_code"],1)
+                self.assertFalse(diagnosis["raw_output_retained"])
+                self.assertEqual(diagnosis["stdout_shape"],"non_json")
+                dumped=json.dumps(diagnosis)
+                self.assertNotIn("SECRET",dumped)
+                self.assertNotIn("/SECRET/PATH",dumped)
+                self.assertNotIn("127.0.0.1",dumped)
+        response=subprocess.CompletedProcess(
+            ["podman","exec"],2,
+            '{"status":"error","error":"key=TOP-SECRET"}',
+            "invalid request token=TOP-SECRET")
+        diagnosis=p.classify_doctor_exit(response)
+        self.assertEqual(diagnosis["stdout_shape"],"json_object")
+        self.assertEqual(diagnosis["category"],"gateway_request_rejected")
+        self.assertNotIn("SECRET",json.dumps(diagnosis))
+        with self.assertRaises(ValueError):
+            p.classify_doctor_exit(subprocess.CompletedProcess([],0,"",""))
+
+    @mock.patch.object(p.sys,"platform","linux")
+    @mock.patch.object(p.os,"geteuid",return_value=1000,create=True)
+    @mock.patch.object(p.os,"getuid",return_value=1000,create=True)
+    @mock.patch.object(p.os,"getgid",return_value=1000,create=True)
+    def test_real_nonzero_gateway_cli_is_blocked_with_safe_diagnostic(self,*_):
+        calls=[]
+        def fake(argv,timeout=50):
+            calls.append(argv)
+            if argv[1]=="run":
+                return done(argv,stdout="container-id")
+            if argv[1]=="inspect":
+                return done(argv,stdout="true")
+            if argv[1]=="exec":
+                if "agent" in argv:
+                    return subprocess.CompletedProcess(
+                        argv,1,'{"error":"SECRET: token"}',
+                        "Gateway connection failed: pairing required SECRET")
+                return done(argv,stdout=json.dumps({
+                    "/healthz":200,"/startupz":200,"/readyz":200}))
+            if argv[1]=="rm":
+                return done(argv)
+            if argv[1:3]==["container","exists"]:
+                return done(argv,status=1)
+            raise AssertionError(argv)
+        with (mock.patch.object(p,"verify_inputs",return_value=M0),
+              mock.patch.object(p,"inspect_composed",return_value=p.OWNER_IMAGE_ID),
+              mock.patch.object(p,"verify_combined",return_value=registry()),
+              mock.patch.object(p,"fixed",side_effect=fake)):
+            report=p.run()
+        self.assertEqual(report["status"],"BLOCKED",report)
+        self.assertTrue(report["gateway_removed"])
+        self.assertIsNone(report["authenticated_doctor"])
+        diag=report["doctor_failure_diagnostic"]
+        self.assertEqual(diag["category"],"device_pairing_required")
+        self.assertEqual(diag["stdout_shape"],"json_object")
+        self.assertEqual(diag["exit_code"],1)
+        self.assertEqual(sum(x[1]=="rm" for x in calls),1)
+        self.assertNotIn("SECRET",json.dumps(report))
+
     @mock.patch.object(p.sys,"platform","win32")
     def test_windows_not_runtime_qualified(self):
         with mock.patch.object(p,"fixed") as tool:
