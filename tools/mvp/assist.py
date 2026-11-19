@@ -285,6 +285,8 @@ def run(args: argparse.Namespace) -> int:
         if run_directory.is_symlink() or not run_directory.is_dir():
             raise ValueError("Approved disposable run directory was not found")
         previous_result = run_directory / "result.json"
+        if previous_result.is_symlink():
+            raise ValueError("Recorded result must not be a symlink")
         if previous_result.is_file():
             previous = json.loads(previous_result.read_text(encoding="utf-8"))
             if previous.get("model") != args.model:
@@ -293,6 +295,8 @@ def run(args: argparse.Namespace) -> int:
                 )
             pinned_digest = previous.get("model_digest")
         project = run_directory / "project"
+        if project.is_symlink() or not project.is_dir():
+            raise ValueError("Approved disposable project must be an ordinary directory")
         relative = args.file or "Program.cs"
         print(f"Rechecking existing disposable copy: {project}")
         compiler_errors: list[str] = []
