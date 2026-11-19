@@ -55,6 +55,12 @@ SOURCES = (CONTAINERFILE, CONFIG, LAUNCHER, PLUGIN / "index.mjs",
            pathlib.Path(__file__).resolve())
 IMAGE_TAG = "localhost/codingassistant-m112-approved-coding:2026.11.5"
 METHOD = "codingassistant.coding.run"
+STATUS_METHOD = "codingassistant.coding.status"
+SAFE_GATEWAY_PHASES = frozenset((
+    "waiting", "approved", "backend_lookup", "session_initialize",
+    "session_ready", "turn_start", "turn_stream", "turn_result",
+    "session_close", "completed", "failed",
+))
 TASK = "02-build-repair"
 MODEL = "qwen3.5:4b"
 HEX64 = re.compile(r"(?:sha256:)?([a-f0-9]{64})\Z")
@@ -68,6 +74,15 @@ EXPECTED_RPC = {
     "modelVerifiedByHost": False,
     "modelInferenceClaim": "host-broker-verification-required",
 }
+
+class SafeGateBlocked(ValueError):
+    """Machine-readable bounded failure category, never raw runtime output."""
+    def __init__(self, category: str):
+        if not re.fullmatch(r"[A-Z_]{4,64}", category):
+            raise ValueError("Invalid sanitized failure code")
+        self.category = category
+        super().__init__(category)
+
 
 def fingerprint() -> str:
     digest = hashlib.sha256()
@@ -95,8 +110,10 @@ def fingerprint() -> str:
             acpx["openClawToolsMcpBridge"] is not False):
         raise ValueError("Approved coding configuration changed")
     source = (PLUGIN / "index.mjs").read_text(encoding="utf-8")
-    if (source.count("api.registerGatewayMethod(") != 1 or
+    if (source.count("api.registerGatewayMethod(") != 2 or
             '"operator.write"' not in source or
+            '"operator.read"' not in source or
+            'codingassistant.coding.status' not in source or
             'getAcpRuntimeBackend("acpx")' not in source or
             "runtime.ensureSession(" not in source or
             "runtime.startTurn(" not in source):
@@ -275,14 +292,17 @@ def container_command(image_id: str, name: str, env: pathlib.Path,
     args[start + 1:] = ["/app/codingassistant-coding-runner.mjs"]
     return args
 
-def gateway_rpc_command(name: str, plan_hash: str) -> list[str]:
-    if not re.fullmatch(r"ca-m17-acpx-[0-9a-f]{12}", name) or (
-            HEX64.fullmatch(plan_hash) is None):
+def gateway_rpc_command(name: str, plan_hash: str,
+                        method: str = METHOD) -> list[str]:
+    if (not re.fullmatch(r"ca-m17-acpx-[0-9a-f]{12}", name) or
+            HEX64.fullmatch(plan_hash) is None or
+            method not in (METHOD, STATUS_METHOD)):
         raise ValueError("Invalid isolated Gateway request")
     params = json.dumps({"planHash": plan_hash}, separators=(",", ":"))
     return ["podman", "exec", "--interactive=false", name, "node",
-            "/app/openclaw.mjs", "gateway", "call", METHOD,
-            "--params", params, "--json", "--timeout", "900000"]
+            "/app/openclaw.mjs", "gateway", "call", method,
+            "--params", params, "--json", "--timeout",
+            "900000" if method == METHOD else "30000"]
 
 def parse_rpc(raw: str) -> dict[str, object]:
     if not 0 < len(raw) < 4000:
@@ -301,10 +321,43 @@ def parse_rpc(raw: str) -> dict[str, object]:
             "turn_completed": True, "events": item["eventsObserved"],
             "tool_calls": item["toolCallsObserved"]}
 
+def parse_gateway_status(raw: str) -> dict[str, object]:
+    """Strict, no-free-text status contract; never print or store raw RPC output."""
+    if not 0 < len(raw) <= 1500:
+        raise ValueError("Missing/oversized bounded diagnostic")
+    value = json.loads(raw)
+    if (type(value) is not dict or
+            set(value) != {"phase", "failureAt", "claimed", "turnSucceeded"} or
+            value.get("phase") not in SAFE_GATEWAY_PHASES or
+            value.get("failureAt") not in SAFE_GATEWAY_PHASES | {None} or
+            type(value.get("claimed")) is not bool or
+            type(value.get("turnSucceeded")) is not bool):
+        raise ValueError("Unexpected bounded diagnostic response")
+    return value
+
+
+def query_gateway_status(name: str, plan_hash: str) -> dict[str, object] | None:
+    """On RPC failure, ask the SAME pinned plugin for four bounded booleans/stages."""
+    try:
+        result = fixed(
+            gateway_rpc_command(name, plan_hash, STATUS_METHOD), timeout=40)
+        if result.returncode != 0:
+            return None
+        return parse_gateway_status(result.stdout)
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        return None
+
+
 def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
-                plan_hash: str) -> dict[str, object]:
+                plan_hash: str, evidence: dict[str, object] | None = None
+                ) -> dict[str, object]:
     name = "ca-m17-acpx-" + secrets.token_hex(6)
-    status: dict[str, object] = {"health": None, "rpc": None, "removed": False}
+    status = evidence if evidence is not None else {}
+    status.update({
+        "phase": "gateway_start", "health": None, "rpc": None,
+        "plugin": None, "removed": False, "container_started": False,
+        "rpc_nonzero": False,
+    })
     with tempfile.TemporaryDirectory(prefix="ca-m112-credentials-") as temporary:
         env = pathlib.Path(temporary) / "gateway.env"
         descriptor = os.open(env, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -316,27 +369,38 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
         try:
             result = fixed(container_command(image, name, env, worktree, socket_dir), timeout=45)
             if result.returncode != 0:
-                raise ValueError("Isolated coding Gateway failed to launch")
+                raise SafeGateBlocked("GATEWAY_LAUNCH_FAILED")
+            status["container_started"] = True
+            status["phase"] = "gateway_readiness"
             for _ in range(50):
                 alive = fixed(["podman", "inspect", "--format",
                                "{{.State.Running}}", name], timeout=12)
                 if alive.returncode != 0 or alive.stdout.strip() != "true":
-                    raise ValueError("Isolated coding Gateway exited")
+                    raise SafeGateBlocked("GATEWAY_EXITED_BEFORE_READY")
                 probe = fixed(["podman", "exec", "--interactive=false",
                                name, "node", "-e", NODE_HTTP], timeout=25)
                 if probe.returncode != 0:
-                    raise ValueError("Gateway readiness probe failed")
+                    raise SafeGateBlocked("GATEWAY_HEALTH_PROBE_FAILED")
                 codes = parse_codes(probe.stdout)
                 status["health"] = codes
                 if all(codes[k] == 200 for k in ("/healthz", "/startupz", "/readyz")):
                     break
                 time.sleep(2)
             else:
-                raise ValueError("Isolated Gateway never became ready")
+                raise SafeGateBlocked("GATEWAY_READINESS_TIMEOUT")
+            status["phase"] = "coding_rpc"
             call = fixed(gateway_rpc_command(name, plan_hash), timeout=950)
             if call.returncode != 0:
-                raise ValueError("Registered ACPX coding turn rejected or failed")
-            status["rpc"] = parse_rpc(call.stdout)
+                status["rpc_nonzero"] = True
+                status["plugin"] = query_gateway_status(name, plan_hash)
+                raise SafeGateBlocked("CODING_RPC_NONZERO")
+            status["phase"] = "coding_rpc_validation"
+            try:
+                status["rpc"] = parse_rpc(call.stdout)
+            except (ValueError, TypeError):
+                status["plugin"] = query_gateway_status(name, plan_hash)
+                raise SafeGateBlocked("CODING_RPC_INVALID_RESULT")
+            status["phase"] = "coding_rpc_complete"
         finally:
             try:
                 fixed(["podman", "rm", "-f", name], timeout=30)
@@ -345,7 +409,8 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
             except (OSError, subprocess.TimeoutExpired):
                 status["removed"] = False
             if not status["removed"]:
-                raise ValueError("Isolated coding Gateway cleanup failed")
+                status["phase"] = "cleanup_failed"
+                raise SafeGateBlocked("GATEWAY_CLEANUP_FAILED")
     return status
 
 def request_exact_approval(plan_hash: str) -> bool:
@@ -370,7 +435,8 @@ def execute(prepare: bool) -> dict[str, object]:
     report: dict[str, object] = {
         "schema_version": 1, "stage": "M1.12-approved-gateway-coding",
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "status": "BLOCKED", "reason_code": None, "approved": False,
+        "status": "BLOCKED", "reason_code": None, "phase": "preflight",
+        "approved": False,
         "plan_hash": None, "base_image": OWNER_IMAGE_ID,
         "derived_image": None, "model": MODEL, "model_digest": None,
         "gateway": None, "broker": None, "source_before": None,
@@ -427,6 +493,7 @@ def execute(prepare: bool) -> dict[str, object]:
             print("Approval declined or incomplete; no coding session was started.")
             return report
         report["approved"] = True
+        report["phase"] = "disposable_workspace"
 
         with tempfile.TemporaryDirectory(prefix="ca-m112-isolated-") as temporary:
             root = pathlib.Path(temporary)
@@ -439,12 +506,29 @@ def execute(prepare: bool) -> dict[str, object]:
             ipc = root / "ipc"
             ipc.mkdir(mode=0o700)
             broker_state = {"attempts": 0, "verified": 0, "failed": 0, "denied": 0}
+            # Shared dictionaries retain safe partial evidence even if an
+            # isolated Gateway or its ACP session fails before returning.
+            report["broker"] = broker_state
+            gateway_evidence: dict[str, object] = {}
+            report["gateway"] = gateway_evidence
+            report["phase"] = "gateway_and_inference"
             with serve_bridge(ipc / "ollama.sock",
                     broker_for(MODEL, digest, broker_state)):
-                gateway = run_gateway(image, project, ipc, plan_hash)
-            report["gateway"] = gateway
-            report["broker"] = dict(broker_state)
-            report["source_after"] = scan_workspace(project, TASK)
+                try:
+                    gateway = run_gateway(
+                        image, project, ipc, plan_hash, gateway_evidence)
+                finally:
+                    # The disposable project survives the Gateway removal but
+                    # is never uploaded to GitHub or printed with its content.
+                    report["phase"] = "gateway_complete_or_blocked"
+                    try:
+                        report["source_after"] = scan_workspace(project, TASK)
+                    except (OSError, ValueError):
+                        report["source_after"] = None
+                        gateway_evidence["post_run_workspace_integrity"] = False
+            if report["source_after"] is None:
+                raise SafeGateBlocked("WORKSPACE_INTEGRITY_FAILED")
+            report["phase"] = "source_integrity"
             report["fixture_unchanged"] = (
                 sealed_snapshot(FIXTURES / TASK, TASK) == base_hash)
             report["sentinel_unchanged"] = (
@@ -459,6 +543,7 @@ def execute(prepare: bool) -> dict[str, object]:
                     old.get("api/Repair.csproj") != new.get("api/Repair.csproj")):
                 raise ValueError("Integrated model/boundary/source gate failed")
             # Isolated verification: no host Ollama socket is mounted here.
+            report["phase"] = "offline_acceptance"
             eval_dir = root / "offline-evaluation"
             result = run_evaluator(
                 eval_img["image_id"], TASK, project, sibling,
@@ -477,10 +562,13 @@ def execute(prepare: bool) -> dict[str, object]:
             if sibling.read_text(encoding="utf-8") != "UNMOUNTED-DO-NOT-TOUCH":
                 raise ValueError("Independent evaluator touched unmounted sibling")
             report["status"] = "GATEWAY_APPROVED_CODING_PASS"
+            report["phase"] = "complete"
     except (OSError, RuntimeError, ValueError, TypeError, KeyError,
             AssertionError, subprocess.TimeoutExpired,
             http.client.HTTPException) as exc:
-        report["reason_code"] = type(exc).__name__
+        report["reason_code"] = (
+            exc.category if isinstance(exc, SafeGateBlocked)
+            else type(exc).__name__)
     return report
 
 def main() -> int:
@@ -497,6 +585,7 @@ def main() -> int:
         stream.write("\n")
     print("M1.12", report["status"])
     print("  approved:", report["approved"], "plan hash:", report["plan_hash"])
+    print("  failed/succeeded phase:", report["phase"])
     print("  isolated Gateway / host broker:", report["gateway"], report["broker"])
     print("  independent evaluator:", report["evaluator"])
     if report["reason_code"]:
