@@ -136,3 +136,21 @@ Current primary references:
 - https://docs.openclaw.ai/install/node
 - https://docs.openclaw.ai/tools/acp-agents-setup
 - https://github.com/openclaw/openclaw/pkgs/container/openclaw
+
+## M1.1 owner Dell result and M1.2 actual Gateway loopback smoke
+
+**M1.1 RUNTIME_IMAGE_PASS**. On Nov 19 the owner verified the official image with immutable ID `405dcc682726f127d316d435e29d3c5d0cdecb502aef6d74384ce6dd4ffe2700` and official registry digest `ghcr.io/openclaw/openclaw@sha256:97781490d6cd01cec8d1f0ad300ff8bedfaae18ec5b8c30666aaebc470a6309f`. The image runs patched Node `v24.22.1` and OpenClaw `2026.11.5`. No host installation or Gateway process occurred.
+
+**Next owner command after PR green and merge:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_loopback_probe.py
+```
+
+Unlike the previous version-only check, this launches a **real temporary OpenClaw Gateway**. It requires exactly the image's already-verified immutable ID/digest and starts it with `gateway --allow-unconfigured --bind loopback --port 18789` inside rootless Podman. The guest has **network=none** (its own loopback remains available), no host-project or config mounts, no host ports, zero capabilities, no new privileges, and read-only root except a disposable `/tmp` tmpfs. A fresh random Gateway token is provided by a private ephemeral environment file, never printed or stored in audit evidence. `HOME` and Gateway state are entirely ephemeral inside the guest. No ACP agent, coding task, remote Git operation, or Ollama inference is configured or requested.
+
+The fixed monitor invokes Node within the isolated guest to request only three documented HTTP probes: `/healthz` (process liveness), `/startupz` (startup completion), and `/readyz` (readiness). **All three must return HTTP 200**. The monitor also requires the Gateway process to remain alive. The container is removed after the check, even on failure; a failed cleanup prevents PASS. Only status codes and safe flags are recorded in ignored `artifacts/m1/gateway-loopback-smoke.json`.
+
+This is a **Gateway runtime test only**, not a working ACP/ACPX connection. If readiness remains 503, keep M1.2 BLOCKED, inspect its explicit local evidence and actual failure cause before adjusting config. Never relax networking or mount your home directory to force a green result. The later true ACP bridge must still have external OS-enforced harness isolation, strict owner approval, explicit local Ollama model pinning and negative security tests.
+
+Command contract sources: https://docs.openclaw.ai/cli/gateway/running and https://docs.openclaw.ai/gateway/health .
