@@ -303,10 +303,16 @@ def inspect_run(row: dict[str, Any], report: dict[str, Any],
              r.get("source_sha256") == source_map,
              "Bounded model compiler-repair evidence incomplete")
         check_writes(r.get("writes"), task, source_map, repair=True)
-        must(type(row.get("write_evidence")) is list and
-             len(row["write_evidence"]) == 1 and
-             row["write_evidence"][0].get("path") == MODEL_WRITES[task][0],
-             "Initial native write lacks source provenance")
+        first = row.get("write_evidence")
+        must(type(first) is list and len(first) == 1 and
+             type(first[0]) is dict and
+             first[0].get("path") == MODEL_WRITES[task][0] and
+             sha256(first[0].get("sha256")) and
+             type(first[0].get("bytes")) is int and
+             0 < first[0]["bytes"] <= MAX_SOURCE_BYTES and
+             first[0]["sha256"] != source_map[
+                 MODEL_WRITES[task][0].removeprefix("/workspace/")],
+             "Compiler repair has no distinct initial model-write provenance")
         # Initial compiler-failing bytes were not retained, so they cannot
         # be independently rehashed here. Never pretend they were.
     else:
