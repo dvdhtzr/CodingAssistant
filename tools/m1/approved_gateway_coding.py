@@ -343,10 +343,8 @@ def container_command(image_id: str, name: str, env: pathlib.Path,
     # availability to the same two CPUs used in the successful M1.8 ACP test.
     args[args.index("--pids-limit=96")] = (
         "--pids-limit=" + str(COMBINED_PIDS_LIMIT))
-    args[at:at] = []  # position is recalculated after the inserted volumes
-    args[args.index("--pids-limit=" + str(COMBINED_PIDS_LIMIT)) + 1: 
-         args.index("--pids-limit=" + str(COMBINED_PIDS_LIMIT)) + 1] = [
-        "--cpus=" + str(COMBINED_CPU_LIMIT)]
+    args.insert(args.index("--pids-limit=" + str(COMBINED_PIDS_LIMIT)) + 1,
+                "--cpus=" + str(COMBINED_CPU_LIMIT))
     args[args.index("--tmpfs=/tmp:rw,nosuid,nodev,size=512m,notmpcopyup")] = (
         "--tmpfs=/tmp:rw,nosuid,nodev,size=768m,notmpcopyup")
     start = args.index(image_id)
