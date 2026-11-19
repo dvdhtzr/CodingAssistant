@@ -59,9 +59,10 @@ class IsolatedGatewaySmokeTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 p.gateway_command(p.APPROVED_IMAGE_ID, "bad", 1000, 1000, path)
             path.chmod(0o644)
-            with self.assertRaises(ValueError):
-                p.gateway_command(
-                    p.APPROVED_IMAGE_ID, "ca-m12-gateway-a", 1000, 1000, path)
+            if os.name == "posix":
+                with self.assertRaises(ValueError):
+                    p.gateway_command(
+                        p.APPROVED_IMAGE_ID, "ca-m12-gateway-a", 1000, 1000, path)
 
     def test_health_probe_strict_schema(self):
         self.assertEqual(p.parse_codes(
