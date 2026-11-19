@@ -178,7 +178,7 @@ def authorize_write(args: object, task: str,
     remaining = set(FILES[task]) - {x["filePath"] for x in done}
     data = args["content"].encode("utf-8")
     return (args["filePath"] in remaining and
-            0 < len(data) <= MAX_CODE and "\\x00" not in args["content"])
+            0 < len(data) <= MAX_CODE and "\x00" not in args["content"])
 
 
 def request_model_write(model: str, digest: str, task: str,
