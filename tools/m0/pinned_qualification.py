@@ -66,7 +66,7 @@ def native_write_offered(request: dict[str, Any]) -> bool:
     return (type(schema) is dict and type(schema.get("properties")) is dict and
             type(schema.get("required")) is list and
             all(x in schema["properties"] and x in schema["required"]
-                for x in ("filePath", "content")))
+                for x in ("path", "content")))
 
 def validate_chat(data: bytes, task: str, model: str, stage: int) -> bool:
     if not 0 < len(data) <= MAX_REQUEST:
@@ -162,7 +162,7 @@ def parse_write_sse(data: bytes, model: str) -> dict[str, str]:
     if not done or not seen or finish != "tool_calls" or name != "write":
         raise ValueError("Model did not finish one native write")
     args = json.loads("".join(fragments), object_pairs_hook=_reject_duplicates)
-    if (type(args) is not dict or set(args) != {"filePath", "content"} or
+    if (type(args) is not dict or set(args) != {"path", "content"} or
             any(type(x) is not str for x in args.values()) or
             not 0 < len(args["content"].encode("utf-8")) <= MAX_CODE or
             "\x00" in args["content"]):
@@ -171,13 +171,13 @@ def parse_write_sse(data: bytes, model: str) -> dict[str, str]:
 
 def authorize_write(args: object, task: str,
                     done: list[dict[str, str]]) -> bool:
-    if type(args) is not dict or set(args) != {"filePath", "content"}:
+    if type(args) is not dict or set(args) != {"path", "content"}:
         return False
-    if type(args["filePath"]) is not str or type(args["content"]) is not str:
+    if type(args["path"]) is not str or type(args["content"]) is not str:
         return False
-    remaining = set(FILES[task]) - {x["filePath"] for x in done}
+    remaining = set(FILES[task]) - {x["path"] for x in done}
     data = args["content"].encode("utf-8")
-    return (args["filePath"] in remaining and
+    return (args["path"] in remaining and
             0 < len(data) <= MAX_CODE and "\x00" not in args["content"])
 
 
@@ -185,7 +185,7 @@ def request_model_write(model: str, digest: str, task: str,
                         stage: int, done: list[dict[str, str]]) -> dict[str, str]:
     if not verify_model_digest(model, digest):
         raise ValueError("Model digest drift")
-    remaining = [p for p in FILES[task] if p not in {w["filePath"] for w in done}]
+    remaining = [p for p in FILES[task] if p not in {w["path"] for w in done}]
     if len(remaining) != len(FILES[task]) - stage:
         raise ValueError("Write stage changed")
     sources = {}
@@ -201,7 +201,7 @@ def request_model_write(model: str, digest: str, task: str,
             sources[path] = file.read_text(encoding="utf-8")
     prompt = (
         "Implement the following ORIGINAL benchmark request without claiming tests ran. "
-        "Use ONLY the native write tool (filePath, content) once this turn. "
+        "Use ONLY the native write tool (path, content) once this turn. "
         "Write a COMPLETE valid source file, no markdown, no explanation. "
         "Permitted remaining paths: " + json.dumps(remaining) + "\n"
         "Original request: " + task_prompt(task) + "\n"
@@ -211,9 +211,9 @@ def request_model_write(model: str, digest: str, task: str,
     tool = {"type": "function", "function": {
         "name": "write", "description": "Replace one complete approved source file.",
         "parameters": {"type": "object",
-                       "properties": {"filePath": {"type": "string"},
+                       "properties": {"path": {"type": "string"},
                                       "content": {"type": "string"}},
-                       "required": ["filePath", "content"],
+                       "required": ["path", "content"],
                        "additionalProperties": False}}}
     query = {"model": model, "messages": [
         {"role": "system", "content": "Produce one native write tool call only."},
@@ -295,7 +295,7 @@ def pinned_qualification_handler(model: str, digest: str, task: str,
                 # Every prior native write must have been truly performed by
                 # OpenCode before we will accept its next chat request.
                 for item in state["writes"]:
-                    f = workspace / item["filePath"].removeprefix("/workspace/")
+                    f = workspace / item["path"].removeprefix("/workspace/")
                     if (f.is_symlink() or not f.is_file() or
                             f.read_text(encoding="utf-8") != item["content"]):
                         state["rejected"] += 1
