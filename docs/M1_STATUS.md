@@ -331,3 +331,80 @@ Source references:
 - `https://github.com/openclaw/openclaw/blob/v2026.11.5/extensions/acpx/index.ts`
 - `https://github.com/openclaw/acpx/blob/v0.21.0/src/agent-registry.ts`
 - `https://github.com/openclaw/openclaw/blob/v2026.11.5/docs/cli/gateway/query.md`
+
+
+## M1.6 owner Dell result — real read-only Gateway-to-ACPX RPC PASS
+
+The owner ran `tools/m1/acpx_opencode_rpc_probe.py` on the Dell:
+`M1.6 ACPX_OPENCODE_DISCOVERY_PASS`. Live Gateway reported all health
+endpoints HTTP 200; the read-only `acpx.agents.list` RPC returned exactly
+one OpenCode descriptor `{id:opencode, runtimeId:acp-opencode,
+installation:missing, enabled:true}`. The independent pinned ACPX registry
+also reported the OpenCode executable **missing**. The disposable Gateway
+was verified removed. No ACP session, agent, model or package installer ran.
+Local evidence: `artifacts/m1/acpx-opencode-rpc-7c2f4890d37e.json`.
+
+**M1.6 GREEN** means the real authenticated Gateway→ACPX metadata
+transport works. It does **not** mean the OpenCode ACP protocol works.
+
+## M1.7 — offline composition of M0-pinned OpenCode and ACPX Gateway
+
+The existing qualified M0.7 toolchain image
+`localhost/codingassistant-m0-runtime:2.3.0` already includes
+`@opencode/cli@2.3.0`, installed at the global npm binary and package
+locations under `/usr/local`. The verified ACPX Gateway image is
+`localhost/codingassistant-openclaw-acpx:2026.11.5-e13cf15e`
+with immutable image ID
+`5aa8b2911525ccf1d5af5ba73ae4bc5f219cdf2a7c91bdf6cfee7208941c5f0c`.
+
+Instead of using ACPX's built-in `npx -y opencode-ai acp` download
+fallback, M1.7 adds a dedicated **copy-only** multistage Containerfile
+at `infra/m1/Containerfile.opencode-acpx`:
+- FROM the exact two **locally inspected immutable image IDs**;
+- copy only the global OpenCode 2.3.0 package and launcher into Gateway;
+- preserve its Node 24, ACPX, startup and non-root Podman constraints;
+- do not copy M0's Node 22, .NET SDK, source trees or secrets;
+- `podman build --pull=never --network=none`, with NO Dockerfile RUN,
+  package install, internet download, floating base image or image push.
+
+The next owner command (after this PR is GREEN/merged):
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_opencode_image_probe.py --prepare
+```
+
+`--prepare` opt-in **composes a new image entirely from the two
+already installed local images**. There are no networked source or
+package downloads. Each parent is checked via our previous offline
+qualification routines. The new image receives pin and provenance
+labels and must have its own immutable local image ID. The runtime
+verification, again in sealed `--network=none --pull=never` containers,
+requires OpenClaw `2026.11.5`, Node `24.22.1`, OpenCode `2.3.0`,
+working **`opencode acp --help`**, and ACPX's read-only native registry
+recognizing the installed `opencode acp` executable. A **real, disposable
+Gateway** then must report `installation:installed` through the
+authenticated `acpx.agents.list` read-only method, with all health
+endpoints HTTP 200. No Gateway/agent runtime may publish ports or mount
+the host, and temporary Gateway cleanup is mandatory.
+
+If the local images are already composed, omit `--prepare` and the
+script only revalidates the image offline. If the older M0 image is
+missing or the global OpenCode package launcher is laid out differently,
+the build MUST fail closed; do not install OpenCode into the running
+Gateway, invoke `npx`, or modify host packages.
+
+Expected potential success:
+`M1.7 ACPX_OPENCODE_INSTALLED_DISCOVERY_PASS`.
+
+**This is STILL installation/metadata compatibility, not an ACP
+handshake or an authorized coding run.** In particular, native
+`opencode acp --help` must exit without initiating an ACP session or
+model. Future gates must validate a genuine initialized ACP session,
+exact local Ollama model/provider pinning, owner plan/hash approval,
+and external process/network/filesystem confinement before source edits.
+
+Official source basis: pinned ACPX v0.21.0 agent registry uses installed
+`opencode acp`, and the existing M0 Containerfile pins
+`@opencode/cli@2.3.0`. Source references:
+- `infra/runtime/Containerfile`
+- `https://github.com/openclaw/acpx/blob/v0.21.0/src/agent-registry.ts`
