@@ -157,7 +157,7 @@ class IndependentEvidenceAuditTests(unittest.TestCase):
         self.rewrite(change)
         result = audit.audit(self.path, reverify=self.fake_rerun)
         self.assertEqual(result["status"], "BLOCKED")
-        self.assertIn("native writes", " ".join(result["findings"]))
+        self.assertIn("unauthorized path", " ".join(result["findings"]))
 
     def test_denies_modified_generated_source(self):
         source = self.root / "workspaces/01-api-feature-1/api/Program.cs"
