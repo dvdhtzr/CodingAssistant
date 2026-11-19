@@ -23,6 +23,7 @@ const checks = {
   offline_node_dependencies: TASK !== "03-fullstack-feature",
 };
 const notes = [];
+let compiler_errors = [];
 const ROOT = "/workspace";
 const TRUSTED_REACT_TEST = "/opt/qualification/TaskSummary.acceptance.test.tsx";
 const TRUSTED_NODE_MODULES = "/opt/qualification/web/node_modules";
@@ -55,8 +56,22 @@ function fixed(command, args, cwd, timeout = 90000) {
     cwd, env, timeout, stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8", maxBuffer: 131072,
   });
+  // Only structured compiler codes and bounded printable diagnostic text
+  // cross the sandbox boundary. Do not forward raw build logs or source.
+  const errors = [];
+  if (command === "dotnet" && args[0] === "build" && out.status !== 0) {
+    for (const line of (out.stdout + "\n" + out.stderr).split(/\r?\n/)) {
+      const found = line.match(/\berror (CS\d{4}):\s*(.+)/);
+      if (!found) continue;
+      const description = found[2].replace(/\s+\[[^\]]*\.csproj\].*$/, "")
+        .replace(/[^\x20-\x7e]/g, "?").trim().slice(0, 200);
+      if (description && errors.length < 5)
+        errors.push(found[1] + ": " + description);
+    }
+  }
   return {ok: out.status === 0 && !out.error,
-          status: out.status, timeout: out.error?.code === "ETIMEDOUT"};
+          status: out.status, timeout: out.error?.code === "ETIMEDOUT",
+          compiler_errors: errors};
 }
 function regular(rel) {
   const candidate = path.join(ROOT, rel);
@@ -212,10 +227,12 @@ try {
       "-p:NuGetAudit=false", "--disable-parallel", "-v:q",
     ], "/workspace/api").ok;
     if (checks.offline_restore) {
-      checks.offline_build = fixed("dotnet", [
+      const built = fixed("dotnet", [
         "build", project, "--no-restore", "-c", "Release",
         "-p:UseSharedCompilation=false", "-v:q",
-      ], "/workspace/api").ok;
+      ], "/workspace/api");
+      checks.offline_build = built.ok;
+      if (!built.ok) compiler_errors = built.compiler_errors;
       if (checks.offline_build) {
         if (TASK === "02-build-repair") {
           const result = spawnSync("dotnet", [
@@ -240,5 +257,5 @@ try {
 }
 const safe = Object.values(guards).every(x => x === true);
 const verified = safe && Object.values(checks).every(x => x === true);
-console.log(JSON.stringify({task: TASK, guards, checks, verified, notes}));
+console.log(JSON.stringify({task: TASK, guards, checks, verified, compiler_errors, notes}));
 if (!verified) process.exitCode = 2;
