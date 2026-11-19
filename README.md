@@ -440,6 +440,23 @@ prove ACP protocol 1; invalid/absent output remains **BLOCKED**.
 All runtime operations remain rootless, no-network, no-host-mount
 and removed after use. M1 autonomous coding is **not** enabled.
 
+### M1.11 Dell GREEN; M1.12 first approved real Gateway coding turn
+
+M1.11 `GATEWAY_OWNED_ACP_DOCTOR_PASS` is now real owner-verified Dell evidence.
+The next `M1.12` slice uses a **fixed disposable C# repair fixture** only:
+Gateway calls ACPX/OpenCode with pinned local Qwen through a private Unix
+broker, then independent offline .NET verification. It requires exact plan
+hash approval and is not general-purpose repo access. After its PR is merged
+and CI GREEN, run on Dell:
+
+```bash
+cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/m1/approved_gateway_coding.py --prepare
+```
+
+Read the full plan SHA256 printed before typing `APPROVE <hash>`. No approval,
+no coding session. A mocked CI success is **not** a real M1.12 runtime pass.
+See [M1 current status](docs/M1_STATUS.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
@@ -465,7 +482,7 @@ Local results appear under `artifacts/m0/` (ignored by Git). Don't commit machin
 | Milestone | Description | Status |
 | --- | --- | --- |
 | M0 | Host inventory, Ollama/OpenCode model feasibility, repeatable 3×3 benchmarks | GREEN on Dell; Windows separate gate |
-| M1 | OpenClaw → ACP → OpenCode, externally enforced security boundary and approvals | YELLOW — M1.11 RPC correction merged; actual Dell Gateway RPC unverified |
+| M1 | OpenClaw → ACP → OpenCode, externally enforced security boundary and approvals | YELLOW — M1.11 Gateway/ACPX doctor GREEN on Dell; approved coding turn unverified |
 | M2 | ASP.NET Core API, auth, SQLite, state machine, reconciliation | NOT STARTED |
 | M3 | React Mission Control, SignalR, supervision and evidence UI | NOT STARTED |
 

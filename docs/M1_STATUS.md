@@ -1,6 +1,6 @@
 # M1 secure orchestration — status
 
-**Status (November 19, 2026): YELLOW / actual Gateway-owned coding integration NOT YET QUALIFIED.** The historical sections below record individual stages. PR #56 replaced the blocked M1.11 CLI slash-command probe with a registered Gateway RPC; model-free CI passed, but the new diagnostic still needs owner Dell runtime acceptance. See `docs/CURRENT_HANDOFF.md`.
+**Status (November 19, 2026): YELLOW / Gateway-owned ACPX diagnostic GREEN on Dell; full coding integration NOT YET QUALIFIED.** M1.11's corrected registered Gateway RPC passed real Dell runtime acceptance after PR #56; see last section and `docs/CURRENT_HANDOFF.md`. Earlier sections preserve historical failures.
 
 ## Accepted M0 baseline
 
@@ -770,3 +770,55 @@ part of a production coding runtime and does not authorize code edits.
 Owner plan hash approvals, source Git worktree permissions, local-only
 networked Ollama transport, durable crash recovery and Windows host
 runtime acceptance remain future M1 exit gates.
+
+
+## M1.12 — first approved disposable Gateway → ACPX → OpenCode → local Qwen coding turn
+
+**Status: implementation proposed; real Dell runtime acceptance NOT YET RUN.**
+M1.11 Gateway-owned diagnostic passed on the owner Dell: all Gateway health endpoints
+200, actual ACPX backend protocol 1, disposable container removed. Local ignored
+evidence `artifacts/m1/gateway-backend-rpc-a1c64f120648.json` and exact
+derived diagnostic image `61f1a21dcdbe2f70181b8788641bee0f7fc9b249290ecacedeb793244e8d5eb6`.
+That result did **not** start an ACP coding session or call a model.
+
+This cohesive M1.12 implementation deliberately reuses the original
+`02-build-repair` frozen C# task rather than admitting a real repository.
+The new opt-in `tools/m1/approved_gateway_coding.py`:
+- Requires Dell rootless Podman, immutable combined OpenClaw/ACPX/OpenCode image
+  `023bf9411fe23045dbdea9c777ed8618dec6553a81417c9aec2d15f7cf5b99ea`,
+  exact local Qwen model digest, original fixture/manifest hashes, and an
+  independent no-network evaluator image.
+- Builds an **offline copy-only** pinned source layer with a one-use
+  `operator.write` Gateway method. Only fixed task `api/Program.cs` may be
+  changed. Gateway method invokes the actual registered ACPX runtime
+  `ensureSession` and `startTurn`, not a CLI slash command or local mock.
+- Shows the **full versioned plan SHA256**, then requires typing exactly
+  `APPROVE <64-character plan hash>` before any coding container is started.
+  Refusal/EOF produces NOT_APPROVED and no coding session.
+- Runs no-network, rootless, non-root, read-only-root, cap-free Podman with only
+  a newly copied writable fixture directory and a private read-only-mounted
+  AF_UNIX broker. A guest-local loopback relay exposes only fixed Ollama API
+  routes; the host broker validates the model/digest and bounded real streaming
+  responses. No cloud keys, personal repository, network route or Git remote.
+- Requires the real Gateway/ACP turn to complete, **at least one verified
+  pinned-Qwen broker inference**, an authorized Program.cs change, an unchanged
+  project file and adjacent unmounted sentinel, verified container removal,
+  and a **separate offline evaluator PASS** before reporting
+  `M1.12 GATEWAY_APPROVED_CODING_PASS`.
+
+**Dell command only after reviewed PR merged and model-free CI GREEN:**
+
+```bash
+cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/m1/approved_gateway_coding.py --prepare
+```
+
+Review the printed exact plan hash and type the full `APPROVE <hash>` only
+if you approve this fixed **disposable** coding task. This is an actual local
+model invocation and source edit to a temporary fixture; it may be slow. If
+the run reports BLOCKED, report only its bounded status/flags; do not paste
+raw Gateway/Ollama logs or weaken the container or approval. CI tests here
+are model-free and cannot substitute for owner Dell runtime evidence.
+
+Passing this one fixture is **not full M1 qualification**: durable run-state,
+crash/restart reconciliation, broader approval scope and Windows runtime
+security remain separate mandatory gates.
