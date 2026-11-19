@@ -1,0 +1,8 @@
+# M1.12: offline-only, approved disposable project coding slice.
+# Source: immutable owner-qualified M1.7 OpenClaw+ACPX+OpenCode image.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY coding-plugin/ /app/codingassistant-coding/
+COPY coding-config.json /app/codingassistant-coding-config.json
+COPY coding-runner.mjs /app/codingassistant-coding-runner.mjs
+# No RUN, packages, downloads, modified base image or public ports.
