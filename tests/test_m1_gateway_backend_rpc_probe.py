@@ -107,7 +107,7 @@ class RegisteredBackendDoctorTests(unittest.TestCase):
             self.assertIn(flag,argv)
         for forbidden in ("--mount","--volume","--publish","--privileged"):
             self.assertNotIn(forbidden,argv)
-        self.assertEqual(argv[argv.index("--entrypoint=node")+1],DERIVED)
+        self.assertEqual(argv[argv.index("--env=OPENCLAW_CONFIG_PATH=/app/codingassistant-doctor-config.json")+1],DERIVED)
 
     def test_real_gateway_rpc_mock_all_checks_and_cleanup(self):
         calls=[]
