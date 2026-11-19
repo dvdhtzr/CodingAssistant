@@ -99,7 +99,8 @@ def scan_workspace(path: pathlib.Path, task: str,
 def qualification_command(image_id: str, uid: int, gid: int,
                           private: pathlib.Path, workspace: pathlib.Path,
                           sentinel: pathlib.Path, model: str,
-                          task: str) -> list[str]:
+                          task: str,
+                          compile_feedback: tuple[str, ...] = ()) -> list[str]:
     """Only two host mounts: the private model socket and disposable copy."""
     if task not in TASKS or workspace.is_symlink() or not workspace.is_dir():
         raise ValueError("Invalid workspace")
@@ -114,7 +115,14 @@ def qualification_command(image_id: str, uid: int, gid: int,
         "--tmpfs=/tmp:rw,nosuid,nodev,size=768m,notmpcopyup")
     if args[-3] != "--" or args[-2] != model:
         raise ValueError("Pinned OpenCode command changed")
-    args[-1:] = [task, task_prompt(task), str(sentinel.resolve())]
+    prompt = task_prompt(task)
+    if compile_feedback:
+        if task not in ("01-api-feature", "02-build-repair"):
+            raise ValueError("Repair only supported for bounded single-file tasks")
+        prompt += ("\\nA separate, offline .NET build failed with: " +
+                   json.dumps(compile_feedback) +
+                   "\\nRepair the original task in the same disposable source file.")
+    args[-1:] = [task, prompt, str(sentinel.resolve())]
     return args
 
 
