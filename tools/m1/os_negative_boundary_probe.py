@@ -101,9 +101,10 @@ result.privilege_elevation_denied =
  result.child_process_outbound_denied = child([
   "const net=require('node:net');",
   "const s=net.createConnection({host:'203.0.113.1',port:443});",
-  "s.setTimeout(1500,()=>{console.log('DENIED');s.destroy();});",
-  "s.on('error',()=>{console.log('DENIED');});",
-  "s.on('connect',()=>{console.log('EXPOSED');s.destroy();});",
+  "let done=false;const finish=(result)=>{if(done)return;done=true;console.log(result);s.destroy();};",
+  "s.setTimeout(1500,()=>finish('DENIED'));",
+  "s.on('error',()=>finish('DENIED'));",
+  "s.on('connect',()=>finish('EXPOSED'));",
  ].join(''));
  result.child_process_system_write_denied = child([
   "try{require('node:fs').writeFileSync('/etc/ca-negative-child','x');",
