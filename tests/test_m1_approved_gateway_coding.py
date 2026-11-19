@@ -143,7 +143,10 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
                     MOCK_IMAGE, "ca-m17-acpx-012345abcdef", env, workspace, ipc)
         for item in ("--network=none", "--read-only", "--cap-drop=all",
                      "--security-opt=no-new-privileges", "--memory=3g",
-                     "--env=OPENCLAW_CONFIG_PATH=/app/codingassistant-coding-config.json"):
+                     "--env=OPENCLAW_CONFIG_PATH=/app/codingassistant-coding-config.json",
+                     "--env=XDG_DATA_HOME=/tmp/.local/share",
+                     "--env=XDG_STATE_HOME=/tmp/.local/state",
+                     "--env=XDG_CACHE_HOME=/tmp/.cache"):
             self.assertIn(item, result)
         self.assertEqual(result[-1], "/app/codingassistant-coding-runner.mjs")
         self.assertIn(":/workspace:rw,nosuid,nodev", " ".join(result))
@@ -170,8 +173,14 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
             "claimed": True, "turnSucceeded": False, "lastFailure": {
                 "kind": "MODEL_UNADVERTISED",
                 "errorCode": "ACP_MODEL_UNSUPPORTED",
-                "modelReason": "unadvertised-model", "exitCode": None}}
+                "modelReason": "unadvertised-model", "exitCode": None,
+                "signal": None, "systemCode": None}}
         self.assertEqual(m.parse_gateway_status(json.dumps(expected)), expected)
+        signaled = dict(expected, lastFailure={
+            **expected["lastFailure"], "kind": "AGENT_STARTUP_FAILED",
+            "errorCode": "AGENT_STARTUP_FAILED", "modelReason": None,
+            "signal": "SIGKILL", "systemCode": "EAGAIN"})
+        self.assertEqual(m.parse_gateway_status(json.dumps(signaled)), signaled)
         bad = [
             dict(expected, phase="my arbitrary token-bearing error"),
             dict(expected, failureAt="/home/private/project"),
@@ -186,6 +195,10 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
                 **expected["lastFailure"], "modelReason": "leak"}),
             dict(expected, lastFailure={
                 **expected["lastFailure"], "exitCode": True}),
+            dict(expected, lastFailure={
+                **expected["lastFailure"], "signal": "SIGLEAK"}),
+            dict(expected, lastFailure={
+                **expected["lastFailure"], "systemCode": "ESECRET"}),
             list(expected),
         ]
         for value in bad:
@@ -201,7 +214,8 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
             "claimed": True, "turnSucceeded": False, "lastFailure": {
                 "kind": "MODEL_UNADVERTISED",
                 "errorCode": "ACP_MODEL_UNSUPPORTED",
-                "modelReason": "unadvertised-model", "exitCode": None}}
+                "modelReason": "unadvertised-model", "exitCode": None,
+                "signal": None, "systemCode": None}}
         health = json.dumps({"/healthz": 200, "/startupz": 200, "/readyz": 200})
         calls = iter([
             completed(),  # podman run
