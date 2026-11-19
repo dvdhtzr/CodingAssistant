@@ -373,6 +373,21 @@ container cleanup blocks M1. The twelve checks are not complete M1
 security qualification: approval-scoped worktrees, Git remotes and
 child-process delegation still require later gates.
 
+### M1.9 OS isolation GREEN; M1.10 Gateway-owned ACP doctor next
+
+Owner Dell passed 12/12 actual negative security checks including
+child-process network and filesystem denials. Next probe invokes the
+**real Gateway's own** `/acp doctor` diagnostic, requiring a verified
+ACPX/OpenCode protocol-1 result without any coding session or model:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_acp_doctor_probe.py
+```
+
+Runs only in a disposable rootless/no-network/no-host-mount Podman
+Gateway. No source edits or inference are authorized. See
+[M1 status](docs/M1_STATUS.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
