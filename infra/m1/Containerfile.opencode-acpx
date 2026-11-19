@@ -1,0 +1,21 @@
+# M1.7: copy the ALREADY-QUALIFIED OpenCode 2.3.0 runtime into the
+# ALREADY-VERIFIED official-source-derived OpenClaw 2026.11.5 + ACPX image.
+# Build args are full immutable local Podman image IDs, never floating tags.
+# Build with --network=none --pull=never. No npm/npx, RUN, or downloads.
+ARG M0_IMAGE
+ARG GATEWAY_IMAGE
+FROM ${M0_IMAGE} AS qualified_opencode
+FROM ${GATEWAY_IMAGE}
+
+# M0.7 installs @opencode/cli@2.3.0 globally using its fixed Containerfile.
+# Copy BOTH its package tree and the original npm-installed launcher symlink,
+# preserving its local package-relative target. Do not copy the M0 base OS,
+# Node 22, global npm, source workspaces, or inference credentials.
+COPY --from=qualified_opencode /usr/local/lib/node_modules/@opencode/cli /usr/local/lib/node_modules/@opencode/cli
+COPY --from=qualified_opencode /usr/local/bin/opencode /usr/local/bin/opencode
+
+ENV OPENCODE_DISABLE_AUTOUPDATE=1 \
+    NPM_CONFIG_UPDATE_NOTIFIER=false
+
+# The original OpenClaw entrypoint/user configuration stays intact.
+# Parent Gateway is run as a non-root uid under rootless Podman.
