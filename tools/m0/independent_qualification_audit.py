@@ -19,6 +19,8 @@ import stat
 import sys
 import shutil
 import tempfile
+import subprocess
+import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -434,7 +436,8 @@ def audit(results: pathlib.Path, *,
                     reviewed["independent_rerun"] = "VERIFIED"
                 else:
                     reviewed["independent_rerun"] = "NOT_RUN"
-            except (ValueError, OSError, KeyError, TypeError) as exc:
+            except (ValueError, OSError, KeyError, TypeError, RuntimeError,
+                    subprocess.TimeoutExpired) as exc:
                 findings.append(f"{case[0]}/{case[1]}: {type(exc).__name__}: {exc}")
                 report["reviewed_runs"].append(
                     {"task": case[0], "repeat": case[1], "status": "AUDIT_BLOCKED"})
@@ -457,7 +460,8 @@ def audit(results: pathlib.Path, *,
              qualification["verified_successes"] == 9,
              "Frozen qualification acceptance criteria are not satisfied")
         report["status"] = "EVIDENCE_REVIEW_PASS"
-    except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    except (ValueError, OSError, KeyError, TypeError, RuntimeError,
+            subprocess.TimeoutExpired) as exc:
         findings.append(f"GLOBAL: {type(exc).__name__}: {exc}")
     report["findings"] = findings[:20]
     report["evidence_only"] = True
@@ -473,12 +477,18 @@ def main() -> int:
     def isolated(image_id: str, task: str, workspace: pathlib.Path) -> dict[str, Any]:
         return sandbox_reverify(image_id, task, workspace)
     report = audit(args.results, reverify=None if args.review_only else isolated)
-    # NEVER edit the original results.json or model-generated source.
-    # Fail closed if an existing audit sidecar already exists.
-    target = args.results.parent / "independent-safety-audit.json"
-    if target.exists() or target.is_symlink():
-        print("M0.18 BLOCKED: audit sidecar already exists; no overwrite", file=sys.stderr)
+    # Never permit results-path injection to write a sidecar elsewhere.
+    # Every review creates a UNIQUE, append-only sidecar, including failures:
+    # retrying a transient blocked audit never overwrites prior evidence.
+    if (args.results.name != "results.json" or
+            not args.results.parent.name.startswith("evaluation-") or
+            args.results.parent.parent.resolve() !=
+                (ROOT / "artifacts/m0").resolve() or
+            args.results.parent.is_symlink()):
+        print("M0.18 BLOCKED: invalid audit evidence destination", file=sys.stderr)
         return 2
+    target = args.results.parent / (
+        "independent-safety-audit-" + uuid.uuid4().hex[:12] + ".json")
     # Exclusive creation and restrictive permissions; no audit overwrite.
     fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as writer:
