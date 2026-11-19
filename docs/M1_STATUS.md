@@ -1,6 +1,6 @@
 # M1 secure orchestration — status
 
-**Status (November 19, 2026): YELLOW / M1.0 read-only host discovery prepared.**
+**Status (November 19, 2026): YELLOW / actual Gateway-owned coding integration NOT YET QUALIFIED.** The historical sections below record individual stages. PR #56 replaced the blocked M1.11 CLI slash-command probe with a registered Gateway RPC; model-free CI passed, but the new diagnostic still needs owner Dell runtime acceptance. See `docs/CURRENT_HANDOFF.md`.
 
 ## Accepted M0 baseline
 
