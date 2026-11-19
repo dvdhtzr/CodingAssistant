@@ -647,5 +647,35 @@ class MvpTests(unittest.TestCase):
             self.assertIn("repeated without progress", out.getvalue())
 
 
+    def test_test_feedback_is_bounded_to_two_automatic_corrections(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "src"
+            project.mkdir()
+            (project / "PricingCalculator.cs").write_text("original\n")
+            (project / "OrderPricing.csproj").write_text("<Project/>")
+            args = argparse.Namespace(model="qwen3.5:4b", demo=False,
+                project=str(project), file="PricingCalculator.cs",
+                task="Correct pricing", build=False, run=True)
+            cases = iter([1, 2, 3])
+            def fails(*a, **k):
+                attempt = next(cases)
+                k["test_feedback"].append(
+                    f"FAIL: scenario {attempt}: expected 3.15, got {3 + attempt}")
+                return False
+            with mock.patch.object(assist, "ARTIFACTS", root / "artifacts"), \
+                 mock.patch.object(assist, "isolated_build", side_effect=fails) as build, \
+                 mock.patch.object(assist, "propose",
+                     side_effect=["first\n", "second\n", "third\n"]) as model, \
+                 mock.patch("builtins.input", return_value="APPLY") as approval, \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(assist.run(args), 2)
+            self.assertEqual(model.call_count, 3)
+            self.assertEqual(build.call_count, 3)
+            self.assertEqual(approval.call_count, 3)
+            self.assertIn("limit of 2", out.getvalue())
+            self.assertEqual((project / "PricingCalculator.cs").read_text(), "original\n")
+
+
 if __name__ == "__main__":
     unittest.main()
