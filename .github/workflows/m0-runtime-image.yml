@@ -28,6 +28,8 @@ on:
       - "tools/m0/real_qualification.py"
       - "tests/test_real_qualification.py"
       - "tests/m0_qualification_native_write_smoke.py"
+      - "tests/m0_qualification_compile_repair_smoke.py"
+      - "docs/M0_COMPILER_FEEDBACK_REPAIR.md"
       - "docs/M0_REAL_QUALIFICATION.md"
       - "tools/m0/qualification_acceptance_client.mjs"
       - "benchmarks/acceptance/**"
@@ -239,6 +241,11 @@ jobs:
           python3 tests/m0_qualification_native_write_smoke.py \
             --runtime-image codingassistant-m0-runtime:ci \
             --evaluation-image codingassistant-m0-qualification:ci
+      - name: M0.17 reproduce API compiler failure and native OpenCode repair (MOCK Qwen)
+        run: |
+          python3 tests/m0_qualification_compile_repair_smoke.py \
+            --runtime codingassistant-m0-runtime:ci \
+            --evaluator codingassistant-m0-qualification:ci
       # The discovery contract exercises the actual OpenCode CLI against a
       # deterministic loopback-only mock, without host Ollama or code execution.
       # GitHub-hosted Docker smoke establishes package startup only.
