@@ -822,3 +822,35 @@ are model-free and cannot substitute for owner Dell runtime evidence.
 Passing this one fixture is **not full M1 qualification**: durable run-state,
 crash/restart reconciliation, broader approval scope and Windows runtime
 security remain separate mandatory gates.
+
+
+## M1.12 — Dell owner-approved run BLOCKED; sanitized failure evidence corrected (November 19)
+
+The first **owner-approved** disposable C# coding run passed full-hash
+authorization `ed4d0a5f90306b8f6feb3eb059770709c0f674aa855077153ed2670d980e4b2a`,
+but returned **`M1.12 BLOCKED`** with `reason_code: ValueError`,
+`gateway: None`, `broker: None`, `evaluator: None`. The prior runner
+discarded the actual phase and partial evidence when an exception escaped
+`run_gateway`. It is **not possible** to infer from those fields whether
+Gateway started, whether Qwen was called, or exactly what failed. Do not
+claim model inference or independent build acceptance.
+
+A follow-up single-slice fix preserves sanitized `phase` plus the
+Gateway launch/readiness/ACP stage, container cleanup result, independent
+model broker's bounded attempt/verified/denied counters, and a status-only
+`operator.read` response from the *same* approved Gateway plugin. All
+fields are allowlisted enums/booleans/integers; **no raw stdout/stderr,
+prompts, source bytes, env values, tokens or model responses** are retained.
+Full plan-hash owner approval is still mandatory, and no new standalone
+diagnostic/test assignment is authorized.
+
+A reattempt is justified only after model-free CI GREEN and this PR merges:
+
+```bash
+cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/m1/approved_gateway_coding.py --prepare
+```
+
+The owner must review and paste the **fresh entire** `APPROVE <hash>`
+line for the same fixed disposable repair. Report `M1.12` status, `phase`,
+`reason_code`, Gateway flags/stage and broker counts. Neither CI nor a
+failed attempt may mark M1.12 GREEN.

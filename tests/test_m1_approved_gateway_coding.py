@@ -34,6 +34,9 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
         self.assertIn("runtime.ensureSession(", script)
         self.assertIn("runtime.startTurn(", script)
         self.assertIn('scope: "operator.write"', script)
+        self.assertIn('scope: "operator.read"', script)
+        self.assertIn("codingassistant.coding.status", script)
+        self.assertEqual(script.count("api.registerGatewayMethod("), 2)
         self.assertIn("claimed = true", script)
         self.assertIn("modelExplicit: true", script)
         self.assertIn('mode: "oneshot"', script)
@@ -153,6 +156,62 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
             m.gateway_rpc_command(name, "not-a-plan")
         with self.assertRaises(ValueError):
             m.gateway_rpc_command("other", MOCK_BASE)
+
+    def test_bounded_gateway_plugin_status_rejects_free_text_and_unknown_values(self):
+        expected = {
+            "phase": "failed", "failureAt": "session_initialize",
+            "claimed": True, "turnSucceeded": False}
+        self.assertEqual(m.parse_gateway_status(json.dumps(expected)), expected)
+        bad = [
+            dict(expected, phase="my arbitrary token-bearing error"),
+            dict(expected, failureAt="/home/private/project"),
+            dict(expected, claimed="true"),
+            dict(expected, extra="SECRET"),
+            list(expected),
+        ]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises((ValueError, TypeError)):
+                m.parse_gateway_status(json.dumps(value))
+        with self.assertRaises(ValueError):
+            m.parse_gateway_status("x" * 1501)
+
+    def test_nonzero_coding_rpc_keeps_gateway_stage_and_cleanup_proof(self):
+        evidence = {}
+        expected = {
+            "phase": "failed", "failureAt": "session_initialize",
+            "claimed": True, "turnSucceeded": False}
+        health = json.dumps({"/healthz": 200, "/startupz": 200, "/readyz": 200})
+        calls = iter([
+            completed(),  # podman run
+            completed(out="true"),  # podman inspect
+            completed(out=health),  # podman exec read-only health
+            completed(code=2, out="SECRET RAW OUTPUT MUST NOT BE SAVED"),
+            completed(),  # podman rm -f
+            completed(code=1),  # podman container exists
+        ])
+        with mock.patch.object(m, "fixed", side_effect=lambda *a, **kw: next(calls)), \
+             mock.patch.object(m, "container_command", return_value=["podman", "run"]), \
+             mock.patch.object(m, "query_gateway_status", return_value=expected):
+            with self.assertRaises(m.SafeGateBlocked) as captured:
+                m.run_gateway(MOCK_IMAGE, pathlib.Path("/disposable"),
+                              pathlib.Path("/ipc"), MOCK_BASE, evidence)
+        self.assertEqual(captured.exception.category, "CODING_RPC_NONZERO")
+        self.assertEqual(evidence["phase"], "coding_rpc")
+        self.assertTrue(evidence["removed"])
+        self.assertTrue(evidence["container_started"])
+        self.assertTrue(evidence["rpc_nonzero"])
+        self.assertEqual(evidence["health"]["/readyz"], 200)
+        self.assertEqual(evidence["plugin"], expected)
+        self.assertNotIn("SECRET", repr(evidence))
+
+    def test_gateway_status_request_is_read_only_and_exact_hash(self):
+        result = m.gateway_rpc_command(
+            "ca-m17-acpx-012345abcdef", MOCK_BASE, m.STATUS_METHOD)
+        self.assertIn(m.STATUS_METHOD, result)
+        self.assertEqual(result[-1], "30000")
+        with self.assertRaises(ValueError):
+            m.gateway_rpc_command("ca-m17-acpx-012345abcdef",
+                                  MOCK_BASE, "untrusted.command")
 
     def test_approval_prompt_displays_copyable_exact_line_and_stays_fail_closed(self):
         import contextlib
