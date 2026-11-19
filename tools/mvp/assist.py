@@ -51,6 +51,28 @@ COMPILER_ERROR_RE = re.compile(r"\berror\s+CS\d+\b", re.IGNORECASE)
 TEST_FAILURE_RE = re.compile(r"^\s*FAIL:\s+\S", re.IGNORECASE)
 TEST_SUMMARY_RE = re.compile(r"^\s*ORDER-PRICING ACCEPTANCE:", re.IGNORECASE)
 RETRY_ID_RE = re.compile(r"\d{8}T\d{6}Z-[0-9a-f]{8}\Z")
+# Only exact compiler error paths from the mounted isolated workspace
+# can narrow a later model correction to already owner-selected files.
+COMPILER_SOURCE_RE = re.compile(
+    r"^/workspace/(?P<path>[A-Za-z0-9_./-]+\.cs)\(\d+,\d+\):\s+error\s+CS\d+\b",
+    re.IGNORECASE,
+)
+
+
+def compiler_focus(errors: list[str], selected: list[str]) -> list[str] | None:
+    """Return a strict subset only if ALL diagnostics name selected C# files."""
+    if not errors or len(selected) <= 1:
+        return None
+    targets: set[str] = set()
+    for error in errors:
+        match = COMPILER_SOURCE_RE.match(error)
+        if match is None or match.group("path") not in selected:
+            return None
+        targets.add(match.group("path"))
+    if not targets or len(targets) == len(selected):
+        return None
+    return [name for name in selected if name in targets]
+
 
 
 def json_http(path: str, post: dict | None = None, timeout: int = 180) -> dict:
@@ -174,7 +196,7 @@ def related_source_context(
     return "\n".join(chunks)
 
 
-def normalize_proposal(text: str) -> str:
+def normalize_proposal(text: str, *, filename: str = "") -> str:
     result = text.strip()
     marker = chr(96) * 3
     if result.startswith(marker):
@@ -185,6 +207,17 @@ def normalize_proposal(text: str) -> str:
                             lines[0]):
             raise ValueError("Unexpected model formatting")
         result = "\n".join(lines[1:-1])
+    # Qwen 4B sometimes appends this exact conversational sentinel after
+    # a complete C# type, which is not valid source code. Normalize only
+    # this exact trailing marker following a closing brace. Log the action.
+    lines = result.splitlines()
+    if filename.lower().endswith(".cs") and result == "--- END ---":
+        raise ValueError("C# model response contains only a non-code delimiter")
+    if (filename.lower().endswith(".cs") and len(lines) >= 2
+            and lines[-1].strip() == "--- END ---"
+            and lines[-2].rstrip().endswith("}")):
+        print("Removed trailing non-code model delimiter: --- END ---")
+        result = "\n".join(lines[:-1])
     if not result or "\x00" in result or len(result.encode("utf-8")) > MAX_RESPONSE:
         raise ValueError("Model did not return a valid source file")
     return result.rstrip("\r\n") + "\n"
@@ -294,7 +327,7 @@ def propose(model: str, filename: str, source: str, task: str, *,
         raise ValueError("Local model digest changed during proposal")
     if metadata is not None:
         metadata["digest"] = digest
-    return normalize_proposal(content)
+    return normalize_proposal(content, filename=filename)
 
 
 def diff_lines(before: str, after: str, name: str) -> list[str]:
@@ -498,27 +531,39 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError("Supply a task description within 4000 characters")
 
     verify = bool(args.build or retry or getattr(args, "run", False))
+    focused_files: list[str] | None = None
+    if retry and compiler_errors:
+        focused_files = compiler_focus(compiler_errors, relatives)
     seen_failures: set[tuple[str, ...]] = set()
 
     # Up to two additional corrections may follow real compiler or assertion
     # failures. Each proposal still requires a separate human APPLY.
     for correction in range(MAX_AUTO_RETRIES + 1):
-        selected_sources = [select_source(project, path) for path in relatives]
+        # The original owner-selected file set stays authoritative. Narrow
+        # inference only when every compiler error clearly names a subset.
+        all_sources = [select_source(project, path) for path in relatives]
+        active_files = focused_files or relatives
+        selected_sources = [source for source in all_sources
+                            if str(source[0]) in active_files]
         original_files = {
             str(rel): selected.read_text(encoding="utf-8")
-            for rel, selected in selected_sources
+            for rel, selected in all_sources
         }
+        if focused_files:
+            print("Compiler diagnostics identify only: "
+                  + ", ".join(focused_files)
+                  + ". Keeping other approved files unchanged.")
         proposals: dict[str, str] = {}
         reasoning_effort = getattr(args, "reasoning_effort", None)
         if reasoning_effort is None:
-            reasoning_effort = "none" if len(selected_sources) > 1 else "auto"
+            reasoning_effort = "none" if len(relatives) > 1 else "auto"
         for rel, selected in selected_sources:
             name = str(rel)
             print(f"Local model: {args.model}\nFile: {name}\nTask: {task}")
             print("Requesting a replacement from local Ollama (no coding tools)...")
             model_info: dict = {}
             options: dict = {"reasoning_effort": reasoning_effort}
-            if len(selected_sources) > 1:
+            if len(relatives) > 1:
                 options["context"] = related_source_context(
                     project, original_files, proposals, name
                 )
@@ -577,12 +622,14 @@ def run(args: argparse.Namespace) -> int:
             "model": args.model,
             "model_digest": pinned_digest,
             "file": str(selected_sources[0][0]),
-            "files": [str(rel) for rel, _ in selected_sources],
+            "files": relatives,
+            "proposal_files": [str(rel) for rel, _ in selected_sources],
             "edits": {
                 name: {
                     "before_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
                     "after_sha256": hashlib.sha256(proposals[name].encode("utf-8")).hexdigest(),
                 } for name, source in original_files.items()
+                if name in proposals
             },
             "before_sha256": hashlib.sha256(
                 original_files[str(selected_sources[0][0])].encode("utf-8")
@@ -628,10 +675,12 @@ def run(args: argparse.Namespace) -> int:
             print("Verified .NET checks passed.")
             return 0
         if compiler_errors:
+            focused_files = compiler_focus(compiler_errors, relatives)
             kind = "C# compilation"
             signature = ("compiler", *compiler_errors)
             next_task = repair_task(compiler_errors, objective)
         elif test_errors:
+            focused_files = None  # A test assertion cannot prove which file is wrong.
             kind = "acceptance tests"
             signature = ("acceptance", *test_errors)
             next_task = test_repair_task(test_errors, objective)

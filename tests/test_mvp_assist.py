@@ -1045,5 +1045,183 @@ class MvpTests(unittest.TestCase):
             assist.main()
 
 
+    def test_exact_trailing_model_sentinel_removed_only_for_complete_csharp(self):
+        original = "namespace Checkout;\nclass DiscountPolicy { }\n--- END ---\n"
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(
+                assist.normalize_proposal(original, filename="DiscountPolicy.cs"),
+                "namespace Checkout;\nclass DiscountPolicy { }\n")
+        self.assertIn("Removed trailing non-code", out.getvalue())
+        self.assertIn("--- END ---",
+                      assist.normalize_proposal(original, filename="script.py"))
+        self.assertIn("--- END ---",
+                      assist.normalize_proposal(
+                          "class X {}\n// another statement\n--- END ---",
+                          filename="DiscountPolicy.cs"))
+        with self.assertRaises(ValueError):
+            assist.normalize_proposal("--- END ---", filename="DiscountPolicy.cs")
+
+    def test_compiler_focus_requires_only_exact_selected_workspace_paths(self):
+        selected = ["DiscountPolicy.cs", "CheckoutCalculator.cs"]
+        errors = [
+            "/workspace/DiscountPolicy.cs(19,1): error CS1022: unexpected text",
+            "/workspace/DiscountPolicy.cs(19,5): error CS0116: invalid namespace",
+        ]
+        self.assertEqual(assist.compiler_focus(errors, selected),
+                         ["DiscountPolicy.cs"])
+        self.assertIsNone(assist.compiler_focus(
+            errors + ["/workspace/CheckoutCalculator.cs(3,1): error CS1002"],
+            selected))
+        self.assertIsNone(assist.compiler_focus(
+            errors + ["/workspace/Program.cs(3,1): error CS1002"], selected))
+        self.assertIsNone(assist.compiler_focus(
+            ["some error CS1022"], selected))
+        self.assertIsNone(assist.compiler_focus(errors, ["DiscountPolicy.cs"]))
+
+    def test_multifile_compiler_retry_targets_only_file_with_compiler_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (source / "DiscountPolicy.cs").write_text("policy base\n")
+            (source / "CheckoutCalculator.cs").write_text("calculator base\n")
+            (source / "Checkout.csproj").write_text("<Project/>")
+            artifacts = root / "artifacts"
+            args = argparse.Namespace(
+                model="qwen3.5:4b", project=str(source), demo=False, retry=None,
+                file=None, files=["DiscountPolicy.cs", "CheckoutCalculator.cs"],
+                task="Fix both", build=False, run=True, reasoning_effort=None)
+            names = []
+            proposals = iter(["policy malformed\n", "calculator correct\n",
+                              "policy corrected\n"])
+            def propose(*a, **k):
+                names.append(a[1])
+                k["metadata"]["digest"] = "digest"
+                return next(proposals)
+            results = iter([False, True])
+            def isolated(*a, **k):
+                if not next(results):
+                    k["feedback"].extend([
+                        "/workspace/DiscountPolicy.cs(19,1): error CS1022: expected",
+                        "/workspace/DiscountPolicy.cs(19,5): error CS0116: expected",
+                    ])
+                    return False
+                return True
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "propose", side_effect=propose) as model, \
+                 mock.patch.object(assist, "isolated_build",
+                                   side_effect=isolated) as build, \
+                 mock.patch("builtins.input", side_effect=["APPLY", "APPLY"]) as approval, \
+                 contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(assist.run(args), 0)
+            self.assertEqual(names,
+                ["DiscountPolicy.cs", "CheckoutCalculator.cs", "DiscountPolicy.cs"])
+            self.assertEqual(approval.call_count, 2)
+            self.assertEqual(build.call_count, 2)
+            self.assertEqual(model.call_args_list[-1].kwargs["reasoning_effort"], "none")
+            self.assertEqual(model.call_args_list[-1].kwargs["expected_digest"], "digest")
+            self.assertIn("Keeping other approved files unchanged", out.getvalue())
+            self.assertEqual((source / "DiscountPolicy.cs").read_text(), "policy base\n")
+            self.assertEqual((source / "CheckoutCalculator.cs").read_text(),
+                             "calculator base\n")
+            records = [__import__("json").loads((p / "result.json").read_text())
+                       for p in artifacts.iterdir()]
+            self.assertEqual(len(records), 2)
+            focused = next(record for record in records if record["correction_attempt"] == 1)
+            self.assertEqual(focused["files"],
+                             ["DiscountPolicy.cs", "CheckoutCalculator.cs"])
+            self.assertEqual(focused["proposal_files"], ["DiscountPolicy.cs"])
+            self.assertEqual(set(focused["edits"]), {"DiscountPolicy.cs"})
+            self.assertEqual(focused["status"], "run_passed")
+            corrected = artifacts / focused["run_id"] / "project"
+            self.assertEqual((corrected / "DiscountPolicy.cs").read_text(),
+                             "policy corrected\n")
+            self.assertEqual((corrected / "CheckoutCalculator.cs").read_text(),
+                             "calculator correct\n")
+            self.assertNotIn("CheckoutCalculator.cs",
+                (corrected.parent / "change.patch").read_text())
+            original = next(record for record in records if record != focused)
+            self.assertEqual(focused["parent_run_id"], original["run_id"])
+
+    def test_ambiguous_diagnostic_retries_all_owner_selected_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "src"
+            source.mkdir()
+            (source / "A.cs").write_text("A base\n")
+            (source / "B.cs").write_text("B base\n")
+            (source / "App.csproj").write_text("<Project/>")
+            args = argparse.Namespace(
+                model="qwen3.5:4b", project=str(source), demo=False, retry=None,
+                file=None, files=["A.cs", "B.cs"], task="Fix both",
+                build=False, run=True)
+            names = []
+            replacements = iter(["A wrong\n", "B wrong\n",
+                                 "A fixed\n", "B fixed\n"])
+            def model(*a, **k):
+                names.append(a[1])
+                return next(replacements)
+            checks = iter([False, True])
+            def isolated(*a, **k):
+                if not next(checks):
+                    k["feedback"].append(
+                        "/workspace/Program.cs(1,1): error CS1002: needs change")
+                    return False
+                return True
+            with mock.patch.object(assist, "ARTIFACTS", root / "artifacts"), \
+                 mock.patch.object(assist, "propose", side_effect=model), \
+                 mock.patch.object(assist, "isolated_build", side_effect=isolated), \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 0)
+            self.assertEqual(names, ["A.cs", "B.cs", "A.cs", "B.cs"])
+
+    def test_saved_multifile_run_focuses_resume_on_failing_selected_class(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifacts = root / "artifacts"
+            run_id = "20261119T130737Z-1d67333d"
+            saved = artifacts / run_id
+            (saved / "project").mkdir(parents=True)
+            (saved / "project/DiscountPolicy.cs").write_text("bad\n")
+            (saved / "project/CheckoutCalculator.cs").write_text("good\n")
+            (saved / "project/Checkout.csproj").write_text("<Project/>")
+            (saved / "result.json").write_text(__import__("json").dumps({
+                "model": "qwen3.5:4b", "model_digest": "digest",
+                "files": ["DiscountPolicy.cs", "CheckoutCalculator.cs"],
+                "objective": "Fix checkout",
+            }))
+            args = argparse.Namespace(
+                model="qwen3.5:4b", project=None, demo=False, retry=run_id,
+                file=None, task=None, build=False, run=True)
+            calls = iter([False, True])
+            def isolated(*a, **k):
+                if not next(calls):
+                    k["feedback"].append(
+                        "/workspace/DiscountPolicy.cs(19,1): error CS1022: text")
+                    return False
+                return True
+            with mock.patch.object(assist, "ARTIFACTS", artifacts), \
+                 mock.patch.object(assist, "isolated_build",
+                                   side_effect=isolated), \
+                 mock.patch.object(assist, "propose",
+                                   return_value="fixed\n") as model, \
+                 mock.patch("builtins.input", return_value="APPLY"), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(assist.run(args), 0)
+            self.assertEqual(model.call_count, 1)
+            self.assertEqual(model.call_args.args[1], "DiscountPolicy.cs")
+            self.assertEqual(model.call_args.kwargs["expected_digest"], "digest")
+            self.assertEqual((saved / "project/DiscountPolicy.cs").read_text(), "bad\n")
+            self.assertEqual((saved / "project/CheckoutCalculator.cs").read_text(), "good\n")
+            new_run = next(p for p in artifacts.iterdir() if p.name != run_id)
+            self.assertEqual((new_run / "project/CheckoutCalculator.cs").read_text(),
+                             "good\n")
+            record = __import__("json").loads((new_run / "result.json").read_text())
+            self.assertEqual(record["files"],
+                             ["DiscountPolicy.cs", "CheckoutCalculator.cs"])
+            self.assertEqual(record["proposal_files"], ["DiscountPolicy.cs"])
+
+
 if __name__ == "__main__":
     unittest.main()

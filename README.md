@@ -92,6 +92,33 @@ response; it prints a phase-specific timeout message and leaves the
 unmodified original and previously approved disposable copies intact.
 No background retries, no remote-model fallback, and no changed Podman privileges.
 
+### Focused compiler correction after a multi-file edit
+
+A real Dell run completed the two-file checkout challenge with **9/9 passing
+acceptance checks** after one failed C# build. Qwen's first
+`DiscountPolicy.cs` proposal appended the exact non-code line
+`--- END ---`, triggering `CS1022` and `CS0116`.
+Both classes were unnecessarily regenerated in the correction round.
+
+The assistant now removes **only that exact terminal marker**, and only when
+it follows a closing brace in a C# model response. The cleanup is reported,
+not hidden. No general rewrite, arbitrary Markdown stripping, source changes
+to originals, or automatic approval is introduced.
+
+If every actual compiler diagnostic names only a subset of the owner-selected
+C# files, subsequent automatic corrections request replacements **only for
+those implicated files**. Other previously approved classes are copied
+unchanged into the next disposable workspace. One new diff and explicit
+`APPLY` remain mandatory, and the **entire project** is built and tested again.
+If compiler diagnostics refer to unknown/multiple files, all selected files
+remain eligible; acceptance-test failures also retry the full selected set.
+Saved `--retry` runs retain the original allowed file list but record precisely
+which files were re-proposed on each correction.
+
+These targeted changes address the actual **103.6-second unnecessary second
+inference** seen in the successful Dell run. They are optimizations, not a
+guarantee of a particular runtime or model accuracy.
+
 ### Faster and diagnosable local Qwen inference
 
 A real two-file Dell attempt completed its `DiscountPolicy.cs` response but
