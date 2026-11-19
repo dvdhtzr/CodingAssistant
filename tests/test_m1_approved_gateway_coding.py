@@ -167,13 +167,25 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
     def test_bounded_gateway_plugin_status_rejects_free_text_and_unknown_values(self):
         expected = {
             "phase": "failed", "failureAt": "session_initialize",
-            "claimed": True, "turnSucceeded": False}
+            "claimed": True, "turnSucceeded": False, "lastFailure": {
+                "kind": "MODEL_UNADVERTISED",
+                "errorCode": "ACP_MODEL_UNSUPPORTED",
+                "modelReason": "unadvertised-model", "exitCode": None}}
         self.assertEqual(m.parse_gateway_status(json.dumps(expected)), expected)
         bad = [
             dict(expected, phase="my arbitrary token-bearing error"),
             dict(expected, failureAt="/home/private/project"),
             dict(expected, claimed="true"),
             dict(expected, extra="SECRET"),
+            dict(expected, lastFailure={"kind": "model-private-secret"}),
+            dict(expected, lastFailure={
+                **expected["lastFailure"], "kind": "arbitrary"}),
+            dict(expected, lastFailure={
+                **expected["lastFailure"], "errorCode": "/home/user"}),
+            dict(expected, lastFailure={
+                **expected["lastFailure"], "modelReason": "leak"}),
+            dict(expected, lastFailure={
+                **expected["lastFailure"], "exitCode": True}),
             list(expected),
         ]
         for value in bad:
@@ -186,7 +198,10 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
         evidence = {}
         expected = {
             "phase": "failed", "failureAt": "session_initialize",
-            "claimed": True, "turnSucceeded": False}
+            "claimed": True, "turnSucceeded": False, "lastFailure": {
+                "kind": "MODEL_UNADVERTISED",
+                "errorCode": "ACP_MODEL_UNSUPPORTED",
+                "modelReason": "unadvertised-model", "exitCode": None}}
         health = json.dumps({"/healthz": 200, "/startupz": 200, "/readyz": 200})
         calls = iter([
             completed(),  # podman run

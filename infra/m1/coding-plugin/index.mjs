@@ -1,6 +1,7 @@
 // M1.12 single-turn Gateway method; never export arbitrary tool or prompt APIs.
 // The only permitted project is the owner's freshly copied frozen C# repair fixture.
 import { getAcpRuntimeBackend } from "openclaw/plugin-sdk/acp-runtime-backend";
+import { classifyAcpSessionFailure } from "./safe-failure.mjs";
 
 const METHOD = "codingassistant.coding.run";
 const STATUS_METHOD = "codingassistant.coding.status";
@@ -19,6 +20,7 @@ const PROMPT = [
 let claimed = false;
 let phase = "waiting";
 let failureAt = null;
+let lastFailure = null;
 let turnSucceeded = false;
 function setPhase(next) {
   if (!PHASES.has(next)) throw new Error("Unexpected coding state");
@@ -97,8 +99,9 @@ const plugin = {
         terminal = result?.status === "completed";
         if (!terminal) throw new Error("ACP coding turn did not complete");
         approved = true;
-      } catch {
+      } catch (error) {
         failureAt = phase;
+        lastFailure = classifyAcpSessionFailure(error);
         approved = false;
       } finally {
         if (timeoutId) clearTimeout(timeoutId);
@@ -108,8 +111,11 @@ const plugin = {
             await runtime.close({
               handle, reason: "disposable-turn-finished", discardPersistentState: true,
             });
-          } catch {
-            if (!failureAt) failureAt = "session_close";
+          } catch (error) {
+            if (!failureAt) {
+              failureAt = "session_close";
+              lastFailure = classifyAcpSessionFailure(error);
+            }
             approved = false;
           }
         }
@@ -147,7 +153,7 @@ const plugin = {
         return;
       }
       respond(true, {
-        phase, failureAt, claimed, turnSucceeded,
+        phase, failureAt, claimed, turnSucceeded, lastFailure,
       }, undefined);
     }, { scope: "operator.read", profileAccess: "independent" });
   },

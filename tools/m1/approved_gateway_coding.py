@@ -51,6 +51,7 @@ CONFIG = CONTEXT / "coding-config.json"
 LAUNCHER = CONTEXT / "coding-runner.mjs"
 PLUGIN = CONTEXT / "coding-plugin"
 SOURCES = (CONTAINERFILE, CONFIG, LAUNCHER, PLUGIN / "index.mjs",
+           PLUGIN / "safe-failure.mjs",
            PLUGIN / "openclaw.plugin.json", PLUGIN / "package.json",
            pathlib.Path(__file__).resolve())
 IMAGE_TAG = "localhost/codingassistant-m112-approved-coding:2026.11.5"
@@ -61,6 +62,24 @@ SAFE_GATEWAY_PHASES = frozenset((
     "session_ready", "turn_start", "turn_stream", "turn_result",
     "session_close", "completed", "failed",
 ))
+SAFE_FAILURE_KINDS = frozenset((
+    "OTHER", "MODEL_UNADVERTISED", "MODEL_CAPABILITY_MISSING",
+    "MODEL_CATALOG_EMPTY", "PROVIDER_AUTH_REQUIRED",
+    "OPENCODE_SERVER_UNAVAILABLE", "AGENT_SPAWN_ENOENT",
+    "AGENT_SPAWN_FAILED", "AGENT_STARTUP_FAILED", "AGENT_DISCONNECTED",
+    "SESSION_OWNER_INVALID", "SESSION_INIT_FAILED", "ACP_REQUEST_INVALID",
+    "ACP_REQUEST_INTERNAL", "FILESYSTEM_DENIED", "FILESYSTEM_MISSING",
+    "STARTUP_TIMEOUT", "BACKEND_UNAVAILABLE",
+))
+SAFE_FAILURE_CODES = frozenset((
+    "NONE", "ACP_MODEL_UNSUPPORTED", "ACP_SESSION_INIT_FAILED",
+    "ACP_BACKEND_UNAVAILABLE", "ACP_INVALID_RUNTIME_OPTION",
+    "AGENT_STARTUP_FAILED", "AGENT_SPAWN_ENOENT", "AGENT_DISCONNECTED",
+    "SESSION_OWNER_UNSUPPORTED", "SESSION_OWNER_MIGRATION_REQUIRED",
+    "ENOENT", "EACCES", "EPERM", "ETIMEDOUT", "ECONNREFUSED",
+    "EPIPE", "ACP_REQUEST_INVALID", "ACP_REQUEST_INTERNAL",
+))
+SAFE_MODEL_REASONS = frozenset(("missing-capability", "unadvertised-model"))
 TASK = "02-build-repair"
 MODEL = "qwen3.5:4b"
 HEX64 = re.compile(r"(?:sha256:)?([a-f0-9]{64})\Z")
@@ -114,6 +133,7 @@ def fingerprint() -> str:
             '"operator.write"' not in source or
             '"operator.read"' not in source or
             'codingassistant.coding.status' not in source or
+            'classifyAcpSessionFailure' not in source or
             'getAcpRuntimeBackend("acpx")' not in source or
             "runtime.ensureSession(" not in source or
             "runtime.startTurn(" not in source):
@@ -327,12 +347,24 @@ def parse_gateway_status(raw: str) -> dict[str, object]:
         raise ValueError("Missing/oversized bounded diagnostic")
     value = json.loads(raw)
     if (type(value) is not dict or
-            set(value) != {"phase", "failureAt", "claimed", "turnSucceeded"} or
+            set(value) != {"phase", "failureAt", "claimed", "turnSucceeded",
+                           "lastFailure"} or
             value.get("phase") not in SAFE_GATEWAY_PHASES or
             value.get("failureAt") not in SAFE_GATEWAY_PHASES | {None} or
             type(value.get("claimed")) is not bool or
             type(value.get("turnSucceeded")) is not bool):
         raise ValueError("Unexpected bounded diagnostic response")
+    failure = value["lastFailure"]
+    if failure is not None:
+        if (type(failure) is not dict or
+                set(failure) != {"kind", "errorCode", "modelReason", "exitCode"} or
+                failure.get("kind") not in SAFE_FAILURE_KINDS or
+                failure.get("errorCode") not in SAFE_FAILURE_CODES or
+                failure.get("modelReason") not in SAFE_MODEL_REASONS | {None} or
+                (failure.get("exitCode") is not None and
+                 (type(failure["exitCode"]) is not int or
+                  not 0 <= failure["exitCode"] <= 255))):
+            raise ValueError("Unrecognized ACP failure category")
     return value
 
 
