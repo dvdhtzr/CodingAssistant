@@ -92,6 +92,35 @@ response; it prints a phase-specific timeout message and leaves the
 unmodified original and previously approved disposable copies intact.
 No background retries, no remote-model fallback, and no changed Podman privileges.
 
+### Faster and diagnosable local Qwen inference
+
+A real two-file Dell attempt completed its `DiscountPolicy.cs` response but
+then spent a long time on `CheckoutCalculator.cs` before returning
+`Model returned incomplete output or attempted a tool call`. **No diff was
+approved or staged.** This can happen when a thinking model exhausts its
+completion-token budget; the old error did not expose the reason.
+
+For **multi-file mode only**, the default Ollama OpenAI-compatible request now
+uses `reasoning_effort: "none"` to suppress long internal thinking and
+prioritize returning the full source file. You can choose
+`--reasoning-effort auto` to restore the model's original thinking behavior.
+Single-file mode keeps its previous default unless explicitly overridden.
+
+The CLI also reports per-call generation elapsed time, completion-token usage
+when Ollama supplies it, and distinguishes `finish_reason=length` from an
+unapproved tool call or other unfinished output. **Truncated output is always
+rejected**, and a failed second proposal never partially stages the first.
+
+The latest multi-file checkout retry command is:
+
+```bash
+cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/mvp/assist.py --project benchmarks/fixtures/05-multifile-checkout --files DiscountPolicy.cs CheckoutCalculator.cs --task "Support MEMBER20 for members only, retain SAVE10 for everyone, apply discounts once to all merchandise with order-level rounding, and tax only taxable items after their proportional discount; preserve signatures and validations." --model qwen3.5:4b --reasoning-effort none --inference-timeout 900 --run
+```
+
+This reduces thinking overhead but may change model quality; the acceptance
+checks remain the arbiter. It does not change security boundaries or proof
+of qualification; a local Dell run must demonstrate success.
+
 ## Next milestone — bounded repository-aware multi-file editing
 
 The MVP now has an explicit **2–3 file** mode (`--files`) for small C# changes
