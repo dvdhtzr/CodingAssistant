@@ -248,6 +248,22 @@ No ACP agent, model, cloud AI, Git operation or host source is involved.
 This is not yet a production Gateway, an approved coding workflow or
 Windows M1 qualification. See `docs/M1_GATEWAY_DISCOVERY.md`.
 
+### M1.2 Gateway ready; M1.3 ACPX packaging inventory
+
+Dell M1.2 passed all three real loopback health endpoints with a
+temporary, isolated Gateway and verified container cleanup.
+The next check inspects whether the official version-pinned image
+actually includes the optional ACPX plugin and its dependencies:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/acpx_image_inventory.py
+```
+
+This is an **offline static image inspection**; no Gateway/ACP session,
+model, project files, package install or network access. A missing
+optional plugin is a discovery outcome, **not** M1 qualification.
+See [M1 discovery and safety boundaries](docs/M1_GATEWAY_DISCOVERY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
