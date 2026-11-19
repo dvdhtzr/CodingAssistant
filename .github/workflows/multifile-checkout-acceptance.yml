@@ -1,0 +1,84 @@
+name: Multi-file checkout static acceptance
+
+on:
+  pull_request:
+    paths:
+      - "benchmarks/fixtures/05-multifile-checkout/**"
+      - "tools/mvp/assist.py"
+      - "tests/test_mvp_assist.py"
+      - ".github/workflows/multifile-checkout-acceptance.yml"
+  push:
+    branches: [main]
+    paths:
+      - "benchmarks/fixtures/05-multifile-checkout/**"
+      - "tools/mvp/assist.py"
+      - "tests/test_mvp_assist.py"
+      - ".github/workflows/multifile-checkout-acceptance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-multifile-acceptance:
+    name: Frozen two-file defect fails / both fixes pass
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Verify deliberate two-file defect and static corrected copy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/empty-nuget-feed"
+          fixture="benchmarks/fixtures/05-multifile-checkout"
+          dotnet restore "$fixture/Checkout.csproj" \
+            --source "$RUNNER_TEMP/empty-nuget-feed" \
+            -p:NuGetAudit=false --disable-parallel
+          dotnet build "$fixture/Checkout.csproj" -c Release --no-restore -warnaserror
+
+          # Frozen source must compile but fail the executable contract.
+          if dotnet run --project "$fixture/Checkout.csproj" -c Release \
+              --no-build > "$RUNNER_TEMP/multifile-baseline.log" 2>&1; then
+            cat "$RUNNER_TEMP/multifile-baseline.log"
+            echo "ERROR: frozen two-file defect unexpectedly passed"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/multifile-baseline.log"
+          grep -q "MULTI-FILE CHECKOUT FAILED" "$RUNNER_TEMP/multifile-baseline.log"
+          grep -q "FAIL: SAVE10" "$RUNNER_TEMP/multifile-baseline.log"
+          grep -q "FAIL: MEMBER20 applies" "$RUNNER_TEMP/multifile-baseline.log"
+
+          # Two-file deterministic repair in disposable CI copy only.
+          cp -R "$fixture" "$RUNNER_TEMP/checkout-fixed"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ["RUNNER_TEMP"]) / "checkout-fixed"
+          policy = root / "DiscountPolicy.cs"
+          before = policy.read_text(encoding="utf-8")
+          target = '            "SAVE10" => 0.10m,'
+          assert before.count(target) == 1
+          policy.write_text(before.replace(
+              target, target + '\n            "MEMBER20" when isMember => 0.20m,'
+          ), encoding="utf-8")
+          calc = root / "CheckoutCalculator.cs"
+          before = calc.read_text(encoding="utf-8")
+          target = 'decimal tax = Money(taxable * request.TaxRate);'
+          assert before.count(target) == 1
+          calc.write_text(before.replace(
+              target,
+              'decimal taxableDiscount = Money(taxable * rate);\n'
+              '        decimal tax = Money((taxable - taxableDiscount) * request.TaxRate);'
+          ), encoding="utf-8")
+          PY
+          fixed="$RUNNER_TEMP/checkout-fixed/Checkout.csproj"
+          dotnet restore "$fixed" --source "$RUNNER_TEMP/empty-nuget-feed" \
+            -p:NuGetAudit=false --disable-parallel
+          dotnet build "$fixed" -c Release --no-restore -warnaserror
+          dotnet run --project "$fixed" -c Release --no-build | tee "$RUNNER_TEMP/multifile-fixed.log"
+          grep -q "MULTI-FILE CHECKOUT: 9/9 checks passed" "$RUNNER_TEMP/multifile-fixed.log"
+          grep -q "MULTI-FILE CHECKOUT PASS" "$RUNNER_TEMP/multifile-fixed.log"
