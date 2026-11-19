@@ -9,7 +9,7 @@ COPY benchmarks/fixtures/03-fullstack-feature/web/package.json /opt/qualificatio
 # These exact direct versions are from the frozen original M0 full-stack fixture.
 # CI/build network is allowed at provisioning time ONLY, not during tests.
 RUN cd /opt/qualification/web \
-    && npm install --ignore-scripts --no-audit --no-fund --no-save \
+    && npm install --ignore-scripts --no-audit --no-fund --package-lock=true \
     && test -f node_modules/.bin/vitest \
     && test -f node_modules/.bin/tsc \
     && test -f package-lock.json \
