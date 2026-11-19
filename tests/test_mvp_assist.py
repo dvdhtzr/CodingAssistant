@@ -915,6 +915,9 @@ class MvpTests(unittest.TestCase):
                 args.files = ["A.cs", "../outside.cs"]
                 with self.assertRaises(ValueError):
                     assist.run(args)
+                args.files = ["A.cs", "other.py"]
+                with self.assertRaisesRegex(ValueError, "only C#"):
+                    assist.run(args)
             model.assert_not_called()
 
     def test_multifile_cli_validates_explicit_selection(self):
