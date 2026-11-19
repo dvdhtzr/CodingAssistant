@@ -38,6 +38,9 @@ MAX_FILES = 250
 MAX_RESPONSE = 120_000
 MAX_DIFF_LINES = 300
 MAX_AUTO_RETRIES = 2
+DEFAULT_INFERENCE_TIMEOUT = 600
+MAX_INFERENCE_TIMEOUT = 1200
+CATALOG_TIMEOUT = 30
 COMPILER_ERROR_RE = re.compile(r"\berror\s+CS\d+\b", re.IGNORECASE)
 # Only independently observed failures from a nonzero-exit test harness are
 # allowed to prompt runtime repair. Ordinary crashes/tool failures stay blocked.
@@ -130,10 +133,31 @@ def normalize_proposal(text: str) -> str:
     return result.rstrip("\r\n") + "\n"
 
 
+def _ollama_call(path: str, post: dict | None = None, *, timeout: int) -> dict:
+    """Distinguish local catalog stalls from slow code generation."""
+    try:
+        return json_http(path, post, timeout=timeout)
+    except TimeoutError as exc:
+        phase = ("model catalog" if path == "/api/tags"
+                 else "chat completion" if path == "/v1/chat/completions"
+                 else "request")
+        raise TimeoutError(
+            f"Ollama {phase} timed out (socket inactivity limit: {timeout}s). "
+            "No proposal was approved or written. Check 'ollama ps' and "
+            "local model availability; rerun the same command or increase "
+            "--inference-timeout for a slow CPU model."
+        ) from exc
+
+
 def propose(model: str, filename: str, source: str, task: str, *,
             expected_digest: str | None = None,
-            metadata: dict | None = None) -> str:
-    catalog = json_http("/api/tags")
+            metadata: dict | None = None,
+            inference_timeout: int = DEFAULT_INFERENCE_TIMEOUT) -> str:
+    if not 30 <= inference_timeout <= MAX_INFERENCE_TIMEOUT:
+        raise ValueError(
+            f"--inference-timeout must be 30–{MAX_INFERENCE_TIMEOUT} seconds"
+        )
+    catalog = _ollama_call("/api/tags", timeout=CATALOG_TIMEOUT)
     matches = [m for m in catalog.get("models", [])
                if isinstance(m, dict) and m.get("name") == model and m.get("digest")]
     if len(matches) != 1:
@@ -154,7 +178,10 @@ def propose(model: str, filename: str, source: str, task: str, *,
                     "You are a careful source-code editor. Respond with only the full replacement file."},
                    {"role": "user", "content": prompt},
                ]}
-    answer = json_http("/v1/chat/completions", request, timeout=300)
+    print(f"Waiting for Ollama to generate a complete replacement "
+          f"(socket inactivity timeout: {inference_timeout}s).", flush=True)
+    answer = _ollama_call("/v1/chat/completions", request,
+                          timeout=inference_timeout)
     if answer.get("model") != model:
         raise ValueError("Ollama returned a different model; refusing proposal")
     choices = answer.get("choices", [])
@@ -167,7 +194,7 @@ def propose(model: str, filename: str, source: str, task: str, *,
     content = message.get("content")
     if not isinstance(content, str):
         raise ValueError("Model returned no source text")
-    after = json_http("/api/tags")
+    after = _ollama_call("/api/tags", timeout=CATALOG_TIMEOUT)
     if not any(m.get("name") == model and m.get("digest") == digest
                for m in after.get("models", []) if isinstance(m, dict)):
         raise ValueError("Local model digest changed during proposal")
@@ -379,6 +406,8 @@ def run(args: argparse.Namespace) -> int:
         proposed = propose(
             args.model, str(rel), original, task,
             expected_digest=pinned_digest, metadata=model_info,
+            inference_timeout=getattr(args, "inference_timeout",
+                                      DEFAULT_INFERENCE_TIMEOUT),
         )
         if model_info.get("digest"):
             pinned_digest = model_info["digest"]
@@ -495,6 +524,11 @@ def main() -> int:
     parser.add_argument("--file", help="One relative source file to edit")
     parser.add_argument("--task", help="Plain-English change request")
     parser.add_argument("--model", default="qwen3.5:4b")
+    parser.add_argument(
+        "--inference-timeout", type=int, default=DEFAULT_INFERENCE_TIMEOUT,
+        metavar="SECONDS",
+        help="Ollama completion socket inactivity timeout (30–1200s; default 600)"
+    )
     parser.add_argument("--build", action="store_true",
                         help="After approval, use isolated Podman for fixed dotnet build")
     parser.add_argument("--run", action="store_true",
