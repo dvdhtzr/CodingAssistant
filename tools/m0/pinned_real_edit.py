@@ -8,7 +8,6 @@ model inference. This is a pilot, not general-purpose agent execution.
 """
 from __future__ import annotations
 
-import hashlib
 import http.client
 import io
 import json
@@ -268,6 +267,8 @@ def pinned_real_edit_handler(model: str, digest: str,
                     return
                 valid = (validate_initial_request(request, model) if stage == 0
                          else validate_followup_request(request, model))
+                if stage == 1 and state["model_completed"] != 1:
+                    valid = False
                 if not valid:
                     self._reply(403, b'{"error":"unexpected chat stage"}')
                     return
