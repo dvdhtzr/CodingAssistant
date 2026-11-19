@@ -179,6 +179,48 @@ class IndependentEvidenceAuditTests(unittest.TestCase):
         self.assertEqual(result["status"], "BLOCKED")
         self.assertIn("final acceptance", " ".join(result["findings"]))
 
+    def test_mock_compiler_repair_requires_distinct_initial_write(self):
+        def add_repair(data):
+            row = data["runs"][0]
+            row["repair_attempted"] = True
+            initial = success_acceptance()
+            initial["status"] = "ACCEPTANCE_FAILED"
+            initial["verified"] = False
+            initial["exit_code"] = 2
+            initial["checks"]["offline_build"] = False
+            initial["checks"]["health"] = False
+            initial["checks"]["feature_behavior"] = False
+            initial["compiler_errors"] = [
+                "CS0246: The type or namespace name 'FromQuery' could not be found"
+            ]
+            row["initial_acceptance"] = initial
+            row["repair"] = {
+                "attempted": True, "completed": True,
+                "status": "MODEL_WRITE_COMPLETE",
+                "opencode_exit_code": 0,
+                "requests": 2, "model_attempts": 1, "model_completed": 1,
+                "model_failures": 0, "route_rejections": 0,
+                "acceptance_status": "VERIFIED",
+                "checks": {key: True for key in audit.GUEST_CHECKS},
+                "source_sha256": dict(row["source_files_sha256"]),
+                "compiler_errors": initial["compiler_errors"],
+                "writes": copy.deepcopy(row["write_evidence"]),
+            }
+            row["write_evidence"][0]["sha256"] = hashlib.sha256(
+                b"original compiler-failing bytes").hexdigest()
+            row["write_evidence"][0]["bytes"] = len(b"original compiler-failing bytes")
+        self.rewrite(add_repair)
+        positive = audit.audit(self.path, reverify=self.fake_rerun)
+        self.assertEqual(positive["status"], "EVIDENCE_REVIEW_PASS")
+        self.assertTrue(positive["reviewed_runs"][0]["repaired"])
+        # A claimed repair with no distinct source change must fail closed.
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data["runs"][0]["write_evidence"][0] = copy.deepcopy(
+            data["runs"][0]["repair"]["writes"][0])
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+        blocked = audit.audit(self.path, reverify=self.fake_rerun)
+        self.assertEqual(blocked["status"], "BLOCKED")
+
     def test_unreported_model_retry_is_rejected(self):
         def change(data):
             data["runs"][0]["repair_attempted"] = True
