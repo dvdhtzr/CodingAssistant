@@ -354,6 +354,25 @@ no model, Ollama or cloud endpoint is involved. A passing initialization
 is **not** approval to edit projects; see
 [the M1 integration gates](docs/M1_GATEWAY_DISCOVERY.md).
 
+### M1.8 ACP handshake GREEN; M1.9 adversarial OS boundaries next
+
+Owner's Dell verified the **real ACPX → OpenCode ACP `initialize`**
+handshake, negotiated protocol `1`, and removed the temporary guest.
+M1.8 is GREEN but Gateway-owned coding sessions remain disabled.
+Before granting any such session, run the twelve negative OS-boundary
+checks against the exact immutable local image:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/os_negative_boundary_probe.py
+```
+
+This executes file/network/privilege **denial attempts in a disposable
+non-root, no-network, no-host-mount, read-only Podman guest**. It does
+not invoke a model or access your source files. Any failed denial or
+container cleanup blocks M1. The twelve checks are not complete M1
+security qualification: approval-scoped worktrees, Git remotes and
+child-process delegation still require later gates.
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
