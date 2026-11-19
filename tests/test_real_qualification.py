@@ -30,17 +30,17 @@ def stream(model: str, args: dict, name: str = "write") -> bytes:
 
 class QualificationBrokerTests(unittest.TestCase):
     def test_real_tool_stream_parsing(self):
-        args = {"filePath": "/workspace/api/Program.cs", "content": "class X {}"}
+        args = {"path": "/workspace/api/Program.cs", "content": "class X {}"}
         self.assertEqual(q.parse_write_sse(stream("qwen3.5:4b", args),
                                            "qwen3.5:4b"), args)
         self.assertEqual(q.tool_id(0), "call_m016_0")
         for bad in (
             stream("other:4b", args),
             stream("qwen3.5:4b", args, "shell"),
-            stream("qwen3.5:4b", {"filePath": "../.ssh/key", "content": ""}),
-            stream("qwen3.5:4b", {"filePath": "/workspace/api/Program.cs",
+            stream("qwen3.5:4b", {"path": "../.ssh/key", "content": ""}),
+            stream("qwen3.5:4b", {"path": "/workspace/api/Program.cs",
                                     "content": "x\x00y"}),
-            stream("qwen3.5:4b", {"filePath": "/workspace/api/Program.cs",
+            stream("qwen3.5:4b", {"path": "/workspace/api/Program.cs",
                                     "content": "X" * 17000}),
             stream("qwen3.5:4b", args).replace(b"data: [DONE]", b"data: []"),
         ):
@@ -58,9 +58,9 @@ class QualificationBrokerTests(unittest.TestCase):
                     "tools": [{"type": "function", "function": {
                         "name": "write",
                         "parameters": {"properties": {
-                            "filePath": {"type": "string"},
+                            "path": {"type": "string"},
                             "content": {"type": "string"}},
-                            "required": ["filePath", "content"]}}}],
+                            "required": ["path", "content"]}}}],
                 }
                 data = json.dumps(request).encode()
                 self.assertTrue(q.validate_chat(data, task, model, 0))
