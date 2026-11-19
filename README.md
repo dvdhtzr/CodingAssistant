@@ -420,6 +420,26 @@ cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_acp_docto
 Do not enable networking, cloud models, host worktrees or unrestricted
 adapter downloads to bypass this issue.
 
+### M1.11 — correct Gateway-owned ACP doctor without CLI slash commands
+
+The old `agent --message '/acp doctor'` route returned a nonzero exit
+despite healthy Gateway endpoints. The pinned CLI source warns that
+slash commands in CLI agent turns may bypass command handling and
+fall into ordinary agent execution. We now use a tiny authenticated
+Gateway RPC diagnostic plugin, layered offline onto the qualified
+M1.7 image. No source checkout, host Node, model, cloud, or Ollama
+configuration changes are required:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_backend_rpc_probe.py --prepare
+```
+
+Only an exact no-parameters `operator.read` diagnostic may call the
+Gateway-registered ACPX backend's `doctor()`. A valid response must
+prove ACP protocol 1; invalid/absent output remains **BLOCKED**.
+All runtime operations remain rootless, no-network, no-host-mount
+and removed after use. M1 autonomous coding is **not** enabled.
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.

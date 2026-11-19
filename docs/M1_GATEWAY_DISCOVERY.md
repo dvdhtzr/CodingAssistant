@@ -743,3 +743,67 @@ Actual coding still requires exact plan/version/hash owner approval,
 scoped writable worktree gates, local-only inference route, Git
 restrictions, recovery and independent Windows-host runtime tests.
 Overall M1 remains YELLOW.
+
+## M1.11 corrected Gateway-owned ACPX doctor (CLI slash command retired)
+
+Owner Dell result after PR #55: M1.11 remains **BLOCKED** on the original
+`openclaw agent --message '/acp doctor'` invocation. Combined immutable
+image and package preflight passed; all 3 Gateway health endpoints HTTP 200;
+Gateway cleanup PASS. CLI exited 1, returned a JSON object, and stderr,
+but sanitizer reported `category: unclassified` and no ACP doctor marker.
+Evidence: `artifacts/m1/gateway-acp-doctor-a3289d889e62.json`.
+
+**Source finding:** pinned OpenClaw v2026.11.5
+`src/commands/agent-via-gateway.ts` documents that CLI-originated
+slash commands can be rejected and fall through to normal agent turns
+(it explicitly rejects `/compact` for that reason). Sending `/acp doctor`
+through `openclaw agent --message` is therefore not a safe/proven
+Gateway diagnostic transport. We do not claim this proves the precise
+cause of the owner's unclassified CLI failure; we retire that route.
+
+The replacement registers an explicit `codingassistant.acp.doctor`
+Gateway method via a tiny **temporary diagnostic plugin**, using the
+pinned official plugin API `openclaw/plugin-sdk/acp-runtime-backend`.
+The method accepts exactly `{}`, requires `operator.read`, obtains
+the **existing Gateway-registered ACPX backend** via
+`getAcpRuntimeBackend('acpx')`, calls its real `runtime.doctor()`
+and returns only a bounded, fixed schema containing ACP protocol 1
+and no coding-session/model claims. Unexpected params, missing
+backend, invalid protocol or error cannot return a success response.
+
+**Build/run only on Dell, after PR CI GREEN and merge:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/gateway_backend_rpc_probe.py --prepare
+```
+
+`--prepare` explicitly creates a **new, disposable-purpose derived
+local image** from immutable M1.7 combined image
+`023bf9411fe23045dbdea9c777ed8618dec6553a81417c9aec2d15f7cf5b99ea`.
+Podman build is copy-only (`FROM` pinned local ID, no `RUN` or npm),
+`--network=none --pull=never`; original M0/M1 images stay unchanged.
+The two added files copied into the image are an explicit operator-only
+plugin under `/app/codingassistant-doctor` and an immutable no-secrets
+OpenClaw config under `/app/codingassistant-doctor-config.json`.
+The config activates ACPX and the diagnostic plugin, pins
+`/usr/local/bin/opencode acp`, probe agent `opencode`, denied
+interactive permissions, no MCP server, and empty agent env allowlist.
+Gateway runtime runs rootless/non-root, no-network, no host mounts or
+ports, read-only root and private tmpfs/token. It calls exactly the
+registered `gateway call codingassistant.acp.doctor --params '{}' --json`
+RPC—**never** a general agent CLI or user prompt.
+
+Passing requires the actual Gateway to return only the schema
+`backend=acpx`, `runtimeDoctorOk=true`, `protocolVersion=1`,
+`codingSessionCreated=false`, `promptSent=false`, and verified removal
+of the disposable Gateway. Appendix records only image digest, source
+fingerprint and bounded success flags. No provider/model inference,
+ACP coding session, source workspace access, remote network or Cloud API.
+
+Potential PASS: `M1.11 GATEWAY_OWNED_ACP_DOCTOR_PASS`.
+A BLOCKED result remains the truth; do not relax config, network or
+provider policy to force success. This diagnostic plugin is **not**
+part of a production coding runtime and does not authorize code edits.
+Owner plan hash approvals, source Git worktree permissions, local-only
+networked Ollama transport, durable crash recovery and Windows host
+runtime acceptance remain future M1 exit gates.
