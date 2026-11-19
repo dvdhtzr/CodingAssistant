@@ -1,0 +1,55 @@
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback"
+  },
+  "acp": {
+    "enabled": true,
+    "backend": "acpx",
+    "allowedAgents": [
+      "opencode"
+    ]
+  },
+  "plugins": {
+    "load": {
+      "paths": [
+        "/app/codingassistant-doctor"
+      ]
+    },
+    "entries": {
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "cwd": "/tmp",
+          "stateDir": "/tmp/acpx-m111",
+          "probeAgent": "opencode",
+          "permissionMode": "deny-all",
+          "nonInteractivePermissions": "deny",
+          "pluginToolsMcpBridge": false,
+          "openClawToolsMcpBridge": false,
+          "mcpServers": {},
+          "agentProcessEnvAllow": [],
+          "agentProcessEnvBlock": [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
+            "OLLAMA_HOST",
+            "AZURE_OPENAI_API_KEY"
+          ],
+          "agents": {
+            "opencode": {
+              "command": "/usr/local/bin/opencode",
+              "args": [
+                "acp"
+              ]
+            }
+          }
+        }
+      },
+      "codingassistant-acp-doctor": {
+        "enabled": true
+      }
+    }
+  }
+}
