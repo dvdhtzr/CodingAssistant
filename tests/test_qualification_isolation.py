@@ -107,7 +107,7 @@ class QualificationIsolationContracts(unittest.TestCase):
 
     def test_fail_closed_when_rootless_unavailable(self):
         with patch.object(q.sys, "platform", "linux"), patch.object(q.os, "geteuid",
-                             return_value=1001), patch.object(q, "inspect_podman",
+                             return_value=1001, create=True), patch.object(q, "inspect_podman",
                              return_value={"rootless": False}):
             with tempfile.TemporaryDirectory() as temp:
                 report = q.evaluate(90, pathlib.Path(temp) / "evidence.json")
