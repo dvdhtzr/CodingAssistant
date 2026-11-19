@@ -1,0 +1,9 @@
+# M1.11 correction: a DIAGNOSTIC-ONLY local image layer built from
+# the immutable owner-qualified M1.7 OpenClaw+ACPX+OpenCode image.
+# Build exclusively offline with --pull=never --network=none; no RUN,
+# dependencies, remote downloads or host project mounts.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+COPY doctor-plugin/ /app/codingassistant-doctor/
+COPY doctor-config.json /app/codingassistant-doctor-config.json
+# No Entrypoint/USER/port modifications. Never retag the M1.7 base.
