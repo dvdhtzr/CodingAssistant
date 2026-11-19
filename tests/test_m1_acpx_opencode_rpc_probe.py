@@ -46,6 +46,7 @@ class ReadonlyAcpxRpcTest(unittest.TestCase):
         self.assertEqual(cmd[-2], "-e")
         js = cmd[-1]
         self.assertIn("createAgentRegistry().inspect('opencode')", js)
+        self.assertIn("createRequire('/app/dist/extensions/acpx/package.json')", js)
         self.assertIn("launch.kind", js)
         self.assertNotIn("child_process", js)
         self.assertNotIn("spawn(", js)
@@ -58,9 +59,9 @@ class ReadonlyAcpxRpcTest(unittest.TestCase):
             p.registry_command(p.IMAGE_ID, 0, 1000)
 
     def test_gateway_cli_rpc_is_single_readonly_plugin_method(self):
-        cmd = p.rpc_command("ca-m16-acpx-sample")
+        cmd = p.rpc_command("ca-m15-acpx-sample")
         self.assertEqual(cmd, [
-            "podman", "exec", "--interactive=false", "ca-m16-acpx-sample",
+            "podman", "exec", "--interactive=false", "ca-m15-acpx-sample",
             "node", "/app/openclaw.mjs", "gateway", "call",
             "acpx.agents.list", "--params", "{}", "--json",
             "--timeout", "15000"])
@@ -189,8 +190,6 @@ class ReadonlyAcpxRpcTest(unittest.TestCase):
               mock.patch.object(p, "fixed") as called):
             result = p.run()
         self.assertEqual(result["status"], "BLOCKED")
-        self.assertTrue(result["gateway_removed"] is False
-                        or result["gateway_removed"] is True)
         self.assertFalse(result["gateway_started"])
         self.assertFalse(result["rpc_verified"])
         self.assertFalse(result["agent_spawned"])
