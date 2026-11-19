@@ -136,8 +136,9 @@ class MvpTests(unittest.TestCase):
                                       project=None, file="Program.cs",
                                       task=None, build=False, run=True,
                                       retry="20261119T010319Z-9726f2d8")
+            attempts = iter([False, True])
             def build(*args, **kwargs):
-                if kwargs.get("feedback") is not None:
+                if not next(attempts):
                     kwargs["feedback"].append(
                         "error CS1529: using directives must precede statements")
                     return False
