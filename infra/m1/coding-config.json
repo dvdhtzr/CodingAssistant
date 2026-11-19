@@ -1,0 +1,32 @@
+{
+  "gateway": {"mode": "local", "bind": "loopback"},
+  "acp": {"enabled": true, "backend": "acpx", "allowedAgents": ["opencode"]},
+  "plugins": {
+    "load": {"paths": ["/app/codingassistant-coding"]},
+    "entries": {
+      "acpx": {
+        "enabled": true,
+        "config": {
+          "cwd": "/workspace",
+          "stateDir": "/tmp/ca-m112-acpx",
+          "probeAgent": "opencode",
+          "permissionMode": "approve-all",
+          "nonInteractivePermissions": "deny",
+          "pluginToolsMcpBridge": false,
+          "openClawToolsMcpBridge": false,
+          "mcpServers": {},
+          "agentProcessEnvAllow": ["OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_AUTOUPDATE", "CI"],
+          "agentProcessEnvBlock": [
+            "OPENCLAW_GATEWAY_TOKEN", "CA_M112_PLAN_HASH",
+            "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+            "AZURE_OPENAI_API_KEY"
+          ],
+          "agents": {
+            "opencode": {"command": "/usr/local/bin/opencode", "args": ["acp"]}
+          }
+        }
+      },
+      "codingassistant-m112": {"enabled": true}
+    }
+  }
+}
