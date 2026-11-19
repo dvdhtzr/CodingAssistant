@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """M0.18 independent, offline, fail-closed review of completed M0.16 evidence.
 
-NO Ollama/agent/container execution. NO generated code execution. NO mutation of
-original benchmark results or workspaces. Only a new, separately hashed audit
-sidecar in the same evidence directory. Unlike the agent runner, this module
-does not import its broker, workspace scanner, or status calculation.
+NO Ollama, model agent or unisolated generated-code execution. Re-executes
+only the TRUSTED independent acceptance evaluation in fresh, no-network
+containers against disposable copies. NEVER mutates original evidence or workspaces.
+Unlike the agent runner, this does not import its model broker/source scanner.
 Historical approved source/fixture Git blob IDs are frozen here.
 """
 from __future__ import annotations
@@ -17,10 +17,14 @@ import pathlib
 import re
 import stat
 import sys
+import shutil
+import tempfile
+from collections.abc import Callable
 from typing import Any
 
 from common import ROOT, utcnow, write_json
 from qualify import TASKS, assess
+from qualification_acceptance_probe import run_evaluator
 
 FROZEN_INPUT_BLOBS = {
     "benchmarks/tasks.json": "44f5937e3956d9fd6fb8400bb0c585ce00407372",
@@ -221,8 +225,7 @@ def check_writes(writes: object, task: str, current: dict[str, str],
 
 
 def inspect_run(row: dict[str, Any], report: dict[str, Any],
-                case: tuple[str, int], root: pathlib.Path,
-                image_ids: tuple[str, str]) -> dict[str, Any]:
+                case: tuple[str, int], root: pathlib.Path) -> dict[str, Any]:
     task, repeat = case
     must(type(row) is dict and row.get("task") == task and
          row.get("repeat") == repeat, "Unknown or duplicate benchmark identity")
@@ -322,14 +325,52 @@ def inspect_run(row: dict[str, Any], report: dict[str, Any],
     }
 
 
-def audit(results: pathlib.Path) -> dict[str, Any]:
+def sandbox_reverify(image_id: str, task: str,
+                     original: pathlib.Path) -> dict[str, Any]:
+    """Execute only fixed tests on a COPY in another no-network guest.
+
+    No original evidence, model socket, repository or host code is mounted.
+    A source-only copy excludes prior binaries and other evaluator products.
+    """
+    if sys.platform != "linux" or os.geteuid() == 0:
+        raise ValueError("Independent rerun needs Linux non-root Podman")
+    with tempfile.TemporaryDirectory(prefix="ca-m018-eval-") as temp:
+        parent = pathlib.Path(temp)
+        copy = parent / "workspace"
+        copy.mkdir(mode=0o700)
+        required = ORIGINAL_FILES[task] | {
+            name.removeprefix("/workspace/") for name in MODEL_WRITES[task]
+        }
+        for rel in required:
+            source = original / rel
+            if not source.exists():
+                raise ValueError("Generated source file missing for verifier")
+            blob = plain_file(source, MAX_SOURCE_BYTES)
+            target = copy / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(blob)
+        before, _ = current_source_hash(copy, task)
+        sentinel = parent / "host-only"
+        sentinel.write_text("not mounted", encoding="utf-8")
+        observed = run_evaluator(
+            image_id, task, copy, sentinel,
+            parent / "independent-container-id", timeout=360)
+        after, _ = current_source_hash(copy, task)
+        if (before != after or sentinel.read_text(encoding="utf-8") != "not mounted"):
+            raise ValueError("Independent verifier changed source or host-only sentinel")
+        return observed
+
+
+def audit(results: pathlib.Path, *,
+          reverify: Callable[[str, str, pathlib.Path], dict[str, Any]] | None = None
+          ) -> dict[str, Any]:
     report: dict[str, Any] = {
         "schema_version": 1, "stage": "M0.18-independent-evidence-audit",
         "status": "BLOCKED", "reviewed_at_utc": utcnow(),
         "results_path": str(results), "reviewed_runs": [],
         "notes": [
-            "Independent offline audit of existing recorded evidence; no model, container or generated code executed.",
-            "This is a consistency and policy audit, not a cryptographic attestation of actual historical machine state.",
+            "Independent offline evidence audit; no model inference or model-driven code executed.",
+            "Consistency/policy plus fresh isolated behavior verification, not cryptographic attestation of historical machine state.",
             "Model response streaming was enforced by pinned broker code; raw provider tokens were not retained.",
             "Initial compiler-failing source bytes were not retained when a model repair followed.",
         ],
@@ -383,9 +424,16 @@ def audit(results: pathlib.Path) -> dict[str, Any]:
             must(case in expected and case not in seen, "Duplicate/missing task repetition")
             seen.add(case)
             try:
-                reviewed = inspect_run(row, data, case, results.parent,
-                                       (data["runtime_image_id"],
-                                        data["evaluator_image_id"]))
+                reviewed = inspect_run(row, data, case, results.parent)
+                if reverify is not None:
+                    check = reverify(data["evaluator_image_id"], case[0],
+                                     pathlib.Path(row["workspace"]))
+                    check_acceptance(check, successful=True)
+                    must(check.get("compiler_errors") == [],
+                         "Independent rerun returned unexpected compiler errors")
+                    reviewed["independent_rerun"] = "VERIFIED"
+                else:
+                    reviewed["independent_rerun"] = "NOT_RUN"
             except (ValueError, OSError, KeyError, TypeError) as exc:
                 findings.append(f"{case[0]}/{case[1]}: {type(exc).__name__}: {exc}")
                 report["reviewed_runs"].append(
@@ -394,6 +442,10 @@ def audit(results: pathlib.Path) -> dict[str, Any]:
             report["reviewed_runs"].append(reviewed)
         must(seen == expected, "A benchmark repetition is missing")
         must(not findings, "At least one case failed independent evidence audit")
+        if reverify is None:
+            report["status"] = "EVIDENCE_REVIEW_ONLY"
+            report["findings"] = []
+            return report
         copies = []
         for row, reviewed in zip(data["runs"], report["reviewed_runs"]):
             item = dict(row)
@@ -415,17 +467,23 @@ def audit(results: pathlib.Path) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", type=pathlib.Path)
+    parser.add_argument("--review-only", action="store_true",
+                        help="Only inspect persisted records; never qualify without isolated rerun")
     args = parser.parse_args()
-    report = audit(args.results)
+    def isolated(image_id: str, task: str, workspace: pathlib.Path) -> dict[str, Any]:
+        return sandbox_reverify(image_id, task, workspace)
+    report = audit(args.results, reverify=None if args.review_only else isolated)
     # NEVER edit the original results.json or model-generated source.
     # Fail closed if an existing audit sidecar already exists.
     target = args.results.parent / "independent-safety-audit.json"
     if target.exists() or target.is_symlink():
         print("M0.18 BLOCKED: audit sidecar already exists; no overwrite", file=sys.stderr)
         return 2
-    target.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
-                      encoding="utf-8")
-    target.chmod(0o600)
+    # Exclusive creation and restrictive permissions; no audit overwrite.
+    fd = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as writer:
+        json.dump(report, writer, indent=2, sort_keys=True)
+        writer.write("\n")
     print("M0.18", report["status"])
     for row in report["reviewed_runs"]:
         print(f'  {row["task"]}/{row["repeat"]}: {row["status"]}')
@@ -434,7 +492,8 @@ def main() -> int:
     if report.get("qualification"):
         print("  Recorded evidence audited:", report["qualification"]["status"])
     print("Audit sidecar:", target)
-    print("Original benchmark evidence untouched. No model or generated code executed.")
+    print("Original evidence untouched. No model executed; generated code")
+    print("runs only in separate no-network verifier containers when enabled.")
     return 0 if report["status"] == "EVIDENCE_REVIEW_PASS" else 2
 
 
