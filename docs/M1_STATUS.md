@@ -547,3 +547,70 @@ Gateway-to-ACP session/plan approval workflows, Ollama socket
 boundaries, or Windows-host controls are safe. All still require
 targeted tests and explicit authorization before autonomous coding.
 Overall M1 remains **YELLOW**.
+
+
+
+## M1.9 owner Dell result — GREEN (Nov 19, 2026)
+
+Owner ran `tools/m1/os_negative_boundary_probe.py` against the
+exact combined local image
+`023bf9411fe23045dbdea9c777ed8618dec6553a81417c9aec2d15f7cf5b99ea`.
+Result **`M1.9 NEGATIVE_SECURITY_PASS`**, **12/12** denied:
+system/symlink/traversal writes, shadow and /proc credentials,
+unmounted user repository, inherited provider secrets, privilege
+escalation, outbound TCP/host Ollama loopback and independent child
+process network/system writes. Disposable container removed. This is a
+**bounded image-specific OS boundary check** (even a failed public
+outbound TCP connection is not a full network-policy proof). No
+Gateway, ACP session, model, source modification or cloud API ran.
+Local evidence: `artifacts/m1/os-negative-audit-a80a37fa58d7.json`.
+
+## M1.10 — writable disposable project boundary, not a real repo
+
+To validate the next critical boundary **before** any real writable
+worktree is admitted, the new `tools/m1/scoped_worktree_probe.py`
+generates a fresh throwaway miniature C# project under Git-ignored
+`artifacts/m1/ca-m110-*/approved` and an adjacent UNMOUNTED
+`unapproved/keep.txt` sentinel. The only host bind is the
+newly-created `approved` directory to `/workspace`; the actual
+CodingAssistant repo, host home, unrelated repos, any `.git` tree,
+credentials and external API sockets are NEVER mounted.
+
+A fixed Node program running inside the already-verified immutable
+OpenClaw/ACPX/OpenCode image, in rootless, non-root Podman with
+`--network=none --read-only --cap-drop=all`, verifies that:
+
+- Approved edits to `App.cs` and newly-created `Feature.cs` succeed.
+- A child process may write a NEW authorized `Child.cs` in the same
+  project scope.
+- Symlinks to `/etc/passwd`, path traversal reads/writes to the
+  unmounted sibling, system writes, and child process writes outside
+  the project are denied.
+- User's real project is not visible and `.git` is not mounted.
+
+The trusted Python parent then INDEPENDENTLY hashes the unmounted
+sibling sentinel and checks the exact modified/new source file bytes,
+unchanged fixture notes, exact file-set, symlink target and absence of
+Git metadata. The disposable container and temporary fixture must
+both be removed and their cleanup verified before reporting PASS.
+This avoids trusting claims made solely by the guest program.
+There is no agent, ACP session, Ollama, hosted AI service or Git remote.
+
+**Run on Dell after PR GREEN and merge:**
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/scoped_worktree_probe.py
+```
+
+Expected: `M1.10 SCOPED_WORKTREE_PASS`, **10/10** guest
+observations, **9/9** independently confirmed host-side checks, and
+both removals confirmed.
+
+**Scope boundary:** This proves a disposable single-project bind mount
+can be writable while neighboring host files are inaccessible. It
+does not authorize a real repo mount, untrusted generated code,
+auto-updated dependencies, Git remotes, Gateway-owned ACP coding
+turns, or model connectivity. Product M1 still needs exact
+plan-version/hash approval, model network segregation, durable run
+state/crash recovery, and independent Windows acceptance. M1 stays
+**YELLOW** until those gates pass.
