@@ -45,6 +45,13 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
         self.assertNotIn("child_process", script)
         self.assertNotIn("session/prompt", script)
         self.assertNotIn("npx", script)
+        # In pinned OpenClaw v2026.11.5, a configured plugin without
+        # activation.onStartup has no startup import and registers no RPCs.
+        # This must be a real manifest assertion, not just a JS-string check.
+        manifest = json.loads(
+            (m.PLUGIN / "openclaw.plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["id"], "codingassistant-m112")
+        self.assertEqual(manifest.get("activation"), {"onStartup": True})
         config = json.loads(m.CONFIG.read_text())
         self.assertEqual(config["acp"]["allowedAgents"], ["opencode"])
         self.assertEqual(config["plugins"]["entries"]["acpx"]["config"]["cwd"], "/workspace")
