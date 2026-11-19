@@ -2,7 +2,7 @@
 
 Cross-platform, **local-first** autonomous software engineering assistant. OpenClaw orchestrates; OpenCode does coding; Ollama serves local Qwen models. The approved target is a .NET 10 Minimal API plus React/TypeScript Mission Control, SQLite, SignalR, and Git worktrees.
 
-> **Current status: M0 IN PROGRESS (not GREEN).** This repository currently contains the model/hardware feasibility and evaluation foundation, not a running autonomous developer. No model or platform has qualified.
+> **Current status (Nov 19, 2026): M0 GREEN on Dell at the independently reviewed evidence-assurance level.** The local `qwen3.5:4b` / OpenCode runner completed **9/9** frozen coding attempts, followed by M0.18 independent review and nine separate offline acceptance rechecks: **EVIDENCE_REVIEW_PASS / QUALIFIED**. This is *not* a production-grade autonomous developer, a cryptographic historical attestation, or a Windows-host security qualification. **M1 secure orchestration is now in read-only discovery; autonomous execution remains gated.**
 
 ## Try the interactive MVP today
 
@@ -193,6 +193,28 @@ The workflow copies selected non-secret source/project files into `artifacts/mvp
 
 **Deliberate shortcut:** this interactive MVP's proposal stage uses Ollama's local OpenAI-compatible API **directly**; it does not start an OpenCode agent. The already validated isolated OpenCode work remains in `tools/m0/`, and the later autonomous workflow will reintegrate it. This first command is meant to produce a useful, reviewable edit now—not claim M0 qualification or production-grade autonomous coding.
 
+## M0 qualification exit / M1 read-only kickoff
+
+The frozen M0 model benchmark on the Dell reached **9/9 verified**.
+Independent M0.18 review reported nine fresh isolated evaluator rechecks
+`EVIDENCE_PASS` and **QUALIFIED**. The benchmark and append-only audit
+sidecars remain local (Git-ignored). For the exact review limitations see
+[the independent audit contract](docs/M0_INDEPENDENT_EVIDENCE_AUDIT.md)
+and [current M0 status](docs/M0_STATUS.md).
+
+**M1 does not yet authorize autonomous coding.** First measure the local
+Gateway and Node compatibility without installing or starting anything:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/discovery.py
+```
+
+The current OpenClaw Gateway needs patched Node 24/26; the Dell's
+previously reported Node 22 is not compatible. A `PREREQUISITES_BLOCKED`
+report is expected and safe; we will decide whether to use a separate
+rootless Gateway runtime rather than modifying the working M0 toolchain.
+See [M1 read-only discovery](docs/M1_GATEWAY_DISCOVERY.md).
+
 ## Quick start: safe checks
 
 Requires Python 3.10+ and a running Ollama instance. These checks do not install software or launch an autonomous coding agent.
@@ -217,8 +239,8 @@ Local results appear under `artifacts/m0/` (ignored by Git). Don't commit machin
 
 | Milestone | Description | Status |
 | --- | --- | --- |
-| M0 | Host inventory, Ollama/OpenCode model feasibility, repeatable 3×3 benchmarks | IN PROGRESS |
-| M1 | OpenClaw → ACP → OpenCode, externally enforced security boundary and approvals | NOT STARTED |
+| M0 | Host inventory, Ollama/OpenCode model feasibility, repeatable 3×3 benchmarks | GREEN on Dell; Windows separate gate |
+| M1 | OpenClaw → ACP → OpenCode, externally enforced security boundary and approvals | M1.0 discovery only |
 | M2 | ASP.NET Core API, auth, SQLite, state machine, reconciliation | NOT STARTED |
 | M3 | React Mission Control, SignalR, supervision and evidence UI | NOT STARTED |
 
