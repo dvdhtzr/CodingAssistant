@@ -132,7 +132,7 @@ const server = http.createServer(async (req, res) => {
           t?.type === "function" && t?.function?.name === "write");
         const schema = native?.[0]?.function?.parameters;
         const promptMatched = users.length === 1 && textOf(users[0]).includes(PROMPT);
-        const schemaOK = ["filePath", "content"].every(key =>
+        const schemaOK = ["path", "content"].every(key =>
           schema?.required?.includes(key) &&
           Object.hasOwn(schema?.properties || {}, key));
         if (!promptMatched || native?.length !== 1 || !schemaOK) {
@@ -191,8 +191,8 @@ function noExternalTcp() {
 function runCli(port) {
   const rules = [{action: "*", resource: "*", effect: "deny"}];
   for (const file of allowed) {
-    rules.push({action: "write", resource: file, effect: "allow"});
-    rules.push({action: "write", resource: "/workspace/" + file, effect: "allow"});
+    rules.push({action: "edit", resource: file, effect: "allow"});
+    rules.push({action: "edit", resource: "/workspace/" + file, effect: "allow"});
   }
   const config = {
     "$schema": "https://opencode.ai/config.json",
