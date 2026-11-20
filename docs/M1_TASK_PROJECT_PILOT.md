@@ -57,7 +57,7 @@ The contract is private because it contains your task and specification.
 The owner can then run, from the repository:
 
 ```bash
-cd ~/CodingAssistant && git pull --ff-only && python3 tools/m1/task_project_coding.py --contract /absolute/private/path/task.json --prepare
+cd ~/CodingAssistant && git pull --ff-only && chmod 600 ~/Downloads/codingassistant-agent-contract.json && python3 tools/m1/task_project_coding.py --contract ~/Downloads/codingassistant-agent-contract.json --prepare
 ```
 
 The optional `--prepare` allows a needed **offline** rebuild of the
