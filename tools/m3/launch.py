@@ -360,11 +360,15 @@ def verify_execution_preflight() -> None:
 
 
 def install_desktop_shortcut() -> bool:
-    """Add a KDE/GNOME application-menu entry once, without storing a token."""
+    """Create a KDE/GNOME app-menu entry once; do not store authentication."""
     if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         return False
-    root = ROOT.resolve()
-    if any(char in str(root) for char in ('"', "\\n", "\\r")):
+    script = ROOT.resolve() / "start.sh"
+    # Desktop entry execution syntax has special quoting rules. Only install
+    # for this known simple user path; never interpolate shell control text.
+    if any(char in str(script) for char in (' ', '"', chr(10), chr(13), chr(9))):
+        return False
+    if not script.is_file():
         return False
     directory = Path.home() / ".local" / "share" / "applications"
     if directory.is_symlink():
@@ -372,20 +376,19 @@ def install_desktop_shortcut() -> bool:
     directory.mkdir(parents=True, exist_ok=True)
     target = directory / "codingassistant.desktop"
     if target.is_symlink() or target.exists():
-        return False  # Never overwrite an owner-customized shortcut.
-    script = root / "start.sh"
-    if not script.is_file():
         return False
-    entry = ("[Desktop Entry]\\n"
-             "Version=1.0\\n"
-             "Type=Application\\n"
-             "Name=CodingAssistant\\n"
-             "Comment=Local AI Coding Mission Control\\n"
-             "Exec=/usr/bin/env bash \\"" + str(script) + "\\"\\n"
-             "Terminal=true\\n"
-             "Icon=applications-development\\n"
-             "Categories=Development;IDE;\\n")
-    # .desktop contains only a local script path: no bearer or environment.
+    entry = chr(10).join([
+        "[Desktop Entry]",
+        "Version=1.0",
+        "Type=Application",
+        "Name=CodingAssistant",
+        "Comment=Local AI Coding Mission Control",
+        "Exec=/usr/bin/env bash " + str(script),
+        "Terminal=true",
+        "Icon=applications-development",
+        "Categories=Development;IDE;",
+        "",
+    ])
     target.write_text(entry, encoding="utf-8")
     target.chmod(0o644)
     return True
