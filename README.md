@@ -19,21 +19,39 @@ Finish/cancel current M1 runs before benchmarking. This **does not change
 the execution pin** or authorize Qwen Coder inside the agent. See
 `src/CodingAssistant.Web/README.md` for runtime/deployment details.
 
-## Start Mission Control on the Dell
+## Start / restart Mission Control — one simple entry point
+
+**On your first launch after cloning/updating this version:**
 
 ```bash
-cd ~/CodingAssistant && git pull --ff-only && python3 tools/m3/launch.py
+cd ~/CodingAssistant && git pull --ff-only && bash start.sh
 ```
 
-The launcher handles the CI application install when needed, opens the local
-browser, and prints the one-time owner token to paste into the login screen.
-If GitHub CLI cannot download the artifact automatically, one browser download
-from the official successful Actions run is necessary. Autonomous coding is
-**off by default**. To perform an explicitly approved **fixed-fixture-only**
-coding trial, add `--enable-execution` to the command; the launcher first
-runs model-free containment preflight and prepares the pinned offline image.
-It refuses to enable coding if those checks fail. The ten integrated security
-tests in issue #76 remain required. See `src/CodingAssistant.Web/README.md`.
+**After that, click _CodingAssistant_ in the KDE application menu.** You can
+also run `bash ~/CodingAssistant/start.sh` at any time, including after a
+restart or power failure. No `--refresh`, `--enable-execution`, manual ZIP
+extraction, `gh auth`, or .NET installation. The starter:
+
+- Safely fast-forwards clean `main` when online; otherwise runs the cached app.
+- Retrieves the *matching* official checksummed GitHub Release (published only
+  after Ubuntu and Windows CI both pass), or keeps the previously verified
+  installed app if a download fails. No expiring CI artifacts in normal use.
+- Checks rootless isolation and reuses an **already verified** offline container
+  image; if a safety prerequisite fails, opens **history-only mode**, with AI
+  execution disabled.
+- Reopens Firefox and retains tasks/history from the private SQLite database.
+  The current session requires pasting a **fresh one-time owner token** shown
+  in the terminal; it is not saved in a cookie, URL or configuration file.
+
+**Stop** with Ctrl+C or by closing the server terminal. A restart never
+automatically resumes an in-flight coding task. An interrupted run may need
+explicit **Request model-free reconciliation** in Mission Control before a
+new run can begin. Every actual run still needs its distinct exact-plan
+authorization and Start click. The engine is limited to the approved
+disposable C# fixture, not arbitrary repositories, and issue #76's integrated
+adversarial security checks remain a release blocker.
+
+For details see `src/CodingAssistant.Web/README.md`.
 
 ## M2 .NET control plane and gated M1 execution integration
 
