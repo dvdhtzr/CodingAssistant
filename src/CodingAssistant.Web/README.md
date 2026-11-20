@@ -46,6 +46,29 @@ consent, and an explicit Start click remain separate.
 Issue #76's ten integrated adversarial security checks remain required
 before wider autonomous execution. This is a development preview.
 
+## Run output and code changes
+
+After selecting a run, Mission Control now shows a prominent **Run result**
+panel and a **View run output** shortcut. On sign-in it reopens the most
+recent task/run automatically. While running, the panel clearly says output
+has not been produced yet. Once complete, the authenticated
+`GET /api/runs/{id}/result` endpoint asks the existing owner-private M1
+ledger for a **read-only**, strict-run-ID/executable-hash-bound result summary:
+final status, last stage, safe stop category, independent offline .NET verdict,
+whether the disposable C# source changed, and verified local inference count.
+No raw agent conversation, credentials, arbitrary filesystem paths or stderr
+are published. The endpoint also works after restarting into history-only
+mode on the Linux Dell; it never starts a model.
+
+For newly completed **independently verified** runs, the fixed
+`02-build-repair/api/Program.cs` diff (up to 7KB) is retained in the private
+M1 evidence artifact **before deleting the disposable worktree**. The UI shows
+that patch as plain text. Unverified, unapproved, oversized or arbitrary-scope
+source cannot be displayed as a verified change. Prior runs can display their
+archived summary/evaluator evidence but have no retained diff; show that
+limitation instead of claiming the output is missing or inventing the code.
+An uncertain cleanup remains `RecoveryBlocked`, not a successful result.
+
 ## Live activity and local model comparison
 
 Running jobs show a **local clock and indeterminate pulse**. These are not
