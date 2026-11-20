@@ -165,7 +165,7 @@ class M3LauncherContracts(unittest.TestCase):
             checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
             def fetch(url, target, limit):
                 if url.endswith(".sha256"):
-                    target.write_text(checksum + "  codingassistant-linux-x64.zip\\n")
+                    target.write_text(checksum + "  codingassistant-linux-x64.zip\n")
                 else:
                     target.write_bytes(archive.read_bytes())
             staging = root / "staging"
@@ -183,7 +183,7 @@ class M3LauncherContracts(unittest.TestCase):
             staging.mkdir()
             def fetch(url, target, limit):
                 if url.endswith(".sha256"):
-                    target.write_text("0" * 64 + "  codingassistant-linux-x64.zip\\n")
+                    target.write_text("0" * 64 + "  codingassistant-linux-x64.zip\n")
                 else:
                     target.write_bytes(b"not a verified application")
             with mock.patch.object(launcher, "fetch_public_asset", side_effect=fetch):
