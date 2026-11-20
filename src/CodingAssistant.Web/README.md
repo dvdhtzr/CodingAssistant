@@ -75,6 +75,34 @@ a real OpenClaw→ACPX→OpenCode coding run, OS-denied escape cases (#76),
 truthful live file/build/test results and inspectable artifacts (#92).
 No repo scope is widened or model permission added in this PR.
 
+## After specification approval: source drafting (first project-specific build step)
+
+The conversation-first workflow delivered in #93 now continues: approve an
+interview-generated specification, then click **Generate project source draft**.
+This produces **multiple actual source files chosen from the specification**
+with the selected pinned-local Ollama model, not the unrelated C# repair
+fixture or a fixed HTML template.
+
+The API creates a durable, SHA256-bound project draft record in SQLite. A
+single bounded local-only inference call proposes up to eight text files
+with validated relative paths, extensions, sizes and content. The frontend
+polls factual journal stages (Queued → ModelRequestStarted →
+ModelResponseReceived → DraftFilesSaved), shows individual source files and
+downloads a ZIP generated exclusively from the validated SQLite content.
+The state and file contents survive a restart. A crashed/terminated process
+marks pending drafts Interrupted on next start, **never automatically replays**
+them. A revised or unapproved specification cannot produce a Ready result.
+
+**This is still an unverified source proposal, not an autonomous agent build.**
+No model-generated commands are run; no generated files are written to an
+existing repository; no compilers/tests are invoked. Only the preapproved
+spec and text output are exchanged with local Ollama, over loopback with
+redirect/proxy disabled. It cannot be claimed as functional project acceptance.
+Completing #76 security qualification, binding a real isolated workspace to
+the approved specification, OpenClaw/ACPX/OpenCode execution, true file/tool
+traces, and independent build/test verification is the next essential slice.
+Do not mislabel text generation as a successful build.
+
 ## First useful task: standalone HTML artifact
 
 The top of Mission Control now has a **Make your HTML page** action.
