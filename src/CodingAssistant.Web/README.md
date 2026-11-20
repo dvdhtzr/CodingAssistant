@@ -89,7 +89,9 @@ with validated relative paths, extensions, sizes and content. The frontend
 polls factual journal stages (Queued → ModelRequestStarted →
 ModelResponseReceived → DraftFilesSaved), shows individual source files and
 downloads a ZIP generated exclusively from the validated SQLite content.
-The state and file contents survive a restart. A crashed/terminated process
+The source generation request streams from Ollama and persists bounded
+model-output-arrived checkpoints (never raw model text) so long CPU inference
+does not appear silently frozen. The state and file contents survive a restart. A crashed/terminated process
 marks pending drafts Interrupted on next start, **never automatically replays**
 them. A revised or unapproved specification cannot produce a Ready result.
 
