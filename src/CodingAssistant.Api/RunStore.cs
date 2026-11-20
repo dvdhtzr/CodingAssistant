@@ -74,9 +74,10 @@ public sealed class RunStore(TaskStore tasks)
         reader.GetString(1),
         reader.GetInt32(2),
         reader.GetString(3),
-        reader.GetString(4),
+        reader.IsDBNull(9) ? reader.GetString(4) : reader.GetString(9),
         reader.GetInt32(5) != 0,
-        ExecutionEnabled: false,
+        ExecutionEnabled: !reader.IsDBNull(9) &&
+            reader.GetString(9) is ("Starting" or "Running" or "Cancelling"),
         reader.GetString(6),
         reader.GetString(7),
         reader.GetInt64(8));
@@ -85,10 +86,11 @@ public sealed class RunStore(TaskStore tasks)
         SELECT r.id,r.task_id,r.plan_version,r.plan_hash,r.state,
           CASE WHEN r.plan_version=t.current_version AND
             p.status='Approved' THEN 1 ELSE 0 END,
-          r.created_utc,r.updated_utc,r.last_sequence
+          r.created_utc,r.updated_utc,r.last_sequence,e.state
         FROM run_intents r
         JOIN tasks t ON t.id=r.task_id
         JOIN plans p ON p.task_id=r.task_id AND p.version=r.plan_version
+        LEFT JOIN run_executions e ON e.run_id=r.id
         """;
 
     private static RunItem? FindRun(
@@ -228,7 +230,11 @@ public sealed class RunStore(TaskStore tasks)
             throw new StoreFailure("NOT_FOUND");
         using var command = TaskStore.Command(db, null, """
             SELECT run_id,sequence,kind,state,created_utc
-            FROM run_events WHERE run_id=@id AND sequence>@after
+            FROM (
+              SELECT run_id,sequence,kind,state,created_utc FROM run_events
+              UNION ALL
+              SELECT run_id,sequence,kind,state,created_utc FROM execution_events
+            ) WHERE run_id=@id AND sequence>@after
             ORDER BY sequence ASC LIMIT @limit
             """, ("@id", runId), ("@after", after), ("@limit", limit));
         using var reader = command.ExecuteReader();

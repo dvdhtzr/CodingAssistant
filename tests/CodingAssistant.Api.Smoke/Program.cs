@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodingAssistant.Api;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -30,9 +31,10 @@ async Task<JsonDocument> ReadJson(HttpResponseMessage response)
 async Task<HttpResponseMessage> Post(HttpClient client, string path, object body) =>
     await client.PostAsJsonAsync(path, body);
 
-async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveApp)
+async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveApp,
+    IM1ExecutionRunner? runner = null)
 {
-    var app = ApiHost.Build([], settings);
+    var app = ApiHost.Build([], settings, runner);
     await app.StartAsync();
     saveApp(app);
     var addresses = app.Services.GetRequiredService<IServer>()
@@ -516,6 +518,307 @@ try
               "event head survives restart without false terminal success");
     }
 
+
+    // M2→M1 model-free HTTP acceptance. The fake runner produces only
+    // strict fixed-fixture plan metadata; no Podman, Ollama or coding agent.
+    WebApplication? executionApp = null;
+    HttpClient? executionClient = null;
+    var fake = new SmokeM1Runner();
+    try
+    {
+        executionClient = await Start(new ApiSettings(
+            Path.Combine(root, "execution-private"), OwnerToken,
+            "http://127.0.0.1:0", EnableLocalExecution: true),
+            app => executionApp = app, fake);
+        executionClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", OwnerToken);
+        using (var status = await executionClient.GetAsync("/api/status"))
+        using (var json = await ReadJson(status))
+            Check(json.RootElement.GetProperty("executionEnabled").GetBoolean(),
+                "explicitly enabled isolated adapter reports real execution capability");
+        string executionTaskId;
+        using (var created = await Post(executionClient, "/api/tasks", new {
+            title = "Approved C# disposable repair", objective = "Fix compilation",
+            requestId = Guid.NewGuid().ToString("N")
+        }))
+        using (var json = await ReadJson(created))
+            executionTaskId = json.RootElement.GetProperty("id").GetString()!;
+        string controlHash;
+        using (var planned = await Post(executionClient,
+            $"/api/tasks/{executionTaskId}/plans", new {
+                summary = "Fixed qualified M1 C# repair", expectedVersion = 0
+            }))
+        using (var json = await ReadJson(planned))
+            controlHash = json.RootElement.GetProperty("planHash").GetString()!;
+        using (var approved = await Post(executionClient,
+            $"/api/tasks/{executionTaskId}/approvals", new {
+                version = 1, approval = "APPROVE " + controlHash
+            }))
+            Check(approved.StatusCode == HttpStatusCode.OK,
+                "planning approved independently of executable scope");
+
+        string executionRunId;
+        using (var intentCreated = await Post(executionClient,
+            $"/api/tasks/{executionTaskId}/runs", new {
+                planVersion = 1, planHash = controlHash,
+                requestId = Guid.NewGuid().ToString("N")
+            }))
+        using (var json = await ReadJson(intentCreated))
+            executionRunId = json.RootElement.GetProperty("id").GetString()!;
+
+        using (var notPreviewed = await Post(executionClient,
+            $"/api/runs/{executionRunId}/execution-authorization",
+            new { approval = "APPROVE " + controlHash }))
+            Check(notPreviewed.StatusCode == HttpStatusCode.NotFound,
+                "control-plane approval cannot authorize an absent M1 executable plan");
+        using (var noStart = await Post(executionClient,
+            $"/api/runs/{executionRunId}/start", new { }))
+            Check(noStart.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict,
+                "no M1 agent admission before exact executable approval");
+        Check(fake.Executions == 0, "no worker was started by planning consent");
+
+        string executableHash;
+        using (var previewed = await Post(executionClient,
+            $"/api/runs/{executionRunId}/execution-plan", new { }))
+        using (var json = await ReadJson(previewed))
+        {
+            Check(previewed.StatusCode == HttpStatusCode.OK,
+                "model-free M1 immutable executable preview stored");
+            executableHash = json.RootElement.GetProperty("planHash").GetString()!;
+            Check(executableHash != controlHash,
+                "M1 execution hash never aliases M2 control-plane hash");
+            Check(json.RootElement.GetProperty("state").GetString() == "Previewed",
+                "M1 scope awaits separate approval");
+        }
+        using (var noModel = await Post(executionClient,
+            $"/api/runs/{executionRunId}/execution-authorization",
+            new { approval = "APPROVE " + controlHash }))
+            Check(noModel.StatusCode == HttpStatusCode.Conflict,
+                "M2 approval cannot substitute for M1 exact executable approval");
+        using (var noChange = await Post(executionClient,
+            $"/api/runs/{executionRunId}/execution-plan", new { }))
+            Check(noChange.StatusCode == HttpStatusCode.OK,
+                "matching execution preview is idempotent");
+        using (var auth = await Post(executionClient,
+            $"/api/runs/{executionRunId}/execution-authorization",
+            new { approval = "APPROVE " + executableHash }))
+            Check(auth.StatusCode == HttpStatusCode.OK,
+                "owner's independent M1 exact hash approval recorded");
+        Check(fake.Executions == 0,
+            "separate explicit start remains required after M1 approval");
+        using (var started = await Post(executionClient,
+            $"/api/runs/{executionRunId}/start", new { }))
+            Check(started.StatusCode == HttpStatusCode.Accepted,
+                "single authorized worker was durably admitted");
+        using (var doubleStart = await Post(executionClient,
+            $"/api/runs/{executionRunId}/start", new { }))
+            Check(doubleStart.StatusCode == HttpStatusCode.Conflict,
+                "duplicate worker admission denied");
+        for (var retry = 0; retry < 100; retry++)
+        {
+            using var current = await executionClient.GetAsync($"/api/runs/{executionRunId}");
+            using var json = await ReadJson(current);
+            if (json.RootElement.GetProperty("state").GetString() == "Succeeded")
+                break;
+            await Task.Delay(30);
+        }
+        using (var finalRun = await executionClient.GetAsync($"/api/runs/{executionRunId}"))
+        using (var json = await ReadJson(finalRun))
+        {
+            Check(json.RootElement.GetProperty("state").GetString() == "Succeeded",
+                "independent runner verification becomes durable terminal state");
+            Check(!json.RootElement.GetProperty("executionEnabled").GetBoolean(),
+                "completed runner is no longer enabled");
+            Check(json.RootElement.GetProperty("lastSequence").GetInt64() == 6,
+                "all six cross-table events are numbered transactionally");
+        }
+        Check(fake.Executions == 1, "one fake worker, no retries");
+        using (var history = await executionClient.GetAsync(
+            $"/api/runs/{executionRunId}/events?after=0"))
+        using (var json = await ReadJson(history))
+        {
+            var events = json.RootElement.GetProperty("events");
+            Check(events.GetArrayLength() == 6,
+                "original run intent plus executable lifecycle replayed together");
+            Check(events[5].GetProperty("kind").GetString() == "ExecutionVerified",
+                "success event is only emitted after verified runner outcome");
+            Check(events[0].GetProperty("sequence").GetInt64() == 1 &&
+                  events[5].GetProperty("sequence").GetInt64() == 6,
+                "events are gapless from intent to independent verification");
+        }
+        // A failed cleanup is a SECURITY BLOCKER for the entire host, not
+        // permission to admit the next model run in another run intent.
+        async Task<string> AuthorizedRun()
+        {
+            string id;
+            using (var intent = await Post(executionClient,
+                $"/api/tasks/{executionTaskId}/runs", new {
+                    planVersion = 1, planHash = controlHash,
+                    requestId = Guid.NewGuid().ToString("N")
+                }))
+            using (var json = await ReadJson(intent))
+                id = json.RootElement.GetProperty("id").GetString()!;
+            string hash;
+            using (var preview = await Post(executionClient,
+                $"/api/runs/{id}/execution-plan", new { }))
+            using (var json = await ReadJson(preview))
+                hash = json.RootElement.GetProperty("planHash").GetString()!;
+            using (var auth = await Post(executionClient,
+                $"/api/runs/{id}/execution-authorization",
+                new { approval = "APPROVE " + hash }))
+                Check(auth.StatusCode == HttpStatusCode.OK,
+                      "independent execution consent required per new run");
+            return id;
+        }
+
+        var blockedRunId = await AuthorizedRun();
+        fake.BlockOnExecute = true;
+        fake.CleanupIsVerified = false;
+        using (var starting = await Post(executionClient,
+            $"/api/runs/{blockedRunId}/start", new { }))
+            Check(starting.StatusCode == HttpStatusCode.Accepted,
+                  "admit distinct exactly approved fixed-fixture worker");
+
+        for (var retry = 0; retry < 100 && fake.Executions < 2; retry++)
+            await Task.Delay(20);
+        Check(fake.Executions == 2,
+              "the cancellation test has a genuine active fake worker");
+        var queuedRunId = await AuthorizedRun();
+        using (var busy = await Post(executionClient,
+            $"/api/runs/{queuedRunId}/start", new { }))
+            Check(busy.StatusCode == HttpStatusCode.Conflict,
+                  "concurrent second owner task cannot start another worker");
+        using (var cancel = await Post(executionClient,
+            $"/api/runs/{blockedRunId}/execution-cancel", new { }))
+            Check(cancel.StatusCode == HttpStatusCode.OK,
+                  "cancel targets exact active M1 run");
+        for (var retry = 0; retry < 100; retry++)
+        {
+            using var current = await executionClient.GetAsync($"/api/runs/{blockedRunId}");
+            using var json = await ReadJson(current);
+            if (json.RootElement.GetProperty("state").GetString() == "RecoveryBlocked")
+                break;
+            await Task.Delay(30);
+        }
+        using (var uncertain = await executionClient.GetAsync($"/api/runs/{blockedRunId}"))
+        using (var json = await ReadJson(uncertain))
+            Check(json.RootElement.GetProperty("state").GetString() == "RecoveryBlocked",
+                "unknown cleanup never reports Cancelled or Succeeded");
+        using (var stillBusy = await Post(executionClient,
+            $"/api/runs/{queuedRunId}/start", new { }))
+            Check(stillBusy.StatusCode == HttpStatusCode.Conflict,
+                  "unverified orphan blocks new execution admission");
+        fake.CleanupIsVerified = true;
+        using (var recovered = await Post(executionClient,
+            $"/api/runs/{blockedRunId}/execution-recover", new { }))
+        using (var json = await ReadJson(recovered))
+            Check(json.RootElement.GetProperty("state").GetString() == "Interrupted",
+                "explicit model-free reconciliation is not reported as success");
+        fake.BlockOnExecute = false;
+        using (var resumed = await Post(executionClient,
+            $"/api/runs/{queuedRunId}/start", new { }))
+            Check(resumed.StatusCode == HttpStatusCode.Accepted,
+                  "separate approved run can start only after verified recovery");
+
+        // A new run is never a replay of the interrupted one.
+        for (var retry = 0; retry < 100; retry++)
+        {
+            using var current = await executionClient.GetAsync($"/api/runs/{queuedRunId}");
+            using var json = await ReadJson(current);
+            if (json.RootElement.GetProperty("state").GetString() == "Succeeded")
+                break;
+            await Task.Delay(30);
+        }
+        Check(fake.Executions == 3, "interrupted run was not automatically retried");
+        using (var recoveredOriginal =
+            await executionClient.GetAsync($"/api/runs/{blockedRunId}"))
+        using (var json = await ReadJson(recoveredOriginal))
+            Check(json.RootElement.GetProperty("state").GetString() == "Interrupted",
+                "interrupted run remains interrupted after another succeeds");
+
+        // Strict plan parsing refuses request-scope escalation independent of
+        // the JSON hash. These model-free contract cases are NOT substitutes
+        // for the mandatory real Podman adversarial cases on the Dell.
+        var verifiedRun = executionApp!.Services
+            .GetRequiredService<RunStore>().Get(executionRunId);
+        var verifiedPreview = await fake.PreviewAsync(verifiedRun, CancellationToken.None);
+        M1ProcessRunner.VerifyExactBoundPlan(
+            verifiedRun, verifiedPreview.Plan, verifiedPreview.PlanHash);
+        Check(true, "known fixed-fixture plan accepted by independent parser");
+        var hostilePlans = new (string Name, Action<JsonNode> Mutate)[] {
+            ("parent directory traversal", n => n["writable_files"]![0] = "../../etc/passwd"),
+            ("absolute host path", n => n["writable_files"]![0] = "/home/owner/.ssh"),
+            ("arbitrary symlink target", n => n["writable_files"]![0] = "api/link-to-secrets"),
+            ("cloud-model substitution", n => n["model"] = "anthropic/claude"),
+            ("model fingerprint absent", n => n["model_digest"] = "latest"),
+            ("mutable runtime image", n => n["image_id"] = "latest"),
+            ("evaluator omitted", n => n["evaluator_image_id"] = "bad"),
+            ("unapproved gateway command", n => n["gateway_method"] = "shell.exec"),
+            ("Git remote escape", n => n["no_git_remote"] = false),
+            ("network/cloud escape", n => n["no_cloud"] = false),
+            ("wrong M2 task", n => n["control"]!["task_id"] = new string('0', 32)),
+            ("wrong M2 run", n => n["control"]!["run_id"] = new string('1', 32)),
+            ("stale planning version", n => n["control"]!["plan_version"] = 999),
+            ("wrong M2 planning approval", n => n["control"]!["plan_hash"] = new string('0', 64)),
+            ("extra child-process grant", n => n.AsObject().Add("allow_shell", true)),
+            ("additional control grant", n => n["control"]!.AsObject().Add("extra", true)),
+            ("changed assignment", n => n["assignment"] = "modify host OS"),
+        };
+        foreach (var (caseName, mutate) in hostilePlans)
+        {
+            var node = JsonNode.Parse(verifiedPreview.Plan.GetRawText())!;
+            mutate(node);
+            var tampered = JsonSerializer.SerializeToElement(node);
+            var tamperedHash = M1ProcessRunner.ComputeCanonicalHash(tampered);
+            try
+            {
+                M1ProcessRunner.VerifyExactBoundPlan(verifiedRun, tampered, tamperedHash);
+                throw new Exception("Hostile M1 plan accepted: " + caseName);
+            }
+            catch (ExecutionUnavailable)
+            {
+                checks++;
+            }
+        }
+
+        // A stale M2 plan must block further execution previews.
+        string staleRunId;
+        using (var created = await Post(executionClient,
+            $"/api/tasks/{executionTaskId}/runs", new {
+                planVersion = 1, planHash = controlHash,
+                requestId = Guid.NewGuid().ToString("N")
+            }))
+        using (var json = await ReadJson(created))
+            staleRunId = json.RootElement.GetProperty("id").GetString()!;
+        using (var newer = await Post(executionClient,
+            $"/api/tasks/{executionTaskId}/plans", new {
+                summary = "Must explicitly reapprove", expectedVersion = 1
+            }))
+            Check(newer.StatusCode == HttpStatusCode.Created,
+                "M2 plan revision invalidates stale intent");
+        using (var stalePreview = await Post(executionClient,
+            $"/api/runs/{staleRunId}/execution-plan", new { }))
+            Check(stalePreview.StatusCode == HttpStatusCode.Conflict,
+                "superseded M2 plan cannot create an executable preview");
+        Check(fake.Executions == 3,
+            "no agent was started for rejected stale executable scope");
+
+        await executionApp!.StopAsync();
+        await executionApp.DisposeAsync();
+        executionApp = null;
+        executionClient.Dispose();
+        executionClient = null;
+    }
+    finally
+    {
+        executionClient?.Dispose();
+        if (executionApp is not null)
+        {
+            await executionApp.StopAsync();
+            await executionApp.DisposeAsync();
+        }
+    }
+
     if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
     {
         var dirMode = File.GetUnixFileMode(data);
@@ -540,4 +843,51 @@ finally
     }
     try { Directory.Delete(root, recursive: true); }
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
+}
+
+sealed class SmokeM1Runner : IM1ExecutionRunner
+{
+    public int Executions;
+    public volatile bool BlockOnExecute;
+    public volatile bool CleanupIsVerified = true;
+
+    public Task<M1ExecutablePreview> PreviewAsync(RunItem run, CancellationToken _)
+    {
+        var plan = JsonSerializer.SerializeToElement(new
+        {
+            schema_version = 1,
+            stage = "M1.12",
+            assignment = "repair fixed C# compiler errors in disposable api/Program.cs",
+            fixture = "02-build-repair",
+            fixture_sha256 = new string('a', 64),
+            manifest_sha256 = new string('b', 64),
+            model = "qwen3.5:4b",
+            model_digest = new string('c', 64),
+            image_id = new string('d', 64),
+            evaluator_image_id = new string('e', 64),
+            source_sha256 = new string('f', 64),
+            writable_files = new[] { "api/Program.cs" },
+            gateway_method = "codingassistant.coding.run",
+            no_cloud = true,
+            no_git_remote = true,
+            control = new {
+                task_id = run.TaskId, run_id = run.Id,
+                plan_version = run.PlanVersion, plan_hash = run.PlanHash
+            }
+        });
+        return Task.FromResult(new M1ExecutablePreview(
+            M1ProcessRunner.ComputeCanonicalHash(plan), plan));
+    }
+
+    public async Task<M1ExecutionOutcome> ExecuteAsync(
+        RunItem run, string hash, CancellationToken cancellation)
+    {
+        Interlocked.Increment(ref Executions);
+        if (BlockOnExecute)
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellation);
+        return M1ExecutionOutcome.Verified;
+    }
+
+    public Task<bool> ReconcileAsync(string requestId, CancellationToken cancellation) =>
+        Task.FromResult(CleanupIsVerified);
 }

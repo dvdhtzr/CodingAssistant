@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -203,7 +204,8 @@ def inspect_image(source_hash: str) -> str | None:
     return match.group(1)
 
 def build_approved_plan(base_hash: str, image_id: str, model_digest: str,
-                        manifest_hash: str, evaluator_id: str
+                        manifest_hash: str, evaluator_id: str,
+                        control: dict[str, object] | None = None
                         ) -> tuple[dict[str, object], str]:
     for value in (base_hash, image_id, model_digest, manifest_hash, evaluator_id):
         if HEX64.fullmatch(value) is None:
@@ -217,6 +219,18 @@ def build_approved_plan(base_hash: str, image_id: str, model_digest: str,
             "source_sha256": fingerprint(),
             "writable_files": ["api/Program.cs"],
             "gateway_method": METHOD, "no_cloud": True, "no_git_remote": True}
+    if control is not None:
+        if (type(control) is not dict or
+                set(control) != {"task_id", "run_id", "plan_version", "plan_hash"} or
+                any(type(control[k]) is not str or
+                    re.fullmatch(r"[0-9a-f]{32}", control[k]) is None
+                    for k in ("task_id", "run_id")) or
+                type(control["plan_version"]) is not int or
+                not 1 <= control["plan_version"] <= 1000000 or
+                type(control["plan_hash"]) is not str or
+                HEX64.fullmatch(control["plan_hash"]) is None):
+            raise ValueError("Invalid immutable M2 control-plane binding")
+        plan["control"] = control
     raw = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
     return plan, hashlib.sha256(raw).hexdigest()
 
@@ -556,7 +570,72 @@ def request_exact_approval(plan_hash: str) -> bool:
     return response.strip() == approval
 
 
-def execute(prepare: bool, journal=None) -> dict[str, object]:
+def preflight(prepare: bool = False,
+              control: dict[str, object] | None = None
+              ) -> tuple[dict[str, object], str, str, str, str, str]:
+    """Model-free exact executable preview, same verified inputs used at execution.
+
+    --prepare-only may build the pinned offline derivative, but never launches
+    an agent. A preview alone never creates a ledger row or grants consent.
+    """
+    if sys.platform != "linux" or os.geteuid() == 0:
+        raise ValueError("Must use Linux rootless Podman")
+    if inspect_podman(20).get("rootless") is not True:
+        raise ValueError("Rootless Podman not available")
+    original = verify_inputs()
+    base_image = inspect_composed(original)
+    if base_image != OWNER_IMAGE_ID or (
+            verify_combined(base_image)["registry"] != {
+                "id": "opencode", "installation": "installed",
+                "expectedCommand": True}):
+        raise ValueError("M1.7 pinned composition changed")
+    manifest_hash = check_manifest()
+    base_hash = sealed_snapshot(FIXTURES / TASK, TASK)
+    eval_img = image_status(EVAL_TAG, 25)
+    if not eval_img.get("present") or not eval_img.get("image_id"):
+        raise ValueError("Independent offline evaluator image unavailable")
+    digest = pin_model(MODEL)
+    source_hash = fingerprint()
+    if prepare:
+        if shutil.disk_usage(ROOT).free < 2 * 1024**3:
+            raise ValueError("Insufficient disk for offline coding layer")
+        ARTIFACTS.mkdir(parents=True, exist_ok=True)
+        log = ARTIFACTS / ("m112-build-" + uuid.uuid4().hex[:12] + ".log")
+        with log.open("x", encoding="utf-8") as stream:
+            built = subprocess.run(image_build_command(source_hash),
+                                   stdin=subprocess.DEVNULL,
+                                   stdout=stream, stderr=subprocess.STDOUT,
+                                   timeout=600, check=False)
+        if built.returncode != 0:
+            raise ValueError("Offline derived image build failed")
+    image = inspect_image(source_hash)
+    if image is None:
+        raise ValueError("Derived image absent; opt in with --prepare-only")
+    plan, plan_hash = build_approved_plan(
+        base_hash, image, digest, manifest_hash, eval_img["image_id"],
+        control=control)
+    return plan, plan_hash, image, digest, eval_img["image_id"], base_hash
+
+
+def control_binding(args: argparse.Namespace) -> dict[str, object] | None:
+    fields = (args.control_task_id, args.control_run_id,
+              args.control_plan_version, args.control_plan_hash)
+    if all(value is None for value in fields):
+        return None
+    if any(value is None for value in fields):
+        raise ValueError("Incomplete M2 control-plane binding")
+    binding = {"task_id": args.control_task_id, "run_id": args.control_run_id,
+               "plan_version": args.control_plan_version,
+               "plan_hash": args.control_plan_hash}
+    # This same validator is used before every executable operation.
+    build_approved_plan("0" * 64, "1" * 64, "2" * 64,
+                        "3" * 64, "4" * 64, binding)
+    return binding
+
+
+def execute(prepare: bool, journal=None, *,
+            control: dict[str, object] | None = None,
+            approval_from_stdin: str | None = None) -> dict[str, object]:
     report: dict[str, object] = {
         "schema_version": 1, "stage": "M1.12-approved-gateway-coding",
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -573,43 +652,10 @@ def execute(prepare: bool, journal=None) -> dict[str, object]:
     try:
         if journal:
             journal.advance("PREFLIGHT")
-        if sys.platform != "linux" or os.geteuid() == 0:
-            raise ValueError("Must use Linux rootless Podman")
-        if inspect_podman(20).get("rootless") is not True:
-            raise ValueError("Rootless Podman not available")
-        original = verify_inputs()
-        base_image = inspect_composed(original)
-        if base_image != OWNER_IMAGE_ID or (
-                verify_combined(base_image)["registry"] != {
-                    "id": "opencode", "installation": "installed",
-                    "expectedCommand": True}):
-            raise ValueError("M1.7 pinned composition changed")
-        manifest_hash = check_manifest()
-        base_hash = sealed_snapshot(FIXTURES / TASK, TASK)
-        eval_img = image_status(EVAL_TAG, 25)
-        if not eval_img.get("present") or not eval_img.get("image_id"):
-            raise ValueError("Independent offline evaluator image unavailable")
-        digest = pin_model(MODEL)
+        plan, plan_hash, image, digest, evaluator_id, base_hash = preflight(
+            prepare, control=control)
         report["model_digest"] = digest
-        source_hash = fingerprint()
-        if prepare:
-            if shutil.disk_usage(ROOT).free < 2 * 1024**3:
-                raise ValueError("Insufficient disk for offline coding layer")
-            ARTIFACTS.mkdir(parents=True, exist_ok=True)
-            log = ARTIFACTS / ("m112-build-" + uuid.uuid4().hex[:12] + ".log")
-            with log.open("x", encoding="utf-8") as stream:
-                built = subprocess.run(image_build_command(source_hash),
-                                       stdin=subprocess.DEVNULL,
-                                       stdout=stream, stderr=subprocess.STDOUT,
-                                       timeout=600, check=False)
-            if built.returncode != 0:
-                raise ValueError("Offline derived image build failed")
-        image = inspect_image(source_hash)
-        if image is None:
-            raise ValueError("Derived image absent; opt in with --prepare")
         report["derived_image"] = image
-        plan, plan_hash = build_approved_plan(
-            base_hash, image, digest, manifest_hash, eval_img["image_id"])
         report["plan_hash"] = plan_hash
         print("Approved-scope preview:", plan["assignment"])
         print("  fixture:", TASK, "model:", MODEL)
@@ -617,7 +663,12 @@ def execute(prepare: bool, journal=None) -> dict[str, object]:
         print("  exact plan SHA256:", plan_hash)
         if journal:
             journal.advance("AWAITING_APPROVAL", plan_hash=plan_hash)
-        if not request_exact_approval(plan_hash):
+        if approval_from_stdin is None:
+            approved = request_exact_approval(plan_hash)
+        else:
+            approved = hmac.compare_digest(
+                approval_from_stdin, "APPROVE " + plan_hash)
+        if not approved:
             report["status"] = "NOT_APPROVED"
             if journal:
                 journal.advance("DECLINED", result_code="NOT_APPROVED")
@@ -682,7 +733,7 @@ def execute(prepare: bool, journal=None) -> dict[str, object]:
                 journal.advance("VERIFYING")
             eval_dir = root / "offline-evaluation"
             result = run_evaluator(
-                eval_img["image_id"], TASK, project, sibling,
+                evaluator_id, TASK, project, sibling,
                 eval_dir, timeout=480)
             # Never retain arbitrary stderr or raw model responses.
             report["evaluator"] = {
@@ -718,13 +769,52 @@ def main() -> int:
                       help="Read one durable run and its transitions (no model)")
     mode.add_argument("--recover", metavar="RUN_ID",
                       help="Safely reconcile one interrupted run (never replays model)")
+    mode.add_argument("--preview-json", action="store_true",
+                      help="Return bound M1 executable plan without model or approval")
+    mode.add_argument("--prepare-only", action="store_true",
+                      help="Build pinned derivative offline and preview, never execute")
+    mode.add_argument("--recover-request-id", metavar="32_HEX",
+                      help="Reconcile by exact M2 idempotency key, never replay")
+    parser.add_argument("--approval-stdin", action="store_true",
+                        help="Consume exact owner authorization from one stdin line")
+    parser.add_argument("--control-task-id")
+    parser.add_argument("--control-run-id")
+    parser.add_argument("--control-plan-version", type=int)
+    parser.add_argument("--control-plan-hash")
     parser.add_argument("--request-id", metavar="32_HEX",
                         help="Caller idempotency key; duplicate key NEVER re-executes")
     args = parser.parse_args()
-    if args.request_id is not None and (args.history or args.status or args.recover):
+    inspect_mode = (args.history or args.status or args.recover or
+                    args.recover_request_id or args.preview_json or
+                    args.prepare_only)
+    if args.prepare and inspect_mode:
+        parser.error("--prepare applies only to a new interactive coding run")
+    if args.request_id is not None and inspect_mode:
         parser.error("--request-id applies only to a new approved run")
-    if args.prepare and (args.history or args.status or args.recover):
-        parser.error("--prepare applies only to a new approved run")
+    if args.approval_stdin and inspect_mode:
+        parser.error("--approval-stdin applies only to a coding run")
+    try:
+        control = control_binding(args)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.preview_json or args.prepare_only:
+        try:
+            plan, plan_hash, *_ = preflight(
+                prepare=args.prepare_only, control=control)
+            print(json.dumps({"schema": "codingassistant-execution-preview-v1",
+                              "plan": plan, "plan_hash": plan_hash},
+                             sort_keys=True, separators=(",", ":")))
+            return 0
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+            print("M1 executable plan preflight BLOCKED", file=sys.stderr)
+            return 2
+    approval_text = None
+    if args.approval_stdin:
+        # This pipe is written only after a durable API authorization. No
+        # approval string is ever supplied through argv, env or audit logs.
+        approval_text = sys.stdin.readline(160).rstrip("\r\n")
+    if args.recover_request_id and control is not None:
+        parser.error("Recovery requires request ID only, not a control binding")
     # This directory is private (0700) regardless of artifacts/m1's
     # historical permissions. No public paths or logs enter SQLite.
     with RunLedger(LEDGER_DIR) as ledger:
@@ -737,6 +827,18 @@ def main() -> int:
                 "transitions": ledger.transitions(args.status),
             }, indent=2))
             return 0
+        if args.recover_request_id:
+            if sys.platform != "linux" or os.geteuid() == 0:
+                print("Recovery blocked: Linux rootless operation required")
+                return 2
+            prior = ledger.get_by_request(args.recover_request_id)
+            if prior is None:
+                print('{"result":"NOT_FOUND"}')
+                return 0
+            outcome = ledger.reconcile(prior["run_id"])
+            print(json.dumps({"result": outcome["result"]}, sort_keys=True))
+            return 0 if outcome["result"] in (
+                "INTERRUPTED_CLEAN", "ALREADY_TERMINAL") else 2
         if args.recover:
             if sys.platform != "linux" or os.geteuid() == 0:
                 print("Recovery blocked: Linux rootless operation required")
@@ -753,7 +855,9 @@ def main() -> int:
             return 3
         try:
             print("Durable run ID:", journal.run_id)
-            report = execute(prepare=args.prepare, journal=journal)
+            report = execute(prepare=args.prepare, journal=journal,
+                             control=control,
+                             approval_from_stdin=approval_text)
             ARTIFACTS.mkdir(parents=True, exist_ok=True)
             name = "m112-approved-coding-" + uuid.uuid4().hex[:12] + ".json"
             path = ARTIFACTS / name

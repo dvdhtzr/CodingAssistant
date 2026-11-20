@@ -183,6 +183,18 @@ class RunLedger:
             raise ValueError("Run not found")
         return dict(row)
 
+    def get_by_request(self, request_id: str) -> dict | None:
+        """Map an M2 run's idempotency key to its one durable M1 run.
+
+        This read is model-free and never allocates a new run or container.
+        """
+        if not REQUEST_RE.fullmatch(request_id):
+            raise ValueError("Invalid exact recovery request ID")
+        row = self.db.execute(
+            "SELECT run_id FROM runs WHERE request_id=?", (request_id,)
+        ).fetchone()
+        return self.get(row["run_id"]) if row else None
+
     def history(self, limit: int = 20) -> list[dict]:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("Invalid history limit")
