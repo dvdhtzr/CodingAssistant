@@ -1156,6 +1156,16 @@ try
                   value.GetProperty("status").GetString() == "Draft",
                 "reviewable v1 specification is SHA-256 bound");
         }
+        // The correct version and hash are insufficient without explicit
+        // human approval: the model cannot authorize its own source draft.
+        using (var prematureDraft = await Post(interviewClient,
+            $"/api/tasks/{id}/draft-build", new {
+                specificationVersion = specVersion,
+                specificationSha256 = specHash
+            }))
+            Check(prematureDraft.StatusCode == HttpStatusCode.Conflict,
+                "unapproved specification cannot start source generation");
+
         using (var wrongApproval = await Post(interviewClient,
             $"/api/tasks/{id}/interview/approve", new {
                 version = specVersion, sha256 = new string('f', 64)
@@ -1479,19 +1489,56 @@ try
             Check(invalid.StatusCode == HttpStatusCode.Conflict,
                 "cancelled or superseded scope cannot be reauthorized");
 
+        // The downloaded ZIP must be byte-identical to the saved source,
+        // with no missing, modified, or extra files.
+        using (var saved = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/draft-build"))
+        using (var json = await ReadJson(saved))
         using (var zipped = await interviewClient.GetAsync(
             $"/api/tasks/{id}/draft-build/{draftId}/zip"))
         {
-            Check(zipped.StatusCode == HttpStatusCode.OK &&
+            Check(saved.StatusCode == HttpStatusCode.OK &&
+                  zipped.StatusCode == HttpStatusCode.OK &&
                   zipped.Content.Headers.ContentType?.MediaType == "application/zip",
                 "approved generated draft available as ZIP to the owner");
+            var files = json.RootElement.GetProperty("snapshot")
+                .GetProperty("files").EnumerateArray()
+                .ToDictionary(e => e.GetProperty("path").GetString()!, e => (
+                    Content: e.GetProperty("content").GetString()!,
+                    Sha: e.GetProperty("sha256").GetString()!));
             var bytes = await zipped.Content.ReadAsByteArrayAsync();
             using var stream = new MemoryStream(bytes);
             using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
-            Check(archive.Entries.Count == 2 &&
+            Check(files.Count == 2 && archive.Entries.Count == files.Count &&
                   archive.Entries.Any(e => e.FullName == "src/Dashboard.tsx"),
                 "ZIP contains exactly selected relative project source paths");
+            foreach (var entry in archive.Entries)
+            {
+                using var contentStream = entry.Open();
+                using var copy = new MemoryStream();
+                contentStream.CopyTo(copy);
+                var extracted = copy.ToArray();
+                var digest = Convert.ToHexString(
+                    System.Security.Cryptography.SHA256.HashData(extracted))
+                    .ToLowerInvariant();
+                Check(files.TryGetValue(entry.FullName, out var persisted) &&
+                      System.Text.Encoding.UTF8.GetString(extracted) == persisted.Content &&
+                      digest == persisted.Sha,
+                    "ZIP entry bytes and SHA256 match persisted source: " + entry.FullName);
+            }
         }
+        // All archive endpoints still require the bearer token and exact task.
+        using (var anonymous = new HttpClient(new SocketsHttpHandler {
+            UseProxy = false
+        }) { BaseAddress = interviewClient.BaseAddress })
+        using (var denied = await anonymous.GetAsync(
+            $"/api/tasks/{id}/draft-build/{draftId}/zip"))
+            Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+                "unauthenticated ZIP download denied");
+        using (var crossTask = await interviewClient.GetAsync(
+            $"/api/tasks/{dotnetTaskId}/draft-build/{draftId}/zip"))
+            Check(crossTask.StatusCode == HttpStatusCode.NotFound,
+                "generated ZIP cannot be fetched using another task scope");
         foreach (var hostile in new[] {
             "../etc/passwd", "/root/.ssh/key", "src/../../secret.json",
             ".env", "scripts/build.sh", "src/evil\\\\x.ts"
