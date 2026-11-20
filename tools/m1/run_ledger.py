@@ -32,10 +32,10 @@ ACTIVE = frozenset(("NEW", "PREFLIGHT", "AWAITING_APPROVAL", "APPROVED",
                     "RUNNING", "VERIFYING"))
 STATES = TERMINAL | ACTIVE | {"RECOVERY_BLOCKED"}
 TRANSITIONS = {
-    "NEW": {"PREFLIGHT"},
-    "PREFLIGHT": {"AWAITING_APPROVAL", "FAILED"},
-    "AWAITING_APPROVAL": {"APPROVED", "DECLINED", "FAILED"},
-    "APPROVED": {"RUNNING", "FAILED"},
+    "NEW": {"PREFLIGHT", "RECOVERY_BLOCKED"},
+    "PREFLIGHT": {"AWAITING_APPROVAL", "FAILED", "RECOVERY_BLOCKED"},
+    "AWAITING_APPROVAL": {"APPROVED", "DECLINED", "FAILED", "RECOVERY_BLOCKED"},
+    "APPROVED": {"RUNNING", "FAILED", "RECOVERY_BLOCKED"},
     "RUNNING": {"VERIFYING", "FAILED", "RECOVERY_BLOCKED"},
     "VERIFYING": {"SUCCEEDED", "FAILED", "RECOVERY_BLOCKED"},
     "RECOVERY_BLOCKED": {"INTERRUPTED_CLEAN"},
@@ -315,20 +315,26 @@ class RunLedger:
                     clean = False
                 else:
                     command = runner or _fixed
-                    exists = command(["podman", "container", "exists", name], timeout=20)
-                    if exists.returncode == 0:
-                        inspect = command([
-                            "podman", "inspect", "--format",
-                            '{{index .Config.Labels "' + LABEL + '"}}', name,
-                        ], timeout=20)
-                        if inspect.returncode != 0 or inspect.stdout.strip() != run_id:
+                    try:
+                        exists = command(
+                            ["podman", "container", "exists", name], timeout=20)
+                        if exists.returncode == 0:
+                            inspect = command([
+                                "podman", "inspect", "--format",
+                                '{{index .Config.Labels "' + LABEL + '"}}', name,
+                            ], timeout=20)
+                            if (inspect.returncode != 0 or
+                                    inspect.stdout.strip() != run_id):
+                                clean = False
+                            else:
+                                removed = command(
+                                    ["podman", "rm", "-f", name], timeout=30)
+                                check = command(
+                                    ["podman", "container", "exists", name], timeout=20)
+                                clean = removed.returncode == 0 and check.returncode == 1
+                        elif exists.returncode != 1:
                             clean = False
-                        else:
-                            command(["podman", "rm", "-f", name], timeout=30)
-                            check = command(
-                                ["podman", "container", "exists", name], timeout=20)
-                            clean = check.returncode == 1
-                    elif exists.returncode != 1:
+                    except (OSError, subprocess.TimeoutExpired):
                         clean = False
             if not clean:
                 if record["state"] != "RECOVERY_BLOCKED":
