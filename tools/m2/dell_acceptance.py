@@ -275,7 +275,17 @@ def perform_run(binary: pathlib.Path) -> None:
             print("\nCancellation requested — no automatic replay.")
             try:
                 client.call("POST", f"/api/runs/{run_id}/execution-cancel", {})
-                print("Cancellation was delivered; check durable recovery state.")
+                print("Cancellation was requested; awaiting bounded cleanup.")
+                final_state = None
+                for _ in range(90):
+                    record = client.call("GET", f"/api/runs/{run_id}")
+                    final_state = record["state"]
+                    if final_state in STATES_FINISHED:
+                        break
+                    time.sleep(1)
+                print("Cancellation/recovery state:", final_state)
+                if final_state not in STATES_FINISHED:
+                    print("Cleanup unconfirmed — no new coding is authorized.")
             except AcceptanceBlocked:
                 print("Cancellation unconfirmed — do not start new work; reconcile M1.")
         raise AcceptanceBlocked("Operator interrupted acceptance") from None
