@@ -34,10 +34,11 @@ jobs:
         run: |
           node --check infra/m1/coding-runner.mjs
           node --check infra/m1/coding-plugin/index.mjs
+          node --check infra/m1/coding-plugin/task-contract.mjs
           node --check infra/m1/coding-plugin/safe-failure.mjs
           node --check infra/m1/doctor-plugin/index.mjs
       - name: Execute M1 ACP typed-error classifier security tests (no agent/model)
-        run: node --test tests/test_m1_safe_acp_failure.mjs
+        run: node --test tests/test_m1_safe_acp_failure.mjs tests/test_m1_task_contract.mjs
       - name: Compile Python tools
         run: python -m compileall -q tools/m0 tools/m1 tools/m2 tools/m3 tools/mvp benchmarks/acceptance tests
       - name: Model-free tests
