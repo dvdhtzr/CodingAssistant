@@ -184,6 +184,7 @@ def exact_owner_approval(client: ApiClient, run_id: str, control_hash: str) -> s
 def monitor(client: ApiClient, run_id: str) -> str:
     cursor = 0
     last = None
+    verified_event_seen = False
     while True:
         page = client.call("GET", f"/api/runs/{run_id}/events?after={cursor}&limit=100")
         for event in page["events"]:
@@ -191,6 +192,8 @@ def monitor(client: ApiClient, run_id: str) -> str:
                     not re.fullmatch(r"[A-Za-z]{4,40}", event["kind"])):
                 raise AcceptanceBlocked("Durable event replay integrity mismatch")
             cursor += 1
+            if event["kind"] == "ExecutionVerified":
+                verified_event_seen = True
             print(f"  event {cursor}: {event['kind']} / {event['state']}", flush=True)
         run = client.call("GET", f"/api/runs/{run_id}")
         state = run["state"]
@@ -198,13 +201,10 @@ def monitor(client: ApiClient, run_id: str) -> str:
             print("  run state:", state, flush=True)
             last = state
         if state in STATES_FINISHED:
-            if state == "Succeeded" and not any(
-                    event["kind"] == "ExecutionVerified"
-                    for event in page["events"]):
-                # The verification may be on an earlier page; do not treat
-                # a missing final evidence event as proof of success.
-                if cursor != run["lastSequence"]:
-                    raise AcceptanceBlocked("Success reported before durable event head")
+            if state == "Succeeded" and (
+                    not verified_event_seen or cursor != run["lastSequence"]):
+                raise AcceptanceBlocked(
+                    "Success lacks complete durable independent verification evidence")
             return state
         time.sleep(2)
 
