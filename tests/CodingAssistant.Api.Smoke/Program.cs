@@ -36,10 +36,11 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object body
 async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveApp,
     IM1ExecutionRunner? runner = null, IHtmlPreviewGenerator? htmlGenerator = null,
     IInterviewModel? interviewModel = null,
-    IProjectDraftModel? projectModel = null)
+    IProjectDraftModel? projectModel = null,
+    IOllamaModelCatalog? catalog = null)
 {
     var app = ApiHost.Build([], settings, runner, htmlGenerator, interviewModel,
-                            projectModel);
+                            projectModel, catalog ?? new SmokeOllamaModelCatalog());
     await app.StartAsync();
     saveApp(app);
     var addresses = app.Services.GetRequiredService<IServer>()
@@ -55,6 +56,19 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     {
         BaseAddress = new Uri(address)
     };
+}
+
+// The catalog must filter cloud aliases, unsafe names and non-downloaded entries.
+{
+    var models = LocalOllamaModelCatalog.ParseTags(
+        """{"models":[{"name":"gemma4:latest","size":120000},{"name":"qwen3.5:4b","size":400},{"name":"gemma4:latest","size":120000},{"name":"gemma4:cloud","size":999},{"name":"some-model-cloud","size":100},{"name":"bad model","size":99},{"name":"not-downloaded:latest","size":0}]}""");
+    Check(models.SequenceEqual(new[] { "gemma4:latest", "qwen3.5:4b" }),
+        "catalog returns sorted, distinct, genuinely local and safe model names");
+    Check(!LocalOllamaModelCatalog.ValidLocalName("gemma4:cloud") &&
+          !LocalOllamaModelCatalog.ValidLocalName("cloud-model-cloud") &&
+          !LocalOllamaModelCatalog.ValidLocalName("evil\nmodel") &&
+          !LocalOllamaModelCatalog.ValidLocalName("https://ollama.com"),
+        "cloud and malformed identifiers never become local inference targets");
 }
 
 // Small local models may ignore JSON-only prompts; validate strict schema,
@@ -1061,13 +1075,14 @@ try
         interviewData, OwnerToken, "http://127.0.0.1:0");
     var fakeInterview = new SmokeInterviewModel();
     var fakeProject = new SmokeProjectDraftModel();
+    var fakeCatalog = new SmokeOllamaModelCatalog();
     WebApplication? interviewApp = null;
     HttpClient? interviewClient = null;
     try
     {
         interviewClient = await Start(interviewSettings,
             app => interviewApp = app, interviewModel: fakeInterview,
-            projectModel: fakeProject);
+            projectModel: fakeProject, catalog: fakeCatalog);
         interviewClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", OwnerToken);
         string id;
@@ -1563,7 +1578,7 @@ try
         // Restart with the SAME real SQLite data: no conversation replay.
         interviewClient = await Start(interviewSettings,
             app => interviewApp = app, interviewModel: fakeInterview,
-            projectModel: fakeProject);
+            projectModel: fakeProject, catalog: fakeCatalog);
         interviewClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", OwnerToken);
         using (var savedDraft = await interviewClient.GetAsync(
