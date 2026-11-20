@@ -58,6 +58,114 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     };
 }
 
+// Windows Visual Studio F5 and the one-click launcher must share a stable,
+// encrypted, owner-private credential without requiring manual environment setup.
+if (OperatingSystem.IsWindows())
+{
+    var tokenDirectory = Path.Combine(Path.GetTempPath(),
+        "ca-windows-token-" + Guid.NewGuid().ToString("N"));
+    var originalToken = Environment.GetEnvironmentVariable(
+        "CODINGASSISTANT_OWNER_TOKEN");
+    var originalDirectory = Environment.GetEnvironmentVariable(
+        "CODINGASSISTANT_DATA_DIR");
+    try
+    {
+        var token = WindowsOwnerTokenStore.GetOrCreate(tokenDirectory);
+        Check(System.Text.RegularExpressions.Regex.IsMatch(token, "^[0-9a-f]{64}$"),
+            "Windows owner token is cryptographically generated in the correct format");
+        Check(WindowsOwnerTokenStore.GetOrCreate(tokenDirectory) == token,
+            "Windows F5 restart retains the same credential");
+        var savedPath = Path.Combine(tokenDirectory, "owner-token.dpapi");
+        var savedContent = File.ReadAllText(savedPath);
+        Check(savedContent.Length > 32 &&
+              !savedContent.Contains(token, StringComparison.Ordinal),
+            "owner token encrypted with DPAPI, never plaintext at rest");
+
+        Environment.SetEnvironmentVariable("CODINGASSISTANT_DATA_DIR", tokenDirectory);
+        Environment.SetEnvironmentVariable("CODINGASSISTANT_OWNER_TOKEN", null);
+        var fromF5 = ApiSettings.FromEnvironment();
+        Check(fromF5.OwnerToken == token &&
+              fromF5.DataDirectory == tokenDirectory,
+            "Visual Studio F5 discovers saved credential with no env token");
+        using (var startup = ApiHost.Build([],
+            fromF5 with { BindUrl = "http://127.0.0.1:0" }))
+            await startup.DisposeAsync();
+        Check(true, "Visual Studio default API can start with generated owner token");
+
+        // Windows PowerShell 5.1 reads the exact same DPAPI file as .NET 10.
+        // Only a SHA-256 digest is passed to the test subprocess; never the token.
+        var interopScript = Path.Combine(Directory.GetCurrentDirectory(),
+            "tests", "Check-WindowsTokenInterop.ps1");
+        var processArgs = new System.Diagnostics.ProcessStartInfo("powershell.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        processArgs.ArgumentList.Add("-NoLogo");
+        processArgs.ArgumentList.Add("-NoProfile");
+        processArgs.ArgumentList.Add("-ExecutionPolicy");
+        processArgs.ArgumentList.Add("Bypass");
+        processArgs.ArgumentList.Add("-File");
+        processArgs.ArgumentList.Add(interopScript);
+        processArgs.ArgumentList.Add(tokenDirectory);
+        processArgs.Environment["CODINGASSISTANT_TOKEN_TEST_SHA"] =
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.ASCII.GetBytes(token))).ToLowerInvariant();
+        using (var process = System.Diagnostics.Process.Start(processArgs) ??
+            throw new Exception("Unable to start Windows PowerShell credential interop"))
+        {
+            if (!process.WaitForExit(15000))
+            {
+                process.Kill();
+                throw new Exception("Windows DPAPI interoperability test timed out");
+            }
+            Check(process.ExitCode == 0,
+                "Windows PowerShell and .NET decrypt the same DPAPI user token");
+        }
+
+        Environment.SetEnvironmentVariable("CODINGASSISTANT_OWNER_TOKEN", "");
+        Check(ApiSettings.FromEnvironment().OwnerToken == token,
+            "blank inherited owner token also bootstraps from Windows storage");
+        Environment.SetEnvironmentVariable("CODINGASSISTANT_OWNER_TOKEN", "bad-token");
+        Check(ApiSettings.FromEnvironment().OwnerToken == "bad-token",
+            "explicit misconfigured token is not silently overridden");
+        try
+        {
+            _ = ApiHost.Build([], ApiSettings.FromEnvironment()
+                with { BindUrl = "http://127.0.0.1:0" });
+            throw new Exception("Invalid explicit owner credential bypassed security");
+        }
+        catch (InvalidOperationException error) when (
+            error.Message.Contains("64 random lowercase", StringComparison.Ordinal))
+        {
+            Check(true, "explicit invalid bearer token still fails closed");
+        }
+
+        File.WriteAllText(savedPath, "invalid-base64!");
+        try
+        {
+            _ = WindowsOwnerTokenStore.GetOrCreate(tokenDirectory);
+            throw new Exception("Corrupt persisted credential was rotated silently");
+        }
+        catch (InvalidOperationException)
+        {
+            Check(File.ReadAllText(savedPath) == "invalid-base64!",
+                "corrupted owner credential fails closed, never silently resets");
+        }
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable(
+            "CODINGASSISTANT_OWNER_TOKEN", originalToken);
+        Environment.SetEnvironmentVariable(
+            "CODINGASSISTANT_DATA_DIR", originalDirectory);
+        try { Directory.Delete(tokenDirectory, recursive: true); }
+        catch (IOException) { /* Test cleanup can race Windows AV handles. */ }
+    }
+}
+
 // The catalog must filter cloud aliases, unsafe names and non-downloaded entries.
 {
     var models = LocalOllamaModelCatalog.ParseTags(
