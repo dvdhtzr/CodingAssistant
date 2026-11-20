@@ -839,7 +839,7 @@ try
             evaluatorVerified = (bool?)true,
             sourceChanged = (bool?)true,
             inferenceRequests = (int?)4,
-            patch = "--- a/api/Program.cs\\n+++ b/api/Program.cs\\n@@ -1 +1 @@\\n-old\\n+new\\n",
+            patch = "--- a/api/Program.cs\n+++ b/api/Program.cs\n@@ -1 +1 @@\n-old\n+new\n",
             patchOmitted = false
         });
         Check(M1ProcessRunner.ParseResult(sampleResult,
@@ -981,7 +981,7 @@ sealed class SmokeM1Runner :
         Task.FromResult<M1RunResult?>(new M1RunResult(
             runId, expectedPlanHash, "GATEWAY_APPROVED_CODING_PASS", "complete",
             null, true, true, 4,
-            "--- a/api/Program.cs\\n+++ b/api/Program.cs\\n@@ -1 +1 @@\\n-old\\n+new\\n",
+            "--- a/api/Program.cs\n+++ b/api/Program.cs\n@@ -1 +1 @@\n-old\n+new\n",
             false));
 
     public Task<bool> ReconcileAsync(string requestId, CancellationToken cancellation) =>
