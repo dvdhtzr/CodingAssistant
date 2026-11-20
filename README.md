@@ -4,6 +4,20 @@ Cross-platform, **local-first** autonomous software engineering assistant. OpenC
 
 > **Current status (Nov 19, 2026): M0 GREEN on Dell at the independently reviewed evidence-assurance level.** The local `qwen3.5:4b` / OpenCode runner completed **9/9** frozen coding attempts, followed by M0.18 independent review and nine separate offline acceptance rechecks: **EVIDENCE_REVIEW_PASS / QUALIFIED**. This is *not* a production-grade autonomous developer, a cryptographic historical attestation, or a Windows-host security qualification. **M1 remains YELLOW overall, but its M1.12 Dell integrated coding sub-gate is GREEN:** an explicitly approved, disposable C# repair completed through the real OpenClaw Gateway → ACPX → OpenCode → pinned local Qwen path (6/6 host-verified inference requests, 9 tool calls, 17 ACP events), with independent offline .NET evaluator `VERIFIED` and confirmed container cleanup. Durable-state/crash recovery, broader integrated negative tests and Windows-host qualification remain outstanding. See [current handoff](docs/CURRENT_HANDOFF.md).
 
+## New: M2 local .NET control plane (not connected to execution yet)
+
+The first real application backend now lives in
+[`src/CodingAssistant.Api`](src/CodingAssistant.Api). It provides an
+authenticated loopback-only .NET 10 Minimal API with private SQLite task
+history, immutable versioned plan hashes, exact `APPROVE <hash>` authorization
+and idempotent submissions. It explicitly **cannot launch OpenCode or execute
+an approved task yet**; M1's separate real coding authorization and sandbox
+remain unchanged.
+
+See [M2 control-plane guide](docs/M2_CONTROL_PLANE.md) for setup,
+REST endpoints, constraints and the real HTTP/SQLite integration smoke tests.
+The product backlog and technical debt are tracked in GitHub issues #68–#73.
+
 ## Try the interactive MVP today
 
 **First usable vertical slice:** choose one source file and a task, get a proposal from your installed **local Ollama** model, inspect the diff, and explicitly type `APPLY` to save it **only in a disposable copy**. There is no automatic modification of your original project, no autonomous tool execution, and no network service beyond `127.0.0.1:11434`.
