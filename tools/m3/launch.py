@@ -11,9 +11,11 @@ run together; execution stays disabled unless --enable-execution is supplied.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 import secrets
 import shutil
 import socket
@@ -36,6 +38,10 @@ FALLBACK_RUN = 44726245411
 ACTIONS = f"https://github.com/{REPO}/actions/workflows/m0-tests.yml?query=branch%3Amain"
 DESTINATION = Path.home() / ".local" / "opt" / "codingassistant-m3"
 PORT = 5098
+RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
+RELEASE_FILE = ARTIFACT + ".zip"
+RELEASE_SHA = RELEASE_FILE + ".sha256"
+MAX_RELEASE_BYTES = 220_000_000
 
 
 class LaunchError(RuntimeError):
@@ -124,50 +130,188 @@ def gh_download(directory: Path, *, current_commit: bool = False) -> bool:
     return False
 
 
+def checkout_commit() -> str | None:
+    """Only a recognized 40-digit Git commit can be matched to a release."""
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                text=True, capture_output=True, check=False,
+                                stdin=subprocess.DEVNULL, timeout=8)
+        sha = result.stdout.strip()
+        return sha if result.returncode == 0 and len(sha) == 40 and all(
+            ch in "0123456789abcdef" for ch in sha) else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def official_https(url: str, *, exact_host: str | None = None) -> bool:
+    value = urlsplit(url)
+    return (value.scheme == "https" and not value.username and not value.password
+            and not value.port and
+            (value.hostname == exact_host if exact_host else
+             value.hostname in {"api.github.com", "github.com",
+                                "release-assets.githubusercontent.com",
+                                "objects.githubusercontent.com"}))
+
+
+def public_release() -> tuple[str, str, str] | None:
+    """Return official tag-bound SHA, release ZIP URL and checksum URL.
+
+    Network failure is an *offline cache hit*, never a reason to discard a
+    verified installed executable. The publisher runs only after both CI OS
+    jobs pass; release tag embeds the complete source commit.
+    """
+    try:
+        request = urllib.request.Request(RELEASE_API, headers={
+            "Accept": "application/vnd.github+json", "User-Agent": "CodingAssistant-M3",
+        })
+        with urllib.request.urlopen(request, timeout=12) as reply:
+            if not official_https(reply.geturl(), exact_host="api.github.com"):
+                raise LaunchError("Unexpected GitHub API redirect")
+            body = reply.read(256_001)
+        if len(body) > 256_000:
+            raise LaunchError("Unexpectedly large GitHub release metadata")
+        data = json.loads(body)
+        tag = data.get("tag_name", "")
+        if not (isinstance(tag, str) and tag.startswith("m3-") and
+                len(tag) == 43 and all(ch in "0123456789abcdef" for ch in tag[3:]) and
+                data.get("draft") is False and data.get("prerelease") is False):
+            raise LaunchError("Official release has unexpected version metadata")
+        assets = {asset.get("name"): asset for asset in data.get("assets", [])
+                  if isinstance(asset, dict)}
+        for filename in (RELEASE_FILE, RELEASE_SHA):
+            asset = assets.get(filename)
+            expected = f"https://github.com/{REPO}/releases/download/{tag}/{filename}"
+            if (not isinstance(asset, dict) or
+                asset.get("browser_download_url") != expected or
+                not isinstance(asset.get("size"), int) or
+                asset["size"] < 1 or asset["size"] > MAX_RELEASE_BYTES):
+                raise LaunchError("Official release asset metadata is incomplete")
+        return tag[3:], assets[RELEASE_FILE]["browser_download_url"], assets[RELEASE_SHA]["browser_download_url"]
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return None
+
+
+def fetch_public_asset(url: str, destination: Path, size_limit: int) -> None:
+    if not official_https(url, exact_host="github.com"):
+        raise LaunchError("Refusing unofficial application download URL")
+    request = urllib.request.Request(url, headers={"User-Agent": "CodingAssistant-M3"})
+    with urllib.request.urlopen(request, timeout=90) as reply:
+        if not official_https(reply.geturl()):
+            raise LaunchError("Refusing non-GitHub download redirect")
+        total = 0
+        with destination.open("xb") as stream:
+            while True:
+                chunk = reply.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > size_limit:
+                    raise LaunchError("Downloaded application exceeded safety limit")
+                stream.write(chunk)
+    if total == 0:
+        raise LaunchError("Empty application download")
+
+
+def install_release(release: tuple[str, str, str], staging: Path) -> str:
+    sha, zip_url, sum_url = release
+    with tempfile.TemporaryDirectory(prefix=".release-download-", dir=staging.parent) as temp:
+        files = Path(temp)
+        checksum = files / RELEASE_SHA
+        archive = files / RELEASE_FILE
+        fetch_public_asset(sum_url, checksum, 256)
+        parts = checksum.read_text(encoding="ascii").strip().split()
+        if (len(parts) != 2 or parts[1] != RELEASE_FILE or
+            len(parts[0]) != 64 or
+            any(ch not in "0123456789abcdef" for ch in parts[0])):
+            raise LaunchError("Invalid official release checksum")
+        fetch_public_asset(zip_url, archive, MAX_RELEASE_BYTES)
+        if hashlib.sha256(archive.read_bytes()).hexdigest() != parts[0]:
+            raise LaunchError("Official release ZIP checksum mismatch")
+        unpack_zip(archive, staging)
+    if not valid_app(staging):
+        raise LaunchError("Official release is missing its application or UI")
+    (staging / ".release-commit").write_text(sha + "\n", encoding="ascii")
+    return sha
+
+
 def install_app(destination: Path = DESTINATION, *, interactive: bool = True,
                 refresh: bool = False) -> Path:
+    """Prefer official public checked release, then existing offline installation.
+
+    This is deliberately safe to repeat. No manual unzip, no need for 'gh'
+    authentication, and no update ever replaces a running process.
+    """
     if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
         raise LaunchError("Refusing non-directory or symlinked installation target")
-    if valid_app(destination) and not refresh:
-        return destination
+    cached = valid_app(destination)
+    release = public_release()
+    head = checkout_commit()
+    if release and head == release[0]:
+        existing = destination / ".release-commit"
+        if cached and not refresh and existing.is_file() and existing.read_text(
+            encoding="ascii").strip() == head:
+            print("Mission Control is up to date.", flush=True)
+            return destination
+    else:
+        if cached:
+            print("Using installed Mission Control (update unavailable or still building).",
+                  flush=True)
+            return destination
+        if release is not None and head != release[0]:
+            print("Application release is not for the current source checkout.",
+                  flush=True)
+        release = None
+
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".codingassistant-m3-", dir=destination.parent) as temp:
         staging = Path(temp) / "package"
         staging.mkdir()
-        downloads = Path.home() / "Downloads"
-        archives = sorted(downloads.glob(f"{ARTIFACT}*.zip"),
-                          key=lambda p: p.stat().st_mtime if p.is_file() else 0,
-                          reverse=True) if downloads.is_dir() else []
-        # An explicit refresh must NEVER reinstall an older ZIP from Downloads.
-        if archives and not refresh:
-            print("Installing the downloaded Mission Control build...")
-            unpack_zip(archives[0], staging)
-        else:
-            print("Finding a successful GitHub Actions Mission Control build...")
-            if not gh_download(staging, current_commit=refresh):
+        downloaded = False
+        if release is not None:
+            try:
+                print("Installing verified official Mission Control release...", flush=True)
+                install_release(release, staging)
+                downloaded = True
+            except (OSError, urllib.error.URLError, TimeoutError, LaunchError,
+                    zipfile.BadZipFile, UnicodeDecodeError) as error:
+                if cached:
+                    print("Update unavailable; leaving existing application untouched:",
+                          type(error).__name__, flush=True)
+                    return destination
+                raise LaunchError("Official release could not be verified") from error
+        if not downloaded:
+            # Compatibility with the original build before the first public
+            # release lands on main. Cached installations require no fallback.
+            archives = sorted((Path.home() / "Downloads").glob(f"{ARTIFACT}*.zip"),
+                              key=lambda p: p.stat().st_mtime, reverse=True)
+            if not refresh and archives:
+                print("Installing previously downloaded CI build...")
+                unpack_zip(archives[0], staging)
+                downloaded = True
+            else:
+                print("Looking for an authenticated GitHub Actions artifact...", flush=True)
+                downloaded = gh_download(staging, current_commit=refresh)
+            if not downloaded:
                 if not interactive:
-                    raise LaunchError("No local build or authenticated gh download available")
+                    raise LaunchError("No verified downloadable application is available")
                 before = time.time()
-                print("\nOne-time download needed. Sign in to GitHub and open")
-                print("the most recent successful MAIN build, then click")
-                print(f"the '{ARTIFACT}' artifact:")
-                print(ACTIONS)
+                print("One-time fallback: open the latest successful MAIN Actions build")
+                print("and download the codingassistant-linux-x64 ZIP:", ACTIONS)
                 webbrowser.open(ACTIONS)
-                input("\nSave the new ZIP to ~/Downloads, then press Enter here: ")
-                archives = sorted(downloads.glob(f"{ARTIFACT}*.zip"),
+                input("Save the ZIP to Downloads, then press Enter here: ")
+                archives = sorted((Path.home() / "Downloads").glob(f"{ARTIFACT}*.zip"),
                                   key=lambda p: p.stat().st_mtime, reverse=True)
                 if refresh:
                     archives = [a for a in archives if a.stat().st_mtime >= before]
                 if not archives:
-                    raise LaunchError("No freshly downloaded CI artifact ZIP found")
+                    raise LaunchError("No freshly downloaded CI application ZIP found")
                 unpack_zip(archives[0], staging)
         if not valid_app(staging):
-            raise LaunchError("Downloaded build lacks the M3 API or React interface")
+            raise LaunchError("Downloaded build lacks the API or Mission Control interface")
         safe_directory(staging)
         binary = staging / "CodingAssistant.Api"
         binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
-        # Replace only after full validation; never follow symlinks in an
-        # existing directory, and roll back if the final rename fails.
+        # Fully verified staged install. Roll back on unsuccessful atomic swap.
         backup = destination.parent / (".codingassistant-m3-previous-" + secrets.token_hex(6))
         old_present = destination.exists()
         if old_present:
@@ -215,6 +359,59 @@ def verify_execution_preflight() -> None:
     print("M1 model-free preflight PASS. Exact hash authorization still required.", flush=True)
 
 
+def install_desktop_shortcut() -> bool:
+    """Create a KDE/GNOME app-menu entry once; do not store authentication."""
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return False
+    script = ROOT.resolve() / "start.sh"
+    # Desktop entry execution syntax has special quoting rules. Only install
+    # for this known simple user path; never interpolate shell control text.
+    if any(char in str(script) for char in (' ', '"', chr(10), chr(13), chr(9))):
+        return False
+    if not script.is_file():
+        return False
+    directory = Path.home() / ".local" / "share" / "applications"
+    if directory.is_symlink():
+        return False
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / "codingassistant.desktop"
+    if target.is_symlink() or target.exists():
+        return False
+    entry = chr(10).join([
+        "[Desktop Entry]",
+        "Version=1.0",
+        "Type=Application",
+        "Name=CodingAssistant",
+        "Comment=Local AI Coding Mission Control",
+        "Exec=/usr/bin/env bash " + str(script),
+        "Terminal=true",
+        "Icon=applications-development",
+        "Categories=Development;IDE;",
+        "",
+    ])
+    target.write_text(entry, encoding="utf-8")
+    target.chmod(0o644)
+    return True
+
+
+def open_existing() -> bool:
+    """Existing instance is safe to re-open, not start or reauthorize."""
+    url = f"http://127.0.0.1:{PORT}/"
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+            url, timeout=2) as response:
+            if response.status != 200 or response.headers.get_content_type() != "text/html":
+                return False
+            body = response.read(8192).decode("utf-8", errors="replace")
+            if "Mission Control" not in body:
+                return False
+    except (urllib.error.URLError, TimeoutError, UnicodeError):
+        return False
+    print("Mission Control is already running. Opening your browser.")
+    webbrowser.open(url)
+    return True
+
+
 def start(api_binary: Path, *, enable_execution: bool = False,
           open_browser: bool = True) -> None:
     if not free_port(PORT):
@@ -254,7 +451,7 @@ def start(api_binary: Path, *, enable_execution: bool = False,
         print(token)
         print("\nToken is temporary and never saved. Closing this window stops the app.")
         if not enable_execution:
-            print("AI coding is OFF for this first browser test.")
+            print("AI coding is OFF. History remains available; no model will execute.")
         else:
             print("Coding enabled ONLY for the approved disposable fixture.")
             print("The complete M1 execution hash still needs separate approval.")
@@ -286,11 +483,21 @@ def main() -> int:
         if not sys.platform.startswith("linux") or os.geteuid() == 0:
             raise LaunchError("Run as your normal, non-root Linux user")
         if not free_port(PORT):
-            raise LaunchError("Mission Control is already running; close its terminal before restarting.")
-        if args.enable_execution:
-            verify_execution_preflight()
+            if open_existing():
+                return 0
+            raise LaunchError("Port 5098 is occupied by a non-Mission Control process")
+        if install_desktop_shortcut():
+            print("Added CodingAssistant to your desktop application menu.")
+        enabled = args.enable_execution
+        if enabled:
+            try:
+                verify_execution_preflight()
+            except LaunchError as exc:
+                print("Safety gate failed — launching READ-ONLY Mission Control:", exc,
+                      flush=True)
+                enabled = False
         app = install_app(refresh=args.refresh)
-        start(app / "CodingAssistant.Api", enable_execution=args.enable_execution,
+        start(app / "CodingAssistant.Api", enable_execution=enabled,
               open_browser=not args.no_browser)
         return 0
     except (LaunchError, OSError, EOFError, zipfile.BadZipFile) as exc:
