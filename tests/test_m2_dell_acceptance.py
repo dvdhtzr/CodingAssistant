@@ -111,6 +111,29 @@ class DellAcceptanceContract(unittest.TestCase):
         with self.assertRaises(dell.AcceptanceBlocked):
             client.call("GET", "/api/../../secrets")
 
+    def test_success_requires_replayed_independent_verification_event(self):
+        run_id = "a" * 32
+        client = mock.Mock()
+        client.call.side_effect = [
+            {"events": [{"runId": run_id, "sequence": 1,
+                         "kind": "ExecutionStarted", "state": "Running"}]},
+            {"state": "Succeeded", "lastSequence": 1},
+        ]
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(dell.AcceptanceBlocked):
+                dell.monitor(client, run_id)
+
+    def test_success_accepts_complete_replayed_verification_evidence(self):
+        run_id = "a" * 32
+        client = mock.Mock()
+        client.call.side_effect = [
+            {"events": [{"runId": run_id, "sequence": 1,
+                         "kind": "ExecutionVerified", "state": "Succeeded"}]},
+            {"state": "Succeeded", "lastSequence": 1},
+        ]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dell.monitor(client, run_id), "Succeeded")
+
     def test_missing_self_contained_binary_cannot_start_server_or_model(self):
         with tempfile.TemporaryDirectory() as temp:
             with mock.patch.object(dell.subprocess, "Popen",
