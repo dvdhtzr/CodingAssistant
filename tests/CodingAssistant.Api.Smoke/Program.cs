@@ -1148,11 +1148,14 @@ try
                   events.EnumerateArray().Any(ev =>
                     ev.GetProperty("kind").GetString() == "FileStarted") &&
                   events.EnumerateArray().Count(ev =>
-                    ev.GetProperty("kind").GetString() == "FileSaved") == 2,
+                    ev.GetProperty("kind").GetString() == "FileSaved") == 2 &&
+                  events.EnumerateArray().Count(ev =>
+                    ev.GetProperty("kind").GetString() == "ModelOutputReceived") == 3,
                 "actual file starts/completions have timestamped durable events");
         }
         Check(fakeProject.PlanCount == 1 &&
               fakeProject.WriteCount == 2 &&
+              fakeProject.ProgressCount == 3 &&
               fakeProject.LastObjective == ownerObjective &&
               fakeProject.LastSpecification.Contains("Individual users"),
             "draft builder consumed actual owner's approved specification");
@@ -1284,12 +1287,22 @@ finally
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
 }
 
-sealed class SmokeProjectDraftModel : IProjectDraftModel
+sealed class SmokeProjectDraftModel : IStreamingProjectDraftModel
 {
     public int PlanCount;
     public int WriteCount;
+    public int ProgressCount;
     public string LastObjective = "";
     public string LastSpecification = "";
+
+    public async Task<IReadOnlyList<PlannedProjectFile>> PlanWithProgressAsync(
+        string objective, string approvedSpecification, string model,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation)
+    {
+        ProgressCount++;
+        await onOutputChunkBatch();
+        return await PlanAsync(objective, approvedSpecification, model, cancellation);
+    }
 
     public Task<IReadOnlyList<PlannedProjectFile>> PlanAsync(
         string objective, string approvedSpecification, string model,
@@ -1305,6 +1318,17 @@ sealed class SmokeProjectDraftModel : IProjectDraftModel
                 "Instructions for locally inspecting the draft source")
         };
         return Task.FromResult(plan);
+    }
+
+    public async Task<string> WriteWithProgressAsync(
+        string objective, string approvedSpecification, string model,
+        PlannedProjectFile file, IReadOnlyList<ProjectDraftFile> previous,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation)
+    {
+        ProgressCount++;
+        await onOutputChunkBatch();
+        return await WriteAsync(objective, approvedSpecification, model,
+                                file, previous, cancellation);
     }
 
     public async Task<string> WriteAsync(
