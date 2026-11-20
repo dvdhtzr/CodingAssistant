@@ -32,6 +32,55 @@ owner-authorization checks, permitted worktree, local model digest, rootless
 Podman sandbox or evaluator. The M2→M1 execution adapter is a distinct,
 later audited slice and must verify its own exact execution plan.
 
+## Next product slice — durable run intents and SignalR progress (issue #75)
+
+The API now accepts an authenticated **run intent** only against the currently
+approved task/plan/version/hash. This is deliberately *not* a real agent run:
+its initial state is `AwaitingExecutionAuthorization`, not `Queued` or
+`Running`, and every result has `executionEnabled: false`. Nothing can
+call Ollama, OpenCode or Podman through these endpoints.
+
+The newly added persisted run table stores the exact task ID, immutable plan
+version/hash, idempotency key, state and highest event sequence. Every create
+or cancellation transaction also commits a fixed-category, numbered SQLite
+event. Event bodies contain **no objective, source, model output, path, token,
+arbitrary message or error text**. Repeated creation returns the original run;
+conflicting reuse returns 409. Repeated cancellation cannot append another
+event. An old run also exposes `planCurrent: false` when its parent plan has
+been revised.
+
+Additional authenticated endpoints:
+
+| Endpoint | Behavior |
+| --- | --- |
+| `POST /api/tasks/{id}/runs` | `{planVersion,planHash,requestId}` records non-executable intent for an exactly approved current plan |
+| `GET /api/tasks/{id}/runs` | History of intents for a task |
+| `GET /api/runs/{id}` | Durable current intent state and event head |
+| `GET /api/runs/{id}/events?after=0&limit=50` | Numbered immutable events strictly after cursor, max 100/page, returns `nextCursor` |
+| `POST /api/runs/{id}/cancel` | Cancel a **pending intent only** and record `IntentCancelled` |
+| `/api/progress` | Authenticated SignalR WebSocket endpoint; invoke `WatchRun(runId)` and `UnwatchRun(runId)`, receive `RunUpdated` |
+
+To watch without losing events, **connect/authenticate**, call
+`WatchRun(runId)`, then fetch `/api/runs/{id}/events?after=<last_saved_cursor>`
+until caught up. Future `RunUpdated` notifications are optional hints;
+deduplicate by `(runId,sequence)`. After network failure or process restart,
+reconnect and replay using SQLite, **never assume SignalR is durable**.
+Only the fixed owner bearer **header** authenticates the hub; query-string
+`access_token` is intentionally not supported. Browser-compatible
+credential handling will be introduced with Mission Control; do not put
+tokens in URLs, query strings, browser localStorage or logs.
+
+The cross-platform smoke test now opens a real authenticated SignalR
+WebSocket, watches a run, verifies a live cancellation event matches SQLite,
+tests non-owner hub rejection and query-token denial, exercises idempotency
+and stale approval rejection, and verifies event cursor replay after restart.
+No local model or autonomous code is run in CI.
+
+**Remaining product work:** issue #75 still requires live worker-state and
+SignalR progress from the exact approved M1 adapter (#76), plus bounded
+cancellation and runtime reconciliation. Issue #77 will add the browser/UI
+workflow. These are product gates, *not deferred debt*.
+
 ## Running locally (when a .NET 10 SDK with SQLite package restore is available)
 
 On the Dell or a Linux development host, in the repository:
@@ -90,15 +139,16 @@ wrong/stale approvals, concurrent plan revisions, non-executable approvals,
 and absence of execution endpoints. No LLM, Gateway or coding process runs.
 
 Ubuntu/Windows CI runs this alongside all existing model-free M0/M1 tests.
-Passing CI validates the M2 API contract, not Dell-host packaging, M1
-production security, WebSockets/SignalR, full run orchestration or M3 UI.
+Passing CI validates the M2 API, local SignalR handshake and event replay
+contract, not Dell-host packaging, **real M1 worker coordination**, full run
+orchestration or M3 browser credential/UI support.
 
 ## Follow-up product slices and backlog
 
-1. **M2 follow-up:** authenticated SignalR progress and observer reconnect
-   backed by durable run records, then an explicitly scoped adapter to the
-   already-proven M1 real coding runner with exact-plan matching and no silent
-   retry. Complete cancellation and integrated negative security verification.
+1. **M2 follow-up:** bind the existing durable run record and SignalR observer
+   to an explicitly scoped **real** M1 execution adapter (#76), enforcing exact
+   coding-plan authorization, no silent retry, bounded interruption/recovery and
+   integrated negative security verification.
 2. **M3:** React Mission Control for task/plan review, approval, status and
    diffs, with owner-friendly run controls.
 3. **Tracked debt:** GitHub issues #68–#72; #68 must be closed before the

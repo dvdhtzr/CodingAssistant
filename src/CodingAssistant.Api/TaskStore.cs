@@ -115,7 +115,7 @@ public sealed class TaskStore
         File.SetUnixFileMode(_databasePath, privateFile);
     }
 
-    private SqliteConnection Open()
+    internal SqliteConnection Open()
     {
         var db = new SqliteConnection(_connectionString);
         db.Open();
@@ -123,7 +123,7 @@ public sealed class TaskStore
         return db;
     }
 
-    private static SqliteCommand Command(
+    internal static SqliteCommand Command(
         SqliteConnection db, SqliteTransaction? tx, string statement,
         params (string Key, object Value)[] values)
     {
@@ -135,7 +135,7 @@ public sealed class TaskStore
         return cmd;
     }
 
-    private static int Execute(
+    internal static int Execute(
         SqliteConnection db, SqliteTransaction? tx, string statement,
         params (string Key, object Value)[] values)
     {
@@ -143,7 +143,7 @@ public sealed class TaskStore
         return command.ExecuteNonQuery();
     }
 
-    private static string? Scalar(
+    internal static string? Scalar(
         SqliteConnection db, SqliteTransaction? tx, string statement,
         params (string Key, object Value)[] values)
     {
@@ -178,7 +178,7 @@ public sealed class TaskStore
         reader.GetString(6), reader.IsDBNull(7) ? null : reader.GetString(7),
         ExecutionEnabled: false);
 
-    private static TaskItem? FindTask(SqliteConnection db, SqliteTransaction? tx, string id)
+    internal static TaskItem? FindTask(SqliteConnection db, SqliteTransaction? tx, string id)
     {
         using var cmd = Command(db, tx, """
             SELECT id,title,objective,status,current_version,created_utc
@@ -188,7 +188,7 @@ public sealed class TaskStore
         return reader.Read() ? ReadTask(reader) : null;
     }
 
-    private static PlanItem? FindPlan(
+    internal static PlanItem? FindPlan(
         SqliteConnection db, SqliteTransaction? tx, string id, int version)
     {
         using var cmd = Command(db, tx, """

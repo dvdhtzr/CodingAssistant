@@ -36,9 +36,11 @@ unauthorized access and concurrent plan edits on both CI platforms.
 An approved M2 record has `executionEnabled=false` and cannot start
 OpenClaw, ACPX, OpenCode, Ollama or a container. Connecting to M1 requires
 a separately audited adapter with the existing original-host exact plan,
-local model, Podman scope and independent evaluator. SignalR, durable
-worker coordination, cancellation and React Mission Control are still
-required; **M2 as a whole is not GREEN**. See
+local model, Podman scope and independent evaluator. The next M2 slice (#75, partial) adds authenticated SignalR, transactionally
+durable non-executable run intents, numbered event replay, and cancellation of
+**pending intent** only. SignalR is a hint; SQLite remains the truth. Real
+worker-state coordination, cancellation of active agent execution and
+React Mission Control are still required; **M2 as a whole is not GREEN**. See
 `docs/M2_CONTROL_PLANE.md`. Known non-blocking debt is recorded in
 issues #68–#72.
 

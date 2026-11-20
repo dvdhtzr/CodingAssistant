@@ -9,8 +9,10 @@ Cross-platform, **local-first** autonomous software engineering assistant. OpenC
 The first real application backend now lives in
 [`src/CodingAssistant.Api`](src/CodingAssistant.Api). It provides an
 authenticated loopback-only .NET 10 Minimal API with private SQLite task
-history, immutable versioned plan hashes, exact `APPROVE <hash>` authorization
-and idempotent submissions. It explicitly **cannot launch OpenCode or execute
+history, immutable versioned plan hashes, exact `APPROVE <hash>` authorization,
+idempotent submissions, **durable run intents and event replay**, and authenticated
+SignalR progress notifications. Pending run intents can be cancelled, but are
+never silently sent to an agent. It explicitly **cannot launch OpenCode or execute
 an approved task yet**; M1's separate real coding authorization and sandbox
 remain unchanged.
 

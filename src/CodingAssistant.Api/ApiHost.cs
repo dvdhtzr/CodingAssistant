@@ -48,6 +48,8 @@ public static class ApiHost
 
         // Fail before opening a network listener if data permissions are unsafe.
         var store = new TaskStore(settings.DataDirectory);
+        var runs = new RunStore(store);
+        runs.Initialize();
         var expected = Convert.FromHexString(settings.OwnerToken);
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls(settings.BindUrl);
@@ -57,6 +59,14 @@ public static class ApiHost
             options.AddServerHeader = false;
         });
         builder.Services.AddSingleton(store);
+        builder.Services.AddSingleton(runs);
+        builder.Services.AddSignalR(options =>
+        {
+            options.EnableDetailedErrors = false;
+            options.MaximumReceiveMessageSize = 4 * 1024;
+            options.MaximumParallelInvocationsPerClient = 2;
+        });
+        builder.Services.AddSingleton<RunNotifier>();
 
         var app = builder.Build();
         app.Use(async (context, next) =>
@@ -126,6 +136,38 @@ public static class ApiHost
                 string id, ApprovePlanRequest input, TaskStore db) =>
             Safe(() => Results.Ok(db.ApprovePlan(id, input))));
 
+        // A run-intent is only a durable owner request, not a worker queue
+        // entry or any authorization to access a repository or call a model.
+        app.MapPost("/api/tasks/{id}/runs", (
+                string id, CreateRunIntentRequest request, RunStore db,
+                RunNotifier notifier) =>
+            SafeAsync(async () =>
+            {
+                var change = db.CreateIntent(id, request);
+                await notifier.PublishAsync(change.NewEvent);
+                return Results.Created($"/api/runs/{change.Run.Id}", change.Run);
+            }));
+        app.MapGet("/api/tasks/{id}/runs", (string id, RunStore db) =>
+            Safe(() => Results.Ok(db.ListForTask(id))));
+        app.MapGet("/api/runs/{id}", (string id, RunStore db) =>
+            Safe(() => Results.Ok(db.Get(id))));
+        app.MapGet("/api/runs/{id}/events", (
+                string id, long? after, int? limit, RunStore db) =>
+            Safe(() => Results.Ok(db.ReadEvents(
+                id, after ?? 0, limit ?? 50))));
+        app.MapPost("/api/runs/{id}/cancel", (
+                string id, RunStore db, RunNotifier notifier) =>
+            SafeAsync(async () =>
+            {
+                var change = db.CancelIntent(id);
+                await notifier.PublishAsync(change.NewEvent);
+                return Results.Ok(change.Run);
+            }));
+
+        // SignalR uses the exact same authenticated /api HTTP boundary,
+        // including WebSocket handshakes. It carries no durable-only state.
+        app.MapHub<RunProgressHub>("/api/progress");
+
         // Intentionally NO /execute endpoint yet: control-plane approval
         // is not authorization for M1 runner execution or repository mounts.
         return app;
@@ -139,21 +181,44 @@ public static class ApiHost
         }
         catch (StoreFailure error)
         {
-            var status = error.Code switch
-            {
-                "NOT_FOUND" => StatusCodes.Status404NotFound,
-                "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
-                    "APPROVAL_MISMATCH" => StatusCodes.Status409Conflict,
-                _ => StatusCodes.Status400BadRequest
-            };
-            return Results.Json(new { error = error.Code }, statusCode: status);
+            return Rejected(error);
         }
-        // Database/OS errors are deliberately not exposed with source
-        // paths, SQL statements, stack traces or task text.
         catch (Microsoft.Data.Sqlite.SqliteException)
         {
-            return Results.Json(new { error = "DATABASE_UNAVAILABLE" },
-                statusCode: StatusCodes.Status503ServiceUnavailable);
+            return DatabaseUnavailable();
         }
     }
+
+    private static async Task<IResult> SafeAsync(Func<Task<IResult>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch (StoreFailure error)
+        {
+            return Rejected(error);
+        }
+        catch (Microsoft.Data.Sqlite.SqliteException)
+        {
+            return DatabaseUnavailable();
+        }
+    }
+
+    private static IResult Rejected(StoreFailure error)
+    {
+        var status = error.Code switch
+        {
+            "NOT_FOUND" => StatusCodes.Status404NotFound,
+            "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
+                "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
+                "INVALID_STATE" => StatusCodes.Status409Conflict,
+            _ => StatusCodes.Status400BadRequest
+        };
+        return Results.Json(new { error = error.Code }, statusCode: status);
+    }
+
+    private static IResult DatabaseUnavailable() =>
+        Results.Json(new { error = "DATABASE_UNAVAILABLE" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
 }
