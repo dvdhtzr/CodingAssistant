@@ -5,6 +5,7 @@ on:
     branches: [main, "feature/**"]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
 
 permissions:
@@ -67,7 +68,15 @@ jobs:
     # Never distribute a package until *both* OS CI jobs passed. A public,
     # immutable-commit GitHub Release avoids expiring, login-gated Actions ZIPs.
     name: Publish verified Linux app for one-command startup
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # A GitHub App/API squash merge may not emit a follow-up push workflow.
+    # The merged pull_request closed event is an independent publication
+    # trigger. Only merge commits from this repository can publish.
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' &&
+       github.event.action == 'closed' &&
+       github.event.pull_request.merged == true &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     needs: unit-and-syntax
     runs-on: ubuntu-latest
     permissions:
