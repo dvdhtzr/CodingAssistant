@@ -10,5 +10,6 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.14" />
     <ProjectReference Include="../../src/CodingAssistant.Api/CodingAssistant.Api.csproj" />
+    <ProjectReference Include="../../src/CodingAssistant.Runner/CodingAssistant.Runner.csproj" />
   </ItemGroup>
 </Project>
