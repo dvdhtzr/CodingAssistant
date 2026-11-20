@@ -56,6 +56,55 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     };
 }
 
+// Contract preview binds the actual approved specification and dynamically
+// selected project paths. This cannot authorize code execution.
+{
+    var now = DateTimeOffset.UtcNow.ToString("O");
+    var task = new TaskItem(new string('a', 32), "Expenses",
+        "Implement a local expense tracking API", "Draft", 0, now);
+    var approvedText = "Create a .NET 10 expense tracking API, with endpoints " +
+        "for adding, listing and filtering expenses. Include a local store and " +
+        "small tests. No remote services. All data must remain private, and " +
+        "the project should compile offline in a bounded temporary workspace.";
+    var spec = new InterviewSpecification(1, TaskStore.Model,
+        approvedText, new string('b', 64), "Approved", now, now);
+    var job = new ProjectDraftJob(new string('c', 32), task.Id, 1, spec.Sha256,
+        TaskStore.Model, "Generated", "DraftGenerated", null, now, now);
+    var files = new[] {
+        new ProjectDraftFile("Expenses/Expenses.csproj", "Project configuration",
+            "<Project Sdk=\"Microsoft.NET.Sdk\" />", new string('d', 64), now),
+        new ProjectDraftFile("Expenses/Program.cs", "Expense API",
+            "var app = WebApplication.Create();", new string('e', 64), now)
+    };
+    var draft = new ProjectDraftSnapshot(job, [], files);
+    var contract = TaskAgentContract.Preview(task, spec, draft);
+    var json = JsonSerializer.SerializeToUtf8Bytes(contract.Contract);
+    var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(json))
+        .ToLowerInvariant();
+    Check(sha == contract.ContractSha256, "task agent contract bytes have exact SHA256");
+    Check(!contract.ExecutionEnabled, "preview is not executable approval");
+    Check(contract.Contract.GetProperty("objective").GetString() == task.Objective &&
+          contract.Contract.GetProperty("specification").GetString() == approvedText,
+          "approved objective/specification reach new task contract");
+    Check(contract.Contract.GetProperty("approvedSpecificationSha256").GetString()
+          == spec.Sha256, "exact approved version bound");
+    Check(contract.Contract.GetProperty("files")[0].GetString()
+          == "Expenses/Expenses.csproj",
+          "dynamically planned file scope reaches new agent contract");
+    try {
+        _ = TaskAgentContract.Preview(task, spec with { Version = 2 }, draft);
+        throw new Exception("Stale task contract accepted");
+    } catch (StoreFailure error) when (error.Code == "SPECIFICATION_CONFLICT") {
+        checks++;
+    }
+    try {
+        _ = TaskAgentContract.Preview(task, spec with { Model = "qwen2.5-coder:3b" }, draft);
+        throw new Exception("Unqualified model was admitted");
+    } catch (StoreFailure error) when (error.Code == "MODEL_NOT_QUALIFIED") {
+        checks++;
+    }
+}
+
 var root = Path.Combine(Path.GetTempPath(), "codingassistant-m2-smoke-" +
                         Guid.NewGuid().ToString("N"));
 var data = Path.Combine(root, "owner-private");
