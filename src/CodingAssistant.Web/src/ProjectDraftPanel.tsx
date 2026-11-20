@@ -132,6 +132,32 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
     } finally { setBusy(''); }
   }
 
+  async function downloadAgentContract() {
+    if (!result || result.job.state !== 'Generated' ||
+        spec?.status !== 'Approved' || busy) return;
+    setBusy('contract'); setError('');
+    try {
+      const response = await fetch(
+        `/api/tasks/${taskId}/agent-contract-preview/json`, {
+          cache: 'no-store', credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      if (!response.ok)
+        throw new Error('Task agent contract unavailable (' + response.status +
+          '). The task model must be separately qualified for execution.');
+      const href = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement('a');
+      anchor.href = href;
+      anchor.download = 'codingassistant-agent-contract.json';
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 3000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message :
+        'Unable to download approved task contract');
+    } finally { setBusy(''); }
+  }
+
   const job = result?.job;
   const running = job?.state === 'Running';
   const seconds = job
@@ -156,6 +182,11 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
         disabled={!!busy} onClick={() => void download()}>
         Download project ZIP
       </button>}
+      {job?.state === 'Generated' && spec?.status === 'Approved' &&
+        <button type="button" disabled={!!busy}
+          onClick={() => void downloadAgentContract()}>
+          {busy === 'contract' ? 'Preparing…' : 'Download agent pilot contract'}
+        </button>}
     </div>
     {spec?.status !== 'Approved' && <p className="hint">
       Approve a specification above before generating project files.</p>}
@@ -207,6 +238,10 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
         </div>
       </>}
     </div>}
+    <p className="hint">Agent pilot contract export is owner-private planning data,
+      not permission to execute. The separately approved, Linux-only task agent
+      qualification driver is described in docs/M1_TASK_PROJECT_PILOT.md.
+      There is no unattended Mission Control build or test run yet.</p>
     <p className="hint">Next qualification gate: build/run/test this generated project
       inside an approved OS-isolated worktree using the real OpenCode agent,
       with its security-negative cases passed. This draft producer is not that agent.</p>
