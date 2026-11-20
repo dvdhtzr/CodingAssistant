@@ -66,6 +66,9 @@ public static class ApiHost
         var interviews = new InterviewStore(store);
         interviews.Initialize();
         var interviewModel = interviewModelOverride ?? new LocalInterviewModel();
+        var projectDrafts = new ProjectDraftStore(store, interviews);
+        projectDrafts.Initialize();
+        projectDrafts.MarkInterrupted();
         var enabled = settings.EnableLocalExecution &&
             (runnerOverride is not null || OperatingSystem.IsLinux());
         var runner = runnerOverride ?? (enabled
@@ -106,6 +109,9 @@ public static class ApiHost
         });
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
+        builder.Services.AddSingleton(projectDrafts);
+        builder.Services.AddSingleton<IProjectDraftModel>(new LocalProjectDraftModel());
+        builder.Services.AddSingleton<ProjectDraftCoordinator>();
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton(htmlArtifacts);
         builder.Services.AddSingleton<IHtmlPreviewGenerator>(htmlGenerator);
@@ -267,6 +273,23 @@ public static class ApiHost
                 string id, ApproveSpecificationRequest input,
                 InterviewStore db) =>
             Safe(() => Results.Ok(db.Approve(id, input))));
+        // Approved specification to asynchronously generated source DRAFT.
+        // Output is text-only and never executed or written into a project.
+        app.MapGet("/api/tasks/{id}/project-draft", (string id, ProjectDraftStore db) =>
+            Safe(() => Results.Ok(new { draft = db.LatestForTask(id) })));
+        app.MapGet("/api/project-drafts/{id}", (string id, ProjectDraftStore db) =>
+            Safe(() => Results.Ok(db.Read(id))));
+        app.MapPost("/api/tasks/{id}/project-draft", (
+                string id, StartProjectDraftRequest request, ProjectDraftCoordinator coordinator) =>
+            Safe(() => Results.Accepted($"/api/tasks/{id}/project-draft",
+                coordinator.Start(id, request))));
+        app.MapGet("/api/project-drafts/{id}/zip", (string id, ProjectDraftStore db) =>
+            Safe(() => {
+                var draft = db.Read(id);
+                var archive = ProjectDraftValidation.ToZip(draft);
+                return Results.File(archive, "application/zip",
+                    $"codingassistant-draft-{id[..8]}.zip");
+            }));
         app.MapPost("/api/tasks/{id}/plans", (
                 string id, DraftPlanRequest input, TaskStore db) =>
             Safe(() =>
@@ -412,6 +435,8 @@ public static class ApiHost
         var status = error.Code switch
         {
             "NOT_FOUND" => StatusCodes.Status404NotFound,
+            "SPECIFICATION_CONFLICT" or "BUILD_BUSY" or "DRAFT_NOT_READY" =>
+                StatusCodes.Status409Conflict,
             "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" =>
                 StatusCodes.Status503ServiceUnavailable,
             "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
