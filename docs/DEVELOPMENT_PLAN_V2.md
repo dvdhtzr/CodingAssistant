@@ -2,14 +2,14 @@
 
 **Approved:** November 20, 2026  
 **Scope:** Evolve the *working* local-first project generator into a coordinated Microsoft Agent Framework engineering team.  
-**Status:** Phase 0 baseline protection GREEN with qualified evidence below; Phase 1 Product Owner in progress. No later phase has passed its acceptance gate.  
+**Status:** Phase 0 baseline protection GREEN; Phase 1 owner-attested acceptance on November 20, 2026 (issue #108 closed, exact model/transcript not retained). Phase 2 Solution Architect work in progress. No general-purpose execution gate has passed.  
 **Origin:** Owner-approved comprehensive handoff of November 20, 2026.
 
 ## Approved architecture extension — November 20, 2026
 
 The human owner **approved** [Architecture Extension A1: Portable Skills, Runtime Profiles and Verified Artifacts](ARCHITECTURE_EXTENSION_A1.md). This is the target design for skills from vetted sources, selected model expertise, language-agnostic runtime capability profiles, disposable isolated build/test attempts, independent verification, bounded repair and truthful ZIP status. **Approval is architectural; no new executable capability is enabled.**
 
-Maintain the six-phase ordering. Phase 1 Product Owner live-model quality remains **YELLOW** pending complete evidence (the owner exercised the Calculation Journal interview and ZIP path but the resulting program failed functional tests). In Phase 2 define and persist approved stack/architecture choices and **non-executable** runtime descriptors; in Phase 3 integrate verified Microsoft Agent Framework skills; in Phase 4 implement and independently qualify the Static Web sandbox/build/test/repair path first; in Phase 5 visualize verifiable results. Existing security issue #76 and task-execution issue #92 remain mandatory release gates. The frozen cross-file failure [#107](https://github.com/dvdhtzr/CodingAssistant/issues/107) is the initial regression target.
+Maintain the six-phase ordering. Phase 1 was owner-attested as **accepted** on November 20, 2026; the exact model and transcript were not retained, and the broken Calculation Journal ZIP remains an unrelated Phase 4 verification failure. In Phase 2 define and persist approved stack/architecture choices and **non-executable** runtime descriptors; in Phase 3 integrate verified Microsoft Agent Framework skills; in Phase 4 implement and independently qualify the Static Web sandbox/build/test/repair path first; in Phase 5 visualize verifiable results. Existing security issue #76 and task-execution issue #92 remain mandatory release gates. The frozen cross-file failure [#107](https://github.com/dvdhtzr/CodingAssistant/issues/107) is the initial regression target.
 
 ## Relationship to the original implementation plan
 
