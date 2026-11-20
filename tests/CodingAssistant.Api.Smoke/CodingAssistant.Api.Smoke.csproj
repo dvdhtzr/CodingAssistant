@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.14" />
     <ProjectReference Include="../../src/CodingAssistant.Api/CodingAssistant.Api.csproj" />
   </ItemGroup>
 </Project>
