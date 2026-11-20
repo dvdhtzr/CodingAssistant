@@ -47,8 +47,10 @@ an owner-facing build button wired to this flow. Baseline 1.0 is NOT GREEN.
 
 ## Qualification usage on the Dell (not ordinary product use)
 
-After PR merge and one-command application update, export the exact
-`contract` object from `/api/tasks/{id}/agent-contract-preview` to a
+After PR merge and one-command application update, use Mission Control's
+**Download agent pilot contract** button to save the exact approved contract
+JSON. The same bytes are available at authenticated
+`/api/tasks/{id}/agent-contract-preview/json`. Save the file to a
 private JSON file. The pilot also rechecks the live approved specification\nand latest file plan in the local private SQLite database before admission\nand again before accepting a final result. By default it uses the conventional\nKubuntu local application data path; use \`--database /absolute/private/path/codingassistant.db\`\nwhen the launcher has been configured with a different data directory.\n**Do not put any bearer token in filenames, Git or URLs.**
 The contract is private because it contains your task and specification.
 
