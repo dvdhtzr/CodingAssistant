@@ -2,7 +2,7 @@
 
 **Implementation:** Issue [#109](https://github.com/dvdhtzr/CodingAssistant/issues/109) — first planning-only slice of [Architecture Extension A1](ARCHITECTURE_EXTENSION_A1.md).
 
-**Security posture:** This API and database schema DO NOT grant execution permission. The Phase 1 live local-Ollama conversational-quality acceptance gate [#108](https://github.com/dvdhtzr/CodingAssistant/issues/108) remains YELLOW until a real, evidenced run passes. Implementing this inert foundation does not mark Phase 1 or Phase 2 GREEN.
+**Security posture:** This API and database schema DO NOT grant execution permission. The owner attested Phase 1 acceptance on November 20 and issue [#108](https://github.com/dvdhtzr/CodingAssistant/issues/108) was closed with an explicit note that the exact model and transcript were not retained. Phase 2 remains incomplete until the real local Solution Architect review is accepted.
 
 ## Runtime profile registry (schema v1)
 
@@ -44,3 +44,34 @@ dotnet run --configuration Release --project tests/CodingAssistant.Phase2.Smoke/
 This runs a model-free, real HTTP + private SQLite exercise: token enforcement; profile qualification truth; no profile mutation; unknown profile/schema rejection; approved spec/version binding; recommendation-versus-human-selection separation; exact hash confirmation; stale/concurrent revision handling; supersession history; old interview persistence; restart durability; specification invalidation; deferral; and absence of a generic execution endpoint. It neither contacts Ollama nor runs generated code or a container.
 
 CI success proves only those deterministic contracts on its two hosted operating systems. It does **not** satisfy live Product Owner quality acceptance [#108](https://github.com/dvdhtzr/CodingAssistant/issues/108), local container qualification [#76](https://github.com/dvdhtzr/CodingAssistant/issues/76), or working Calculation Journal browser QA [#111](https://github.com/dvdhtzr/CodingAssistant/issues/111).
+
+
+## Second slice — Local Solution Architect recommendations and owner review
+
+- Authenticated \`POST /api/tasks/{id}/architecture-decisions/recommend\` takes
+  \`schemaVersion:1\`, \`specificationVersion\`, \`specificationSha256\`,
+  \`topic\` (\`technology-stack\` or \`architecture-style\`) and
+  \`expectedRevision\`.
+- It validates the **currently approved Product Owner specification**,
+  selects that specification's **exact local model tag**, verifies the tag is
+  still installed via the Ollama catalog, and asks the planning-only Solution
+  Architect for 2–4 alternatives with specific benefits/tradeoffs.
+- The Ollama transport is fixed to loopback with no proxy, redirects, tools,
+  shell access or cloud fallback. The response must be bounded JSON; the
+  existing \`ArchitectureDecisionStore.Propose\` validates every option,
+  runtime-profile reference and expected revision before persisting.
+- Mission Control now shows both decision topics, clear qualification
+  limitations, the model's recommendation **without preselecting it**, explicit
+  radio selection, and full-hash confirmation for approval or deferral. Saved
+  decisions reload after restart; stale specifications invalidate effective
+  decisions, and old proposals cannot silently regain authority.
+- Model-free cross-platform API tests use an injected advisor and local-model
+  catalog to check that no network inference is required for deterministic
+  checks. A live owner-Ollama acceptance is separately required to assert
+  recommendation *quality* or evaluate actual model output.
+
+**Current limits:** no actual MAF integration yet (Phase 3), no runtime
+execution or profile qualification, and the existing source-only draft generator
+does **not** consume approved architecture decisions yet. The next Phase 2 slice
+must bind the chosen stack/architecture to source planning without bypassing
+unqualified language/runtime security and provide end-to-end owner acceptance.
