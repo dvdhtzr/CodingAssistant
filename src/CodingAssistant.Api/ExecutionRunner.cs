@@ -166,7 +166,24 @@ public sealed class M1ProcessRunner : IM1ExecutionRunner
             throw new ExecutionUnavailable();
         try
         {
+            var keys = new[] {
+                "schema_version", "stage", "assignment", "fixture",
+                "fixture_sha256", "manifest_sha256", "model", "model_digest",
+                "image_id", "evaluator_image_id", "source_sha256",
+                "writable_files", "gateway_method", "no_cloud",
+                "no_git_remote", "control"
+            };
+            if (!plan.EnumerateObject().Select(p => p.Name)
+                    .OrderBy(x => x, StringComparer.Ordinal)
+                    .SequenceEqual(keys.OrderBy(x => x, StringComparer.Ordinal)))
+                throw new ExecutionUnavailable();
             var control = plan.GetProperty("control");
+            if (!control.EnumerateObject().Select(p => p.Name)
+                    .OrderBy(x => x, StringComparer.Ordinal)
+                    .SequenceEqual(new[] {
+                        "task_id", "run_id", "plan_version", "plan_hash"
+                    }.OrderBy(x => x, StringComparer.Ordinal)))
+                throw new ExecutionUnavailable();
             if (control.GetProperty("task_id").GetString() != run.TaskId ||
                 control.GetProperty("run_id").GetString() != run.Id ||
                 control.GetProperty("plan_version").GetInt32() != run.PlanVersion ||
@@ -174,6 +191,8 @@ public sealed class M1ProcessRunner : IM1ExecutionRunner
                 plan.GetProperty("schema_version").GetInt32() != 1 ||
                 plan.GetProperty("stage").GetString() != "M1.12" ||
                 plan.GetProperty("fixture").GetString() != "02-build-repair" ||
+                plan.GetProperty("assignment").GetString() !=
+                    "repair fixed C# compiler errors in disposable api/Program.cs" ||
                 plan.GetProperty("model").GetString() != TaskStore.Model ||
                 plan.GetProperty("gateway_method").GetString() != "codingassistant.coding.run" ||
                 !plan.GetProperty("no_cloud").GetBoolean() ||
