@@ -475,6 +475,18 @@ def query_gateway_status(name: str, plan_hash: str) -> dict[str, object] | None:
         return None
 
 
+def trace_stage(stage: str) -> None:
+    """Fixed-category progress only; never print an agent message or source."""
+    if stage not in {
+        "ScopeVerified", "WorkspacePrepared", "InferenceBridgeReady",
+        "GatewayLaunched", "GatewayReady", "CodingRequestSent",
+        "CodingRequestReturned", "GatewayRemoved", "EvaluatorStarted",
+        "EvaluatorPassed",
+    }:
+        raise ValueError("Unknown progress stage")
+    print("CA_M1_STAGE:" + stage, flush=True)
+
+
 def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
                 plan_hash: str, evidence: dict[str, object] | None = None, *,
                 journal=None) -> dict[str, object]:
@@ -506,6 +518,7 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
             if result.returncode != 0:
                 raise SafeGateBlocked("GATEWAY_LAUNCH_FAILED")
             status["container_started"] = True
+            trace_stage("GatewayLaunched")
             status["phase"] = "gateway_readiness"
             for _ in range(50):
                 alive = fixed(["podman", "inspect", "--format",
@@ -523,7 +536,9 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
                 time.sleep(2)
             else:
                 raise SafeGateBlocked("GATEWAY_READINESS_TIMEOUT")
+            trace_stage("GatewayReady")
             status["phase"] = "coding_rpc"
+            trace_stage("CodingRequestSent")
             call = fixed(gateway_rpc_command(name, plan_hash), timeout=950)
             if call.returncode != 0:
                 status["rpc_nonzero"] = True
@@ -536,6 +551,7 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
                 status["plugin"] = query_gateway_status(name, plan_hash)
                 raise SafeGateBlocked("CODING_RPC_INVALID_RESULT")
             status["phase"] = "coding_rpc_complete"
+            trace_stage("CodingRequestReturned")
         finally:
             # An observed pids.events.max > 0 proves that the cgroup
             # reached its task limit. A zero counter does not prove an
@@ -550,6 +566,7 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
             if not status["removed"]:
                 status["phase"] = "cleanup_failed"
                 raise SafeGateBlocked("GATEWAY_CLEANUP_FAILED")
+            trace_stage("GatewayRemoved")
     return status
 
 def request_exact_approval(plan_hash: str) -> bool:
@@ -657,6 +674,7 @@ def execute(prepare: bool, journal=None, *,
         report["model_digest"] = digest
         report["derived_image"] = image
         report["plan_hash"] = plan_hash
+        trace_stage("ScopeVerified")
         print("Approved-scope preview:", plan["assignment"])
         print("  fixture:", TASK, "model:", MODEL)
         print("  disposable writable file:", "api/Program.cs")
@@ -687,6 +705,7 @@ def execute(prepare: bool, journal=None, *,
             sibling = root / "unmounted.txt"
             sibling.write_text("UNMOUNTED-DO-NOT-TOUCH", encoding="utf-8")
             report["source_before"] = scan_workspace(project, TASK)
+            trace_stage("WorkspacePrepared")
             ipc = root / "ipc"
             ipc.mkdir(mode=0o700)
             broker_state = {"attempts": 0, "verified": 0, "failed": 0, "denied": 0}
@@ -698,6 +717,7 @@ def execute(prepare: bool, journal=None, *,
             report["phase"] = "gateway_and_inference"
             with serve_bridge(ipc / "ollama.sock",
                     broker_for(MODEL, digest, broker_state)):
+                trace_stage("InferenceBridgeReady")
                 try:
                     gateway = run_gateway(
                         image, project, ipc, plan_hash, gateway_evidence,
@@ -729,6 +749,7 @@ def execute(prepare: bool, journal=None, *,
                 raise ValueError("Integrated model/boundary/source gate failed")
             # Isolated verification: no host Ollama socket is mounted here.
             report["phase"] = "offline_acceptance"
+            trace_stage("EvaluatorStarted")
             if journal:
                 journal.advance("VERIFYING")
             eval_dir = root / "offline-evaluation"
@@ -748,6 +769,7 @@ def execute(prepare: bool, journal=None, *,
                 raise ValueError("Offline evaluator changed approved source")
             if sibling.read_text(encoding="utf-8") != "UNMOUNTED-DO-NOT-TOUCH":
                 raise ValueError("Independent evaluator touched unmounted sibling")
+            trace_stage("EvaluatorPassed")
             report["status"] = "GATEWAY_APPROVED_CODING_PASS"
             report["phase"] = "complete"
     except (OSError, RuntimeError, ValueError, TypeError, KeyError,
