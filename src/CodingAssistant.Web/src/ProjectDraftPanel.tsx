@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
+import { TaskBuildPanel } from './TaskBuildPanel';
 
 interface SpecContract {
   version: number;
@@ -238,12 +239,14 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
         </div>
       </>}
     </div>}
-    <p className="hint">Agent pilot contract export is owner-private planning data,
-      not permission to execute. The separately approved, Linux-only task agent
-      qualification driver is described in docs/M1_TASK_PROJECT_PILOT.md.
-      There is no unattended Mission Control build or test run yet.</p>
-    <p className="hint">Next qualification gate: build/run/test this generated project
-      inside an approved OS-isolated worktree using the real OpenCode agent,
-      with its security-negative cases passed. This draft producer is not that agent.</p>
+    {job?.state === 'Generated' && spec?.status === 'Approved' &&
+      job.specificationSha256 === spec.sha256 &&
+      <TaskBuildPanel token={token} taskId={taskId}
+        specificationSha256={spec.sha256} />}
+    <p className="hint">The source-only project draft and task-specific build review
+      are separate from independently verified coding. The Linux-only OpenCode
+      pilot remains a manual qualification path (docs/M1_TASK_PROJECT_PILOT.md).
+      The security-negative cases in issue #76 must pass before executable coding
+      can be enabled in Mission Control.</p>
   </section>;
 }
