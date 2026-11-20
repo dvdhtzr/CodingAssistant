@@ -101,6 +101,12 @@ public static class ApiHost
         {
             context.Response.Headers["Cache-Control"] = "no-store";
             context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            context.Response.Headers["Referrer-Policy"] = "no-referrer";
+            context.Response.Headers["X-Frame-Options"] = "DENY";
+            context.Response.Headers["Content-Security-Policy"] =
+                "default-src 'none'; script-src 'self'; style-src 'self'; " +
+                "connect-src 'self'; img-src 'self' data:; " +
+                "base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
             if (!context.Request.Path.StartsWithSegments("/api"))
             {
                 await next(context);
