@@ -140,6 +140,11 @@ public static class ApiHost
             await next(context);
         });
 
+        // UI assets are static and unauthenticated; all data/operations still
+        // require the exact owner bearer in an Authorization header.
+        app.UseDefaultFiles();
+        app.UseStaticFiles();
+
         app.MapGet("/healthz", () => Results.Ok(
             new { status = "ok", executionEnabled = enabled }));
         app.MapGet("/api/status", () => Results.Ok(
