@@ -1,4 +1,5 @@
 using System.Net;
+using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -33,9 +34,11 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object body
 
 async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveApp,
     IM1ExecutionRunner? runner = null, IHtmlPreviewGenerator? htmlGenerator = null,
-    IInterviewModel? interviewModel = null)
+    IInterviewModel? interviewModel = null,
+    IProjectDraftModel? projectModel = null)
 {
-    var app = ApiHost.Build([], settings, runner, htmlGenerator, interviewModel);
+    var app = ApiHost.Build([], settings, runner, htmlGenerator, interviewModel,
+                            projectModel);
     await app.StartAsync();
     saveApp(app);
     var addresses = app.Services.GetRequiredService<IServer>()
@@ -963,12 +966,14 @@ try
     var interviewSettings = new ApiSettings(
         interviewData, OwnerToken, "http://127.0.0.1:0");
     var fakeInterview = new SmokeInterviewModel();
+    var fakeProject = new SmokeProjectDraftModel();
     WebApplication? interviewApp = null;
     HttpClient? interviewClient = null;
     try
     {
         interviewClient = await Start(interviewSettings,
-            app => interviewApp = app, interviewModel: fakeInterview);
+            app => interviewApp = app, interviewModel: fakeInterview,
+            projectModel: fakeProject);
         interviewClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", OwnerToken);
         string id;
@@ -1077,6 +1082,110 @@ try
               fakeInterview.LastObjective == ownerObjective,
             "real task objective, not C# fixture, reached model interview");
 
+        // No fake static HTML exercise here: approved specification drives
+        // file choice and real persisted event/file state. The fake produces
+        // text only; no command, container, package install or code execution.
+        using (var emptyDraft = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/draft-build"))
+        using (var json = await ReadJson(emptyDraft))
+            Check(emptyDraft.StatusCode == HttpStatusCode.OK &&
+                  !json.RootElement.GetProperty("available").GetBoolean(),
+                "no invented generated files before owner starts a draft build");
+
+        using (var wrongDraft = await Post(interviewClient,
+            $"/api/tasks/{id}/draft-build", new {
+                specificationVersion = specVersion,
+                specificationSha256 = new string('f', 64)
+            }))
+            Check(wrongDraft.StatusCode == HttpStatusCode.Conflict,
+                "draft builder rejects an unapproved or substituted spec hash");
+
+        string draftId;
+        using (var started = await Post(interviewClient,
+            $"/api/tasks/{id}/draft-build", new {
+                specificationVersion = specVersion,
+                specificationSha256 = specHash
+            }))
+        using (var json = await ReadJson(started))
+        {
+            Check(started.StatusCode == HttpStatusCode.Accepted,
+                "explicit owner action admitted a source-only draft job");
+            draftId = json.RootElement.GetProperty("id").GetString()!;
+        }
+        JsonDocument? finishedJson = null;
+        for (var attempt = 0; attempt < 120; attempt++)
+        {
+            using var get = await interviewClient.GetAsync(
+                $"/api/tasks/{id}/draft-build");
+            var doc = await ReadJson(get);
+            if (doc.RootElement.GetProperty("snapshot").GetProperty("job")
+                  .GetProperty("state").GetString() != "Running")
+            {
+                finishedJson = doc;
+                break;
+            }
+            doc.Dispose();
+            await Task.Delay(30);
+        }
+        if (finishedJson is null)
+            throw new Exception("Source-only draft did not reach terminal status");
+        using (finishedJson)
+        {
+            var body = finishedJson.RootElement.GetProperty("snapshot");
+            var job = body.GetProperty("job");
+            Check(job.GetProperty("state").GetString() == "Generated" &&
+                  job.GetProperty("id").GetString() == draftId,
+                "real source-text generation finished and was persisted");
+            var files = body.GetProperty("files");
+            Check(files.GetArrayLength() == 2 &&
+                  files.EnumerateArray().Any(item =>
+                      item.GetProperty("path").GetString() == "src/Dashboard.tsx") &&
+                  files.EnumerateArray().Any(item =>
+                      item.GetProperty("path").GetString() == "README.md"),
+                "specification-specific files, not a fixed C# repair, were saved");
+            var events = body.GetProperty("events");
+            Check(events.GetArrayLength() >= 7 &&
+                  events.EnumerateArray().Any(ev =>
+                    ev.GetProperty("kind").GetString() == "FileStarted") &&
+                  events.EnumerateArray().Count(ev =>
+                    ev.GetProperty("kind").GetString() == "FileSaved") == 2,
+                "actual file starts/completions have timestamped durable events");
+        }
+        Check(fakeProject.PlanCount == 1 &&
+              fakeProject.WriteCount == 2 &&
+              fakeProject.LastObjective == ownerObjective &&
+              fakeProject.LastSpecification.Contains("Individual users"),
+            "draft builder consumed actual owner's approved specification");
+
+        using (var zipped = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/draft-build/{draftId}/zip"))
+        {
+            Check(zipped.StatusCode == HttpStatusCode.OK &&
+                  zipped.Content.Headers.ContentType?.MediaType == "application/zip",
+                "approved generated draft available as ZIP to the owner");
+            var bytes = await zipped.Content.ReadAsByteArrayAsync();
+            using var stream = new MemoryStream(bytes);
+            using var archive = new ZipArchive(stream, ZipArchiveMode.Read);
+            Check(archive.Entries.Count == 2 &&
+                  archive.Entries.Any(e => e.FullName == "src/Dashboard.tsx"),
+                "ZIP contains exactly selected relative project source paths");
+        }
+        foreach (var hostile in new[] {
+            "../etc/passwd", "/root/.ssh/key", "src/../../secret.json",
+            ".env", "scripts/build.sh", "src/evil\\\\x.ts"
+        })
+        {
+            try
+            {
+                ProjectDraftStore.SafePath(hostile);
+                throw new Exception("Unsafe model-selected path accepted: " + hostile);
+            }
+            catch (StoreFailure error) when (error.Code == "INVALID_PROJECT_PATH")
+            {
+                checks++;
+            }
+        }
+
         await interviewApp!.StopAsync();
         await interviewApp.DisposeAsync();
         interviewApp = null;
@@ -1084,9 +1193,21 @@ try
         interviewClient = null;
         // Restart with the SAME real SQLite data: no conversation replay.
         interviewClient = await Start(interviewSettings,
-            app => interviewApp = app, interviewModel: fakeInterview);
+            app => interviewApp = app, interviewModel: fakeInterview,
+            projectModel: fakeProject);
         interviewClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", OwnerToken);
+        using (var savedDraft = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/draft-build"))
+        using (var json = await ReadJson(savedDraft))
+        {
+            var snapshot = json.RootElement.GetProperty("snapshot");
+            Check(snapshot.GetProperty("job").GetProperty("state").GetString()
+                    == "Generated" &&
+                  snapshot.GetProperty("files").GetArrayLength() == 2 &&
+                  fakeProject.PlanCount == 1,
+                "durable generated files survive API restart without model replay");
+        }
         using (var saved = await interviewClient.GetAsync($"/api/tasks/{id}/interview"))
         using (var json = await ReadJson(saved))
             Check(saved.StatusCode == HttpStatusCode.OK &&
@@ -1108,6 +1229,13 @@ try
                   json.RootElement.GetProperty("specification")
                     .GetProperty("status").GetString() == "Superseded",
                 "new requirements invalidate earlier approved spec");
+        using (var staleBuild = await Post(interviewClient,
+            $"/api/tasks/{id}/draft-build", new {
+                specificationVersion = specVersion,
+                specificationSha256 = specHash
+            }))
+            Check(staleBuild.StatusCode == HttpStatusCode.Conflict,
+                "superseded spec cannot authorize a new draft build");
         using (var updated = await Post(interviewClient,
             $"/api/tasks/{id}/interview/specification", new {
                 expectedSequence = 7
@@ -1154,6 +1282,42 @@ finally
     }
     try { Directory.Delete(root, recursive: true); }
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
+}
+
+sealed class SmokeProjectDraftModel : IProjectDraftModel
+{
+    public int PlanCount;
+    public int WriteCount;
+    public string LastObjective = "";
+    public string LastSpecification = "";
+
+    public Task<IReadOnlyList<PlannedProjectFile>> PlanAsync(
+        string objective, string approvedSpecification, string model,
+        CancellationToken cancellation)
+    {
+        LastObjective = objective;
+        LastSpecification = approvedSpecification;
+        PlanCount++;
+        IReadOnlyList<PlannedProjectFile> plan = new[] {
+            new PlannedProjectFile("src/Dashboard.tsx",
+                "React dashboard with personal finance budgets"),
+            new PlannedProjectFile("README.md",
+                "Instructions for locally inspecting the draft source")
+        };
+        return Task.FromResult(plan);
+    }
+
+    public async Task<string> WriteAsync(
+        string objective, string approvedSpecification, string model,
+        PlannedProjectFile file, IReadOnlyList<ProjectDraftFile> previous,
+        CancellationToken cancellation)
+    {
+        WriteCount++;
+        await Task.Delay(15, cancellation);
+        return file.Path.EndsWith(".tsx", StringComparison.Ordinal)
+            ? "export function Dashboard() { return <main>Monthly budgets</main>; }"
+            : "# Personal budget dashboard\\n\\nDraft implementation only.";
+    }
 }
 
 sealed class SmokeInterviewModel : IInterviewModel
