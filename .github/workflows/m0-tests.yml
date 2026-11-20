@@ -58,6 +58,8 @@ jobs:
           dotnet-version: "10.0.x"
       - name: Build and exercise actual M2 HTTP/SQLite API (no model)
         run: dotnet run --configuration Release --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.csproj
+      - name: Verify Phase 2 runtime profiles and decision persistence (no model or executor)
+        run: dotnet run --configuration Release --project tests/CodingAssistant.Phase2.Smoke/CodingAssistant.Phase2.Smoke.csproj
       - name: Publish self-contained Dell-ready Linux-x64 API
         if: runner.os == 'Linux'
         run: dotnet publish src/CodingAssistant.Api/CodingAssistant.Api.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output ${{ runner.temp }}/codingassistant-linux-x64
