@@ -97,6 +97,29 @@ try
         using var healthBody = await ReadJson(publicHealth);
         Check(!healthBody.RootElement.GetProperty("executionEnabled").GetBoolean(),
             "health does not advertise execution");
+        // M3's compiled React UI is served from the exact same loopback
+        // origin. Static assets are public, but /api never is.
+        var uiSource = Path.Combine(Directory.GetCurrentDirectory(),
+            "src", "CodingAssistant.Api", "wwwroot", "index.html");
+        if (File.Exists(uiSource))
+        {
+            using var page = await unauthenticated.GetAsync("/");
+            Check(page.StatusCode == HttpStatusCode.OK,
+                "compiled React UI accessible on owner loopback");
+            Check(page.Content.Headers.ContentType?.MediaType == "text/html",
+                "Mission Control index served as HTML");
+            Check(page.Headers.TryGetValues("Content-Security-Policy", out var csp) &&
+                  csp.Any(value => value.Contains("script-src 'self'") &&
+                                   value.Contains("frame-ancestors 'none'")),
+                "frontend response has restrictive CSP");
+            Check(page.Headers.TryGetValues("Referrer-Policy", out var referrer) &&
+                  referrer.Contains("no-referrer"),
+                "owner token never leaked via referrer");
+            var html = await page.Content.ReadAsStringAsync();
+            Check(html.Contains("Mission Control", StringComparison.Ordinal) &&
+                  !html.Contains(OwnerToken, StringComparison.Ordinal),
+                "static HTML has no embedded owner credential");
+        }
         using var noToken = await unauthenticated.GetAsync("/api/tasks");
         Check(noToken.StatusCode == HttpStatusCode.Unauthorized,
             "unauthenticated owner history blocked");
