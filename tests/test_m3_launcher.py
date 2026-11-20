@@ -100,6 +100,32 @@ class M3LauncherContracts(unittest.TestCase):
         self.assertEqual(env["CODINGASSISTANT_OWNER_TOKEN"], "a" * 64)
         browser.assert_called_once_with("http://127.0.0.1:5098/")
 
+    def test_execution_preflight_uses_model_free_checks_only(self):
+        fake = mock.Mock(returncode=0)
+        with mock.patch.object(launcher.subprocess, "run", return_value=fake) as run, \
+             contextlib.redirect_stdout(io.StringIO()):
+            launcher.verify_execution_preflight()
+        args = run.call_args.args[0]
+        self.assertEqual(args[-2:], [str(launcher.ROOT / "tools/m2/dell_acceptance.py"),
+                                      "--preflight-only"])
+        self.assertNotIn("--run", args)
+        self.assertEqual(run.call_args.kwargs["cwd"], launcher.ROOT)
+        self.assertEqual(run.call_args.kwargs["stdin"], launcher.subprocess.DEVNULL)
+
+    def test_failed_execution_preflight_denies_launch(self):
+        fake = mock.Mock(returncode=2)
+        with mock.patch.object(launcher.subprocess, "run", return_value=fake), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(launcher.LaunchError, "coding remains OFF"):
+                launcher.verify_execution_preflight()
+
+    def test_preflight_timeout_denies_launch(self):
+        with mock.patch.object(launcher.subprocess, "run",
+                               side_effect=launcher.subprocess.TimeoutExpired("preflight", 1300)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(launcher.LaunchError, "coding remains OFF"):
+                launcher.verify_execution_preflight()
+
     def test_occupied_port_never_launches_second_api(self):
         with mock.patch.object(launcher, "free_port", return_value=False), \
              mock.patch.object(launcher.subprocess, "Popen",

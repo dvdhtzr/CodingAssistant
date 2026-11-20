@@ -164,6 +164,33 @@ def free_port(port: int) -> bool:
         return client.connect_ex(("127.0.0.1", port)) != 0
 
 
+def verify_execution_preflight() -> None:
+    """Verify actual rootless boundaries and refresh pinned offline runtime.
+
+    This runs the existing M2→M1 model-free containment/preview checks, NOT an
+    agent or model. Fail closed before starting an execution-enabled API.
+    A stale source fingerprint may require a local offline derivative rebuild.
+    """
+    checker = ROOT / "tools" / "m2" / "dell_acceptance.py"
+    if not checker.is_file() or checker.is_symlink():
+        raise LaunchError("Missing reviewed M2→M1 preflight driver")
+    print("Checking rootless containment and preparing pinned offline runtime...", flush=True)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(checker), "--preflight-only"],
+            cwd=ROOT, stdin=subprocess.DEVNULL, check=False,
+            timeout=1300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise LaunchError("M1 preflight timed out; coding remains OFF") from exc
+    if result.returncode != 0:
+        raise LaunchError(
+            "M1 security/runtime preflight failed; coding remains OFF. "
+            "Do not bypass the check or start an unqualified agent."
+        )
+    print("M1 model-free preflight PASS. Exact hash authorization still required.", flush=True)
+
+
 def start(api_binary: Path, *, enable_execution: bool = False,
           open_browser: bool = True) -> None:
     if not free_port(PORT):
@@ -232,6 +259,8 @@ def main() -> int:
     try:
         if not sys.platform.startswith("linux") or os.geteuid() == 0:
             raise LaunchError("Run as your normal, non-root Linux user")
+        if args.enable_execution:
+            verify_execution_preflight()
         app = install_app()
         start(app / "CodingAssistant.Api", enable_execution=args.enable_execution,
               open_browser=not args.no_browser)
