@@ -106,6 +106,50 @@ class TaskPilotTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.read_contract(linked)
 
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux-only execution state gate")
+    def test_live_sqlite_approval_invalidates_superseded_contract(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            db_path = root / "codingassistant.db"
+            item = contract()
+            with m.sqlite3.connect(db_path) as db:
+                db.executescript("""
+                    CREATE TABLE tasks(id TEXT PRIMARY KEY,objective TEXT);
+                    CREATE TABLE interview_specs(
+                      task_id TEXT,version INTEGER,sha256 TEXT,model TEXT,
+                      content TEXT,status TEXT);
+                    CREATE TABLE project_drafts(
+                      id TEXT,task_id TEXT,spec_version INTEGER,
+                      spec_sha256 TEXT,model TEXT,state TEXT,
+                      created_utc TEXT);
+                    CREATE TABLE project_draft_files(draft_id TEXT,path TEXT);
+                """)
+                db.execute("INSERT INTO tasks VALUES(?,?)", (
+                    item["taskId"], item["objective"]))
+                db.execute("INSERT INTO interview_specs VALUES(?,?,?,?,?,?)",
+                           (item["taskId"], item["specificationVersion"],
+                            item["approvedSpecificationSha256"], item["model"],
+                            item["specification"], "Approved"))
+                db.execute("INSERT INTO project_drafts VALUES(?,?,?,?,?,?,?)",
+                           ("d" * 32, item["taskId"], item["specificationVersion"],
+                            item["approvedSpecificationSha256"], item["model"],
+                            "Generated", "2026-11-20T00:00:00Z"))
+                db.executemany("INSERT INTO project_draft_files VALUES(?,?)",
+                               [("d" * 32, x) for x in item["files"]])
+            db_path.chmod(0o600)
+            m.verify_live_approval(db_path, item)
+            with m.sqlite3.connect(db_path) as db:
+                db.execute("UPDATE interview_specs SET status='Superseded'")
+            with self.assertRaises(ValueError):
+                m.verify_live_approval(db_path, item)
+            with m.sqlite3.connect(db_path) as db:
+                db.execute("UPDATE interview_specs SET status='Approved'")
+                db.execute("DELETE FROM project_draft_files WHERE path=?",
+                           (item["files"][0],))
+            with self.assertRaises(ValueError):
+                m.verify_live_approval(db_path, item)
+
     def test_workspace_accepts_exact_source_files_only(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
