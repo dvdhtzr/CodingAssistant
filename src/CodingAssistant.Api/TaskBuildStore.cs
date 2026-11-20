@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
@@ -212,7 +214,13 @@ public sealed class TaskBuildStore(TaskStore tasks)
             throw new StoreFailure("TASK_PROFILE_UNSUPPORTED");
 
         var json = preview.Contract.GetRawText();
-        if (json.Length > 24576)
+        var computedSha = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
+        if (json.Length > 24576 ||
+            !string.Equals(computedSha, preview.ContractSha256, StringComparison.Ordinal) ||
+            preview.Contract.GetProperty("schema").GetString() != TaskAgentContract.Schema ||
+            preview.Contract.GetProperty("taskId").GetString() != taskId ||
+            preview.Contract.GetProperty("model").GetString() != TaskStore.Model)
             throw new StoreFailure("INVALID_EXECUTION_PLAN");
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
