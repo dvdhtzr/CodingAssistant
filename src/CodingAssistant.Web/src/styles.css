@@ -50,3 +50,10 @@
 .spec-consent input{width:auto;min-width:18px;height:18px;margin:.12rem 0}
 .build-gate{background:#16202e;padding:1rem;border-radius:8px}
 .build-gate p{line-height:1.5}
+
+.project-draft-result{border:1px solid #3f7282;border-radius:10px;margin-top:1rem;padding:1rem}
+.build-draft{margin-top:1.2rem;border-top:1px solid #36506c;padding-top:1rem}
+.build-draft h2{margin:.7rem 0}
+.source-file{border:1px solid #394f6a;border-radius:7px;padding:.65rem;margin:.7rem 0}
+.source-file summary{cursor:pointer;font-weight:600;color:#c3f1ea}
+.source-file pre{max-height:440px;white-space:pre;overflow:auto;margin:.7rem 0 0}
