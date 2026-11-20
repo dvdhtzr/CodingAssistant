@@ -5,6 +5,12 @@
 **Status:** Phase 0 baseline protection GREEN with qualified evidence below; Phase 1 Product Owner in progress. No later phase has passed its acceptance gate.  
 **Origin:** Owner-approved comprehensive handoff of November 20, 2026.
 
+## Approved architecture extension — November 20, 2026
+
+The human owner **approved** [Architecture Extension A1: Portable Skills, Runtime Profiles and Verified Artifacts](ARCHITECTURE_EXTENSION_A1.md). This is the target design for skills from vetted sources, selected model expertise, language-agnostic runtime capability profiles, disposable isolated build/test attempts, independent verification, bounded repair and truthful ZIP status. **Approval is architectural; no new executable capability is enabled.**
+
+Maintain the six-phase ordering. Phase 1 Product Owner live-model quality remains **YELLOW** pending complete evidence (the owner exercised the Calculation Journal interview and ZIP path but the resulting program failed functional tests). In Phase 2 define and persist approved stack/architecture choices and **non-executable** runtime descriptors; in Phase 3 integrate verified Microsoft Agent Framework skills; in Phase 4 implement and independently qualify the Static Web sandbox/build/test/repair path first; in Phase 5 visualize verifiable results. Existing security issue #76 and task-execution issue #92 remain mandatory release gates. The frozen cross-file failure [#107](https://github.com/dvdhtzr/CodingAssistant/issues/107) is the initial regression target.
+
 ## Relationship to the original implementation plan
 
 This is the **authoritative product-development sequence for new v2 work**. [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) remains the preserved historical M0–M3 architecture, qualification evidence and security-gate record. Do not overwrite that history, erase M0/M1 evidence or infer that a new feature relaxes security. [SECURITY.md](SECURITY.md), the current implementation, and release blockers [#76](https://github.com/dvdhtzr/CodingAssistant/issues/76) and [#92](https://github.com/dvdhtzr/CodingAssistant/issues/92) continue to constrain executable coding.
