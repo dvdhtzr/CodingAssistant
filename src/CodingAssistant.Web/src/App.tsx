@@ -142,7 +142,10 @@ export default function App() {
     if (!token) return;
     let closed = false;
     void api<TaskItem[]>(token, '/api/tasks')
-      .then(list => { if (!closed) setTasks(list); })
+      .then(list => { if (!closed) {
+        setTasks(list);
+        setTaskId(current => current || (list[0]?.id ?? ''));
+      } })
       .catch(() => { if (!closed) setError('Unable to load tasks.'); });
     return () => { closed = true; };
   }, [token, taskRevision]);
@@ -157,6 +160,7 @@ export default function App() {
       if (closed) return;
       setTaskView(view);
       setRuns(list);
+      setRunId(current => current || (list[0]?.id ?? ''));
     }).catch((e: unknown) => {
       if (!closed) setError(e instanceof Error ? e.message : 'Task refresh failed.');
     });
@@ -347,6 +351,13 @@ export default function App() {
         {taskView && <section className="panel">
           <h2>{taskView.task.title} <span className="pill">{taskView.task.status}</span></h2>
           <p>{taskView.task.objective}</p>
+          {run && <div className="actions">
+            <span className="pill">Latest selected run: {run.state}</span>
+            <button type="button" className="outline"
+              onClick={() => document.getElementById('run-result')?.scrollIntoView({
+                behavior: 'smooth', block: 'start',
+              })}>View run output ↓</button>
+          </div>}
           <div className="subtle" />
           <h3>1 · Planning record</h3>
           {!plan && <p className="hint">No plan yet. Drafting does not authorize execution.</p>}
@@ -408,7 +419,7 @@ export default function App() {
 
         {run && <section className="panel">
           <h3>3 · Run control <span className="pill">{run.state}</span></h3>
-          <section className="result-panel" aria-label="Run result">
+          <section id="run-result" className="result-panel" aria-label="Run result">
             <h3>Run result</h3>
             {!terminal.has(run.state) && <p className="hint">
               The run has not finished. Actual verification output will appear here
