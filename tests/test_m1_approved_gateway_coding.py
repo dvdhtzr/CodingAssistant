@@ -191,6 +191,39 @@ class ApprovedGatewayCodingTests(unittest.TestCase):
                                return_value=completed(code=1, out="PRIVATE RAW OUTPUT")):
             self.assertIsNone(m.query_cgroup_pids(name))
 
+    def test_managed_podman_guest_must_have_exact_run_id_label(self):
+        from run_ledger import managed_container, LABEL
+        run_id = "e" * 24
+        name = managed_container(run_id)
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            workspace = root / "approved"
+            workspace.mkdir()
+            ipc = root / "ipc"
+            ipc.mkdir()
+            (ipc / "ollama.sock").write_bytes(b"model-free-socket-stub")
+            env = root / "private.env"
+            env.write_text("OPENCLAW_GATEWAY_TOKEN=TEST\n")
+            fake = [
+                "podman", "run", "--network=none", "--read-only",
+                "--cap-drop=all", "--security-opt=no-new-privileges",
+                "--pids-limit=96", "--memory=2g",
+                "--tmpfs=/tmp:rw,nosuid,nodev,size=512m,notmpcopyup",
+                "--entrypoint=node", MOCK_IMAGE,
+                "/app/openclaw.mjs", "gateway"]
+            with mock.patch.object(m, "ephemeral_gateway", return_value=fake):
+                command = m.container_command(
+                    MOCK_IMAGE, name, env, workspace, ipc,
+                    managed_run_id=run_id)
+                with self.assertRaises(ValueError):
+                    m.container_command(MOCK_IMAGE, "ca-m17-acpx-" + "b" * 12,
+                                        env, workspace, ipc, managed_run_id=run_id)
+        self.assertIn("--label", command)
+        self.assertEqual(command[command.index("--label") + 1],
+                         LABEL + "=" + run_id)
+        self.assertLess(command.index("--label"), command.index(MOCK_IMAGE))
+        self.assertNotIn("--privileged", command)
+
     def test_rpc_request_only_fixed_method_and_plan_hash(self):
         name = "ca-m17-acpx-012345abcdef"
         args = m.gateway_rpc_command(name, MOCK_BASE)
