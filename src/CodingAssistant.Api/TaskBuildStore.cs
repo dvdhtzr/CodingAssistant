@@ -218,7 +218,7 @@ public sealed class TaskBuildStore(TaskStore tasks)
         using var tx = db.BeginTransaction();
         var existing = TaskStore.Scalar(db, tx,
             "SELECT id FROM task_builds WHERE request_id=@request",
-            ("@request", requestId));
+            ("@request", requestId!));
         if (existing is not null)
         {
             var previous = Find(db, tx, existing)!;
@@ -238,7 +238,7 @@ public sealed class TaskBuildStore(TaskStore tasks)
             INSERT INTO task_builds
             (id,task_id,request_id,contract_sha,contract_json,state,created_utc,updated_utc)
             VALUES(@id,@task,@request,@sha,@json,'Prepared',@utc,@utc)
-            """, ("@id", id), ("@task", taskId), ("@request", requestId),
+            """, ("@id", id), ("@task", taskId), ("@request", requestId!),
                 ("@sha", preview.ContractSha256), ("@json", json), ("@utc", utc));
         Append(db, tx, id, "TaskScopePrepared", utc);
         tx.Commit();
