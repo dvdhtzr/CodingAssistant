@@ -19,9 +19,28 @@ Validate real OpenClaw Gateway → ACP → OpenCode integration. Read-only plann
 
 **M1.12 verified Dell exit (November 19, 2026):** with exact owner approval for a fixed disposable C# build repair, the actual integrated Gateway/ACPX/OpenCode path completed 17 ACP events and 9 tool calls with 6/6 host-verified pinned-Qwen inference requests, no denied/failed requests and a separate offline .NET evaluator result of `VERIFIED`. Podman guest cleanup and all three Gateway health checks passed. Cgroup peak 107 (under a new enforced 256 PID ceiling) explains why the earlier 96 limit was likely insufficient. **This is an M1.12 sub-gate GREEN, not overall M1 GREEN.** Remaining: durable run-state/reconnect/crash handling, idempotent execution, integrated adversarial tests, generalized owner-approved worktree scope, and separate Windows security/runtime acceptance; do not repeat M1.12 without a specific need.
 
-## M2 — .NET 10 foundation
+## M2 — .NET 10 foundation (IN PROGRESS; control-plane vertical slice)
 
 Minimal APIs in vertical slices, local single-owner auth, SQLite/EF Core, tasks, plans, approvals, immutable evidence, idempotency, concurrency, monitoring, reconciliation, SignalR and unit/integration/security tests.
+
+**First product slice (issue #73):** implemented `src/CodingAssistant.Api`,
+an authenticated IPv4 loopback-only Minimal API using private SQLite. Users
+can create/list tasks, submit immutable versioned planning-only SHA-256
+summaries and approve the **current exact plan** with full
+`APPROVE <hash>` text. Task creation is idempotent by request key and
+plan changes use optimistic version checks; prior approval does not survive
+a revision. Real HTTP/SQLite smoke tests exercise restart persistence,
+unauthorized access and concurrent plan edits on both CI platforms.
+
+**Critical separation:** This is a task/approval **control plane only**.
+An approved M2 record has `executionEnabled=false` and cannot start
+OpenClaw, ACPX, OpenCode, Ollama or a container. Connecting to M1 requires
+a separately audited adapter with the existing original-host exact plan,
+local model, Podman scope and independent evaluator. SignalR, durable
+worker coordination, cancellation and React Mission Control are still
+required; **M2 as a whole is not GREEN**. See
+`docs/M2_CONTROL_PLANE.md`. Known non-blocking debt is recorded in
+issues #68–#72.
 
 ## M3 — Mission Control
 
