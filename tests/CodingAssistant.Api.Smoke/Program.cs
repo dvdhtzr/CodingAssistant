@@ -1221,6 +1221,13 @@ try
                     .GetProperty("status").GetString() == "Approved",
                 "interview, spec and approval survive real API restart");
 
+        // Hold an unfinished draft in the real SQLite store. A new owner
+        // answer must invalidate both subsequent file writes and final
+        // "Generated" success even if the model finished under an old spec.
+        var rawDraftStore = new ProjectDraftStore(new TaskStore(interviewData));
+        var pendingContract = rawDraftStore.Start(
+            id, specVersion, specHash, "qwen3.5:4b");
+
         // More owner input deliberately supersedes an approved contract.
         using (var more = await Post(interviewClient,
             $"/api/tasks/{id}/interview/turn", new {
@@ -1232,6 +1239,23 @@ try
                   json.RootElement.GetProperty("specification")
                     .GetProperty("status").GetString() == "Superseded",
                 "new requirements invalidate earlier approved spec");
+        try
+        {
+            rawDraftStore.SaveFile(id, pendingContract.Id,
+                new PlannedProjectFile("README.md", "Instructions for budget app"),
+                "# Wrong specification must not be silently finalized");
+            throw new Exception("Superseded spec saved a stale project file");
+        }
+        catch (StoreFailure error) when (error.Code == "SPECIFICATION_CONFLICT")
+        {
+            checks++;
+        }
+        rawDraftStore.Finish(id, pendingContract.Id, true, null);
+        Check(rawDraftStore.Get(id, pendingContract.Id).Job.State == "Failed" &&
+              rawDraftStore.Get(id, pendingContract.Id).Job.ErrorCode ==
+                "SPECIFICATION_CONFLICT",
+            "atomic completion cannot claim success against superseded spec");
+
         using (var staleBuild = await Post(interviewClient,
             $"/api/tasks/{id}/draft-build", new {
                 specificationVersion = specVersion,
