@@ -154,9 +154,9 @@ class TaskPilotTests(unittest.TestCase):
             with mock.patch.object(m, "run_check", side_effect=[
                     {"passed": True, "exit_code": 0, "tests_observed": 0},
                     {"passed": True, "exit_code": 0, "tests_observed": 0},
-                    {"passed": True, "exit_code": 0, "tests_observed": 0},
-                    {"passed": True, "exit_code": 0, "tests_observed": 0},
                     {"passed": True, "exit_code": 0, "tests_observed": 4},
+                    {"passed": True, "exit_code": 0, "tests_observed": 0},
+                    {"passed": True, "exit_code": 0, "tests_observed": 0},
             ]):
                 result = m.independent_evaluation("f" * 64, root, path)
                 self.assertTrue(result["tests_passed"])
