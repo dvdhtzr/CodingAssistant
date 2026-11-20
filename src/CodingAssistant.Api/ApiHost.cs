@@ -68,6 +68,8 @@ public static class ApiHost
         var htmlGenerator = htmlGeneratorOverride ?? new LocalHtmlPreviewGenerator();
         var interviews = new InterviewStore(store);
         interviews.Initialize();
+        var architectureDecisions = new ArchitectureDecisionStore(store);
+        architectureDecisions.Initialize();
         var interviewModel = interviewModelOverride ?? new LocalInterviewModel();
         var catalog = catalogOverride ?? new LocalOllamaModelCatalog();
         var projectDrafts = new ProjectDraftStore(store);
@@ -116,6 +118,7 @@ public static class ApiHost
         });
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
+        builder.Services.AddSingleton(architectureDecisions);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton<IOllamaModelCatalog>(catalog);
         builder.Services.AddSingleton(projectDrafts);
@@ -295,6 +298,47 @@ public static class ApiHost
                 string id, ApproveSpecificationRequest input,
                 InterviewStore db) =>
             Safe(() => Results.Ok(db.Approve(id, input))));
+        // Planning-only Phase 2 contracts. A profile descriptor is not a
+        // runnable toolchain and an architecture approval is not execution consent.
+        app.MapGet("/api/runtime-profiles", () => Results.Ok(new
+        {
+            schemaVersion = RuntimeProfileRegistry.SchemaVersion,
+            registryExecutionAvailable = false,
+            profiles = RuntimeProfileRegistry.List()
+        }));
+        app.MapGet("/api/runtime-profiles/{id}", (string id) =>
+        {
+            var profile = RuntimeProfileRegistry.Find(id);
+            return profile is null ? Results.NotFound() : Results.Ok(profile);
+        });
+        app.MapGet("/api/tasks/{id}/architecture-decisions",
+                (string id, ArchitectureDecisionStore decisions) =>
+            Safe(() => Results.Ok(new
+            {
+                schemaVersion = ArchitectureDecisionStore.SchemaVersion,
+                decisions = decisions.List(id)
+            })));
+        app.MapGet("/api/tasks/{id}/architecture-decisions/{topic}/history",
+                (string id, string topic, ArchitectureDecisionStore decisions) =>
+            Safe(() => Results.Ok(new
+            {
+                schemaVersion = ArchitectureDecisionStore.SchemaVersion,
+                decisions = decisions.History(id, topic)
+            })));
+        app.MapPost("/api/tasks/{id}/architecture-decisions",
+                (string id, ProposeArchitectureDecisionRequest input,
+                 ArchitectureDecisionStore decisions) =>
+            Safe(() =>
+            {
+                var proposal = decisions.Propose(id, input);
+                return Results.Created(
+                    $"/api/tasks/{id}/architecture-decisions/{proposal.Topic}/history",
+                    proposal);
+            }));
+        app.MapPost("/api/tasks/{id}/architecture-decisions/{topic}/review",
+                (string id, string topic, ReviewArchitectureDecisionRequest input,
+                 ArchitectureDecisionStore decisions) =>
+            Safe(() => Results.Ok(decisions.Review(id, topic, input))));
         // User-scoped draft source generation. This is not M1 agent
         // execution and runs NO model-generated code, shell or package tool.
         // Only an approved, current interview specification can start it.
@@ -551,6 +595,7 @@ public static class ApiHost
                 StatusCodes.Status503ServiceUnavailable,
             "BUILD_BUSY" or "BUILD_NOT_COMPLETE" or
                 "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
+                "STALE_DECISION" or "SPECIFICATION_NOT_APPROVED" or
                 "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
