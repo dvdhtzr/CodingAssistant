@@ -4,21 +4,27 @@ Cross-platform, **local-first** autonomous software engineering assistant. OpenC
 
 > **Current status (Nov 19, 2026): M0 GREEN on Dell at the independently reviewed evidence-assurance level.** The local `qwen3.5:4b` / OpenCode runner completed **9/9** frozen coding attempts, followed by M0.18 independent review and nine separate offline acceptance rechecks: **EVIDENCE_REVIEW_PASS / QUALIFIED**. This is *not* a production-grade autonomous developer, a cryptographic historical attestation, or a Windows-host security qualification. **M1 remains YELLOW overall, but its M1.12 Dell integrated coding sub-gate is GREEN:** an explicitly approved, disposable C# repair completed through the real OpenClaw Gateway → ACPX → OpenCode → pinned local Qwen path (6/6 host-verified inference requests, 9 tool calls, 17 ACP events), with independent offline .NET evaluator `VERIFIED` and confirmed container cleanup. Durable-state/crash recovery, broader integrated negative tests and Windows-host qualification remain outstanding. See [current handoff](docs/CURRENT_HANDOFF.md).
 
-## New: M2 local .NET control plane (not connected to execution yet)
+## M2 .NET control plane and gated M1 execution integration
 
-The first real application backend now lives in
-[`src/CodingAssistant.Api`](src/CodingAssistant.Api). It provides an
-authenticated loopback-only .NET 10 Minimal API with private SQLite task
-history, immutable versioned plan hashes, exact `APPROVE <hash>` authorization,
-idempotent submissions, **durable run intents and event replay**, and authenticated
-SignalR progress notifications. Pending run intents can be cancelled, but are
-never silently sent to an agent. It explicitly **cannot launch OpenCode or execute
-an approved task yet**; M1's separate real coding authorization and sandbox
-remain unchanged.
+The application backend lives in
+[`src/CodingAssistant.Api`](src/CodingAssistant.Api). Its .NET 10 Minimal API
+provides authenticated loopback HTTP, private SQLite task history, immutable
+planning-only hashes, explicit owner approval, idempotent run intents,
+durable event replay and SignalR progress.
 
-See [M2 control-plane guide](docs/M2_CONTROL_PLANE.md) for setup,
-REST endpoints, constraints and the real HTTP/SQLite integration smoke tests.
-The product backlog and technical debt are tracked in GitHub issues #68–#73.
+**Issue #76 integration is in qualification.** A separate, Linux-only,
+**disabled-by-default** M1 bridge now supports exact executable-plan previews,
+second owner approval of the fully scope- and provenance-bound M1 hash,
+one-time admission, and fail-closed cancellation/restart reconciliation.
+Only the already-verified disposable C# repair fixture is admissible.
+A planning approval alone never launches OpenCode, and arbitrary personal
+repository mounts remain forbidden.
+
+See the [M2 control-plane guide](docs/M2_CONTROL_PLANE.md) and
+[M2→M1 operator/security guide](docs/M2_M1_EXECUTION_ADAPTER.md).
+Model-free Ubuntu/Windows checks do not replace required Dell real-runtime
+positive and adversarial negative qualification. **M1 overall remains YELLOW.**
+The product backlog and technical debt remain in GitHub issues #68–#77.
 
 ## Try the interactive MVP today
 
