@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import { spawn } from "node:child_process";
+import { loadTaskContract, taskPermissions } from "./codingassistant-coding/task-contract.mjs";
 
 const MODEL = "qwen3.5:4b";
 const SOCK = "/run/codingassistant/ollama.sock";
@@ -14,16 +15,20 @@ if (!fs.statSync(SOCK).isSocket() ||
     !/^[a-f0-9]{64}$/.test(process.env.CA_M112_PLAN_HASH || "")) {
   process.exit(78);
 }
-const permissions = [
+// Task mode is enabled only by a SHA-bound, read-only contract mount.
+// Absence of the contract retains the original exact M1.12 permissions.
+let contract;
+try { contract = loadTaskContract(); }
+catch { process.exit(78); }
+const permissions = contract ? taskPermissions(contract) : [
   {action: "*", resource: "*", effect: "deny"},
+  ...["api/Program.cs", "api/Repair.csproj"].flatMap(file => [
+    {action: "read", resource: file, effect: "allow"},
+    {action: "read", resource: "/workspace/" + file, effect: "allow"},
+  ]),
+  ...["api/Program.cs", "/workspace/api/Program.cs"].map(file =>
+    ({action: "edit", resource: file, effect: "allow"})),
 ];
-for (const file of ["api/Program.cs", "api/Repair.csproj"]) {
-  permissions.push({action: "read", resource: file, effect: "allow"});
-  permissions.push({action: "read", resource: "/workspace/" + file, effect: "allow"});
-}
-for (const file of ["api/Program.cs", "/workspace/api/Program.cs"]) {
-  permissions.push({action: "edit", resource: file, effect: "allow"});
-}
 const opencodeConfig = {
   "$schema": "https://opencode.ai/config.json",
   model: "ollama/" + MODEL,
