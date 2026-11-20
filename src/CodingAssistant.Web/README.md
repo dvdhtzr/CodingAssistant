@@ -32,10 +32,17 @@ owner token to paste into the login screen. It does **not** store the token,
 expose the API beyond 127.0.0.1, or enable AI execution by default. Ctrl+C
 stops only the API process that the launcher started.
 
-After independently qualified security checks, the optional
-`python3 tools/m3/launch.py --enable-execution` enables only the existing
-fixed-fixture M1 runner. Separate exact owner plan approval and explicit start
-are still required. Do not use this flag for general repository execution.
+For the next **controlled, fixed-fixture** Dell coding acceptance run, use
+`python3 tools/m3/launch.py --enable-execution`. This opt-in first runs the
+existing M2→M1 model-free rootless Podman negative boundary probes and
+prepares the pinned offline derivative against the current source fingerprint.
+If any check fails, the application does not start in execution-enabled mode.
+The full-hash M1 executable plan still requires separate owner approval,
+followed by an explicit start click. No arbitrary repository is allowed.
+
+These prerequisites do **not** constitute all ten required integrated issue
+#76 adversarial tests. M1 overall stays YELLOW until that release/security
+gate and its real Dell evidence are complete.
 
 ## Development
 
