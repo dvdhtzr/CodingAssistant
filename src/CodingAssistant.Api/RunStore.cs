@@ -116,10 +116,8 @@ public sealed class RunStore(TaskStore tasks)
         if (TaskStore.FindTask(db, null, taskId) is null)
             throw new StoreFailure("NOT_FOUND");
         using var command = TaskStore.Command(db, null,
-            SelectRun + """
-             WHERE r.task_id=@task
-             ORDER BY r.created_utc DESC,r.id DESC LIMIT @limit
-             """,
+            SelectRun + " WHERE r.task_id=@task " +
+            "ORDER BY r.created_utc DESC,r.id DESC LIMIT @limit",
             ("@task", taskId), ("@limit", limit));
         using var reader = command.ExecuteReader();
         var result = new List<RunItem>();
