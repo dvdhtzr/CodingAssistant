@@ -421,7 +421,7 @@ public sealed class M1ProcessRunner :
                 count is < 0 or > 10 ||
                 patch.Length > 7000 ||
                 (patch.Length > 0 && !patch.StartsWith(
-                    "--- a/api/Program.cs\\n", StringComparison.Ordinal)) ||
+                    "--- a/api/Program.cs\n", StringComparison.Ordinal)) ||
                 (status != "GATEWAY_APPROVED_CODING_PASS" &&
                     (patch.Length != 0 || omitted)) ||
                 (status == "GATEWAY_APPROVED_CODING_PASS" &&
