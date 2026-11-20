@@ -1326,7 +1326,7 @@ try
             "verify inventory calculations, rejection of invalid values and " +
             "correct removal. Do not connect to external services or install " +
             "packages from the public network.";
-        var specIdentity = $"codingassistant-spec-v1\\n{dotnetTaskId}\\n1\\n{approvedDotnetSpec}";
+        var specIdentity = $"codingassistant-spec-v1\n{dotnetTaskId}\n1\n{approvedDotnetSpec}";
         var dotnetSpecSha = Convert.ToHexString(
             System.Security.Cryptography.SHA256.HashData(
                 System.Text.Encoding.UTF8.GetBytes(specIdentity))).ToLowerInvariant();
@@ -1370,7 +1370,7 @@ try
                     VALUES(@id,@path,'Test fixture source',@content,@sha,@utc)
                     """, ("@id", jobId), ("@path", filePath),
                     ("@content", filePath.EndsWith(".csproj")
-                        ? "<Project Sdk=\\\"Microsoft.NET.Sdk\\\" />"
+                        ? "<Project Sdk=\"Microsoft.NET.Sdk\" />"
                         : "public class Inventory {}"),
                     ("@sha", new string('c',64)), ("@utc", createdUtc));
         }
