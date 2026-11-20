@@ -81,22 +81,28 @@ def unpack_zip(archive: Path, directory: Path) -> None:
     safe_directory(directory)
 
 
-def gh_download(directory: Path) -> bool:
+def gh_download(directory: Path, *, current_commit: bool = False) -> bool:
     gh = shutil.which("gh")
     if not gh:
         return False
     try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                              text=True, capture_output=True, timeout=8,
+                              check=False)
+        if current_commit and (head.returncode != 0 or
+                               len(head.stdout.strip()) != 40):
+            return False
         listed = subprocess.run(
             [gh, "run", "list", "--repo", REPO, "--workflow", "m0-tests.yml",
-             "--limit", "30", "--json", "databaseId,conclusion,headBranch"],
+             "--limit", "30", "--json", "databaseId,conclusion,headBranch,headSha"],
             stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=25,
             check=False)
         runs = json.loads(listed.stdout) if listed.returncode == 0 else []
         ids = [r["databaseId"] for r in runs
-               if r.get("conclusion") == "success"
-               and (r.get("headBranch") == "main"
-                    or r.get("databaseId") == FALLBACK_RUN)]
-        if FALLBACK_RUN not in ids:
+               if r.get("conclusion") == "success" and (
+                   r.get("headSha") == head.stdout.strip()
+                   if current_commit else r.get("headBranch") == "main")]
+        if not current_commit and FALLBACK_RUN not in ids:
             ids.append(FALLBACK_RUN)
         for run_id in ids[:6]:
             fetched = subprocess.run(
@@ -138,16 +144,16 @@ def install_app(destination: Path = DESTINATION, *, interactive: bool = True,
             unpack_zip(archives[0], staging)
         else:
             print("Finding a successful GitHub Actions Mission Control build...")
-            if not gh_download(staging):
+            if not gh_download(staging, current_commit=refresh):
                 if not interactive:
                     raise LaunchError("No local build or authenticated gh download available")
                 before = time.time()
-                print("\\nOne-time download needed. Sign in to GitHub and open")
+                print("\nOne-time download needed. Sign in to GitHub and open")
                 print("the most recent successful MAIN build, then click")
                 print(f"the '{ARTIFACT}' artifact:")
                 print(ACTIONS)
                 webbrowser.open(ACTIONS)
-                input("\\nSave the new ZIP to ~/Downloads, then press Enter here: ")
+                input("\nSave the new ZIP to ~/Downloads, then press Enter here: ")
                 archives = sorted(downloads.glob(f"{ARTIFACT}*.zip"),
                                   key=lambda p: p.stat().st_mtime, reverse=True)
                 if refresh:
