@@ -44,7 +44,7 @@ interface ArchitectureReadiness {
   readyForSourceGeneration: boolean;
   architectureSha256: string | null;
   blockingTopics: string[];
-  approvedChoices: { topic: string; label: string }[];
+  approvedChoices: { topic: string; label: string; selectedOptionId: string }[];
 }
 interface DraftResponse {
   available: boolean;
@@ -112,7 +112,11 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
           architectureSha256: current.architectureSha256,
         });
       setResult({
-        job: started, files: [], architecture: null,
+        job: started, files: [],
+        architecture: {
+          sha256: current.architectureSha256,
+          choices: current.approvedChoices,
+        },
         events: [{
           sequence: 1,
           kind: 'BuildAccepted',
