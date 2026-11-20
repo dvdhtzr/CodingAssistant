@@ -81,9 +81,6 @@ public sealed class TaskStore
         RestrictDatabasePermissions();
     }
 
-    private static bool Unix =>
-        OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD();
-
     private static void EnsurePrivateDirectory(string path)
     {
         if (Directory.Exists(path))
@@ -91,7 +88,7 @@ public sealed class TaskStore
             if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
                 throw new InvalidOperationException("Refusing symlinked data directory");
         }
-        else if (Unix)
+        else if (!OperatingSystem.IsWindows())
         {
             Directory.CreateDirectory(path,
                 UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -101,7 +98,7 @@ public sealed class TaskStore
             Directory.CreateDirectory(path);
         }
 
-        if (Unix)
+        if (!OperatingSystem.IsWindows())
         {
             var allowed = UnixFileMode.UserRead | UnixFileMode.UserWrite |
                           UnixFileMode.UserExecute;
@@ -112,7 +109,7 @@ public sealed class TaskStore
 
     private void RestrictDatabasePermissions()
     {
-        if (!Unix)
+        if (OperatingSystem.IsWindows())
             return;
         var privateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         File.SetUnixFileMode(_databasePath, privateFile);
