@@ -40,6 +40,23 @@ async Task<JsonDocument> Body(HttpResponseMessage response) =>
 async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj) =>
     await client.PostAsJsonAsync(path, obj);
 
+// Strict structured output is only a proposal, never owner approval.
+{
+    var parsed = LocalArchitectureAdvisor.Parse(
+        """{"recommendedOptionId":"static-web","rationale":"An offline page is proportional.","options":[{"id":"static-web","label":"Static web","benefit":"Offline","tradeoff":"Browser only","runtimeProfileId":"static-web"},{"id":"react","label":"React app","benefit":"Component UI","tradeoff":"Build tools","runtimeProfileId":null}]}""");
+    Check(parsed.Options.Count == 2 && parsed.RecommendedOptionId == "static-web",
+        "local Solution Architect model output parses as structured options");
+    try
+    {
+        _ = LocalArchitectureAdvisor.Parse("not valid JSON");
+        Check(false, "malformed output must not be admitted");
+    }
+    catch (StoreFailure e) when (e.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(true, "malformed model response rejected");
+    }
+}
+
 var root = Path.Combine(Path.GetTempPath(),
     "ca-phase2-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -73,13 +90,53 @@ try
         spec.Version, spec.Sha256));
 
     var settings = new ApiSettings(root, Token, "http://127.0.0.1:0");
-    app = ApiHost.Build([], settings);
+    app = ApiHost.Build([], settings, catalogOverride: new Phase2Catalog(),
+        architectureAdvisorOverride: new Phase2Advisor());
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
         Check(denied.StatusCode == HttpStatusCode.Unauthorized,
             "runtime profiles are authenticated");
 
+
+    // Model-free injected fixture: actual HTTP, approved spec, private SQLite.
+    var recommendPath = "/api/tasks/" + task.Id + "/architecture-decisions/recommend";
+    using (var badTopic = await Post(client, recommendPath, new {
+        schemaVersion = 1, specificationVersion = spec.Version,
+        specificationSha256 = spec.Sha256, topic = "execute-shell",
+        expectedRevision = 0
+    }))
+        Check(badTopic.StatusCode == HttpStatusCode.BadRequest,
+            "recommend endpoint rejects arbitrary topics and execution attempts");
+    using (var wrongSpec = await Post(client, recommendPath, new {
+        schemaVersion = 1, specificationVersion = spec.Version,
+        specificationSha256 = new string('0', 64),
+        topic = "architecture-style", expectedRevision = 0
+    }))
+        Check(wrongSpec.StatusCode == HttpStatusCode.Conflict,
+            "advisor cannot propose against changed spec hash");
+    using (var recommended = await Post(client, recommendPath, new {
+        schemaVersion = 1, specificationVersion = spec.Version,
+        specificationSha256 = spec.Sha256, topic = "architecture-style",
+        expectedRevision = 0
+    }))
+    using (var body = await Body(recommended))
+    {
+        Check(recommended.StatusCode == HttpStatusCode.Created,
+            "Solution Architect proposal persisted through HTTP");
+        var item = body.RootElement;
+        Check(item.GetProperty("status").GetString() == "Proposed" &&
+              item.GetProperty("selectedOptionId").ValueKind == JsonValueKind.Null &&
+              item.GetProperty("recommendedOptionId").GetString() == "minimal-modules",
+            "AI recommendation is not owner-approved selection");
+    }
+    using (var repeatedRecommend = await Post(client, recommendPath, new {
+        schemaVersion = 1, specificationVersion = spec.Version,
+        specificationSha256 = spec.Sha256, topic = "architecture-style",
+        expectedRevision = 0
+    }))
+        Check(repeatedRecommend.StatusCode == HttpStatusCode.Conflict,
+            "stale model recommendation cannot overwrite newer decision");
     using (var profiles = await client.GetAsync("/api/runtime-profiles"))
     using (var body = await Body(profiles))
     {
@@ -198,10 +255,12 @@ try
     using (var body = await Body(list))
     {
         var items = body.RootElement.GetProperty("decisions");
-        Check(items.GetArrayLength() == 1 &&
-              items[0].GetProperty("specificationCurrent").GetBoolean() &&
-              items[0].GetProperty("effectiveStatus").GetString() == "Approved",
-            "current approved decision listed as planning state");
+        var technology = items.EnumerateArray().Single(d =>
+            d.GetProperty("topic").GetString() == "technology-stack");
+        Check(items.GetArrayLength() == 2 &&
+              technology.GetProperty("specificationCurrent").GetBoolean() &&
+              technology.GetProperty("effectiveStatus").GetString() == "Approved",
+            "current approved technology decision listed separately from architect proposal");
     }
     using (var status = await client.GetAsync("/api/status"))
     using (var body = await Body(status))
@@ -215,12 +274,15 @@ try
     await app.DisposeAsync();
     app = null;
 
-    app = ApiHost.Build([], settings);
+    app = ApiHost.Build([], settings, catalogOverride: new Phase2Catalog(),
+        architectureAdvisorOverride: new Phase2Advisor());
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
     {
-        var saved = body.RootElement.GetProperty("decisions")[0];
+        var saved = body.RootElement.GetProperty("decisions")
+            .EnumerateArray().Single(item =>
+                item.GetProperty("topic").GetString() == "technology-stack");
         Check(saved.GetProperty("selectedOptionId").GetString() == "legacy-dotnet" &&
               saved.GetProperty("proposalSha256").GetString() == hash,
             "SQLite selection and proposal hash survive restart");
@@ -323,4 +385,31 @@ finally
     }
     try { Directory.Delete(root, recursive: true); }
     catch (IOException) { /* Windows may release SQLite locks after process exit. */ }
+}
+
+
+sealed class Phase2Catalog : IOllamaModelCatalog
+{
+    public Task<IReadOnlyList<string>> ListAsync(CancellationToken cancellation) =>
+        Task.FromResult<IReadOnlyList<string>>(new[] { "qwen3.5:4b" });
+}
+sealed class Phase2Advisor : IArchitectureAdvisor
+{
+    public Task<ArchitectureRecommendation> RecommendAsync(
+        string objective, string approvedSpecification, string model,
+        string topic, CancellationToken cancellation)
+    {
+        if (model != "qwen3.5:4b" || topic != "architecture-style" ||
+            !objective.Contains("calculator", StringComparison.OrdinalIgnoreCase) ||
+            !approvedSpecification.Contains("offline", StringComparison.OrdinalIgnoreCase))
+            throw new Exception("Advisor received wrong approved task/model context");
+        return Task.FromResult(new ArchitectureRecommendation(
+            "minimal-modules", "Keep offline calculation behavior straightforward.",
+            new ArchitectureOption[] {
+                new("minimal-modules", "Small modules",
+                    "Direct and testable", "More manual boundaries", null),
+                new("clean-layers", "Layered structure",
+                    "Stricter dependencies", "More files and boilerplate", null)
+            }));
+    }
 }

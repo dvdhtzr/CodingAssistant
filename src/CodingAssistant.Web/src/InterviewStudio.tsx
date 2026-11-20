@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ProjectDraftPanel } from './ProjectDraftPanel';
+import { ArchitectureStudio } from './ArchitectureStudio';
 import { api, type TaskItem } from './api';
 
 interface InterviewMessage {
@@ -260,6 +261,7 @@ export function InterviewStudio({ token, task }: {
         </div>}
       </div>
 
+      <ArchitectureStudio token={token} taskId={task.id} spec={spec ?? null} />
       <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null} />
     </>}
   </section>;

@@ -40,7 +40,8 @@ public static class ApiHost
         IHtmlPreviewGenerator? htmlGeneratorOverride = null,
         IInterviewModel? interviewModelOverride = null,
         IProjectDraftModel? projectModelOverride = null,
-        IOllamaModelCatalog? catalogOverride = null)
+        IOllamaModelCatalog? catalogOverride = null,
+        IArchitectureAdvisor? architectureAdvisorOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -119,6 +120,8 @@ public static class ApiHost
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(architectureDecisions);
+        builder.Services.AddSingleton<IArchitectureAdvisor>(
+            architectureAdvisorOverride ?? new LocalArchitectureAdvisor());
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton<IOllamaModelCatalog>(catalog);
         builder.Services.AddSingleton(projectDrafts);
@@ -325,6 +328,42 @@ public static class ApiHost
                 schemaVersion = ArchitectureDecisionStore.SchemaVersion,
                 decisions = decisions.History(id, topic)
             })));
+        // The Solution Architect only proposes; owner review is separate.
+        // A pending model response is never saved if the spec/revision changed.
+        app.MapPost("/api/tasks/{id}/architecture-decisions/recommend",
+                (string id, RecommendArchitectureRequest input,
+                 TaskStore tasks, InterviewStore interviews,
+                 ArchitectureDecisionStore decisions, IArchitectureAdvisor advisor,
+                 IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+            SafeAsync(async () =>
+            {
+                if (input.SchemaVersion != ArchitectureDecisionStore.SchemaVersion ||
+                    !LocalArchitectureAdvisor.AllowedTopic(input.Topic) ||
+                    input.ExpectedRevision < 0)
+                    throw new StoreFailure("INVALID_INPUT");
+                var task = tasks.GetTask(id).Task;
+                var snapshot = interviews.Read(id);
+                var spec = snapshot.Specification;
+                if (spec is null || spec.Status != "Approved" ||
+                    spec.Version != input.SpecificationVersion ||
+                    spec.Sha256 != input.SpecificationSha256)
+                    throw new StoreFailure("SPECIFICATION_CONFLICT");
+                var models = await catalog.ListAsync(cancellation);
+                if (!models.Contains(spec.Model, StringComparer.Ordinal))
+                    throw new StoreFailure("MODEL_NOT_INSTALLED");
+                var recommendation = await advisor.RecommendAsync(
+                    task.Objective, spec.Content, spec.Model,
+                    input.Topic!, cancellation);
+                var created = decisions.Propose(id, new(
+                    ArchitectureDecisionStore.SchemaVersion,
+                    input.SpecificationVersion, input.SpecificationSha256,
+                    input.Topic, recommendation.RecommendedOptionId,
+                    recommendation.Rationale, recommendation.Options,
+                    input.ExpectedRevision));
+                return Results.Created(
+                    $"/api/tasks/{id}/architecture-decisions/{created.Topic}/history",
+                    created);
+            }));
         app.MapPost("/api/tasks/{id}/architecture-decisions",
                 (string id, ProposeArchitectureDecisionRequest input,
                  ArchitectureDecisionStore decisions) =>

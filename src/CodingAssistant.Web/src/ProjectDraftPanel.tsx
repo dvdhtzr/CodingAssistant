@@ -164,7 +164,7 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
   const seconds = job
     ? Math.max(0, Math.floor((clock - Date.parse(job.createdUtc)) / 1000)) : 0;
   return <section className="build-stage" aria-label="Task-specific project draft">
-    <h2>3. Generate project files</h2>
+    <h2>4. Generate project files</h2>
     <p className="hint">After approval, the local model chooses a small set of
       source files for <em>your approved specification</em>, writes them one by one,
       and saves the results. This stage does not execute code, install packages,
