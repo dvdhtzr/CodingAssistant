@@ -33,7 +33,7 @@ ARTIFACT = "codingassistant-linux-x64"
 # Last known cross-platform-green M3 PR build; CI artifacts expire after 7 days.
 # The launcher prefers a newer successful GitHub Actions run via gh.
 FALLBACK_RUN = 44726245411
-ACTIONS = f"https://github.com/{REPO}/actions/runs/{FALLBACK_RUN}"
+ACTIONS = f"https://github.com/{REPO}/actions/workflows/m0-tests.yml?query=branch%3Amain"
 DESTINATION = Path.home() / ".local" / "opt" / "codingassistant-m3"
 PORT = 5098
 
@@ -81,22 +81,28 @@ def unpack_zip(archive: Path, directory: Path) -> None:
     safe_directory(directory)
 
 
-def gh_download(directory: Path) -> bool:
+def gh_download(directory: Path, *, current_commit: bool = False) -> bool:
     gh = shutil.which("gh")
     if not gh:
         return False
     try:
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                              text=True, capture_output=True, timeout=8,
+                              check=False)
+        if current_commit and (head.returncode != 0 or
+                               len(head.stdout.strip()) != 40):
+            return False
         listed = subprocess.run(
             [gh, "run", "list", "--repo", REPO, "--workflow", "m0-tests.yml",
-             "--limit", "30", "--json", "databaseId,conclusion,headBranch"],
+             "--limit", "30", "--json", "databaseId,conclusion,headBranch,headSha"],
             stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=25,
             check=False)
         runs = json.loads(listed.stdout) if listed.returncode == 0 else []
         ids = [r["databaseId"] for r in runs
-               if r.get("conclusion") == "success"
-               and (r.get("headBranch") == "main"
-                    or r.get("databaseId") == FALLBACK_RUN)]
-        if FALLBACK_RUN not in ids:
+               if r.get("conclusion") == "success" and (
+                   r.get("headSha") == head.stdout.strip()
+                   if current_commit else r.get("headBranch") == "main")]
+        if not current_commit and FALLBACK_RUN not in ids:
             ids.append(FALLBACK_RUN)
         for run_id in ids[:6]:
             fetched = subprocess.run(
@@ -118,44 +124,62 @@ def gh_download(directory: Path) -> bool:
     return False
 
 
-def install_app(destination: Path = DESTINATION, *, interactive: bool = True) -> Path:
+def install_app(destination: Path = DESTINATION, *, interactive: bool = True,
+                refresh: bool = False) -> Path:
     if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
         raise LaunchError("Refusing non-directory or symlinked installation target")
-    if valid_app(destination):
+    if valid_app(destination) and not refresh:
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".codingassistant-m3-", dir=destination.parent) as temp:
-        staging = Path(temp)
+        staging = Path(temp) / "package"
+        staging.mkdir()
         downloads = Path.home() / "Downloads"
         archives = sorted(downloads.glob(f"{ARTIFACT}*.zip"),
                           key=lambda p: p.stat().st_mtime if p.is_file() else 0,
                           reverse=True) if downloads.is_dir() else []
-        if archives:
+        # An explicit refresh must NEVER reinstall an older ZIP from Downloads.
+        if archives and not refresh:
             print("Installing the downloaded Mission Control build...")
             unpack_zip(archives[0], staging)
         else:
             print("Finding a successful GitHub Actions Mission Control build...")
-            if not gh_download(staging):
+            if not gh_download(staging, current_commit=refresh):
                 if not interactive:
                     raise LaunchError("No local build or authenticated gh download available")
-                print("\nOne-time download needed. Sign in to GitHub and click")
-                print(f"the '{ARTIFACT}' artifact under this build:")
+                before = time.time()
+                print("\nOne-time download needed. Sign in to GitHub and open")
+                print("the most recent successful MAIN build, then click")
+                print(f"the '{ARTIFACT}' artifact:")
                 print(ACTIONS)
                 webbrowser.open(ACTIONS)
-                input("\nSave the ZIP to ~/Downloads, then press Enter here: ")
+                input("\nSave the new ZIP to ~/Downloads, then press Enter here: ")
                 archives = sorted(downloads.glob(f"{ARTIFACT}*.zip"),
                                   key=lambda p: p.stat().st_mtime, reverse=True)
+                if refresh:
+                    archives = [a for a in archives if a.stat().st_mtime >= before]
                 if not archives:
-                    raise LaunchError("No artifact ZIP found in ~/Downloads")
+                    raise LaunchError("No freshly downloaded CI artifact ZIP found")
                 unpack_zip(archives[0], staging)
         if not valid_app(staging):
             raise LaunchError("Downloaded build lacks the M3 API or React interface")
         safe_directory(staging)
-        shutil.copytree(staging, destination, dirs_exist_ok=True)
-        (destination / "CodingAssistant.Api").chmod(
-            (destination / "CodingAssistant.Api").stat().st_mode | stat.S_IXUSR)
-        if not valid_app(destination):
-            raise LaunchError("Mission Control installation did not verify")
+        binary = staging / "CodingAssistant.Api"
+        binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+        # Replace only after full validation; never follow symlinks in an
+        # existing directory, and roll back if the final rename fails.
+        backup = destination.parent / (".codingassistant-m3-previous-" + secrets.token_hex(6))
+        old_present = destination.exists()
+        if old_present:
+            destination.rename(backup)
+        try:
+            staging.rename(destination)
+        except OSError:
+            if old_present:
+                backup.rename(destination)
+            raise
+        if old_present:
+            shutil.rmtree(backup)
     return destination
 
 
@@ -255,13 +279,17 @@ def main() -> int:
                         help="Explicitly enable the still approval-gated M1 fixed fixture")
     parser.add_argument("--no-browser", action="store_true",
                         help="Do not open Firefox automatically")
+    parser.add_argument("--refresh", action="store_true",
+                        help="Download the latest CI application after a UI update")
     args = parser.parse_args()
     try:
         if not sys.platform.startswith("linux") or os.geteuid() == 0:
             raise LaunchError("Run as your normal, non-root Linux user")
+        if not free_port(PORT):
+            raise LaunchError("Mission Control is already running; close its terminal before restarting.")
         if args.enable_execution:
             verify_execution_preflight()
-        app = install_app()
+        app = install_app(refresh=args.refresh)
         start(app / "CodingAssistant.Api", enable_execution=args.enable_execution,
               open_browser=not args.no_browser)
         return 0

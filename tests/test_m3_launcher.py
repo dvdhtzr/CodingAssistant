@@ -126,6 +126,29 @@ class M3LauncherContracts(unittest.TestCase):
             with self.assertRaisesRegex(launcher.LaunchError, "coding remains OFF"):
                 launcher.verify_execution_preflight()
 
+    def test_cached_build_kept_without_refresh(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            target = root / "app"
+            (target / "wwwroot").mkdir(parents=True)
+            (target / "CodingAssistant.Api").write_text("api")
+            (target / "wwwroot/index.html").write_text("Mission Control")
+            self.assertEqual(launcher.install_app(target, interactive=False), target)
+
+    def test_explicit_refresh_never_falls_back_to_cached_build(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            target = root / "app"
+            (target / "wwwroot").mkdir(parents=True)
+            (target / "CodingAssistant.Api").write_text("api")
+            (target / "wwwroot/index.html").write_text("Mission Control")
+            with mock.patch.object(launcher.Path, "home", return_value=root), \
+                 mock.patch.object(launcher, "gh_download", return_value=False):
+                with self.assertRaisesRegex(launcher.LaunchError, "No local build"):
+                    launcher.install_app(target, interactive=False, refresh=True)
+            # Failure before package verification must preserve current version.
+            self.assertTrue(launcher.valid_app(target))
+
     def test_occupied_port_never_launches_second_api(self):
         with mock.patch.object(launcher, "free_port", return_value=False), \
              mock.patch.object(launcher.subprocess, "Popen",

@@ -214,6 +214,30 @@ public sealed class ExecutionStore(TaskStore tasks)
         return changed;
     }
 
+    /// <summary>
+    /// Persist a fixed host-runner milestone without changing run admission or
+    /// claiming model progress. Ignore late stages from cancelled sessions.
+    /// Each event is append-only with the existing run sequence.
+    /// </summary>
+    public ExecutionChange? RecordStage(string runId, string stage)
+    {
+        CheckId(runId);
+        if (!M1StageNames.IsAllowed(stage))
+            throw new StoreFailure("INVALID_EXECUTION_STAGE");
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var current = Find(db, tx, runId) ?? throw new StoreFailure("NOT_FOUND");
+        if (current.State != "Running")
+        {
+            tx.Commit();
+            return null;
+        }
+        var utc = DateTimeOffset.UtcNow.ToString("O");
+        var ev = Append(db, tx, runId, "ExecutionStage" + stage, "Running", utc);
+        tx.Commit();
+        return new ExecutionChange(current, ev);
+    }
+
     public ExecutionChange Move(string runId, string from, string to, string kind)
     {
         CheckId(runId);

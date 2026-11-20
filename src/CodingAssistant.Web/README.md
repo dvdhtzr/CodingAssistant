@@ -44,6 +44,42 @@ These prerequisites do **not** constitute all ten required integrated issue
 #76 adversarial tests. M1 overall stays YELLOW until that release/security
 gate and its real Dell evidence are complete.
 
+## Live activity and local model comparison
+
+Running jobs show a **local clock and indeterminate pulse**. These are not
+claims that a model is responding. A separate, append-only event records each
+fixed, host-produced milestone: pinned scope checked, disposable copy ready,
+Ollama socket ready, Gateway launch/readiness, coding request dispatched and
+returned, guest removed, and offline evaluator started/passed. Never show
+raw model text, token contents, paths outside the fixture, credentials or
+container stderr. If no confirmed milestone appears for 90 seconds, the UI
+explicitly warns that the worker might be waiting or stalled. Timestamps,
+durable SQLite event ordering and cancellation remain available.
+
+To compare performance *outside* the approved M1 engine, finish or cancel any
+active coding job, then use:
+
+```bash
+cd ~/CodingAssistant && python3 tools/m3/compare_coder.py --pull-coder
+```
+
+This explicitly downloads `qwen2.5-coder:3b` once if missing. The probe
+makes **one short local-only Ollama tool-call C# repair per model** versus
+`qwen3.5:4b`, reports elapsed time/tokens-per-second/tool-call success,
+and stores only bounded metrics in ignored `artifacts/m3/`. No generated
+code is executed, no remote inference is used, and no M1 model pin or owner
+approval is changed. Short inference success is **not** proof that the model
+works with OpenClaw/ACPX/OpenCode or passes the original M0 gates. A separately
+reviewed and qualified model profile is required before enabling it for real
+agent runs.
+
+After a UI update merges into main, the installed API must be replaced with
+the latest CI build to see it. Use `python3 tools/m3/launch.py --refresh
+--enable-execution` when restarting; refresh only accepts the CI build from
+the exact current checkout commit via authenticated GitHub CLI or a new ZIP
+downloaded manually from the latest successful MAIN workflow. Old ZIPs are
+never silently reinstalled during an explicit refresh.
+
 ## Development
 
 ```bash

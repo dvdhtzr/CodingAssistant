@@ -4,6 +4,21 @@ Cross-platform, **local-first** autonomous software engineering assistant. OpenC
 
 > **Current status (Nov 19, 2026): M0 GREEN on Dell at the independently reviewed evidence-assurance level.** The local `qwen3.5:4b` / OpenCode runner completed **9/9** frozen coding attempts, followed by M0.18 independent review and nine separate offline acceptance rechecks: **EVIDENCE_REVIEW_PASS / QUALIFIED**. This is *not* a production-grade autonomous developer, a cryptographic historical attestation, or a Windows-host security qualification. **M1 remains YELLOW overall, but its M1.12 Dell integrated coding sub-gate is GREEN:** an explicitly approved, disposable C# repair completed through the real OpenClaw Gateway → ACPX → OpenCode → pinned local Qwen path (6/6 host-verified inference requests, 9 tool calls, 17 ACP events), with independent offline .NET evaluator `VERIFIED` and confirmed container cleanup. Durable-state/crash recovery, broader integrated negative tests and Windows-host qualification remain outstanding. See [current handoff](docs/CURRENT_HANDOFF.md).
 
+## Local inference speed and honest activity signals
+
+Mission Control's M3 activity view shows elapsed time, last **actual host
+milestone**, and a 90-second no-progress-signal warning, not an invented
+completion percentage. For a bounded, non-agent C# tool-call speed comparison
+between pinned `qwen3.5:4b` and coding-specialized `qwen2.5-coder:3b`:
+
+```bash
+cd ~/CodingAssistant && python3 tools/m3/compare_coder.py --pull-coder
+```
+
+Finish/cancel current M1 runs before benchmarking. This **does not change
+the execution pin** or authorize Qwen Coder inside the agent. See
+`src/CodingAssistant.Web/README.md` for runtime/deployment details.
+
 ## Start Mission Control on the Dell
 
 ```bash
