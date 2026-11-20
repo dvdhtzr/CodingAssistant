@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { InterviewStudio } from './InterviewStudio';
 import * as signalR from '@microsoft/signalr';
 import {
   api, newRequestId, isHexId,
@@ -384,6 +385,10 @@ export default function App() {
         {!taskView && <section className="panel">
           <h2>Choose a task</h2><p className="hint">Create or select a task to review planning approval and coding history.</p>
         </section>}
+        {taskView && <InterviewStudio key={taskView.task.id}
+          token={token} task={taskView.task} />}
+        <details className="advanced-gate">
+          <summary>Legacy single-file HTML preview (not the AI interview)</summary>
         {taskView && <section className="panel html-preview-panel">
           <h2>Make your HTML page</h2>
           <p className="hint">This uses your task objective to generate a real <code>index.html</code>
@@ -437,8 +442,9 @@ export default function App() {
           <p className="hint">To edit your actual project or create multiple files autonomously,
             the general-purpose agent still needs separate workspace-scope qualification.</p>
         </section>}
+        </details>
         <details className="advanced-gate">
-          <summary>Advanced: isolated C# repair qualification (not your HTML task)</summary>
+          <summary>Advanced: isolated C# repair qualification (not your task)</summary>
           <p className="hint">These steps always run the fixed disposable
             <code>02-build-repair/api/Program.cs</code> test fixture and do
             not use your task objective. They are engineering tests, not the
