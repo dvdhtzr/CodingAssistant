@@ -71,6 +71,8 @@ public static class ApiHost
         var projectDrafts = new ProjectDraftStore(store);
         projectDrafts.Initialize();
         projectDrafts.MarkInterruptedOnStartup();
+        var taskBuilds = new TaskBuildStore(store);
+        taskBuilds.Initialize();
         var projectModel = projectModelOverride ?? new LocalProjectDraftModel();
         var enabled = settings.EnableLocalExecution &&
             (runnerOverride is not null || OperatingSystem.IsLinux());
@@ -114,6 +116,7 @@ public static class ApiHost
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton(projectDrafts);
+        builder.Services.AddSingleton(taskBuilds);
         builder.Services.AddSingleton<IProjectDraftModel>(projectModel);
         builder.Services.AddSingleton<ProjectDraftCoordinator>();
         builder.Services.AddSingleton(htmlArtifacts);
@@ -343,6 +346,46 @@ public static class ApiHost
                 return Results.File(bytes, "application/json",
                     "codingassistant-agent-contract.json");
             }));
+        // New task-specific build admission is independent of M1.12's fixture.
+        // These endpoints can persist/review a source scope, but cannot yet
+        // launch OpenCode. The actual runtime plan must receive separate exact
+        // owner authorization after issue #76's integrated security gates.
+        app.MapGet("/api/tasks/{id}/task-build", (
+                string id, TaskBuildStore builds) =>
+            Safe(() => {
+                var snapshot = builds.Latest(id);
+                return Results.Ok(new { available = snapshot is not null, snapshot });
+            }));
+        app.MapPost("/api/tasks/{id}/task-build", (
+                string id, PrepareTaskBuildRequest request,
+                TaskStore tasks, InterviewStore interviews,
+                ProjectDraftStore drafts, TaskBuildStore builds) =>
+            Safe(() => {
+                var task = tasks.GetTask(id).Task;
+                var preview = TaskAgentContract.Preview(task,
+                    interviews.Read(id).Specification, drafts.Latest(id));
+                var snapshot = builds.Prepare(id, request.RequestId, preview);
+                return Results.Created($"/api/task-builds/{snapshot.Build.Id}", snapshot);
+            }));
+        app.MapGet("/api/task-builds/{id}", (string id, TaskBuildStore builds) =>
+            Safe(() => Results.Ok(builds.Get(id))));
+        app.MapGet("/api/task-builds/{id}/events", (
+                string id, int? after, int? limit, TaskBuildStore builds) =>
+            Safe(() => Results.Ok(builds.ReadEvents(id, after ?? 0, limit ?? 50))));
+        app.MapPost("/api/task-builds/{id}/scope-acknowledgement", (
+                string id, AcknowledgeTaskBuildRequest request,
+                TaskBuildStore builds) =>
+            Safe(() => Results.Ok(builds.Acknowledge(id, request.Approval))));
+        app.MapPost("/api/task-builds/{id}/cancel", (
+                string id, TaskBuildStore builds) =>
+            Safe(() => Results.Ok(builds.Cancel(id))));
+        app.MapPost("/api/task-builds/{id}/start", (
+                string id, TaskBuildStore builds) =>
+            Safe(() => {
+                builds.RequireStartGate(id);
+                return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            }));
+
         app.MapPost("/api/tasks/{id}/plans", (
                 string id, DraftPlanRequest input, TaskStore db) =>
             Safe(() =>

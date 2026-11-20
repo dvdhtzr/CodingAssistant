@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Http.Connections;
+using Microsoft.Data.Sqlite;
 
 const string OwnerToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 var checks = 0;
@@ -1288,6 +1289,195 @@ try
                   body.RootElement.GetProperty("taskId").GetString() == id,
                 "download file binds actual task and chosen file plan");
         }
+
+        // A React source-text draft cannot be misrepresented as qualified
+        // executable .NET agent scope. Preparing it launches no model or tools.
+        using (var wrongProfile = await Post(interviewClient,
+            $"/api/tasks/{id}/task-build", new {
+                requestId = Guid.NewGuid().ToString("N")
+            }))
+        using (var body = await ReadJson(wrongProfile))
+            Check(wrongProfile.StatusCode == HttpStatusCode.BadRequest &&
+                  body.RootElement.GetProperty("error").GetString() ==
+                    "TASK_PROFILE_UNSUPPORTED",
+                "new coding path rejects a React plan outside the .NET pilot profile");
+
+        // Seed a SECOND small .NET fixture into the owner-private stores to
+        // exercise exact transaction/HTTP semantics. This is model-free,
+        // cannot start OpenCode, and is NOT runtime qualification evidence.
+        string dotnetTaskId;
+        const string dotnetObjective =
+            "Implement a small offline C# inventory application with unit tests";
+        using (var created = await Post(interviewClient, "/api/tasks", new {
+            title = "Scoped .NET build review",
+            objective = dotnetObjective,
+            requestId = Guid.NewGuid().ToString("N")
+        }))
+        using (var json = await ReadJson(created))
+        {
+            Check(created.StatusCode == HttpStatusCode.Created,
+                "second independently scoped .NET task created");
+            dotnetTaskId = json.RootElement.GetProperty("id").GetString()!;
+        }
+        const string approvedDotnetSpec =
+            "Build a .NET 10 offline inventory console application. " +
+            "Store products in memory and support adding, removing and updating " +
+            "inventory quantities. Include meaningful automated tests that " +
+            "verify inventory calculations, rejection of invalid values and " +
+            "correct removal. Do not connect to external services or install " +
+            "packages from the public network.";
+        var specIdentity = $"codingassistant-spec-v1\n{dotnetTaskId}\n1\n{approvedDotnetSpec}";
+        var dotnetSpecSha = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(specIdentity))).ToLowerInvariant();
+        var jobId = Guid.NewGuid().ToString("N");
+        var createdUtc = DateTimeOffset.UtcNow.ToString("O");
+        using (var db = new SqliteConnection(
+            new SqliteConnectionStringBuilder {
+                DataSource = Path.Combine(interviewData, "codingassistant.db")
+            }.ToString()))
+        {
+            db.Open();
+            void Seed(string sql, params (string Name, object Value)[] fields)
+            {
+                using var cmd = db.CreateCommand();
+                cmd.CommandText = sql;
+                foreach (var (name, value) in fields)
+                    cmd.Parameters.AddWithValue(name, value);
+                cmd.ExecuteNonQuery();
+            }
+            Seed("""
+                INSERT INTO interview_specs
+                (task_id,version,model,content,sha256,status,created_utc,approved_utc)
+                VALUES(@task,1,@model,@spec,@hash,'Approved',@utc,@utc)
+                """, ("@task", dotnetTaskId), ("@model", TaskStore.Model),
+                ("@spec", approvedDotnetSpec), ("@hash", dotnetSpecSha),
+                ("@utc", createdUtc));
+            Seed("""
+                INSERT INTO project_drafts
+                (id,task_id,spec_version,spec_sha256,model,state,phase,
+                 error_code,created_utc,updated_utc)
+                VALUES(@id,@task,1,@hash,@model,'Generated','DraftGenerated',
+                       NULL,@utc,@utc)
+                """, ("@id", jobId), ("@task", dotnetTaskId),
+                ("@hash", dotnetSpecSha), ("@model", TaskStore.Model),
+                ("@utc", createdUtc));
+            foreach (var filePath in new[] { "Inventory/Inventory.csproj",
+                                              "Inventory/Program.cs" })
+                Seed("""
+                    INSERT INTO project_draft_files
+                    (draft_id,path,purpose,content,sha256,created_utc)
+                    VALUES(@id,@path,'Test fixture source',@content,@sha,@utc)
+                    """, ("@id", jobId), ("@path", filePath),
+                    ("@content", filePath.EndsWith(".csproj")
+                        ? "<Project Sdk=\"Microsoft.NET.Sdk\" />"
+                        : "public class Inventory {}"),
+                    ("@sha", new string('c',64)), ("@utc", createdUtc));
+        }
+
+        using (var missing = await interviewClient.GetAsync(
+            $"/api/tasks/{dotnetTaskId}/task-build"))
+        using (var body = await ReadJson(missing))
+            Check(missing.StatusCode == HttpStatusCode.OK &&
+                  !body.RootElement.GetProperty("available").GetBoolean(),
+                "no executable job is fabricated before exact-scope preparation");
+        var reviewRequest = Guid.NewGuid().ToString("N");
+        string buildId;
+        string buildSha;
+        using (var review = await Post(interviewClient,
+            $"/api/tasks/{dotnetTaskId}/task-build", new {
+                requestId = reviewRequest
+            }))
+        using (var body = await ReadJson(review))
+        {
+            Check(review.StatusCode == HttpStatusCode.Created,
+                "task-specific contract persisted via authenticated endpoint");
+            var build = body.RootElement.GetProperty("build");
+            buildId = build.GetProperty("id").GetString()!;
+            buildSha = build.GetProperty("contractSha256").GetString()!;
+            Check(build.GetProperty("contract").GetProperty("objective")
+                    .GetString() == dotnetObjective &&
+                  build.GetProperty("contract").GetProperty("files")
+                    .GetArrayLength() == 2 &&
+                  !build.GetProperty("executionEnabled").GetBoolean() &&
+                  build.GetProperty("state").GetString() == "Prepared",
+                "actual approved objective and file allowlist bound to non-executable review");
+        }
+        using (var duplicate = await Post(interviewClient,
+            $"/api/tasks/{dotnetTaskId}/task-build", new {
+                requestId = reviewRequest
+            }))
+        using (var body = await ReadJson(duplicate))
+            Check(duplicate.StatusCode == HttpStatusCode.Created &&
+                  body.RootElement.GetProperty("build").GetProperty("id")
+                    .GetString() == buildId &&
+                  body.RootElement.GetProperty("events").GetArrayLength() == 1,
+                "idempotent duplicate scope preparation creates no new event");
+
+        using (var mismatch = await Post(interviewClient,
+            $"/api/task-builds/{buildId}/scope-acknowledgement",
+            new { approval = "APPROVE " + new string('0', 64) }))
+            Check(mismatch.StatusCode == HttpStatusCode.Conflict,
+                "incorrect contract digest cannot acknowledge scope");
+        using (var blocked = await Post(interviewClient,
+            $"/api/task-builds/{buildId}/start", new { }))
+            Check(blocked.StatusCode == HttpStatusCode.Conflict,
+                "unacknowledged task scope cannot start");
+
+        using (var acknowledged = await Post(interviewClient,
+            $"/api/task-builds/{buildId}/scope-acknowledgement",
+            new { approval = "APPROVE " + buildSha }))
+        using (var body = await ReadJson(acknowledged))
+            Check(acknowledged.StatusCode == HttpStatusCode.OK &&
+                  body.RootElement.GetProperty("build").GetProperty("state")
+                    .GetString() == "ScopeAcknowledged" &&
+                  body.RootElement.GetProperty("events").GetArrayLength() == 2,
+                "exact scope acknowledgement is recorded and never executes");
+        using (var blocked = await Post(interviewClient,
+            $"/api/task-builds/{buildId}/start", new { }))
+        using (var body = await ReadJson(blocked))
+            Check(blocked.StatusCode == HttpStatusCode.ServiceUnavailable &&
+                  body.RootElement.GetProperty("error").GetString() ==
+                    "EXECUTION_UNAVAILABLE",
+                "even acknowledged task build cannot bypass issue #76 release gate");
+        using (var cursor = await interviewClient.GetAsync(
+            $"/api/task-builds/{buildId}/events?after=1"))
+        using (var body = await ReadJson(cursor))
+            Check(cursor.StatusCode == HttpStatusCode.OK &&
+                  body.RootElement.GetProperty("events").GetArrayLength() == 1 &&
+                  body.RootElement.GetProperty("nextCursor").GetInt32() == 2,
+                "append-only build events replay from an exact cursor");
+
+        // Revocation must invalidate previously acknowledged scope.
+        using (var db = new SqliteConnection(
+            $"Data Source={Path.Combine(interviewData, "codingassistant.db")}"))
+        {
+            db.Open();
+            using var cmd = db.CreateCommand();
+            cmd.CommandText = """
+                UPDATE interview_specs SET status='Superseded'
+                WHERE task_id=@task AND version=1
+                """;
+            cmd.Parameters.AddWithValue("@task", dotnetTaskId);
+            cmd.ExecuteNonQuery();
+        }
+        using (var stale = await Post(interviewClient,
+            $"/api/task-builds/{buildId}/start", new { }))
+            Check(stale.StatusCode == HttpStatusCode.Conflict,
+                "revoked specification blocks a once-approved executable scope");
+        using (var cancelled = await Post(interviewClient,
+            $"/api/task-builds/{buildId}/cancel", new { }))
+        using (var body = await ReadJson(cancelled))
+            Check(cancelled.StatusCode == HttpStatusCode.OK &&
+                  body.RootElement.GetProperty("build").GetProperty("state")
+                    .GetString() == "Cancelled" &&
+                  body.RootElement.GetProperty("events").GetArrayLength() == 3,
+                "cancelled scope survives as an auditable terminal record");
+        using (var invalid = await Post(interviewClient,
+            $"/api/task-builds/{buildId}/scope-acknowledgement",
+            new { approval = "APPROVE " + buildSha }))
+            Check(invalid.StatusCode == HttpStatusCode.Conflict,
+                "cancelled or superseded scope cannot be reauthorized");
 
         using (var zipped = await interviewClient.GetAsync(
             $"/api/tasks/{id}/draft-build/{draftId}/zip"))
