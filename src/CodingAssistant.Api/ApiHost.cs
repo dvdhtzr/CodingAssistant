@@ -164,6 +164,20 @@ public static class ApiHost
                 return Results.Ok(change.Run);
             }));
 
+        // A trusted host coordinator can nudge live observers AFTER writing
+        // durable SQLite state. This endpoint cannot create an event, alter a
+        // run or start an agent; it only broadcasts the current stored tip.
+        app.MapPost("/api/runs/{id}/refresh", (
+                string id, RunStore db, RunNotifier notifier) =>
+            SafeAsync(async () =>
+            {
+                var current = db.Get(id);
+                var page = db.ReadEvents(id,
+                    after: Math.Max(0, current.LastSequence - 1), limit: 1);
+                await notifier.PublishAsync(page.Events.LastOrDefault());
+                return Results.Ok(current);
+            }));
+
         // SignalR uses the exact same authenticated /api HTTP boundary,
         // including WebSocket handshakes. It carries no durable-only state.
         app.MapHub<RunProgressHub>("/api/progress");
