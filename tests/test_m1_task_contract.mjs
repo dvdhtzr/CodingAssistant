@@ -38,10 +38,10 @@ test("valid approved specification is byte-bound and drives actual task prompt",
   const contract = validate(valid());
   const prompt = taskPrompt(contract);
   assert.match(prompt, /local expense tracking API/);
-  assert.match(prompt, /ExpenseApi\\/Program.cs/);
+  assert.match(prompt, /ExpenseApi\/Program.cs/);
   assert.match(prompt, /approved software specification/);
   assert.match(prompt, /Never claim tests have run/);
-  assert.doesNotMatch(prompt, /Fix the compiler errors in api\\/Program.cs/);
+  assert.doesNotMatch(prompt, /Fix the compiler errors in api\/Program.cs/);
 });
 test("file operations are explicitly restricted to approved paths", () => {
   const paths = valid().files;
