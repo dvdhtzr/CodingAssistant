@@ -16,6 +16,8 @@ import json
 import os
 import pathlib
 import re
+import secrets
+import selectors
 import shutil
 import sqlite3
 import stat
@@ -23,13 +25,14 @@ import urllib.parse
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / "tools/m1"), str(ROOT / "tools/m0")]
 from approved_gateway_coding import (
-    ARTIFACTS, MODEL, HEX64, broker_for, preflight, run_gateway,
+    ARTIFACTS, MODEL, HEX64, broker_for, fixed, preflight, run_gateway,
 )
 from ollama_bridge import serve_bridge
 from run_ledger import RunLedger, DuplicateRequest
@@ -252,13 +255,18 @@ def source_snapshot(workspace: pathlib.Path, allowed: set[str],
 
 
 def evaluator_command(image: str, worktree: pathlib.Path,
-                      project: str, command: list[str]) -> list[str]:
+                      project: str, command: list[str], *,
+                      name: str | None = None) -> list[str]:
     if HEX64.fullmatch(image) is None or safe_path(project) != project:
         raise ValueError("Invalid offline evaluator provenance")
+    if name is not None and re.fullmatch(r"ca-task-eval-[0-9a-f]{12}", name) is None:
+        raise ValueError("Unsafe evaluator container identity")
     # Every compiler/test subprocess runs inside its OWN fresh no-network,
     # no-model-socket, non-root, read-only-root container.
     return [
-        "podman", "run", "--rm", "--pull=never", "--network=none",
+        "podman", "run", "--rm",
+        *([] if name is None else ["--name", name]),
+        "--pull=never", "--network=none",
         "--read-only", "--cap-drop=all", "--security-opt=no-new-privileges",
         "--pids-limit=96", "--memory=3g", "--userns=keep-id",
         "--user", f"{os.getuid()}:{os.getgid()}",
@@ -274,21 +282,61 @@ def evaluator_command(image: str, worktree: pathlib.Path,
 
 def run_check(image: str, worktree: pathlib.Path,
               project: str, command: list[str], timeout: int) -> dict:
-    process = subprocess.run(
-        evaluator_command(image, worktree, project, command),
-        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT, text=True, errors="replace",
-        timeout=timeout, check=False)
-    # Never retain arbitrary compiler output or agent text in durable evidence.
-    codes = sorted(set(re.findall(r"\b(?:CS|NU)[0-9]{4}\b",
-                                  process.stdout[:RESULT_LIMIT])))[:12]
-    completed = process.returncode == 0 and len(process.stdout) <= RESULT_LIMIT
+    """Bound captured guest output and explicitly reconcile evaluator cleanup.
+
+    A generated .csproj may run arbitrary MSBuild targets. Never trust it
+    to limit stdout, exit promptly, or clean up an orphan Podman process.
+    """
+    name = "ca-task-eval-" + secrets.token_hex(6)
+    args = evaluator_command(image, worktree, project, command, name=name)
+    captured = bytearray()
+    deadline = time.monotonic() + timeout
+    failed = None
+    rc = None
+    try:
+        with subprocess.Popen(args, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              bufsize=0) as process:
+            try:
+                with selectors.DefaultSelector() as ready:
+                    ready.register(process.stdout, selectors.EVENT_READ)
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(args, timeout)
+                        events = ready.select(min(remaining, 0.5))
+                        if not events:
+                            continue
+                        part = os.read(process.stdout.fileno(), 8192)
+                        if not part:
+                            break
+                        captured.extend(part)
+                        if len(captured) > RESULT_LIMIT:
+                            raise ValueError("Untrusted evaluator stdout exceeded limit")
+                rc = process.wait(timeout=max(1, deadline - time.monotonic()))
+            except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+                failed = error
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=10)
+    finally:
+        # --rm normally removes the guest. A killed/interrupted Podman client
+        # may leave it alive. Only remove this uniquely named evaluator, then
+        # independently verify it no longer exists.
+        fixed(["podman", "rm", "-f", name], timeout=30)
+        exists = fixed(["podman", "container", "exists", name], timeout=15)
+        if exists.returncode != 1:
+            raise ValueError("Isolated evaluator cleanup unverified")
+    if failed is not None:
+        raise ValueError("Bounded evaluator did not finish cleanly") from None
+    stdout = captured.decode("utf-8", errors="replace")
+    codes = sorted(set(re.findall(r"\\b(?:CS|NU)[0-9]{4}\\b", stdout)))[:12]
     return {
-        "passed": completed, "exit_code": process.returncode,
+        "passed": rc == 0, "exit_code": rc,
         "diagnostic_codes": codes,
-        "output_too_large": len(process.stdout) > RESULT_LIMIT,
+        "output_too_large": False,
         "tests_observed": sum(int(x) for x in re.findall(
-            r"\bPassed:\s*([0-9]+)\b", process.stdout[:RESULT_LIMIT])) if
+            r"\\bPassed:\\s*([0-9]+)\\b", stdout)) if
             command[0] == "test" else 0,
     }
 
