@@ -26,8 +26,9 @@ public sealed record ApiSettings(
         // Visual Studio F5 does not run the PowerShell launcher. Windows uses
         // the same user-protected credential as the one-click launcher when
         // no explicit token was configured. Linux stays explicit by design.
-        token ??= OperatingSystem.IsWindows()
-            ? WindowsOwnerTokenStore.GetOrCreate(directory) : "";
+        if (string.IsNullOrWhiteSpace(token))
+            token = OperatingSystem.IsWindows()
+                ? WindowsOwnerTokenStore.GetOrCreate(directory) : "";
         return new ApiSettings(directory, token, $"http://127.0.0.1:{port}",
             Environment.GetEnvironmentVariable("CODINGASSISTANT_ENABLE_LOCAL_EXECUTION") == "1",
             Environment.GetEnvironmentVariable("CODINGASSISTANT_REPOSITORY_ROOT"));
