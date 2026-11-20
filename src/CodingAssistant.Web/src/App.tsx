@@ -378,8 +378,8 @@ export default function App() {
         {!taskId && <section className="panel new-project-panel">
           <span className="pill">Start a project</span>
           <h2>What would you like to build?</h2>
-          <p className="hint">Describe your idea in your own words. Your local AI will interview
-            you to clarify the requirements before you approve a specification.
+          <p className="hint">Describe your idea in your own words. Your Product Owner will discuss your goals and requirements with you
+            before you approve a specification.
             No example project is selected automatically.</p>
           <form onSubmit={e => { e.preventDefault(); void action('create-task', async () => {
             const objective = newObjective.trim();
@@ -414,12 +414,12 @@ export default function App() {
         </section>}
         {taskId && !taskView && <section className="panel">
           <h2>Opening your project…</h2>
-          <p className="hint">Loading the selected project's saved interview and history.</p>
+          <p className="hint">Loading the selected project's saved Product Owner conversation and history.</p>
         </section>}
         {taskView && <InterviewStudio key={taskView.task.id}
           token={token} task={taskView.task} />}
         <details className="advanced-gate" hidden={!taskView}>
-          <summary>Legacy single-file HTML preview (not the AI interview)</summary>
+          <summary>Legacy single-file HTML preview (not the Product Owner workflow)</summary>
         {taskView && <section className="panel html-preview-panel">
           <h2>Make your HTML page</h2>
           <p className="hint">This uses your task objective to generate a real <code>index.html</code>
