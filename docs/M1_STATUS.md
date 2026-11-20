@@ -983,3 +983,55 @@ A fresh exact owner approval is required because the source
 fingerprint and derived immutable image change. **M1.12 remains
 BLOCKED until live local-model activity and independently evaluated
 C# repair actually pass.** GitHub model-free CI is not that proof.
+
+
+## M1.12 — owner-approved Dell integrated coding GREEN (November 19, 2026)
+
+**Status: `GATEWAY_APPROVED_CODING_PASS` on Dell.** This later
+owner-observed acceptance supersedes the historical M1.12 BLOCKED
+attempts retained above. Execution used GitHub main
+`191a7b0ef9e99133fcdc535abad2236265f8c029` and the explicitly
+approved exact plan SHA256
+`0349c4327de288058ca556289e09839235db3e84bc699e06b1fbd0582dc5cd06`
+for the frozen disposable `02-build-repair` C# fixture and pinned
+`qwen3.5:4b`. The owner reported local ignored evidence:
+`artifacts/m1/m112-approved-coding-4a73cdebeebf.json`.
+
+The real isolated OpenClaw Gateway passed all three health probes
+(`/healthz`, `/startupz`, `/readyz`: **200/200/200**). Its registered
+coding plugin delegated a real session to ACPX/OpenCode, sent the
+approved prompt, and completed the coding turn. **17 ACP events** and
+**9 tool calls** were observed. The host-only, digest-rechecking
+local Ollama broker recorded **6 attempts / 6 verified / 0 failed /
+0 denied**. The separate offline .NET evaluator returned
+`{"status":"VERIFIED","verified":true}`. The isolated coding
+container was removed. No cloud route, real owner repository, or
+Git remote was enabled for this task. The runner therefore returned
+`M1.12 GATEWAY_APPROVED_CODING_PASS` with `phase=complete`.
+This is real end-to-end acceptance, **not a model-free CI assertion**.
+
+The combined Gateway/Node/OpenCode container used an enforced
+**256-task cgroup ceiling and two-CPU quota**; kernel counters
+reported `pids.max=256`, `pids.peak=107`, and
+`pids.events.max=0`. The observed peak **exceeded the old 96-task
+configuration**, strongly supporting the hypothesis that the prior
+tight cap contributed to repeated Bun/OpenCode `SIGABRT` failures;
+the previous failed runs did not retain equivalent peak data, so
+their exact causes are not mathematically proven.
+
+**Boundary:** M1.12 GREEN validates one fixed, reviewed,
+exact-plan-approved disposable C# coding task **on the Dell only**.
+M1 as a whole stays **YELLOW**: durable execution history,
+cancel/pause/reconnect/crash reconciliation, idempotency, integrated
+hostile-operation denial tests, general worktree policies, and
+Windows-specific qualification remain to be implemented or accepted.
+Do not authorize arbitrary personal repositories or describe this
+as a production-ready autonomous coding product.
+
+**Next work:** follow `docs/IMPLEMENTATION_PLAN.md` and
+`docs/CURRENT_HANDOFF.md`; prioritize cohesive M1 durable-state/
+reconciliation/negative-test functionality in an operator-visible
+vertical slice, then the M2 .NET 10 + SQLite foundation and M3
+React/SignalR Mission Control. Do not repeat the already-GREEN
+M1.12 coding test without a specific regression or scope change.
+
