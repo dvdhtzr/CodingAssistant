@@ -157,21 +157,29 @@ public static class DraftArchitecturePolicy
 
     // A declared Static Web stack must not silently turn into C#/React/TS.
     // This is bounded plan validation, NOT a browser or compile test.
+    private static bool StaticWeb(DraftArchitectureContract? context) =>
+        context?.Choices.FirstOrDefault(c =>
+            c.Topic == "technology-stack")?.RuntimeProfileId == "static-web";
+
+    // Allowed source types are independent of model self-assessment.
+    public static void ValidateSourcePath(
+        DraftArchitectureContract? context, string path)
+    {
+        if (!StaticWeb(context)) return;
+        var extension = Path.GetExtension(path);
+        if (extension is not (".html" or ".css" or ".js" or ".json" or ".md"))
+            throw new StoreFailure("ARCHITECTURE_PLAN_CONFLICT");
+    }
+
     public static void ValidatePlannedFiles(
         DraftArchitectureContract? context, IReadOnlyList<PlannedProjectFile> files)
     {
-        if (context?.Choices.FirstOrDefault(c =>
-            c.Topic == "technology-stack")?.RuntimeProfileId != "static-web")
-            return;
-
-        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ".html", ".css", ".js", ".json", ".md"
-        };
-        if (!files.Any(f => string.Equals(f.Path, "index.html",
-                StringComparison.OrdinalIgnoreCase)) ||
-            files.Any(f => !allowed.Contains(Path.GetExtension(f.Path))))
+        if (!StaticWeb(context)) return;
+        if (!files.Any(file => string.Equals(file.Path, "index.html",
+                StringComparison.OrdinalIgnoreCase)))
             throw new StoreFailure("ARCHITECTURE_PLAN_CONFLICT");
+        foreach (var file in files)
+            ValidateSourcePath(context, file.Path);
     }
 
     public static string AsModelInstructions(DraftArchitectureContract context)
