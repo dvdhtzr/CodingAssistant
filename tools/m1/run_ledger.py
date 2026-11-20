@@ -301,8 +301,10 @@ class RunLedger:
         if not lock_path.exists() or lock_path.is_symlink():
             return {"result": "RECOVERY_BLOCKED", "run": record}
         fd = _open_lock(lock_path, create=False)
+        locked = False
         try:
-            if not _flock(fd, blocking=False):
+            locked = _flock(fd, blocking=False)
+            if not locked:
                 return {"result": "ACTIVE", "run": record}
             # Recheck under the exclusive run lock and a current DB read.
             record = self.get(run_id)
@@ -348,7 +350,8 @@ class RunLedger:
             return {"result": "INTERRUPTED_CLEAN", "run": self.get(run_id)}
         finally:
             try:
-                _unlock(fd)
+                if locked:
+                    _unlock(fd)
             finally:
                 os.close(fd)
 
