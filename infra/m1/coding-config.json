@@ -18,6 +18,7 @@
           "agentProcessEnvAllow": ["OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_AUTOUPDATE", "CI"],
           "agentProcessEnvBlock": [
             "OPENCLAW_GATEWAY_TOKEN", "CA_M112_PLAN_HASH",
+            "CA_M1_TASK_CONTRACT_SHA256",
             "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
             "AZURE_OPENAI_API_KEY"
           ],
