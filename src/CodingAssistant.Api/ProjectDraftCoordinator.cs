@@ -25,7 +25,8 @@ public sealed class ProjectDraftCoordinator(
             request.SpecificationSha256 != spec.Sha256)
             throw new StoreFailure("SPECIFICATION_CONFLICT");
         var task = tasks.GetTask(taskId).Task;
-        var job = store.Start(taskId, spec.Version, spec.Sha256, spec.Model);
+        var job = store.Start(taskId, spec.Version, spec.Sha256, spec.Model,
+            request.ArchitectureSha256);
         var stop = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = stop;
@@ -69,6 +70,7 @@ public sealed class ProjectDraftCoordinator(
                     }, token)
                 : await model.PlanAsync(task.Objective, sourceSpecification, spec.Model, token);
             var plan = ProjectDraftStore.ValidatePlan(planOutput);
+            DraftArchitecturePolicy.ValidatePlannedFiles(bound, plan);
             token.ThrowIfCancellationRequested();
             RequireCurrentApproval(task.Id, job);
             store.Note(task.Id, job.Id, "PlanAccepted",
