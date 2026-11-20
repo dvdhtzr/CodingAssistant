@@ -1,0 +1,105 @@
+export interface ApiStatus {
+  phase: string;
+  model: string;
+  executionEnabled: boolean;
+  localOnly: boolean;
+}
+export interface TaskItem {
+  id: string;
+  title: string;
+  objective: string;
+  status: string;
+  currentVersion: number;
+  createdUtc: string;
+}
+export interface PlanItem {
+  taskId: string;
+  version: number;
+  summary: string;
+  model: string;
+  scope: string;
+  planHash: string;
+  status: string;
+  executionEnabled: boolean;
+}
+export interface TaskView { task: TaskItem; plan: PlanItem | null; }
+export interface RunItem {
+  id: string;
+  taskId: string;
+  planVersion: number;
+  planHash: string;
+  state: string;
+  planCurrent: boolean;
+  executionEnabled: boolean;
+  lastSequence: number;
+  createdUtc: string;
+  updatedUtc: string;
+}
+export interface RunEvent {
+  runId: string;
+  sequence: number;
+  kind: string;
+  state: string;
+  createdUtc: string;
+}
+export interface EventPage {
+  events: RunEvent[];
+  nextCursor: number;
+}
+export interface ExecutionView {
+  runId: string;
+  planHash: string;
+  state: string;
+  plan: {
+    fixture: string;
+    model: string;
+    model_digest: string;
+    writable_files: string[];
+    image_id: string;
+    evaluator_image_id: string;
+    no_cloud: boolean;
+    no_git_remote: boolean;
+    control: { run_id: string; plan_hash: string };
+    [key: string]: unknown;
+  };
+}
+export class ApiError extends Error {
+  constructor(public readonly status: number, public readonly code: string) {
+    super(`HTTP ${status}: ${code}`);
+  }
+}
+
+/** Same-origin bearer authentication. No token ever appears in an URL, body or store. */
+export async function api<T>(
+  token: string, path: string, body?: Record<string, unknown>,
+): Promise<T> {
+  if (!/^[0-9a-f]{64}$/.test(token)) throw new Error('Owner token must be 64 lowercase hex characters.');
+  if (!path.startsWith('/api/') || path.includes('..') || path.includes('//')) {
+    throw new Error('Refusing non-local API endpoint.');
+  }
+  const response = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    cache: 'no-store',
+    credentials: 'omit',
+    referrerPolicy: 'no-referrer',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const data: unknown = await response.json().catch(() => null);
+    const code = typeof data === 'object' && data !== null && 'error' in data &&
+      typeof data.error === 'string' && /^[A-Z_]{2,60}$/.test(data.error)
+      ? data.error : 'REQUEST_REJECTED';
+    throw new ApiError(response.status, code);
+  }
+  return response.json() as Promise<T>;
+}
+export function newRequestId(): string {
+  return crypto.randomUUID().replaceAll('-', '');
+}
+export function isHexId(value: string): boolean {
+  return /^[0-9a-f]{32}$/.test(value);
+}

@@ -16,3 +16,6 @@ Thumbs.db
 !.env.example
 *.pfx
 *.key
+
+# Compiled Mission Control SPA (built in CI before .NET publish)
+src/CodingAssistant.Api/wwwroot/

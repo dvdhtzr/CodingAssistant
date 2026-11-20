@@ -156,8 +156,16 @@ and approve it, use the following endpoints with authenticated JSON requests:
 | `POST /api/tasks/{id}/plans` | `{summary, expectedVersion}`; increments and hashes immutable plan |
 | `POST /api/tasks/{id}/approvals` | `{version, approval}`; approval must exactly match `APPROVE <planHash>` |
 
-No frontend is available yet. This REST surface is the foundation for
-M3's Mission Control UI, not a substitute for it.
+The first M3 React Mission Control slice is now under review in issue #77.
+After CI builds `src/CodingAssistant.Web`, the same loopback API serves the
+compiled frontend at `http://127.0.0.1:5098/`. The owner enters the existing
+64-hex bearer token only into the UI's current in-memory session. Planning
+approval and executable approval remain distinct; no run is started without a
+separate explicit start click. SignalR LongPolling uses authenticated
+request headers, not browser WebSocket query-token fallback, and SQLite replay
+is authoritative. The UI is limited to the existing fixed C# fixture, not
+arbitrary repository mounts. Real browser acceptance and independently
+qualified Dell security-negative tests remain outstanding.
 
 ## Verification
 

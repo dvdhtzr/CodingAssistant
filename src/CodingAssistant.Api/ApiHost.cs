@@ -65,7 +65,18 @@ public static class ApiHost
                                   Directory.GetCurrentDirectory())
             : new DisabledM1Runner());
         var expected = Convert.FromHexString(settings.OwnerToken);
-        var builder = WebApplication.CreateBuilder(args);
+        // Web root must be selected BEFORE WebApplicationBuilder is created.
+        // The deployed API uses assets next to the binary; repository smoke
+        // tests may use Vite's generated source-tree output instead.
+        var packagedWeb = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+        var repositoryWeb = Path.Combine(Directory.GetCurrentDirectory(),
+            "src", "CodingAssistant.Api", "wwwroot");
+        var webRoot = Directory.Exists(packagedWeb) ? packagedWeb :
+            Directory.Exists(repositoryWeb) ? repositoryWeb : null;
+        var builder = webRoot is null
+            ? WebApplication.CreateBuilder(args)
+            : WebApplication.CreateBuilder(new WebApplicationOptions
+                { Args = args, WebRootPath = webRoot });
         builder.WebHost.UseUrls(settings.BindUrl);
         builder.WebHost.ConfigureKestrel(options =>
         {
@@ -90,6 +101,12 @@ public static class ApiHost
         {
             context.Response.Headers["Cache-Control"] = "no-store";
             context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            context.Response.Headers["Referrer-Policy"] = "no-referrer";
+            context.Response.Headers["X-Frame-Options"] = "DENY";
+            context.Response.Headers["Content-Security-Policy"] =
+                "default-src 'none'; script-src 'self'; style-src 'self'; " +
+                "connect-src 'self'; img-src 'self' data:; " +
+                "base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
             if (!context.Request.Path.StartsWithSegments("/api"))
             {
                 await next(context);
@@ -122,6 +139,11 @@ public static class ApiHost
             }
             await next(context);
         });
+
+        // UI assets are static and unauthenticated; all data/operations still
+        // require the exact owner bearer in an Authorization header.
+        app.UseDefaultFiles();
+        app.UseStaticFiles();
 
         app.MapGet("/healthz", () => Results.Ok(
             new { status = "ok", executionEnabled = enabled }));
