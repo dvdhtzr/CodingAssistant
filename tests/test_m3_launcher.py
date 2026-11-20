@@ -1,5 +1,7 @@
 """Model-free, cross-platform launcher tests. Never download, start .NET or invoke LLMs."""
 import contextlib
+import hashlib
+import json
 import importlib.util
 import io
 import os
@@ -69,6 +71,7 @@ class M3LauncherContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
             with mock.patch.object(launcher.Path, "home", return_value=root), \
+                 mock.patch.object(launcher, "public_release", return_value=None), \
                  mock.patch.object(launcher, "gh_download", return_value=False), \
                  mock.patch.object(launcher.subprocess, "Popen",
                                    side_effect=AssertionError("API unexpectedly started")), \
@@ -133,9 +136,10 @@ class M3LauncherContracts(unittest.TestCase):
             (target / "wwwroot").mkdir(parents=True)
             (target / "CodingAssistant.Api").write_text("api")
             (target / "wwwroot/index.html").write_text("Mission Control")
-            self.assertEqual(launcher.install_app(target, interactive=False), target)
+            with mock.patch.object(launcher, "public_release", return_value=None):
+                self.assertEqual(launcher.install_app(target, interactive=False), target)
 
-    def test_explicit_refresh_never_falls_back_to_cached_build(self):
+    def test_offline_refresh_preserves_cached_build(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
             target = root / "app"
@@ -143,11 +147,117 @@ class M3LauncherContracts(unittest.TestCase):
             (target / "CodingAssistant.Api").write_text("api")
             (target / "wwwroot/index.html").write_text("Mission Control")
             with mock.patch.object(launcher.Path, "home", return_value=root), \
+                 mock.patch.object(launcher, "public_release", return_value=None), \
                  mock.patch.object(launcher, "gh_download", return_value=False):
-                with self.assertRaisesRegex(launcher.LaunchError, "No local build"):
-                    launcher.install_app(target, interactive=False, refresh=True)
+                self.assertEqual(launcher.install_app(target, interactive=False,
+                                                      refresh=True), target)
             # Failure before package verification must preserve current version.
             self.assertTrue(launcher.valid_app(target))
+
+    def test_release_checksum_installs_only_verified_zip(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            root.mkdir(exist_ok=True)
+            archive = root / "app.zip"
+            with zipfile.ZipFile(archive, "w") as zipped:
+                zipped.writestr("CodingAssistant.Api", b"binary")
+                zipped.writestr("wwwroot/index.html", "Mission Control")
+            checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
+            def fetch(url, target, limit):
+                if url.endswith(".sha256"):
+                    target.write_text(checksum + "  codingassistant-linux-x64.zip\\n")
+                else:
+                    target.write_bytes(archive.read_bytes())
+            staging = root / "staging"
+            staging.mkdir()
+            sha = "a" * 40
+            with mock.patch.object(launcher, "fetch_public_asset", side_effect=fetch):
+                launcher.install_release((sha, "https://github.com/a.zip",
+                                          "https://github.com/a.sha256"), staging)
+            self.assertTrue(launcher.valid_app(staging))
+            self.assertEqual((staging / ".release-commit").read_text().strip(), sha)
+
+    def test_corrupt_release_never_installs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            staging = pathlib.Path(temp) / "staging"
+            staging.mkdir()
+            def fetch(url, target, limit):
+                if url.endswith(".sha256"):
+                    target.write_text("0" * 64 + "  codingassistant-linux-x64.zip\\n")
+                else:
+                    target.write_bytes(b"not a verified application")
+            with mock.patch.object(launcher, "fetch_public_asset", side_effect=fetch):
+                with self.assertRaisesRegex(launcher.LaunchError, "checksum mismatch"):
+                    launcher.install_release(("a"*40, "https://github.com/a.zip",
+                                            "https://github.com/a.sha256"), staging)
+            self.assertFalse(launcher.valid_app(staging))
+
+    def test_matching_release_updates_existing_build_once(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            target = root / "app"
+            (target / "wwwroot").mkdir(parents=True)
+            (target / "CodingAssistant.Api").write_text("old")
+            (target / "wwwroot/index.html").write_text("Mission Control")
+            sha = "a" * 40
+            release = (sha, "https://github.com/zip", "https://github.com/sha")
+            def installer(release, staging):
+                (staging / "CodingAssistant.Api").write_text("new")
+                (staging / "wwwroot").mkdir()
+                (staging / "wwwroot/index.html").write_text("Mission Control")
+                (staging / ".release-commit").write_text(sha)
+                return sha
+            with mock.patch.object(launcher, "public_release", return_value=release), \
+                 mock.patch.object(launcher, "checkout_commit", return_value=sha), \
+                 mock.patch.object(launcher, "install_release", side_effect=installer) as install:
+                self.assertEqual(launcher.install_app(target, interactive=False), target)
+                self.assertEqual((target / "CodingAssistant.Api").read_text(), "new")
+                self.assertEqual(launcher.install_app(target, interactive=False), target)
+                install.assert_called_once()
+
+    def test_release_failure_preserves_cached_binary(self):
+        with tempfile.TemporaryDirectory() as temp:
+            target = pathlib.Path(temp) / "app"
+            (target / "wwwroot").mkdir(parents=True)
+            (target / "CodingAssistant.Api").write_text("old")
+            (target / "wwwroot/index.html").write_text("Mission Control")
+            sha = "a" * 40
+            with mock.patch.object(launcher, "public_release", return_value=(
+                sha, "https://github.com/zip", "https://github.com/sha")), \
+                 mock.patch.object(launcher, "checkout_commit", return_value=sha), \
+                 mock.patch.object(launcher, "install_release",
+                                   side_effect=launcher.LaunchError("bad checksum")):
+                self.assertEqual(launcher.install_app(target, interactive=False), target)
+                self.assertEqual((target / "CodingAssistant.Api").read_text(), "old")
+
+    def test_desktop_shortcut_created_once_without_secrets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            (root / "start.sh").write_text("#!/bin/bash")
+            with mock.patch.object(launcher, "ROOT", root), \
+                 mock.patch.object(launcher.Path, "home", return_value=root), \
+                 mock.patch.dict(os.environ, {"DISPLAY": ":0"}):
+                self.assertTrue(launcher.install_desktop_shortcut())
+                shortcut = root / ".local/share/applications/codingassistant.desktop"
+                data = shortcut.read_text()
+                self.assertIn("Exec=/usr/bin/env bash ", data)
+                self.assertIn("Terminal=true", data)
+                self.assertNotIn("CODINGASSISTANT_OWNER_TOKEN", data)
+                self.assertFalse(launcher.install_desktop_shortcut())
+
+    def test_failed_preflight_opens_history_only(self):
+        with mock.patch.object(launcher.sys, "platform", "linux"), \
+             mock.patch.object(launcher.os, "geteuid", return_value=1000, create=True), \
+             mock.patch.object(launcher, "free_port", return_value=True), \
+             mock.patch.object(launcher, "install_desktop_shortcut", return_value=False), \
+             mock.patch.object(launcher, "verify_execution_preflight",
+                               side_effect=launcher.LaunchError("not safe")), \
+             mock.patch.object(launcher, "install_app",
+                               return_value=pathlib.Path("/fixture")), \
+             mock.patch.object(launcher, "start") as start, \
+             mock.patch.object(launcher.sys, "argv", ["launch.py", "--enable-execution"]):
+            self.assertEqual(launcher.main(), 0)
+            self.assertFalse(start.call_args.kwargs["enable_execution"])
 
     def test_occupied_port_never_launches_second_api(self):
         with mock.patch.object(launcher, "free_port", return_value=False), \
