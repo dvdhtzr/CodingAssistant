@@ -50,3 +50,14 @@
 .spec-consent input{width:auto;min-width:18px;height:18px;margin:.12rem 0}
 .build-gate{background:#16202e;padding:1rem;border-radius:8px}
 .build-gate p{line-height:1.5}
+
+/* Task-specific generated source, never a pretend verified agent build. */
+.build-stage{margin-top:1.4rem;border:1px solid #2d696c;border-radius:10px;padding:1rem;background:#13202d}
+.build-stage h2{margin:0 0 .6rem}
+.build-stage .actions{margin:.7rem 0;gap:.6rem;flex-wrap:wrap}
+.draft-status{border-top:1px solid #2c4b5d;margin-top:.9rem;padding-top:.9rem}
+.draft-status .activity-heading{gap:.6rem}
+.draft-files{display:flex;flex-direction:column;gap:.6rem}
+.draft-files>details{border:1px solid #456176;background:#0c1726;border-radius:9px;padding:.75rem}
+.draft-files summary{cursor:pointer;overflow-wrap:anywhere}
+.draft-files pre{max-height:420px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
