@@ -63,6 +63,23 @@ export interface ExecutionView {
     [key: string]: unknown;
   };
 }
+export interface RunResult {
+  runId: string;
+  planHash: string;
+  status: 'GATEWAY_APPROVED_CODING_PASS' | 'BLOCKED' | 'NOT_APPROVED';
+  phase: string;
+  reasonCode: string | null;
+  evaluatorVerified: boolean | null;
+  sourceChanged: boolean | null;
+  inferenceRequests: number | null;
+  patch: string;
+  patchOmitted: boolean;
+}
+export interface RunResultResponse {
+  available: boolean;
+  result: RunResult | null;
+}
+
 export class ApiError extends Error {
   constructor(public readonly status: number, public readonly code: string) {
     super(`HTTP ${status}: ${code}`);
