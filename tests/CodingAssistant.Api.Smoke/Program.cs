@@ -56,6 +56,50 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     };
 }
 
+// Small local models may ignore JSON-only prompts; validate strict schema,
+// bounded plain-question recovery, and fail-closed malformed reasoning without
+// making real Ollama requests in model-free CI.
+{
+    var structured = LocalInterviewModel.ParseInterviewReply(
+        """{"message":"Who should use this dashboard?","readyForSpecification":false}""");
+    Check(structured.Message.Contains("dashboard?", StringComparison.Ordinal) &&
+          !structured.ReadyForSpecification,
+          "schema-constrained interview response is parsed");
+
+    var ready = LocalInterviewModel.ParseInterviewReply(
+        "```json\n" +
+        """{"message":"I can draft your specification now.","readyForSpecification":true}""" +
+        "\n```");
+    Check(ready.ReadyForSpecification &&
+          ready.Message == "I can draft your specification now.",
+          "clean fenced JSON is accepted");
+
+    var conversational = LocalInterviewModel.ParseInterviewReply(
+        "Who will use this project, and should it save data locally?");
+    Check(!conversational.ReadyForSpecification &&
+          conversational.Message.Contains("save data", StringComparison.Ordinal),
+          "a plain project-specific question cannot prematurely approve readiness");
+
+    foreach (var rejected in new[] {
+        "", "{}", "{broken JSON",
+        """{"message":"Who will use this?","readyForSpecification":"yes"}""",
+        """{"message":"short","readyForSpecification":true}""",
+        "Thinking about implementation steps: what is needed?",
+        "<think>secret reasoning</think> What is needed?"
+    })
+    {
+        try
+        {
+            _ = LocalInterviewModel.ParseInterviewReply(rejected);
+            throw new Exception("Invalid local model output was accepted");
+        }
+        catch (StoreFailure ex) when (ex.Code == "MODEL_OUTPUT_REJECTED")
+        {
+            checks++;
+        }
+    }
+}
+
 // Contract preview binds the actual approved specification and dynamically
 // selected project paths. This cannot authorize code execution.
 {

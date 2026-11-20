@@ -74,26 +74,74 @@ public sealed class LocalInterviewModel : IInterviewModel
         return result.ToArray();
     }
 
+    // This parser never reads Ollama's private thinking field. A usable
+    // question written as plain text can still be shown, but may never claim
+    // that the model has completed requirements gathering.
+    public static InterviewReply ParseInterviewReply(string? content)
+    {
+        var value = content?.Trim() ?? "";
+        if (value.Length == 0)
+            throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+
+        // A few small models wrap even schema-constrained JSON in a fence.
+        if (value.StartsWith("```json\n", StringComparison.OrdinalIgnoreCase) &&
+            value.EndsWith("\n```", StringComparison.Ordinal))
+            value = value[8..^4].Trim();
+
+        try
+        {
+            using var parsed = JsonDocument.Parse(value);
+            var root = parsed.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("message", out var message) ||
+                message.ValueKind != JsonValueKind.String ||
+                !root.TryGetProperty("readyForSpecification", out var readiness) ||
+                readiness.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            return new InterviewReply(
+                InterviewStore.ValidAssistantMessage(message.GetString()),
+                readiness.GetBoolean());
+        }
+        catch (JsonException)
+        {
+            // Plain-language questions are still useful even if the model
+            // ignores its JSON contract. Reject malformed JSON, code, and
+            // apparent reasoning; never infer readiness from free text.
+            if (value.Length <= 3000 && value.Contains('?') &&
+                !value.Contains('{') && !value.Contains('}') &&
+                !value.Contains('`') && !value.Contains('<') &&
+                !value.Contains('>') && !value.StartsWith('[') &&
+                !value.Contains("thinking", StringComparison.OrdinalIgnoreCase))
+                return new InterviewReply(
+                    InterviewStore.ValidAssistantMessage(value), false);
+            throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+        }
+    }
+
     public async Task<InterviewReply> AskAsync(
         string objective, IReadOnlyList<InterviewMessage> messages, string model,
         CancellationToken cancellation)
     {
         var content = await ChatAsync(
             InterviewPolicy, objective, messages, model,
-            json: true, maxTokens: 450, cancellation);
+            json: true, maxTokens: 750, cancellation);
         try
         {
-            using var parsed = JsonDocument.Parse(content);
-            var root = parsed.RootElement;
-            var text = InterviewStore.ValidAssistantMessage(
-                root.GetProperty("message").GetString());
-            var ready = root.GetProperty("readyForSpecification").GetBoolean();
-            return new InterviewReply(text, ready);
+            return ParseInterviewReply(content);
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException
-            or KeyNotFoundException)
+        catch (StoreFailure ex) when (ex.Code == "MODEL_OUTPUT_REJECTED")
         {
-            throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            // One bounded retry, with the exact same task and interview
+            // history. A bad model response is never saved as an owner turn.
+            var retry = await ChatAsync(
+                InterviewPolicy, objective, messages, model,
+                json: true, maxTokens: 750, cancellation,
+                correction: "The previous answer was unusable. Respond with " +
+                    "one valid JSON object containing a nonempty 'message' " +
+                    "with one or two project-specific questions and a " +
+                    "boolean 'readyForSpecification'. No reasoning, " +
+                    "code fences, or surrounding commentary.");
+            return ParseInterviewReply(retry);
         }
     }
 
@@ -104,14 +152,28 @@ public sealed class LocalInterviewModel : IInterviewModel
         var content = await ChatAsync(
             SpecPolicy, objective, messages, model,
             json: false, maxTokens: 3500, cancellation);
-        return InterviewStore.ValidSpecification(content);
+        try
+        {
+            return InterviewStore.ValidSpecification(content);
+        }
+        catch (StoreFailure ex) when (ex.Code == "MODEL_OUTPUT_REJECTED")
+        {
+            var retry = await ChatAsync(
+                SpecPolicy, objective, messages, model,
+                json: false, maxTokens: 3500, cancellation,
+                correction: "The previous draft did not meet the length or " +
+                    "text requirements. Provide only a complete Markdown " +
+                    "specification with at least 180 and at most 16000 " +
+                    "characters, grounded in the recorded owner answers.");
+            return InterviewStore.ValidSpecification(retry);
+        }
     }
 
     private static async Task<string> ChatAsync(
         string policy, string objective,
         IReadOnlyList<InterviewMessage> messages,
         string model, bool json, int maxTokens,
-        CancellationToken cancellation)
+        CancellationToken cancellation, string? correction = null)
     {
         if (!AllowedModel(model) || string.IsNullOrWhiteSpace(objective) ||
             objective.Length > 4000 || messages.Count > 25)
@@ -131,16 +193,33 @@ public sealed class LocalInterviewModel : IInterviewModel
             Timeout = TimeSpan.FromMinutes(8),
             MaxResponseContentBufferSize = 100_000
         };
+        // Ollama's JSON schema constrains the shape more reliably than the
+        // generic "json" mode, particularly with the small local models.
+        // No free-form response is granted access to tools or commands.
+        var interviewSchema = new
+        {
+            type = "object",
+            properties = new
+            {
+                message = new { type = "string" },
+                readyForSpecification = new { type = "boolean" }
+            },
+            required = new[] { "message", "readyForSpecification" },
+            additionalProperties = false
+        };
+        var conversation = new object[]
+        {
+            new { role = "system", content = policy }
+        }.Concat(Conversation(objective, messages)).ToList();
+        if (correction is not null)
+            conversation.Add(new { role = "user", content = correction });
         var chat = new
         {
             model,
             stream = false,
             think = false,
-            format = json ? "json" : null,
-            messages = new object[]
-            {
-                new { role = "system", content = policy }
-            }.Concat(Conversation(objective, messages)).ToArray(),
+            format = json ? (object)interviewSchema : null,
+            messages = conversation.ToArray(),
             options = new
             {
                 temperature = 0.2,
@@ -165,8 +244,14 @@ public sealed class LocalInterviewModel : IInterviewModel
             if (data.Length > 100_000)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             using var decoded = JsonDocument.Parse(data);
-            return decoded.RootElement.GetProperty("message")
-                .GetProperty("content").GetString() ??
+            var outer = decoded.RootElement;
+            if (outer.ValueKind != JsonValueKind.Object ||
+                !outer.TryGetProperty("message", out var answer) ||
+                answer.ValueKind != JsonValueKind.Object ||
+                !answer.TryGetProperty("content", out var reply) ||
+                reply.ValueKind != JsonValueKind.String)
+                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            return reply.GetString() ??
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
