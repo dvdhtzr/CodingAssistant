@@ -15,7 +15,6 @@ import hashlib
 import json
 import shutil
 import sqlite3
-import stat
 import secrets
 from contextlib import contextmanager
 import os
@@ -24,7 +23,6 @@ import re
 import select
 import subprocess
 import sys
-import tempfile
 import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
