@@ -613,7 +613,17 @@ def preflight(prepare: bool = False,
         raise ValueError("Independent offline evaluator image unavailable")
     digest = pin_model(MODEL)
     source_hash = fingerprint()
-    if prepare:
+    # Reuse only an *independently re-inspected* image whose immutable source
+    # fingerprint and base provenance match. Avoid rebuilding on each restart.
+    # A stale tag after reviewed source changes is replaced offline, then
+    # rechecked. Unexpected provenance blocks non-preparation execution.
+    try:
+        image = inspect_image(source_hash)
+    except ValueError:
+        if not prepare:
+            raise
+        image = None
+    if prepare and image is None:
         if shutil.disk_usage(ROOT).free < 2 * 1024**3:
             raise ValueError("Insufficient disk for offline coding layer")
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -625,7 +635,7 @@ def preflight(prepare: bool = False,
                                    timeout=600, check=False)
         if built.returncode != 0:
             raise ValueError("Offline derived image build failed")
-    image = inspect_image(source_hash)
+        image = inspect_image(source_hash)
     if image is None:
         raise ValueError("Derived image absent; opt in with --prepare-only")
     plan, plan_hash = build_approved_plan(
