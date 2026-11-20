@@ -37,7 +37,8 @@ public static class ApiHost
         string[] args, ApiSettings? settings = null,
         IM1ExecutionRunner? runnerOverride = null,
         IHtmlPreviewGenerator? htmlGeneratorOverride = null,
-        IInterviewModel? interviewModelOverride = null)
+        IInterviewModel? interviewModelOverride = null,
+        IProjectDraftModel? projectModelOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -66,6 +67,10 @@ public static class ApiHost
         var interviews = new InterviewStore(store);
         interviews.Initialize();
         var interviewModel = interviewModelOverride ?? new LocalInterviewModel();
+        var projectDrafts = new ProjectDraftStore(store);
+        projectDrafts.Initialize();
+        projectDrafts.MarkInterruptedOnStartup();
+        var projectModel = projectModelOverride ?? new LocalProjectDraftModel();
         var enabled = settings.EnableLocalExecution &&
             (runnerOverride is not null || OperatingSystem.IsLinux());
         var runner = runnerOverride ?? (enabled
@@ -107,6 +112,9 @@ public static class ApiHost
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
+        builder.Services.AddSingleton(projectDrafts);
+        builder.Services.AddSingleton<IProjectDraftModel>(projectModel);
+        builder.Services.AddSingleton<ProjectDraftCoordinator>();
         builder.Services.AddSingleton(htmlArtifacts);
         builder.Services.AddSingleton<IHtmlPreviewGenerator>(htmlGenerator);
         builder.Services.AddSingleton(runs);
@@ -267,6 +275,30 @@ public static class ApiHost
                 string id, ApproveSpecificationRequest input,
                 InterviewStore db) =>
             Safe(() => Results.Ok(db.Approve(id, input))));
+        // User-scoped draft source generation. This is not M1 agent
+        // execution and runs NO model-generated code, shell or package tool.
+        // Only an approved, current interview specification can start it.
+        app.MapGet("/api/tasks/{id}/draft-build", (
+                string id, ProjectDraftStore drafts) =>
+            Safe(() => {
+                var snapshot = drafts.Latest(id);
+                return Results.Ok(new { available = snapshot is not null,
+                    snapshot });
+            }));
+        app.MapPost("/api/tasks/{id}/draft-build", (
+                string id, StartProjectDraftRequest request,
+                ProjectDraftCoordinator coordinator) =>
+            Safe(() => Results.Accepted(
+                $"/api/tasks/{id}/draft-build",
+                coordinator.Start(id, request))));
+        app.MapPost("/api/tasks/{id}/draft-build/{jobId}/cancel", (
+                string id, string jobId,
+                ProjectDraftCoordinator coordinator) =>
+            Safe(() => Results.Ok(coordinator.Cancel(id, jobId))));
+        app.MapGet("/api/tasks/{id}/draft-build/{jobId}/zip", (
+                string id, string jobId, ProjectDraftStore drafts) =>
+            Safe(() => Results.File(drafts.Zip(id, jobId),
+                "application/zip", "codingassistant-project-draft.zip")));
         app.MapPost("/api/tasks/{id}/plans", (
                 string id, DraftPlanRequest input, TaskStore db) =>
             Safe(() =>
@@ -414,7 +446,8 @@ public static class ApiHost
             "NOT_FOUND" => StatusCodes.Status404NotFound,
             "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" =>
                 StatusCodes.Status503ServiceUnavailable,
-            "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
+            "BUILD_BUSY" or "BUILD_NOT_COMPLETE" or
+                "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
                 "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or

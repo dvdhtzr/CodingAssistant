@@ -46,6 +46,33 @@ consent, and an explicit Start click remain separate.
 Issue #76's ten integrated adversarial security checks remain required
 before wider autonomous execution. This is a development preview.
 
+## Approved specification → visible, source-only project draft
+
+The first task-specific generation slice now follows the interview:
+**Create task → local AI interview → versioned specification → owner
+approval → generate a small project draft → inspect files/events → download
+ZIP.** The local model chooses up to five relative source filenames from
+the specification, then writes each file in separate local Ollama requests.
+No filename, fixture or tech stack is hard-coded by the product. The result
+and every real event (model call launched, path selected, file saved, source
+statically checked) are saved in owner-private SQLite and survive restart.
+Mission Control polls the durable history and displays actual file contents
+and a download link. Cancel and process interruption never auto-retry.
+A revised specification invalidates the approval for **new** builds.
+
+**Security and truthful status:** This is a **draft source producer**, not
+yet the qualified autonomous OpenClaw/ACPX/OpenCode build/test agent.
+Generated text is **untrusted** and remains in SQLite until explicitly
+downloaded. It is **never executed, restored, compiled, launched, mounted,
+applied to another repository, or sent to a remote model**. The application
+validates path traversal/extension/size/count, JSON source syntax, bind to
+approved current SHA/version, model allowlist, single active job and fixed
+loopback network. It must say `Generated (NOT TESTED)`, not `Succeeded`
+or `Verified`. The real isolated coding/build/test integration and issue
+#76 ten integrated adversarial security gates are still required for
+Baseline 1.0, as tracked in #92. Do not claim this draft equals a tested
+or runnable application.
+
 ## Current primary workflow: freeform objective → dynamic interview → specification
 
 Starting at issue #92, the primary Mission Control UI now includes
