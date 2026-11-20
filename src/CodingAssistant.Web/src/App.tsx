@@ -17,7 +17,7 @@ const stages: Record<string, string> = {
   ExecutionStageInferenceBridgeReady: 'Connected the restricted local Ollama socket.',
   ExecutionStageGatewayLaunched: 'Started the isolated Gateway container.',
   ExecutionStageGatewayReady: 'Gateway health checks passed.',
-  ExecutionStageCodingRequestSent: 'Sent the coding request to the local agent; waiting for Qwen.',
+  ExecutionStageCodingRequestSent: 'Entering the coding RPC phase; waiting for the local agent to respond.',
   ExecutionStageCodingRequestReturned: 'Agent returned a result; verifying the workspace.',
   ExecutionStageGatewayRemoved: 'Removed the isolated agent container.',
   ExecutionStageEvaluatorStarted: 'Started independent offline .NET verification.',
