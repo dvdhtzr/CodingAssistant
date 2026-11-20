@@ -277,16 +277,18 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         // This check runs in the SAME SQLite transaction as file persistence
         // and final completion. A revised interview invalidates the build;
         // previously approved text cannot be silently resurrected.
-        using var cmd = TaskStore.Command(db, tx, """
+        using (var cmd = TaskStore.Command(db, tx, """
             SELECT version,sha256,status FROM interview_specs
             WHERE task_id=@task ORDER BY version DESC LIMIT 1
-            """, ("@task", job.TaskId));
-        using var reader = cmd.ExecuteReader();
-        if (!reader.Read() ||
-            reader.GetInt32(0) != job.SpecificationVersion ||
-            reader.GetString(1) != job.SpecificationSha256 ||
-            reader.GetString(2) != "Approved")
-            throw new StoreFailure("SPECIFICATION_CONFLICT");
+            """, ("@task", job.TaskId))
+        using (var reader = cmd.ExecuteReader())
+        {
+            if (!reader.Read() ||
+                reader.GetInt32(0) != job.SpecificationVersion ||
+                reader.GetString(1) != job.SpecificationSha256 ||
+                reader.GetString(2) != "Approved")
+                throw new StoreFailure("SPECIFICATION_CONFLICT");
+        }
         var hash = TaskStore.Scalar(db, tx, """
             SELECT contract_sha256 FROM project_draft_architecture
             WHERE draft_id=@id
