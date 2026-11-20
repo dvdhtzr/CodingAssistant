@@ -1,0 +1,326 @@
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using System.Text.Json;
+using CodingAssistant.Api;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
+
+const string Token = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+var checks = 0;
+void Check(bool condition, string label)
+{
+    if (!condition)
+        throw new Exception("Phase 2 acceptance failed: " + label);
+    checks++;
+}
+
+async Task<HttpClient> Start(WebApplication app)
+{
+    await app.StartAsync();
+    var addresses = app.Services.GetRequiredService<IServer>()
+        .Features.Get<IServerAddressesFeature>()?.Addresses;
+    var address = addresses?.SingleOrDefault() ??
+        throw new Exception("Missing loopback address");
+    Check(address.StartsWith("http://127.0.0.1:", StringComparison.Ordinal),
+        "HTTP API stays on IPv4 loopback");
+    return new HttpClient(new SocketsHttpHandler { UseProxy = false })
+    {
+        BaseAddress = new Uri(address),
+        DefaultRequestHeaders = { Authorization =
+            new AuthenticationHeaderValue("Bearer", Token) }
+    };
+}
+
+async Task<JsonDocument> Body(HttpResponseMessage response) =>
+    JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj) =>
+    await client.PostAsJsonAsync(path, obj);
+
+var root = Path.Combine(Path.GetTempPath(),
+    "ca-phase2-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(root);
+if (!OperatingSystem.IsWindows())
+    File.SetUnixFileMode(root,
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+WebApplication? app = null;
+HttpClient? client = null;
+try
+{
+    var tasks = new TaskStore(root);
+    var interviews = new InterviewStore(tasks);
+    interviews.Initialize();
+    var task = tasks.CreateTask(new CreateTaskRequest(
+        "Calculator", "Offline journal calculator",
+        Guid.NewGuid().ToString("N")));
+    var first = interviews.CommitTurn(task.Id,
+        new InterviewTurnRequest(0, null, "qwen3.5:4b"),
+        new InterviewReply("Who uses this calculation journal?", false));
+    var second = interviews.CommitTurn(task.Id,
+        new InterviewTurnRequest(first.LastSequence,
+            "An offline user needs decimals and history.", "qwen3.5:4b"),
+        new InterviewReply("Should history survive reloads?", true));
+    var drafted = interviews.CommitSpecification(task.Id, second.LastSequence,
+        ("An offline calculation journal with keyboard and mouse input; " +
+         "acceptance requires arithmetic, a Back action, and durable history. " +
+         "Deployment requires no cloud connectivity and all source files must link correctly. ")
+        .PadRight(200, 'x'));
+    var spec = drafted.Specification!;
+    interviews.Approve(task.Id, new ApproveSpecificationRequest(
+        spec.Version, spec.Sha256));
+
+    var settings = new ApiSettings(root, Token, "http://127.0.0.1:0");
+    app = ApiHost.Build([], settings);
+    client = await Start(app);
+    using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "runtime profiles are authenticated");
+
+    using (var profiles = await client.GetAsync("/api/runtime-profiles"))
+    using (var body = await Body(profiles))
+    {
+        Check(profiles.StatusCode == HttpStatusCode.OK, "profile registry GET");
+        var json = body.RootElement;
+        Check(json.GetProperty("schemaVersion").GetInt32() == 1,
+            "profile registry schema is explicit");
+        Check(!json.GetProperty("registryExecutionAvailable").GetBoolean(),
+            "registry never grants executable capability");
+        var descriptors = json.GetProperty("profiles").EnumerateArray().ToArray();
+        Check(descriptors.Length == 2, "two scoped descriptors");
+        var web = descriptors.Single(p => p.GetProperty("id").GetString() == "static-web");
+        Check(web.GetProperty("qualificationStatus").GetString() == "UNQUALIFIED" &&
+              !web.GetProperty("executableViaRegistry").GetBoolean() &&
+              web.GetProperty("toolchainImageDigest").ValueKind == JsonValueKind.Null,
+            "Static Web cannot claim an image or executable admission");
+        var legacy = descriptors.Single(p =>
+            p.GetProperty("id").GetString() == "legacy-dotnet-pilot");
+        Check(legacy.GetProperty("qualificationStatus").GetString() ==
+              "LEGACY_SCOPED_PILOT_ONLY" &&
+              !legacy.GetProperty("executableViaRegistry").GetBoolean(),
+            "legacy .NET pilot is not general-purpose .NET");
+    }
+
+    using (var missing = await client.GetAsync("/api/runtime-profiles/python"))
+        Check(missing.StatusCode == HttpStatusCode.NotFound,
+            "unsupported profile cannot be selected");
+    using (var noMutation = await Post(client, "/api/runtime-profiles",
+        new { id = "python", executableViaRegistry = true }))
+        Check(noMutation.StatusCode == HttpStatusCode.MethodNotAllowed,
+            "runtime profiles have no mutation API");
+
+    var options = new[]
+    {
+        new ArchitectureOption("static-web", "Static browser app",
+            "Offline operation with no build dependencies",
+            "Manual module boundaries", "static-web"),
+        new ArchitectureOption("legacy-dotnet", "Scoped C# pilot",
+            "Existing isolated .NET test scenario",
+            "Not a general product runtime", "legacy-dotnet-pilot")
+    };
+    var proposal = new ProposeArchitectureDecisionRequest(
+        1, spec.Version, spec.Sha256, "technology-stack", "static-web",
+        "Prefer offline JavaScript; owner may select an alternative.",
+        options, 0);
+    var path = $"/api/tasks/{task.Id}/architecture-decisions";
+
+    using (var unsupported = await Post(client, path, proposal with
+    {
+        Options = new[]
+        {
+            options[0] with { RuntimeProfileId = "untrusted-container" },
+            options[1]
+        }
+    }))
+        Check(unsupported.StatusCode == HttpStatusCode.BadRequest,
+            "unknown profile rejected before persistence");
+
+    using (var invalidSchema = await Post(client, path,
+        proposal with { SchemaVersion = 2 }))
+        Check(invalidSchema.StatusCode == HttpStatusCode.BadRequest,
+            "unknown schema version rejected");
+
+    string hash;
+    using (var proposed = await Post(client, path, proposal))
+    using (var body = await Body(proposed))
+    {
+        Check(proposed.StatusCode == HttpStatusCode.Created,
+            "versioned proposal accepted with approved specification");
+        var json = body.RootElement;
+        Check(json.GetProperty("status").GetString() == "Proposed" &&
+              json.GetProperty("selectedOptionId").ValueKind == JsonValueKind.Null &&
+              json.GetProperty("revision").GetInt32() == 1,
+            "recommendation does not imply owner approval");
+        hash = json.GetProperty("proposalSha256").GetString()!;
+        Check(hash.Length == 64 && hash.All(Uri.IsHexDigit),
+            "proposal has immutable SHA256 identity");
+    }
+
+    using (var repeated = await Post(client, path, proposal))
+        Check(repeated.StatusCode == HttpStatusCode.Conflict,
+            "concurrent or repeated obsolete revisions rejected");
+
+    var reviewPath = path + "/technology-stack/review";
+    var selection = new ReviewArchitectureDecisionRequest(
+        1, 1, hash, "Approve", "legacy-dotnet", "APPROVE " + hash);
+    using (var wrongHash = await Post(client, reviewPath,
+        selection with { ProposalSha256 = new string('0', 64) }))
+        Check(wrongHash.StatusCode == HttpStatusCode.Conflict,
+            "changed proposal hash invalidates approval");
+
+    using (var wrongConfirmation = await Post(client, reviewPath,
+        selection with { Confirmation = "APPROVE unrelated" }))
+        Check(wrongConfirmation.StatusCode == HttpStatusCode.Conflict,
+            "owner must confirm exact proposal hash");
+
+    using (var unknownChoice = await Post(client, reviewPath,
+        selection with { SelectedOptionId = "arbitrary-runtime" }))
+        Check(unknownChoice.StatusCode == HttpStatusCode.BadRequest,
+            "owner cannot approve unproposed option");
+
+    using (var accepted = await Post(client, reviewPath, selection))
+    using (var body = await Body(accepted))
+    {
+        Check(accepted.StatusCode == HttpStatusCode.OK,
+            "owner approves recommendation alternative explicitly");
+        Check(body.RootElement.GetProperty("status").GetString() == "Approved" &&
+              body.RootElement.GetProperty("selectedOptionId").GetString() ==
+              "legacy-dotnet", "selection differs from model recommendation");
+    }
+    using (var replay = await Post(client, reviewPath, selection))
+        Check(replay.StatusCode == HttpStatusCode.Conflict,
+            "approval cannot be replayed or silently changed");
+
+    using (var list = await client.GetAsync(path))
+    using (var body = await Body(list))
+    {
+        var items = body.RootElement.GetProperty("decisions");
+        Check(items.GetArrayLength() == 1 &&
+              items[0].GetProperty("specificationCurrent").GetBoolean() &&
+              items[0].GetProperty("effectiveStatus").GetString() == "Approved",
+            "current approved decision listed as planning state");
+    }
+    using (var status = await client.GetAsync("/api/status"))
+    using (var body = await Body(status))
+        Check(!body.RootElement.GetProperty("executionEnabled").GetBoolean(),
+            "decision approval never starts or enables the M1 runner");
+
+    // Recreate the entire HTTP host; proposals and old interviews remain.
+    client.Dispose();
+    client = null;
+    await app.StopAsync();
+    await app.DisposeAsync();
+    app = null;
+
+    app = ApiHost.Build([], settings);
+    client = await Start(app);
+    using (var persisted = await client.GetAsync(path))
+    using (var body = await Body(persisted))
+    {
+        var saved = body.RootElement.GetProperty("decisions")[0];
+        Check(saved.GetProperty("selectedOptionId").GetString() == "legacy-dotnet" &&
+              saved.GetProperty("proposalSha256").GetString() == hash,
+            "SQLite selection and proposal hash survive restart");
+    }
+    Check(interviews.Read(task.Id).Specification!.Status == "Approved",
+        "original interview approval survives Phase 2 migration");
+
+    var replacement = proposal with
+    {
+        ExpectedRevision = 1,
+        RecommendedOptionId = "legacy-dotnet",
+        Rationale = "Alternative proposed after owner changed priorities."
+    };
+    using (var replaced = await Post(client, path, replacement))
+    using (var body = await Body(replaced))
+        Check(replaced.StatusCode == HttpStatusCode.Created &&
+              body.RootElement.GetProperty("revision").GetInt32() == 2 &&
+              body.RootElement.GetProperty("status").GetString() == "Proposed",
+            "new proposal supersedes previous approval");
+
+    using (var history = await client.GetAsync(path + "/technology-stack/history"))
+    using (var body = await Body(history))
+    {
+        var versions = body.RootElement.GetProperty("decisions");
+        Check(versions.GetArrayLength() == 2 &&
+              versions[0].GetProperty("status").GetString() == "Superseded" &&
+              versions[1].GetProperty("status").GetString() == "Proposed",
+            "immutable revisions retain audit history");
+    }
+
+    using (var staleReview = await Post(client, reviewPath, selection))
+        Check(staleReview.StatusCode == HttpStatusCode.Conflict,
+            "old proposal can never be reapproved");
+
+    // Updated Product Owner conversation invalidates the exact old spec.
+    var revisedInterview = interviews.CommitTurn(task.Id,
+        new InterviewTurnRequest(second.LastSequence,
+            "Change requirement: history may now be optional.", "qwen3.5:4b"),
+        new InterviewReply("What is the minimum history behavior?", true));
+    using (var stale = await client.GetAsync(path))
+    using (var body = await Body(stale))
+        Check(body.RootElement.GetProperty("decisions")[0]
+            .GetProperty("effectiveStatus").GetString() == "STALE_SPECIFICATION",
+            "revised interview invalidates effective architecture decisions");
+
+    using (var forbidden = await Post(client, reviewPath,
+        new ReviewArchitectureDecisionRequest(
+            1, 2, hash, "Defer", null, "DEFER " + hash)))
+        Check(forbidden.StatusCode == HttpStatusCode.Conflict,
+            "stale revision cannot be reviewed");
+
+    var newSpec = interviews.CommitSpecification(
+        task.Id, revisedInterview.LastSequence,
+        ("Revised calculator. History is optional. All controls must work " +
+         "offline with mouse and keyboard. The owner still selects architecture. ")
+        .PadRight(200, 'y')).Specification!;
+    interviews.Approve(task.Id, new ApproveSpecificationRequest(
+        newSpec.Version, newSpec.Sha256));
+    using (var oldSpec = await Post(client, path, replacement with
+    {
+        ExpectedRevision = 2
+    }))
+        Check(oldSpec.StatusCode == HttpStatusCode.Conflict,
+            "superseded spec hash cannot create new proposal");
+
+    string deferredHash;
+    using (var newProposal = await Post(client, path, proposal with
+    {
+        ExpectedRevision = 2,
+        SpecificationVersion = newSpec.Version,
+        SpecificationSha256 = newSpec.Sha256
+    }))
+    using (var body = await Body(newProposal))
+    {
+        Check(newProposal.StatusCode == HttpStatusCode.Created,
+            "new approved specification permits revision 3");
+        deferredHash = body.RootElement.GetProperty("proposalSha256").GetString()!;
+    }
+    using (var deferred = await Post(client, reviewPath,
+        new ReviewArchitectureDecisionRequest(
+            1, 3, deferredHash, "Defer", null, "DEFER " + deferredHash)))
+    using (var body = await Body(deferred))
+        Check(deferred.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("status").GetString() == "Deferred",
+            "owner can explicitly defer a decision without selecting a profile");
+
+    using (var noExec = await Post(client, "/api/tasks/" + task.Id + "/execute",
+        new { }))
+        Check(noExec.StatusCode == HttpStatusCode.NotFound,
+            "Phase 2 adds no arbitrary execution endpoint");
+    Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
+}
+finally
+{
+    client?.Dispose();
+    if (app is not null)
+    {
+        await app.StopAsync();
+        await app.DisposeAsync();
+    }
+    try { Directory.Delete(root, recursive: true); }
+    catch (IOException) { /* Windows may release SQLite locks after process exit. */ }
+}
