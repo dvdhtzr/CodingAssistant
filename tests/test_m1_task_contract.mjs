@@ -14,7 +14,8 @@ function valid() {
     "The API must not reach any cloud services. Use a local SQLite store.";
   return {
     schema: CONTRACT_SCHEMA, taskId: "a".repeat(32),
-    specificationVersion: 1, specificationSha256: hash(specification),
+    specificationVersion: 1, approvedSpecificationSha256: "b".repeat(64),
+    specificationSha256: hash(specification),
     objective: "Implement a local expense tracking API",
     specification, model: "qwen3.5:4b",
     files: ["ExpenseApi/ExpenseApi.csproj", "ExpenseApi/Program.cs"],
@@ -72,6 +73,7 @@ test("rejects malformed input and contract downgrade", () => {
     { model: "remote/cloud" },
     { specificationVersion: 0 },
     { specificationVersion: 2.5 },
+    { approvedSpecificationSha256: "bad" },
     { specificationSha256: "0".repeat(64) },
     { objective: "x" },
     { specification: "short" },
