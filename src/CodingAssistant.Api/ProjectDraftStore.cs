@@ -24,7 +24,7 @@ public sealed record ProjectDraftSnapshot(
     IReadOnlyList<ProjectDraftFile> Files,
     DraftArchitectureContract? Architecture = null);
 public sealed record StartProjectDraftRequest(int SpecificationVersion,
-                                              string? SpecificationSha256);
+    string? SpecificationSha256, string? ArchitectureSha256 = null);
 
 public interface IProjectDraftModel
 {
@@ -201,7 +201,8 @@ public sealed class ProjectDraftStore(TaskStore tasks)
     }
 
     public ProjectDraftJob Start(
-        string taskId, int specVersion, string specSha, string model)
+        string taskId, int specVersion, string specSha, string model,
+        string? architectureSha256 = null)
     {
         ValidateId(taskId);
         if (specVersion < 1 || specSha is null || !Sha.IsMatch(specSha) ||
@@ -222,6 +223,8 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         // Any proposal/review concurrent with this transaction is serialized.
         var architecture = DraftArchitecturePolicy.Capture(
             db, tx, taskId, specVersion, specSha);
+        if (architecture?.Sha256 != architectureSha256)
+            throw new StoreFailure("ARCHITECTURE_CONFLICT");
         var now = DateTimeOffset.UtcNow.ToString("O");
         var id = Guid.NewGuid().ToString("N");
         try
@@ -505,6 +508,8 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireApprovedSpec(db, tx, job);
+        DraftArchitecturePolicy.ValidateSourcePath(
+            ReadArchitecture(db, tx, id), path);
         var files = TaskStore.Scalar(db, tx, """
             SELECT COUNT(*) FROM project_draft_files WHERE draft_id=@id
             """, ("@id", id));
