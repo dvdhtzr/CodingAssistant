@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type TaskItem } from './api';
+import { ProjectDraftPanel } from './ProjectDraftPanel';
 
 interface InterviewMessage {
   sequence: number;
@@ -218,15 +219,15 @@ export function InterviewStudio({ token, task }: {
         </div>}
       </div>
 
-      <div className="build-gate">
-        <h2>3. Autonomous build</h2>
-        <p>Not connected to arbitrary project workspaces yet.</p>
-        <p className="hint">I won't pretend that the old fixed C# repair fixture builds
-          your requested application. The next implementation must bind this approved
-          specification to a genuinely isolated project worktree, perform actual coding,
-          record file changes and tests, and present the results here. The required
-          integrated security checks must pass before general repository access.</p>
-      </div>
+      {spec?.status === 'Approved' &&
+        <ProjectDraftPanel token={token} task={task} specification={spec} />}
+      {spec?.status !== 'Approved' &&
+        <div className="build-gate">
+          <h2>3. Source drafting</h2>
+          <p className="hint">Approve your specification before asking the local
+            model to generate a project-specific source proposal. No model
+            tool execution or repository changes are authorized by this step.</p>
+        </div>}
     </>}
   </section>;
 }
