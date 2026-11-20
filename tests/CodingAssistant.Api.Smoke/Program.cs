@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using CodingAssistant.Api;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -734,6 +735,51 @@ try
         using (var json = await ReadJson(recoveredOriginal))
             Check(json.RootElement.GetProperty("state").GetString() == "Interrupted",
                 "interrupted run remains interrupted after another succeeds");
+
+        // Strict plan parsing refuses request-scope escalation independent of
+        // the JSON hash. These model-free contract cases are NOT substitutes
+        // for the mandatory real Podman adversarial cases on the Dell.
+        var verifiedRun = executionApp!.Services
+            .GetRequiredService<RunStore>().Get(executionRunId);
+        var verifiedPreview = await fake.PreviewAsync(verifiedRun, CancellationToken.None);
+        M1ProcessRunner.VerifyExactBoundPlan(
+            verifiedRun, verifiedPreview.Plan, verifiedPreview.PlanHash);
+        Check(true, "known fixed-fixture plan accepted by independent parser");
+        var hostilePlans = new (string Name, Action<JsonNode> Mutate)[] {
+            ("parent directory traversal", n => n["writable_files"]![0] = "../../etc/passwd"),
+            ("absolute host path", n => n["writable_files"]![0] = "/home/owner/.ssh"),
+            ("arbitrary symlink target", n => n["writable_files"]![0] = "api/link-to-secrets"),
+            ("cloud-model substitution", n => n["model"] = "anthropic/claude"),
+            ("model fingerprint absent", n => n["model_digest"] = "latest"),
+            ("mutable runtime image", n => n["image_id"] = "latest"),
+            ("evaluator omitted", n => n["evaluator_image_id"] = "bad"),
+            ("unapproved gateway command", n => n["gateway_method"] = "shell.exec"),
+            ("Git remote escape", n => n["no_git_remote"] = false),
+            ("network/cloud escape", n => n["no_cloud"] = false),
+            ("wrong M2 task", n => n["control"]!["task_id"] = new string('0', 32)),
+            ("wrong M2 run", n => n["control"]!["run_id"] = new string('1', 32)),
+            ("stale planning version", n => n["control"]!["plan_version"] = 999),
+            ("wrong M2 planning approval", n => n["control"]!["plan_hash"] = new string('0', 64)),
+            ("extra child-process grant", n => n.AsObject().Add("allow_shell", true)),
+            ("additional control grant", n => n["control"]!.AsObject().Add("extra", true)),
+            ("changed assignment", n => n["assignment"] = "modify host OS"),
+        };
+        foreach (var (caseName, mutate) in hostilePlans)
+        {
+            var node = JsonNode.Parse(verifiedPreview.Plan.GetRawText())!;
+            mutate(node);
+            var tampered = JsonSerializer.SerializeToElement(node);
+            var tamperedHash = M1ProcessRunner.ComputeCanonicalHash(tampered);
+            try
+            {
+                M1ProcessRunner.VerifyExactBoundPlan(verifiedRun, tampered, tamperedHash);
+                throw new Exception("Hostile M1 plan accepted: " + caseName);
+            }
+            catch (ExecutionUnavailable)
+            {
+                checks++;
+            }
+        }
 
         // A stale M2 plan must block further execution previews.
         string staleRunId;
