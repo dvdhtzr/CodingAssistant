@@ -1,6 +1,7 @@
 """Model-free M3 result contracts for the existing immutable M1 evidence ledger."""
 import importlib.util
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -71,6 +72,7 @@ class ResultReadoutContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             runner.bounded_result(bad, REQUEST, HASH)
 
+    @unittest.skipUnless(os.name == "posix", "Linux owner-private evidence files")
     def test_private_saved_result_loaded_by_exact_request_id(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
@@ -96,6 +98,7 @@ class ResultReadoutContracts(unittest.TestCase):
         }
         self.assertFalse(runner.read_result_by_request(ledger, REQUEST)["available"])
 
+    @unittest.skipUnless(os.name == "posix", "Linux O_NOFOLLOW evidence boundary")
     def test_symlink_report_refused(self):
         with tempfile.TemporaryDirectory() as temp:
             root = pathlib.Path(temp)
