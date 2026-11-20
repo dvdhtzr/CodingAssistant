@@ -14,7 +14,11 @@ The launcher handles the CI application install when needed, opens the local
 browser, and prints the one-time owner token to paste into the login screen.
 If GitHub CLI cannot download the artifact automatically, one browser download
 from the official successful Actions run is necessary. Autonomous coding is
-**off by default**; see `src/CodingAssistant.Web/README.md`.
+**off by default**. To perform an explicitly approved **fixed-fixture-only**
+coding trial, add `--enable-execution` to the command; the launcher first
+runs model-free containment preflight and prepares the pinned offline image.
+It refuses to enable coding if those checks fail. The ten integrated security
+tests in issue #76 remain required. See `src/CodingAssistant.Web/README.md`.
 
 ## M2 .NET control plane and gated M1 execution integration
 
