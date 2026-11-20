@@ -844,9 +844,9 @@ def bounded_result(report: dict, request_id: str, plan_hash: str) -> dict:
         raise ValueError("Invalid inference request count")
     patch = report.get("approved_patch", "")
     omitted = report.get("patch_omitted", False)
-    if type(patch) is not str or len(patch.encode("utf-8")) > 7000 or (
-            patch and not patch.startswith("--- a/api/Program.cs\n")) or
-            type(omitted) is not bool:
+    if (type(patch) is not str or len(patch.encode("utf-8")) > 7000 or
+            (patch and not patch.startswith("--- a/api/Program.cs\n")) or
+            type(omitted) is not bool):
         raise ValueError("Invalid fixed-fixture patch")
     if status != "GATEWAY_APPROVED_CODING_PASS" or verified is not True:
         patch = ""  # Never present unverified code as approved output.
