@@ -200,9 +200,12 @@ public sealed class ExecutionStore(TaskStore tasks)
             throw new StoreFailure("INVALID_STATE");
         // At most one active M1 worker per host DB, independently protected by
         // ix_single_active_execution against simultaneous API processes.
+        // An unresolved orphan may still own a live labeled container.
+        // Never admit another worker while ANY cleanup is uncertain.
         if (TaskStore.Scalar(db, tx, """
             SELECT run_id FROM run_executions
-            WHERE state IN ('Starting','Running','Cancelling') LIMIT 1
+            WHERE state IN ('Starting','Running','Cancelling','RecoveryBlocked')
+            LIMIT 1
             """) is not null)
             throw new StoreFailure("EXECUTION_BUSY");
         var changed = Transition(db, tx, runId, "Authorized", "Starting",
