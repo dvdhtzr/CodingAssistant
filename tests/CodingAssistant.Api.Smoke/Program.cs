@@ -32,9 +32,10 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object body
     await client.PostAsJsonAsync(path, body);
 
 async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveApp,
-    IM1ExecutionRunner? runner = null, IHtmlPreviewGenerator? htmlGenerator = null)
+    IM1ExecutionRunner? runner = null, IHtmlPreviewGenerator? htmlGenerator = null,
+    IInterviewModel? interviewModel = null)
 {
-    var app = ApiHost.Build([], settings, runner, htmlGenerator);
+    var app = ApiHost.Build([], settings, runner, htmlGenerator, interviewModel);
     await app.StartAsync();
     saveApp(app);
     var addresses = app.Services.GetRequiredService<IServer>()
@@ -954,6 +955,181 @@ try
         }
     }
 
+    // First conversation-first, real API + SQLite vertical slice:
+    // an arbitrary task objective drives adaptive model-supplied questions,
+    // the owner's answers, a versioned specification, and exact approval.
+    // The fake proves orchestration only; real Ollama acceptance is Dell-only.
+    var interviewData = Path.Combine(root, "interview-private");
+    var interviewSettings = new ApiSettings(
+        interviewData, OwnerToken, "http://127.0.0.1:0");
+    var fakeInterview = new SmokeInterviewModel();
+    WebApplication? interviewApp = null;
+    HttpClient? interviewClient = null;
+    try
+    {
+        interviewClient = await Start(interviewSettings,
+            app => interviewApp = app, interviewModel: fakeInterview);
+        interviewClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", OwnerToken);
+        string id;
+        const string ownerObjective =
+            "Build a personal finance app with monthly budgets and editable categories";
+        using (var created = await Post(interviewClient, "/api/tasks", new {
+            title = "My own requested app",
+            objective = ownerObjective,
+            requestId = Guid.NewGuid().ToString("N")
+        }))
+        using (var json = await ReadJson(created))
+        {
+            Check(created.StatusCode == HttpStatusCode.Created,
+                "arbitrary interview task persists");
+            id = json.RootElement.GetProperty("id").GetString()!;
+        }
+        using (var empty = await interviewClient.GetAsync($"/api/tasks/{id}/interview"))
+        using (var json = await ReadJson(empty))
+            Check(empty.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("lastSequence").GetInt32() == 0,
+                "interview starts empty, without hard-coded questions");
+        using (var wrongModel = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/turn", new {
+                expectedSequence = 0, model = "cloud/model"
+            }))
+            Check(wrongModel.StatusCode == HttpStatusCode.BadRequest,
+                "interview rejects remote model before an LLM call");
+        using (var first = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/turn", new {
+                expectedSequence = 0, model = "qwen3.5:4b"
+            }))
+        using (var json = await ReadJson(first))
+        {
+            Check(first.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("lastSequence").GetInt32() == 1 &&
+                  json.RootElement.GetProperty("messages")[0]
+                    .GetProperty("content").GetString()!
+                    .Contains("budgets", StringComparison.OrdinalIgnoreCase),
+                "first dynamic interview question is persisted");
+        }
+        using (var noAnswersSpec = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/specification", new {
+                expectedSequence = 1
+            }))
+            Check(noAnswersSpec.StatusCode == HttpStatusCode.Conflict,
+                "specification cannot be drafted without owner answers");
+        using (var answer = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/turn", new {
+                expectedSequence = 1,
+                message = "Individual users, no bank integrations, C# and React."
+            }))
+        using (var json = await ReadJson(answer))
+            Check(answer.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("lastSequence").GetInt32() == 3,
+                "second context-aware question and answer persisted atomically");
+        using (var stale = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/turn", new {
+                expectedSequence = 1,
+                message = "Stale repeated owner answer"
+            }))
+            Check(stale.StatusCode == HttpStatusCode.Conflict,
+                "duplicate/interleaved owner answer cannot overwrite interview");
+        using (var answer2 = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/turn", new {
+                expectedSequence = 3,
+                message = "Provide a monthly budget editor and expense reports."
+            }))
+        using (var json = await ReadJson(answer2))
+            Check(answer2.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("readyForSpecification").GetBoolean(),
+                "model signals readiness after actual interview");
+        string specHash;
+        int specVersion;
+        using (var spec = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/specification", new {
+                expectedSequence = 5
+            }))
+        using (var json = await ReadJson(spec))
+        {
+            Check(spec.StatusCode == HttpStatusCode.OK,
+                "LLM-authored spec persists through authenticated API");
+            var value = json.RootElement.GetProperty("specification");
+            specHash = value.GetProperty("sha256").GetString()!;
+            specVersion = value.GetProperty("version").GetInt32();
+            Check(specHash.Length == 64 && specVersion == 1 &&
+                  value.GetProperty("status").GetString() == "Draft",
+                "reviewable v1 specification is SHA-256 bound");
+        }
+        using (var wrongApproval = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/approve", new {
+                version = specVersion, sha256 = new string('f', 64)
+            }))
+            Check(wrongApproval.StatusCode == HttpStatusCode.Conflict,
+                "unbound specification consent rejected");
+        using (var approve = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/approve", new {
+                version = specVersion, sha256 = specHash
+            }))
+        using (var json = await ReadJson(approve))
+            Check(approve.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("specification")
+                    .GetProperty("status").GetString() == "Approved",
+                "owner's exact approved specification saved");
+        Check(fakeInterview.AskCount == 3 &&
+              fakeInterview.SpecCount == 1 &&
+              fakeInterview.LastObjective == ownerObjective,
+            "real task objective, not C# fixture, reached model interview");
+
+        await interviewApp!.StopAsync();
+        await interviewApp.DisposeAsync();
+        interviewApp = null;
+        interviewClient.Dispose();
+        interviewClient = null;
+        // Restart with the SAME real SQLite data: no conversation replay.
+        interviewClient = await Start(interviewSettings,
+            app => interviewApp = app, interviewModel: fakeInterview);
+        interviewClient.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", OwnerToken);
+        using (var saved = await interviewClient.GetAsync($"/api/tasks/{id}/interview"))
+        using (var json = await ReadJson(saved))
+            Check(saved.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("messages").GetArrayLength() == 5 &&
+                  json.RootElement.GetProperty("specification")
+                    .GetProperty("sha256").GetString() == specHash &&
+                  json.RootElement.GetProperty("specification")
+                    .GetProperty("status").GetString() == "Approved",
+                "interview, spec and approval survive real API restart");
+
+        // More owner input deliberately supersedes an approved contract.
+        using (var more = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/turn", new {
+                expectedSequence = 5,
+                message = "Also support exporting budget reports as CSV."
+            }))
+        using (var json = await ReadJson(more))
+            Check(more.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("specification")
+                    .GetProperty("status").GetString() == "Superseded",
+                "new requirements invalidate earlier approved spec");
+        using (var updated = await Post(interviewClient,
+            $"/api/tasks/{id}/interview/specification", new {
+                expectedSequence = 7
+            }))
+        using (var json = await ReadJson(updated))
+            Check(updated.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("specification")
+                    .GetProperty("version").GetInt32() == 2 &&
+                  json.RootElement.GetProperty("specification")
+                    .GetProperty("sha256").GetString() != specHash,
+                "revised specification gets a new immutable version/hash");
+    }
+    finally
+    {
+        interviewClient?.Dispose();
+        if (interviewApp is not null)
+        {
+            await interviewApp.StopAsync();
+            await interviewApp.DisposeAsync();
+        }
+    }
+
     if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
     {
         var dirMode = File.GetUnixFileMode(data);
@@ -978,6 +1154,48 @@ finally
     }
     try { Directory.Delete(root, recursive: true); }
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
+}
+
+sealed class SmokeInterviewModel : IInterviewModel
+{
+    public int AskCount;
+    public int SpecCount;
+    public string LastObjective = "";
+
+    public Task<InterviewReply> AskAsync(
+        string objective, IReadOnlyList<InterviewMessage> messages,
+        string model, CancellationToken cancellation)
+    {
+        LastObjective = objective;
+        AskCount++;
+        var answerCount = messages.Count(x => x.Role == "owner");
+        var message = answerCount switch
+        {
+            0 => "For your monthly budgets, who will use the application and " +
+                 "are there any bank integrations?",
+            1 => "For your C# and React application, which monthly budget " +
+                 "editing features are essential?",
+            _ => "I have enough detail to draft your finance specification."
+        };
+        return Task.FromResult(new InterviewReply(message, answerCount >= 2));
+    }
+
+    public Task<string> DraftAsync(
+        string objective, IReadOnlyList<InterviewMessage> messages,
+        string model, CancellationToken cancellation)
+    {
+        LastObjective = objective;
+        SpecCount++;
+        var text = "# Specification: " + objective + "\n\n" +
+            "## Functional requirements\n" +
+            string.Join("\n", messages.Where(x => x.Role == "owner")
+                .Select(x => "- " + x.Content)) +
+            "\n\n## Architecture\nLocal React and .NET with SQLite.\n" +
+            "## Acceptance criteria\nAll required features are covered.\n" +
+            "## Testing\nCompile and run independent acceptance tests.\n" +
+            "## Risk\nDo not use cloud services or bank integrations.";
+        return Task.FromResult(text);
+    }
 }
 
 sealed class SmokeHtmlGenerator : IHtmlPreviewGenerator

@@ -46,6 +46,35 @@ consent, and an explicit Start click remain separate.
 Issue #76's ten integrated adversarial security checks remain required
 before wider autonomous execution. This is a development preview.
 
+## Current primary workflow: freeform objective → dynamic interview → specification
+
+Starting at issue #92, the primary Mission Control UI now includes
+`InterviewStudio` for every newly created task (not an HTML or C# fixture).
+The local Ollama model conducts an adaptive requirements interview based on
+the **actual task objective and saved owner answers**. The conversation is
+stored in owner-private SQLite with monotonically numbered messages and
+optimistic concurrency. A stale browser tab cannot silently append a second
+answer or approve a different specification. The user may draft a detailed
+Markdown implementation specification after answering at least one question,
+then review and approve the **exact version and SHA-256** using a confirmation
+checkbox. Changing requirements supersedes prior approvals. Reconnect and API
+restart preserve the conversation, specification and consent.
+
+Models are explicitly restricted to installed local `qwen3.5:4b` and
+`qwen2.5-coder:3b`; no proxy, redirect, cloud or model tool execution.
+Each interview/spec request has a bounded prompt and timeout; failures do
+not append imaginary assistant replies or claim the model is progressing.
+
+**Important limitation:** This release implements the interview and
+specification side of Baseline 1.0, **not** its generalized build engine.
+The new build panel states this explicitly. The old single-file HTML demo
+and frozen C# agent qualification are in separate Advanced disclosures and
+must not be presented as arbitrary-project implementation.
+The remaining build milestone requires a task-bound approved workspace,
+a real OpenClaw→ACPX→OpenCode coding run, OS-denied escape cases (#76),
+truthful live file/build/test results and inspectable artifacts (#92).
+No repo scope is widened or model permission added in this PR.
+
 ## First useful task: standalone HTML artifact
 
 The top of Mission Control now has a **Make your HTML page** action.

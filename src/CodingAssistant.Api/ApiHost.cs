@@ -36,7 +36,8 @@ public static class ApiHost
     public static WebApplication Build(
         string[] args, ApiSettings? settings = null,
         IM1ExecutionRunner? runnerOverride = null,
-        IHtmlPreviewGenerator? htmlGeneratorOverride = null)
+        IHtmlPreviewGenerator? htmlGeneratorOverride = null,
+        IInterviewModel? interviewModelOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -62,6 +63,9 @@ public static class ApiHost
         var htmlArtifacts = new HtmlArtifactStore(store);
         htmlArtifacts.Initialize();
         var htmlGenerator = htmlGeneratorOverride ?? new LocalHtmlPreviewGenerator();
+        var interviews = new InterviewStore(store);
+        interviews.Initialize();
+        var interviewModel = interviewModelOverride ?? new LocalInterviewModel();
         var enabled = settings.EnableLocalExecution &&
             (runnerOverride is not null || OperatingSystem.IsLinux());
         var runner = runnerOverride ?? (enabled
@@ -101,6 +105,8 @@ public static class ApiHost
             options.AddServerHeader = false;
         });
         builder.Services.AddSingleton(store);
+        builder.Services.AddSingleton(interviews);
+        builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton(htmlArtifacts);
         builder.Services.AddSingleton<IHtmlPreviewGenerator>(htmlGenerator);
         builder.Services.AddSingleton(runs);
@@ -204,6 +210,63 @@ public static class ApiHost
                 var artifact = artifacts.Save(id, model, html);
                 return Results.Created($"/api/tasks/{id}/html", artifact);
             }));
+        // Task-specific dynamic AI interview + owner-reviewed specification.
+        // All steps are planning-only; none can launch the M1 execution plane.
+        app.MapGet("/api/tasks/{id}/interview", (string id, InterviewStore db) =>
+            Safe(() => Results.Ok(db.Read(id))));
+        app.MapPost("/api/tasks/{id}/interview/turn", (
+                string id, InterviewTurnRequest input,
+                TaskStore tasks, InterviewStore db, IInterviewModel model,
+                CancellationToken cancellation) =>
+            SafeAsync(async () =>
+            {
+                var task = tasks.GetTask(id).Task;
+                var snapshot = db.Read(id);
+                if (snapshot.LastSequence != input.ExpectedSequence ||
+                    snapshot.Messages.Count(x => x.Role == "owner") >=
+                    InterviewStore.MaxOwnerAnswers)
+                    throw new StoreFailure("STALE_INTERVIEW");
+                var selected = snapshot.Model ?? input.Model ??
+                    LocalInterviewModel.DefaultModel;
+                if (!LocalInterviewModel.AllowedModel(selected) ||
+                    snapshot.Model is not null && input.Model is not null &&
+                    snapshot.Model != input.Model)
+                    throw new StoreFailure("INVALID_MODEL");
+                if (snapshot.LastSequence == 0 && input.Message is not null)
+                    throw new StoreFailure("INVALID_INPUT");
+                var context = snapshot.Messages.ToList();
+                if (snapshot.LastSequence != 0)
+                    context.Add(new InterviewMessage(
+                        snapshot.LastSequence + 1, "owner",
+                        InterviewStore.ValidOwnerMessage(input.Message),
+                        DateTimeOffset.UtcNow.ToString("O")));
+                var reply = await model.AskAsync(
+                    task.Objective, context, selected, cancellation);
+                return Results.Ok(db.CommitTurn(
+                    id, input with { Model = selected }, reply));
+            }));
+        app.MapPost("/api/tasks/{id}/interview/specification", (
+                string id, SpecificationRequest input,
+                TaskStore tasks, InterviewStore db, IInterviewModel model,
+                CancellationToken cancellation) =>
+            SafeAsync(async () =>
+            {
+                var task = tasks.GetTask(id).Task;
+                var snapshot = db.Read(id);
+                if (snapshot.LastSequence != input.ExpectedSequence ||
+                    !snapshot.Messages.Any(x => x.Role == "owner") ||
+                    snapshot.Model is null)
+                    throw new StoreFailure("STALE_INTERVIEW");
+                var content = await model.DraftAsync(
+                    task.Objective, snapshot.Messages, snapshot.Model,
+                    cancellation);
+                return Results.Ok(db.CommitSpecification(
+                    id, input.ExpectedSequence, content));
+            }));
+        app.MapPost("/api/tasks/{id}/interview/approve", (
+                string id, ApproveSpecificationRequest input,
+                InterviewStore db) =>
+            Safe(() => Results.Ok(db.Approve(id, input))));
         app.MapPost("/api/tasks/{id}/plans", (
                 string id, DraftPlanRequest input, TaskStore db) =>
             Safe(() =>
@@ -351,7 +414,8 @@ public static class ApiHost
             "NOT_FOUND" => StatusCodes.Status404NotFound,
             "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" =>
                 StatusCodes.Status503ServiceUnavailable,
-            "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
+            "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
+                "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
                 "EXECUTION_PLAN_CONFLICT" => StatusCodes.Status409Conflict,

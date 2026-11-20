@@ -29,3 +29,24 @@
 .advanced-gate{border:1px solid #314557;border-radius:9px;padding:1rem}
 .advanced-gate>summary{cursor:pointer;color:#d4e8fa;font-size:.9rem;font-weight:700}
 .advanced-gate>.panel{margin-top:1rem}
+
+/* Primary M3 workflow: context-aware interview and immutable specification. */
+.interview-studio{border:1px solid #318b88;box-shadow:0 0 22px #2de0c412}
+.interview-title{display:flex;justify-content:space-between;gap:1rem;align-items:start;flex-wrap:wrap}
+.interview-title h2{margin:.65rem 0}
+.interview-start{padding:1rem;border:1px solid #395a6c;border-radius:10px;background:#13283c}
+.interview-start select{display:block;margin:.5rem 0;padding:.55rem;color:#f0f5ff;background:#111f34;border:1px solid #506c8a;border-radius:7px;max-width:100%}
+.interview-transcript{list-style:none;margin:1rem 0;padding:0;display:flex;flex-direction:column;gap:.75rem;max-height:650px;overflow:auto}
+.interview-transcript li{padding:1rem;border-radius:12px;white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere}
+.interview-transcript .assistant-message{margin-right:8%;background:#132b36;border:1px solid #286a71}
+.interview-transcript .owner-message{margin-left:8%;background:#253047;border:1px solid #465b83}
+.interview-speaker{font-weight:700;font-size:.85rem;color:#d7e9fa;margin-bottom:.55rem;display:flex;justify-content:space-between;gap:1rem}
+.interview-speaker small{font-size:.7rem;color:#9eb3c9;font-weight:400}
+.interview-message{font-size:.95rem}
+.specification-stage,.build-gate{margin-top:1.4rem;padding-top:1.1rem;border-top:1px solid #35485b}
+.spec-review{padding:1rem;border-radius:10px;background:#111c2e;border:1px solid #40637a;margin-top:1rem}
+.specification-text{font-size:.84rem;line-height:1.6;max-height:650px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#081525;padding:1rem;border:1px solid #355168;border-radius:9px;user-select:text}
+.spec-consent{display:flex;gap:.7rem;align-items:flex-start;line-height:1.45;padding:.6rem 0}
+.spec-consent input{width:auto;min-width:18px;height:18px;margin:.12rem 0}
+.build-gate{background:#16202e;padding:1rem;border-radius:8px}
+.build-gate p{line-height:1.5}
