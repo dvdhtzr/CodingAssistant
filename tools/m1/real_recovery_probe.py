@@ -22,13 +22,15 @@ import sys
 import tempfile
 import uuid
 
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "tools/m0"))
+
 from acpx_initialize_probe import OWNER_IMAGE_ID
 from run_ledger import (
     DuplicateRequest, LABEL, RunLedger, managed_container,
 )
 from sandbox_probe import inspect_podman
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / "artifacts/m1"
 READY = re.compile(r"READY ([0-9a-f]{24})\n\Z")
 # This is deliberately NOT the owner-approved coding plan. No model,
