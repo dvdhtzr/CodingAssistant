@@ -40,6 +40,10 @@ To run just the API suite locally from a clean checkout:
 dotnet run --configuration Release --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.csproj
 ```
 
+## Observed owner project run (partial live-model evidence, November 20, 2026)
+
+The owner completed a real local-Ollama Product Owner interview and downloaded a source ZIP for **Calculation Journal**, an offline calculator with Back/History. The HTML rendered attractively but mouse and keyboard controls did not function; the source failures are recorded in [#107](https://github.com/dvdhtzr/CodingAssistant/issues/107). This positively demonstrates the real local-model *conversation → specification → source-only ZIP* path and negatively demonstrates independent functional verification. The exact model, complete conversation/transcript and proof of adaptive questioning/contradiction handling are not present in the repository evidence. Therefore **Phase 1 remains YELLOW** for its full quality gate; the multi-language architecture may be documented without pretending later phases are implemented.
+
 ## Owner local-model acceptance (required before Phase 1 GREEN)
 
 1. Launch the application with an installed **local Ollama** model; create a fresh project with a **nontrivial, non-demo** objective.
