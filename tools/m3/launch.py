@@ -359,6 +359,56 @@ def verify_execution_preflight() -> None:
     print("M1 model-free preflight PASS. Exact hash authorization still required.", flush=True)
 
 
+def install_desktop_shortcut() -> bool:
+    """Add a KDE/GNOME application-menu entry once, without storing a token."""
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return False
+    root = ROOT.resolve()
+    if any(char in str(root) for char in ('"', "\\n", "\\r")):
+        return False
+    directory = Path.home() / ".local" / "share" / "applications"
+    if directory.is_symlink():
+        return False
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / "codingassistant.desktop"
+    if target.is_symlink() or target.exists():
+        return False  # Never overwrite an owner-customized shortcut.
+    script = root / "start.sh"
+    if not script.is_file():
+        return False
+    entry = ("[Desktop Entry]\\n"
+             "Version=1.0\\n"
+             "Type=Application\\n"
+             "Name=CodingAssistant\\n"
+             "Comment=Local AI Coding Mission Control\\n"
+             "Exec=/usr/bin/env bash \\"" + str(script) + "\\"\\n"
+             "Terminal=true\\n"
+             "Icon=applications-development\\n"
+             "Categories=Development;IDE;\\n")
+    # .desktop contains only a local script path: no bearer or environment.
+    target.write_text(entry, encoding="utf-8")
+    target.chmod(0o644)
+    return True
+
+
+def open_existing() -> bool:
+    """Existing instance is safe to re-open, not start or reauthorize."""
+    url = f"http://127.0.0.1:{PORT}/"
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
+            url, timeout=2) as response:
+            if response.status != 200 or response.headers.get_content_type() != "text/html":
+                return False
+            body = response.read(8192).decode("utf-8", errors="replace")
+            if "Mission Control" not in body:
+                return False
+    except (urllib.error.URLError, TimeoutError, UnicodeError):
+        return False
+    print("Mission Control is already running. Opening your browser.")
+    webbrowser.open(url)
+    return True
+
+
 def start(api_binary: Path, *, enable_execution: bool = False,
           open_browser: bool = True) -> None:
     if not free_port(PORT):
@@ -398,7 +448,7 @@ def start(api_binary: Path, *, enable_execution: bool = False,
         print(token)
         print("\nToken is temporary and never saved. Closing this window stops the app.")
         if not enable_execution:
-            print("AI coding is OFF for this first browser test.")
+            print("AI coding is OFF. History remains available; no model will execute.")
         else:
             print("Coding enabled ONLY for the approved disposable fixture.")
             print("The complete M1 execution hash still needs separate approval.")
@@ -430,11 +480,21 @@ def main() -> int:
         if not sys.platform.startswith("linux") or os.geteuid() == 0:
             raise LaunchError("Run as your normal, non-root Linux user")
         if not free_port(PORT):
-            raise LaunchError("Mission Control is already running; close its terminal before restarting.")
-        if args.enable_execution:
-            verify_execution_preflight()
+            if open_existing():
+                return 0
+            raise LaunchError("Port 5098 is occupied by a non-Mission Control process")
+        if install_desktop_shortcut():
+            print("Added CodingAssistant to your desktop application menu.")
+        enabled = args.enable_execution
+        if enabled:
+            try:
+                verify_execution_preflight()
+            except LaunchError as exc:
+                print("Safety gate failed — launching READ-ONLY Mission Control:", exc,
+                      flush=True)
+                enabled = False
         app = install_app(refresh=args.refresh)
-        start(app / "CodingAssistant.Api", enable_execution=args.enable_execution,
+        start(app / "CodingAssistant.Api", enable_execution=enabled,
               open_browser=not args.no_browser)
         return 0
     except (LaunchError, OSError, EOFError, zipfile.BadZipFile) as exc:
