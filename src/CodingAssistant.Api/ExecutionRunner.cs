@@ -195,12 +195,7 @@ public sealed class M1ProcessRunner : IM1ExecutionRunner
             }
             // Independently recalculate the Python sorted-key compact JSON
             // SHA-256 instead of trusting an unverified field in stdout.
-            using var bytes = new MemoryStream();
-            using (var writer = new Utf8JsonWriter(bytes,
-                       new JsonWriterOptions { Indented = false }))
-                WriteCanonical(writer, plan);
-            var computed = Convert.ToHexString(SHA256.HashData(bytes.ToArray()))
-                .ToLowerInvariant();
+            var computed = ComputeCanonicalHash(plan);
             if (!CryptographicOperations.FixedTimeEquals(
                     Encoding.ASCII.GetBytes(hash), Encoding.ASCII.GetBytes(computed)))
                 throw new ExecutionUnavailable();
@@ -211,6 +206,16 @@ public sealed class M1ProcessRunner : IM1ExecutionRunner
         {
             throw new ExecutionUnavailable();
         }
+    }
+
+    public static string ComputeCanonicalHash(JsonElement plan)
+    {
+        using var bytes = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(bytes,
+                   new JsonWriterOptions { Indented = false }))
+            WriteCanonical(writer, plan);
+        return Convert.ToHexString(SHA256.HashData(bytes.ToArray()))
+            .ToLowerInvariant();
     }
 
     private static void WriteCanonical(Utf8JsonWriter writer, JsonElement value)
