@@ -54,8 +54,15 @@ public sealed class ProjectDraftCoordinator(
             RequireCurrentApproval(task.Id, job);
             store.Note(task.Id, job.Id, "ModelPlanning",
                 "Asking local " + spec.Model + " to choose project files");
-            var plan = ProjectDraftStore.ValidatePlan(
-                await model.PlanAsync(task.Objective, spec.Content, spec.Model, token));
+            var planOutput = model is IStreamingProjectDraftModel streamingPlan
+                ? await streamingPlan.PlanWithProgressAsync(
+                    task.Objective, spec.Content, spec.Model,
+                    () => {
+                        store.NoteModelProgress(task.Id, job.Id);
+                        return Task.CompletedTask;
+                    }, token)
+                : await model.PlanAsync(task.Objective, spec.Content, spec.Model, token);
+            var plan = ProjectDraftStore.ValidatePlan(planOutput);
             token.ThrowIfCancellationRequested();
             RequireCurrentApproval(task.Id, job);
             store.Note(task.Id, job.Id, "PlanAccepted",
@@ -67,8 +74,15 @@ public sealed class ProjectDraftCoordinator(
                 store.Note(task.Id, job.Id, "FileStarted",
                     "Generating " + file.Path + " using local model");
                 var previous = store.Get(task.Id, job.Id).Files;
-                var content = await model.WriteAsync(
-                    task.Objective, spec.Content, spec.Model, file, previous, token);
+                var content = model is IStreamingProjectDraftModel streamingWrite
+                    ? await streamingWrite.WriteWithProgressAsync(
+                        task.Objective, spec.Content, spec.Model, file, previous,
+                        () => {
+                            store.NoteModelProgress(task.Id, job.Id);
+                            return Task.CompletedTask;
+                        }, token)
+                    : await model.WriteAsync(
+                        task.Objective, spec.Content, spec.Model, file, previous, token);
                 token.ThrowIfCancellationRequested();
                 RequireCurrentApproval(task.Id, job);
                 store.SaveFile(task.Id, job.Id, file, content);

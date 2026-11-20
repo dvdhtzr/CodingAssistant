@@ -8,11 +8,17 @@ namespace CodingAssistant.Api;
 /// Generates a bounded, task-specific source bundle from an owner-approved
 /// specification through local Ollama, without tool use or code execution.
 /// </summary>
-public sealed class LocalProjectDraftModel : IProjectDraftModel
+public sealed class LocalProjectDraftModel : IStreamingProjectDraftModel
 {
-    public async Task<IReadOnlyList<PlannedProjectFile>> PlanAsync(
+    public Task<IReadOnlyList<PlannedProjectFile>> PlanAsync(
         string objective, string approvedSpecification, string model,
-        CancellationToken cancellation)
+        CancellationToken cancellation) =>
+        PlanWithProgressAsync(objective, approvedSpecification, model,
+            () => Task.CompletedTask, cancellation);
+
+    public async Task<IReadOnlyList<PlannedProjectFile>> PlanWithProgressAsync(
+        string objective, string approvedSpecification, string model,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation)
     {
         var prompt = """
             You are a software engineer planning an implementation from an
@@ -33,7 +39,7 @@ public sealed class LocalProjectDraftModel : IProjectDraftModel
         var result = await ChatAsync(model, prompt,
             "PROJECT OBJECTIVE:\n" + objective +
             "\n\nAPPROVED SPECIFICATION:\n" + approvedSpecification,
-            json: true, maxTokens: 650, cancellation);
+            json: true, maxTokens: 650, onOutputChunkBatch, cancellation);
         try
         {
             using var parsed = JsonDocument.Parse(result);
@@ -58,10 +64,17 @@ public sealed class LocalProjectDraftModel : IProjectDraftModel
         }
     }
 
-    public async Task<string> WriteAsync(
+    public Task<string> WriteAsync(
         string objective, string approvedSpecification, string model,
         PlannedProjectFile file, IReadOnlyList<ProjectDraftFile> previous,
-        CancellationToken cancellation)
+        CancellationToken cancellation) =>
+        WriteWithProgressAsync(objective, approvedSpecification, model,
+            file, previous, () => Task.CompletedTask, cancellation);
+
+    public async Task<string> WriteWithProgressAsync(
+        string objective, string approvedSpecification, string model,
+        PlannedProjectFile file, IReadOnlyList<ProjectDraftFile> previous,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation)
     {
         var path = ProjectDraftStore.SafePath(file.Path);
         if (previous.Count >= ProjectDraftStore.MaxFiles)
@@ -85,13 +98,14 @@ public sealed class LocalProjectDraftModel : IProjectDraftModel
                      "\nPURPOSE:\n" + file.Purpose +
                      "\n\nPREVIOUS FILE CONTEXT:\n" + earlier;
         var source = await ChatAsync(model, system, prompt, json: false,
-            maxTokens: 3000, cancellation);
+            maxTokens: 3000, onOutputChunkBatch, cancellation);
         return ProjectDraftStore.ValidateSource(path, source);
     }
 
     private static async Task<string> ChatAsync(
         string model, string policy, string prompt,
-        bool json, int maxTokens, CancellationToken cancellation)
+        bool json, int maxTokens,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation)
     {
         if (!LocalInterviewModel.AllowedModel(model) ||
             prompt.Length is < 15 or > 32000)
@@ -111,7 +125,7 @@ public sealed class LocalProjectDraftModel : IProjectDraftModel
         var requestBody = new
         {
             model,
-            stream = false,
+            stream = true,
             think = false,
             format = json ? "json" : null,
             messages = new[]
@@ -133,18 +147,53 @@ public sealed class LocalProjectDraftModel : IProjectDraftModel
         try
         {
             using var response = await client.SendAsync(
-                request, HttpCompletionOption.ResponseContentRead, cancellation);
+                request, HttpCompletionOption.ResponseHeadersRead, cancellation);
             if (response.StatusCode == HttpStatusCode.NotFound)
                 throw new StoreFailure("MODEL_NOT_INSTALLED");
             if (!response.IsSuccessStatusCode)
                 throw new StoreFailure("LOCAL_MODEL_UNAVAILABLE");
-            var jsonText = await response.Content.ReadAsStringAsync(cancellation);
-            if (jsonText.Length > 70000)
+
+            await using var network = await response.Content.ReadAsStreamAsync(cancellation);
+            using var reader = new StreamReader(network, Encoding.UTF8);
+            var content = new StringBuilder();
+            var chunks = 0;
+            var done = false;
+            string? line;
+            while ((line = await reader.ReadLineAsync(cancellation)) is not null)
+            {
+                if (line.Length > 20000)
+                    throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+                if (line.Length == 0) continue;
+                using var update = JsonDocument.Parse(line);
+                var root = update.RootElement;
+                if (root.TryGetProperty("error", out _))
+                    throw new StoreFailure("LOCAL_MODEL_UNAVAILABLE");
+                if (root.TryGetProperty("message", out var message) &&
+                    message.TryGetProperty("content", out var fragment))
+                {
+                    var text = fragment.GetString();
+                    if (text is not null && text.Length > 0)
+                    {
+                        content.Append(text);
+                        ++chunks;
+                        if (content.Length > 70000)
+                            throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+                        // Host-confirmed bytes from Ollama, NOT simulated
+                        // agent status or leaked model-generated source.
+                        if (chunks % 50 == 0 && chunks <= 2500)
+                            await onOutputChunkBatch();
+                    }
+                }
+                if (root.TryGetProperty("done", out var finished) &&
+                    finished.ValueKind == JsonValueKind.True)
+                {
+                    done = true;
+                    break;
+                }
+            }
+            if (!done || content.Length == 0)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-            using var decoded = JsonDocument.Parse(jsonText);
-            return decoded.RootElement.GetProperty("message")
-                .GetProperty("content").GetString() ??
-                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            return content.ToString();
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

@@ -1148,11 +1148,14 @@ try
                   events.EnumerateArray().Any(ev =>
                     ev.GetProperty("kind").GetString() == "FileStarted") &&
                   events.EnumerateArray().Count(ev =>
-                    ev.GetProperty("kind").GetString() == "FileSaved") == 2,
+                    ev.GetProperty("kind").GetString() == "FileSaved") == 2 &&
+                  events.EnumerateArray().Count(ev =>
+                    ev.GetProperty("kind").GetString() == "ModelOutputReceived") == 3,
                 "actual file starts/completions have timestamped durable events");
         }
         Check(fakeProject.PlanCount == 1 &&
               fakeProject.WriteCount == 2 &&
+              fakeProject.ProgressCount == 3 &&
               fakeProject.LastObjective == ownerObjective &&
               fakeProject.LastSpecification.Contains("Individual users"),
             "draft builder consumed actual owner's approved specification");
@@ -1218,6 +1221,13 @@ try
                     .GetProperty("status").GetString() == "Approved",
                 "interview, spec and approval survive real API restart");
 
+        // Hold an unfinished draft in the real SQLite store. A new owner
+        // answer must invalidate both subsequent file writes and final
+        // "Generated" success even if the model finished under an old spec.
+        var rawDraftStore = new ProjectDraftStore(new TaskStore(interviewData));
+        var pendingContract = rawDraftStore.Start(
+            id, specVersion, specHash, "qwen3.5:4b");
+
         // More owner input deliberately supersedes an approved contract.
         using (var more = await Post(interviewClient,
             $"/api/tasks/{id}/interview/turn", new {
@@ -1229,6 +1239,23 @@ try
                   json.RootElement.GetProperty("specification")
                     .GetProperty("status").GetString() == "Superseded",
                 "new requirements invalidate earlier approved spec");
+        try
+        {
+            rawDraftStore.SaveFile(id, pendingContract.Id,
+                new PlannedProjectFile("README.md", "Instructions for budget app"),
+                "# Wrong specification must not be silently finalized");
+            throw new Exception("Superseded spec saved a stale project file");
+        }
+        catch (StoreFailure error) when (error.Code == "SPECIFICATION_CONFLICT")
+        {
+            checks++;
+        }
+        rawDraftStore.Finish(id, pendingContract.Id, true, null);
+        Check(rawDraftStore.Get(id, pendingContract.Id).Job.State == "Failed" &&
+              rawDraftStore.Get(id, pendingContract.Id).Job.ErrorCode ==
+                "SPECIFICATION_CONFLICT",
+            "atomic completion cannot claim success against superseded spec");
+
         using (var staleBuild = await Post(interviewClient,
             $"/api/tasks/{id}/draft-build", new {
                 specificationVersion = specVersion,
@@ -1284,12 +1311,22 @@ finally
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
 }
 
-sealed class SmokeProjectDraftModel : IProjectDraftModel
+sealed class SmokeProjectDraftModel : IStreamingProjectDraftModel
 {
     public int PlanCount;
     public int WriteCount;
+    public int ProgressCount;
     public string LastObjective = "";
     public string LastSpecification = "";
+
+    public async Task<IReadOnlyList<PlannedProjectFile>> PlanWithProgressAsync(
+        string objective, string approvedSpecification, string model,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation)
+    {
+        ProgressCount++;
+        await onOutputChunkBatch();
+        return await PlanAsync(objective, approvedSpecification, model, cancellation);
+    }
 
     public Task<IReadOnlyList<PlannedProjectFile>> PlanAsync(
         string objective, string approvedSpecification, string model,
@@ -1305,6 +1342,17 @@ sealed class SmokeProjectDraftModel : IProjectDraftModel
                 "Instructions for locally inspecting the draft source")
         };
         return Task.FromResult(plan);
+    }
+
+    public async Task<string> WriteWithProgressAsync(
+        string objective, string approvedSpecification, string model,
+        PlannedProjectFile file, IReadOnlyList<ProjectDraftFile> previous,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation)
+    {
+        ProgressCount++;
+        await onOutputChunkBatch();
+        return await WriteAsync(objective, approvedSpecification, model,
+                                file, previous, cancellation);
     }
 
     public async Task<string> WriteAsync(
