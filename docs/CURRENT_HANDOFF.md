@@ -1,6 +1,6 @@
 # CodingAssistant — current project handoff
 
-**Checkpoint: November 19, 2026 (updated after Dell M1.11 runtime acceptance).** Read this before doing more work. This file is an operational checkpoint, not a replacement for `docs/IMPLEMENTATION_PLAN.md`, `docs/SECURITY.md`, or detailed append-only M0/M1 evidence records. Check live GitHub `main` and open PRs before relying on the commit information below.
+**Checkpoint: November 19, 2026 (updated after verified Dell M1.12 end-to-end coding PASS).** Read this before doing more work. This file is an operational checkpoint, not a replacement for `docs/IMPLEMENTATION_PLAN.md`, `docs/SECURITY.md`, or detailed append-only M0/M1 evidence records. Check live GitHub `main` and open PRs before relying on the commit information below.
 
 ## Goal and scope
 
@@ -14,22 +14,41 @@ Contributors must follow `AGENTS.md`, `docs/IMPLEMENTATION_PLAN.md`, and `docs/S
 | --- | --- | --- |
 | M0 — feasibility | **GREEN on Dell only** | Local `qwen3.5:4b`, OpenCode v2.3.0, rootless offline Podman: 9/9 frozen functional attempts; independently reviewed M0.18 evidence/acceptance. Does **not** qualify Windows or arbitrary autonomous operation. |
 | Interactive MVP | **Available separately** | `tools/mvp/assist.py` can generate/review a proposal and apply only to an approved disposable copy. It calls local Ollama directly; **do not confuse it with the OpenClaw/ACP product architecture**. |
-| M1 — secure orchestration | **YELLOW, not accepted** | Real isolated Gateway health, ACPX registration/metadata, installed OpenCode, independent ACP initialize, 12/12 image-specific negative checks on Dell. A disposable writable-fixture probe is merged, but its independent owner acceptance is not clearly recorded in the canonical M1 status. No approved end-to-end Gateway-owned coding turn yet. |
+| M1 — secure orchestration | **YELLOW overall; M1.12 GREEN on Dell** | Real owner-approved Gateway → ACPX → OpenCode → Qwen turn completed, 6/6 digest-pinned host-verified local inference requests, 9 tool calls, 17 ACP events, and independent offline .NET evaluator `VERIFIED` on one disposable C# repair. The Gateway container was removed and all health checks passed. The broader durable-state, crash/reconnect, integrated negative testing and Windows gates remain open. |
 | M1.11 — actual Gateway backend diagnostic | **GREEN on Dell** | Owner ran `tools/m1/gateway_backend_rpc_probe.py --prepare` after PR #56. Real Gateway health 3/3 HTTP 200; registered ACPX backend `doctor()` passed, ACP protocol v1 confirmed, disposable guest removed. Local ignored evidence: `artifacts/m1/gateway-backend-rpc-a1c64f120648.json`; derived local image ID `61f1a21dcdbe2f70181b8788641bee0f7fc9b249290ecacedeb793244e8d5eb6`. No coding session or model was attempted. |
 | M2 — .NET 10 foundation | **NOT STARTED** | Do not claim implementation. |
 | M3 — React Mission Control | **NOT STARTED** | Do not claim implementation. |
 
 See `docs/M0_STATUS.md`, `docs/M1_STATUS.md`, and `docs/M1_GATEWAY_DISCOVERY.md` for accumulated historical detail. Older sections retain intermediate BLOCKED/YELLOW states and should not override this checkpoint.
 
-## Latest Dell verification — M1.11 GREEN
+## Latest Dell verification — M1.12 GREEN (integrated coding, not overall M1)
 
-The owner completed the registered Gateway/ACPX/OpenCode doctor on the Dell using the fixed, offline derived image. All three health checks returned 200; the real ACPX backend doctor reported protocol 1 and zero coding/model requests; the disposable guest was verified removed. This is **real runtime acceptance of the diagnostic path**, not approval of an end-to-end coding assignment. See the M1.11 row above. The next action is the approved disposable C# coding slice (M1.12), which must independently verify real model usage, exact owner consent and OS-enforced worktree containment.
+On November 19, 2026, the owner explicitly approved a new exact
+SHA256 plan (`0349c4327de288058ca556289e09839235db3e84bc699e06b1fbd0582dc5cd06`)
+for the fixed disposable `02-build-repair` project under
+`qwen3.5:4b` on main `191a7b0`. The actual OpenClaw Gateway,
+ACPX and OpenCode coding path completed, with **6/6 host-verified**
+local Ollama requests (**0 failed, 0 denied**), **17 ACP events**,
+**9 tool calls**, **three healthy Gateway endpoints** and independently
+verified offline .NET repair (`VERIFIED`). Disposable container
+cleanup was confirmed. PID accounting: limit 256, peak 107, limit-hit
+events 0; the peak crossed the previous 96 limit. The previous
+abort-on-startup incidents were plausibly related to that old cap,
+but prior failures lack comparable cgroup counters.
 
-## After M1.11: finish M1 in cohesive product slices
+**Real Dell acceptance evidence:**
+`artifacts/m1/m112-approved-coding-4a73cdebeebf.json` (local,
+Git-ignored; not available on GitHub). The displayed run status
+`GATEWAY_APPROVED_CODING_PASS` is verified by the owner's console
+output, not independently reproduced on this GitHub connector.
+This validates a single frozen disposable repair, not arbitrary real
+repos or Windows and not the remaining M1 run-state/security gates.
 
-1. Prove a **real Gateway-owned, pinned local-Qwen coding request** in a fresh, approved disposable C# worktree through ACPX/OpenCode, mediated by a narrowly restricted Ollama broker. Explicit plan-version/hash approval, permitted files, blocked remote Git/network/secret/child-process escape, true model identity, independently checked code changes, and test results must be observable. No real user repo access until this is demonstrated.
-2. Complete **durable run state**, cancellation/pause, crash/reconnect reconciliation, idempotency, and denial/negative tests for the **actual integrated execution path**. Record immutable evidence; do not rely on guest self-reporting alone.
-3. Qualify **Windows independently** before claiming cross-platform security/runtime support; do not transpose the Dell result.
+## After M1.12: finish M1 in cohesive product slices
+
+1. **M1.12 integrated coding is GREEN on Dell** for the fixed and owner-approved disposable C# task. Do **not** create more preflight-only milestones or rerun this already-passed slice without a regression reason. Preserve its pinned local model, exact approval, host-verified requests and independent evaluation.
+2. Deliver **durable run state**, cancellation/pause, crash/reconnect reconciliation, idempotency, and integrated hostile-operation denial/negative tests in cohesive product-facing functionality. Evidence must survive process failure without relying on the guest's self-report. No arbitrary owner repo access until its separate containment and authorization tests pass.
+3. Independently qualify Windows/WSL2 if development moves to the more powerful Windows workstation; Dell-specific results do not automatically transfer.
 
 Then follow the approved sequential M2 (.NET API, SQLite, approval/observability, SignalR) and M3 (React Mission Control) plan. Prefer a meaningful end-to-end feature and acceptance criteria to more tiny discovery-only PRs. Never downgrade containment or authorization to make a diagnostic turn green.
 
