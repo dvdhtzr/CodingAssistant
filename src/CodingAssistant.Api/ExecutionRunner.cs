@@ -303,7 +303,8 @@ public sealed class ExecutionCoordinator(
         string runId, CancellationToken cancellation)
     {
         var run = runs.Get(runId);
-        if (run.State != "AwaitingExecutionAuthorization" || !run.PlanCurrent)
+        if (run.State is not ("AwaitingExecutionAuthorization" or "Previewed") ||
+            !run.PlanCurrent)
             throw new StoreFailure("INVALID_STATE");
         var preview = await runner.PreviewAsync(run, cancellation);
         // Revalidate the exact scope/sha on the trusted side immediately
