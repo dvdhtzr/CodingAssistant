@@ -259,6 +259,28 @@ class M3LauncherContracts(unittest.TestCase):
             self.assertEqual(launcher.main(), 0)
             self.assertFalse(start.call_args.kwargs["enable_execution"])
 
+    def test_attach_only_reopens_without_source_change_or_preflight(self):
+        with mock.patch.object(launcher.sys, "platform", "linux"), \
+             mock.patch.object(launcher.os, "geteuid", return_value=1000, create=True), \
+             mock.patch.object(launcher, "free_port", return_value=False), \
+             mock.patch.object(launcher, "open_existing", return_value=True) as attach, \
+             mock.patch.object(launcher, "verify_execution_preflight",
+                               side_effect=AssertionError("preflight must not run")), \
+             mock.patch.object(launcher, "install_app",
+                               side_effect=AssertionError("install must not run")), \
+             mock.patch.object(launcher.sys, "argv", ["launch.py", "--attach-only"]):
+            self.assertEqual(launcher.main(), 0)
+            attach.assert_called_once()
+
+    def test_attach_only_without_server_is_quiet_noop(self):
+        with mock.patch.object(launcher.sys, "platform", "linux"), \
+             mock.patch.object(launcher.os, "geteuid", return_value=1000, create=True), \
+             mock.patch.object(launcher, "free_port", return_value=True), \
+             mock.patch.object(launcher, "install_app",
+                               side_effect=AssertionError("install must not run")), \
+             mock.patch.object(launcher.sys, "argv", ["launch.py", "--attach-only"]):
+            self.assertEqual(launcher.main(), 3)
+
     def test_occupied_port_never_launches_second_api(self):
         with mock.patch.object(launcher, "free_port", return_value=False), \
              mock.patch.object(launcher.subprocess, "Popen",

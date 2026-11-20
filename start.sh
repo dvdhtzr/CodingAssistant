@@ -6,6 +6,12 @@ set -u
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$root" || exit 2
 
+# If already running, attach to the browser and leave the running source,
+# current AI run and container provenance completely untouched.
+if python3 "$root/tools/m3/launch.py" --attach-only; then
+  exit 0
+fi
+
 if [[ "$(git branch --show-current)" == "main" ]]; then
   echo "Checking for CodingAssistant updates..."
   if ! GIT_TERMINAL_PROMPT=0 git pull --ff-only --quiet origin main; then

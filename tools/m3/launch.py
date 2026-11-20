@@ -478,10 +478,20 @@ def main() -> int:
                         help="Do not open Firefox automatically")
     parser.add_argument("--refresh", action="store_true",
                         help="Download the latest CI application after a UI update")
+    parser.add_argument("--attach-only", action="store_true",
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         if not sys.platform.startswith("linux") or os.geteuid() == 0:
             raise LaunchError("Run as your normal, non-root Linux user")
+        # Internal desktop-wrapper fast path: never git-pull or touch images
+        # while an existing API (possibly executing an M1 job) is active.
+        if args.attach_only:
+            if free_port(PORT):
+                return 3
+            if open_existing():
+                return 0
+            raise LaunchError("Local port occupied by another application")
         if not free_port(PORT):
             if open_existing():
                 return 0
