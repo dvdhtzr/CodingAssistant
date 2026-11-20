@@ -62,3 +62,47 @@ jobs:
           name: codingassistant-linux-x64
           path: ${{ runner.temp }}/codingassistant-linux-x64/
           retention-days: 7
+
+  publish-local-preview:
+    # Never distribute a package until *both* OS CI jobs passed. A public,
+    # immutable-commit GitHub Release avoids expiring, login-gated Actions ZIPs.
+    name: Publish verified Linux app for one-command startup
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: unit-and-syntax
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified Linux application from this workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: codingassistant-linux-x64
+          path: ${{ runner.temp }}/codingassistant-package
+      - name: Package with checksum (no LLM or model)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "${{ runner.temp }}/codingassistant-package/CodingAssistant.Api"
+          test -f "${{ runner.temp }}/codingassistant-package/wwwroot/index.html"
+          cd "${{ runner.temp }}/codingassistant-package"
+          zip -q -r "${{ runner.temp }}/codingassistant-linux-x64.zip" .
+          cd "${{ runner.temp }}"
+          sha256sum codingassistant-linux-x64.zip > codingassistant-linux-x64.zip.sha256
+      - name: Publish commit-pinned official GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="m3-${GITHUB_SHA}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "This exact commit was already published."
+          else
+            gh release create "$tag" \
+              "${{ runner.temp }}/codingassistant-linux-x64.zip" \
+              "${{ runner.temp }}/codingassistant-linux-x64.zip.sha256" \
+              --target "$GITHUB_SHA" --latest \
+              --title "Mission Control — verified Linux build ${GITHUB_SHA:0:12}" \
+              --notes "M3 Linux x64 self-contained API and React UI. Published only after Ubuntu and Windows model-free CI passed. This is development preview software; M1 integrated adversarial security qualification remains outstanding."
+          fi
