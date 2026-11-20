@@ -119,6 +119,8 @@ def gh_download(directory: Path) -> bool:
 
 
 def install_app(destination: Path = DESTINATION, *, interactive: bool = True) -> Path:
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        raise LaunchError("Refusing non-directory or symlinked installation target")
     if valid_app(destination):
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
