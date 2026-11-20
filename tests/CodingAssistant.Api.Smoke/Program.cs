@@ -8,6 +8,8 @@ using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.AspNetCore.Http.Connections;
 
 const string OwnerToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 var checks = 0;
@@ -290,6 +292,228 @@ try
                 .GetInt32() == 2, "task persists across restart");
         Check(body.RootElement.GetProperty("plan").GetProperty("version")
                 .GetInt32() == 2, "latest plan survives restart");
+    }
+
+    // M2 #75: real HTTP + SQLite + SignalR event contract, no worker.
+    string secondHash;
+    using (var current = await client.GetAsync("/api/tasks/" + taskId))
+    {
+        using var body = await ReadJson(current);
+        secondHash = body.RootElement.GetProperty("plan")
+            .GetProperty("planHash").GetString()!;
+    }
+    var runRequestId = Guid.NewGuid().ToString("N");
+    var intent = new { planVersion = 2, planHash = secondHash, requestId = runRequestId };
+
+    using (var notYetApproved = await Post(client, $"/api/tasks/{taskId}/runs", intent))
+        Check(notYetApproved.StatusCode == HttpStatusCode.Conflict,
+            "pending plan cannot create run intent");
+
+    using (var authorize = await Post(client, $"/api/tasks/{taskId}/approvals",
+        new { version = 2, approval = "APPROVE " + secondHash }))
+        Check(authorize.StatusCode == HttpStatusCode.OK,
+            "version 2 exact planning approval persisted");
+
+    using (var wrongHash = await Post(client, $"/api/tasks/{taskId}/runs",
+        new { planVersion = 2, planHash = new string('0', 64),
+              requestId = Guid.NewGuid().ToString("N") }))
+        Check(wrongHash.StatusCode == HttpStatusCode.Conflict,
+            "run intent rejects wrong approval hash");
+    using (var oldPlan = await Post(client, $"/api/tasks/{taskId}/runs",
+        new { planVersion = 1, planHash = hash,
+              requestId = Guid.NewGuid().ToString("N") }))
+        Check(oldPlan.StatusCode == HttpStatusCode.Conflict,
+            "run intent rejects stale plan version");
+    using (var badRequestId = await Post(client, $"/api/tasks/{taskId}/runs",
+        new { planVersion = 2, planHash = secondHash, requestId = "../invalid" }))
+        Check(badRequestId.StatusCode == HttpStatusCode.BadRequest,
+            "run intent rejects malformed idempotency key");
+
+    string runId;
+    using (var createdIntent = await Post(client, $"/api/tasks/{taskId}/runs", intent))
+    {
+        Check(createdIntent.StatusCode == HttpStatusCode.Created,
+            "run intent created by real HTTP API");
+        using var body = await ReadJson(createdIntent);
+        runId = body.RootElement.GetProperty("id").GetString()!;
+        Check(body.RootElement.GetProperty("state").GetString() ==
+              "AwaitingExecutionAuthorization",
+              "new run is explicitly NOT queued for execution");
+        Check(!body.RootElement.GetProperty("executionEnabled").GetBoolean(),
+              "run cannot execute a model or container");
+        Check(body.RootElement.GetProperty("lastSequence").GetInt64() == 1,
+              "first event is durably assigned sequence 1");
+        Check(body.RootElement.GetProperty("planCurrent").GetBoolean(),
+              "new intent references current approved plan");
+    }
+
+    using (var duplicateIntent = await Post(client, $"/api/tasks/{taskId}/runs", intent))
+    {
+        using var body = await ReadJson(duplicateIntent);
+        Check(body.RootElement.GetProperty("id").GetString() == runId,
+              "identical request id does not create second run");
+    }
+    using (var changedIdempotency = await Post(client, $"/api/tasks/{taskId}/runs",
+        new { planVersion = 2, planHash = new string('0', 64),
+              requestId = runRequestId }))
+        Check(changedIdempotency.StatusCode == HttpStatusCode.Conflict,
+              "same request id cannot be repurposed");
+
+    using (var runList = await client.GetAsync($"/api/tasks/{taskId}/runs"))
+    {
+        Check(runList.StatusCode == HttpStatusCode.OK,
+              "authenticated task run history");
+        using var body = await ReadJson(runList);
+        Check(body.RootElement.GetArrayLength() == 1,
+              "duplicate request has one durable run");
+    }
+
+    using (var unauthHub = new HttpClient { BaseAddress = client.BaseAddress })
+    {
+        using var negotiate = await Post(unauthHub,
+            "/api/progress/negotiate?negotiateVersion=1", new { });
+        Check(negotiate.StatusCode == HttpStatusCode.Unauthorized,
+              "SignalR handshake requires owner bearer token");
+        using var queryToken = await Post(unauthHub,
+            "/api/progress/negotiate?negotiateVersion=1&access_token=" + OwnerToken,
+            new { });
+        Check(queryToken.StatusCode == HttpStatusCode.Unauthorized,
+              "owner token in query string never authenticates hub");
+        using var noEvent = await unauthHub.GetAsync($"/api/runs/{runId}/events");
+        Check(noEvent.StatusCode == HttpStatusCode.Unauthorized,
+              "event history cannot be read without authorization");
+    }
+
+    using (var initial = await client.GetAsync($"/api/runs/{runId}/events?after=0&limit=1"))
+    {
+        Check(initial.StatusCode == HttpStatusCode.OK, "run event page accessible");
+        using var body = await ReadJson(initial);
+        Check(body.RootElement.GetProperty("events").GetArrayLength() == 1,
+              "run creation was persisted as event");
+        Check(body.RootElement.GetProperty("events")[0].GetProperty("kind")
+                .GetString() == "IntentCreated",
+              "event category is fixed and bounded");
+        Check(body.RootElement.GetProperty("nextCursor").GetInt64() == 1,
+              "initial resume cursor is sequence 1");
+    }
+    using (var badCursor = await client.GetAsync($"/api/runs/{runId}/events?after=-1"))
+        Check(badCursor.StatusCode == HttpStatusCode.BadRequest,
+              "negative replay cursor rejected");
+    using (var badLimit = await client.GetAsync($"/api/runs/{runId}/events?limit=9999"))
+        Check(badLimit.StatusCode == HttpStatusCode.BadRequest,
+              "unbounded event fetch rejected");
+    using (var badRun = await client.GetAsync("/api/runs/../../invalid/events"))
+        Check(badRun.StatusCode != HttpStatusCode.OK,
+              "path traversal run ID never returns event history");
+
+    await using (var hub = new HubConnectionBuilder()
+        .WithUrl(new Uri(client.BaseAddress!, "/api/progress"), options =>
+        {
+            options.Transports = HttpTransportType.WebSockets;
+            options.SkipNegotiation = true;
+            options.AccessTokenProvider = () => Task.FromResult<string?>(OwnerToken);
+        })
+        .Build())
+    {
+        var streamed = new TaskCompletionSource<RunEvent>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = hub.On<RunEvent>("RunUpdated", change =>
+        {
+            if (change.RunId == runId && change.Kind == "IntentCancelled")
+                streamed.TrySetResult(change);
+        });
+        await hub.StartAsync();
+        Check(hub.State == HubConnectionState.Connected,
+              "authenticated SignalR websocket connected");
+        var subscribedCursor = await hub.InvokeAsync<long>("WatchRun", runId);
+        Check(subscribedCursor == 1,
+              "subscribing returns current durable sequence for replay");
+
+        using (var cancel = await Post(client, $"/api/runs/{runId}/cancel", new { }))
+        {
+            Check(cancel.StatusCode == HttpStatusCode.OK,
+                  "run intent may be cancelled explicitly");
+            using var body = await ReadJson(cancel);
+            Check(body.RootElement.GetProperty("state").GetString() == "Cancelled",
+                  "cancellation state persisted");
+            Check(!body.RootElement.GetProperty("executionEnabled").GetBoolean(),
+                  "cancelling intent does not imply worker involvement");
+        }
+        var notification = await streamed.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        Check(notification.Sequence == 2 &&
+              notification.Kind == "IntentCancelled" &&
+              notification.State == "Cancelled",
+              "SignalR delivered same fixed-shape event persisted in SQLite");
+        await hub.InvokeAsync("UnwatchRun", runId);
+        await hub.StopAsync();
+    }
+
+    using (var replay = await client.GetAsync($"/api/runs/{runId}/events?after=1"))
+    {
+        using var body = await ReadJson(replay);
+        Check(body.RootElement.GetProperty("events").GetArrayLength() == 1,
+              "replay catches up after missed first event");
+        Check(body.RootElement.GetProperty("events")[0].GetProperty("sequence")
+                .GetInt64() == 2, "replayed event sequence is monotonic");
+        Check(body.RootElement.GetProperty("nextCursor").GetInt64() == 2,
+              "client can persist exact cursor");
+    }
+    using (var emptyReplay = await client.GetAsync($"/api/runs/{runId}/events?after=2"))
+    {
+        using var body = await ReadJson(emptyReplay);
+        Check(body.RootElement.GetProperty("events").GetArrayLength() == 0,
+              "repeated replay is empty and idempotent");
+        Check(body.RootElement.GetProperty("nextCursor").GetInt64() == 2,
+              "empty replay preserves cursor");
+    }
+    using (var cancelAgain = await Post(client, $"/api/runs/{runId}/cancel", new { }))
+    {
+        using var body = await ReadJson(cancelAgain);
+        Check(body.RootElement.GetProperty("lastSequence").GetInt64() == 2,
+              "repeated cancellation cannot add duplicate event");
+    }
+
+    // Even if an operator revises a plan, an old run does not carry approval
+    // forward and cannot silently become an executable queue item.
+    using (var newerPlan = await Post(client, $"/api/tasks/{taskId}/plans",
+        new { summary = "New reviewed plan, separate authorization",
+              expectedVersion = 2 }))
+        Check(newerPlan.StatusCode == HttpStatusCode.Created,
+              "revision after run intent is accepted separately");
+    using (var staleRun = await client.GetAsync($"/api/runs/{runId}"))
+    {
+        using var body = await ReadJson(staleRun);
+        Check(!body.RootElement.GetProperty("planCurrent").GetBoolean(),
+              "run intent visibly references a superseded plan");
+        Check(!body.RootElement.GetProperty("executionEnabled").GetBoolean(),
+              "superseded run never receives execution permission");
+    }
+
+    // Prove events survive the process/network restart, not just SignalR.
+    client.Dispose();
+    client = null;
+    await appInstance!.StopAsync();
+    await appInstance.DisposeAsync();
+    appInstance = null;
+    client = await Start(settings, a => appInstance = a);
+    client.DefaultRequestHeaders.Authorization =
+        new AuthenticationHeaderValue("Bearer", OwnerToken);
+    using (var replayAfterRestart =
+        await client.GetAsync($"/api/runs/{runId}/events?after=0&limit=1"))
+    {
+        using var body = await ReadJson(replayAfterRestart);
+        Check(body.RootElement.GetProperty("events").GetArrayLength() == 1,
+              "durable event available after API restart");
+        Check(body.RootElement.GetProperty("nextCursor").GetInt64() == 1,
+              "new client can page from a saved cursor");
+    }
+    using (var recoveredRun = await client.GetAsync($"/api/runs/{runId}"))
+    {
+        using var body = await ReadJson(recoveredRun);
+        Check(body.RootElement.GetProperty("state").GetString() == "Cancelled",
+              "cancelled run state survives restart");
+        Check(body.RootElement.GetProperty("lastSequence").GetInt64() == 2,
+              "event head survives restart without false terminal success");
     }
 
     if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
