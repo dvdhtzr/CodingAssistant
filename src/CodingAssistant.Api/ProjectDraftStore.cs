@@ -36,6 +36,17 @@ public interface IProjectDraftModel
         CancellationToken cancellation);
 }
 
+public interface IStreamingProjectDraftModel : IProjectDraftModel
+{
+    Task<IReadOnlyList<PlannedProjectFile>> PlanWithProgressAsync(
+        string objective, string approvedSpecification, string model,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation);
+    Task<string> WriteWithProgressAsync(
+        string objective, string approvedSpecification, string model,
+        PlannedProjectFile file, IReadOnlyList<ProjectDraftFile> previous,
+        Func<Task> onOutputChunkBatch, CancellationToken cancellation);
+}
+
 public sealed class ProjectDraftStore(TaskStore tasks)
 {
     private static readonly Regex Id = new(
@@ -55,7 +66,7 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         StringComparer.Ordinal)
     {
         "BuildAccepted", "ModelPlanning", "PlanAccepted",
-        "FileStarted", "FileSaved", "StaticChecking",
+        "FileStarted", "FileSaved", "StaticChecking", "ModelOutputReceived",
         "DraftGenerated", "DraftFailed", "DraftInterrupted"
     };
     public const int MaxFiles = 5;
@@ -313,6 +324,40 @@ public sealed class ProjectDraftStore(TaskStore tasks)
             detail.Length > 160 || detail.Any(ch => char.IsControl(ch)))
             throw new StoreFailure("INVALID_BUILD_EVENT");
         Transition(taskId, id, kind, detail, null, null);
+    }
+
+    public void NoteModelProgress(string taskId, string id)
+    {
+        ValidateId(taskId);
+        ValidateId(id);
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var job = Find(db, tx, taskId, id) ??
+            throw new StoreFailure("NOT_FOUND");
+        if (job.State != "Running")
+        {
+            tx.Commit();
+            return;
+        }
+        var count = TaskStore.Scalar(db, tx, """
+            SELECT COUNT(*) FROM project_draft_events
+            WHERE draft_id=@id AND kind='ModelOutputReceived'
+            """, ("@id", id));
+        if (int.TryParse(count, out var n) && n < 50)
+        {
+            var seq = Convert.ToInt32(TaskStore.Scalar(db, tx, """
+                SELECT COALESCE(MAX(sequence),0)+1 FROM project_draft_events
+                WHERE draft_id=@id
+                """, ("@id", id)) ?? "1");
+            TaskStore.Execute(db, tx, """
+                INSERT INTO project_draft_events(
+                    draft_id,sequence,kind,detail,created_utc)
+                VALUES(@id,@seq,'ModelOutputReceived',
+                       'More output arrived from local Ollama (content withheld)',@utc)
+                """, ("@id", id), ("@seq", seq),
+                ("@utc", DateTimeOffset.UtcNow.ToString("O")));
+        }
+        tx.Commit();
     }
 
     public void Finish(string taskId, string id, bool success, string? reason)
