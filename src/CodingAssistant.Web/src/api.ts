@@ -23,6 +23,19 @@ export interface PlanItem {
   executionEnabled: boolean;
 }
 export interface TaskView { task: TaskItem; plan: PlanItem | null; }
+export interface HtmlArtifact {
+  id: string;
+  taskId: string;
+  model: string;
+  html: string;
+  sha256: string;
+  createdUtc: string;
+}
+export interface HtmlArtifactResponse {
+  available: boolean;
+  artifact: HtmlArtifact | null;
+}
+
 export interface RunItem {
   id: string;
   taskId: string;
