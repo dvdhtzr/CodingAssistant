@@ -106,7 +106,7 @@ class RealRecoveryProbeContracts(unittest.TestCase):
             spawn.assert_not_called()
         if os.name == "posix":
             with mock.patch.object(p.sys, "platform", "linux"), \
-                 mock.patch.object(p.os, "geteuid", return_value=0), \
+                 mock.patch.object(p.os, "geteuid", return_value=0, create=True), \
                  mock.patch.object(p, "inspect_podman") as runtime, \
                  mock.patch.object(p.subprocess, "Popen") as spawn:
                 self.assertEqual(p.run_probe()["reason"], "PLATFORM")
@@ -115,7 +115,7 @@ class RealRecoveryProbeContracts(unittest.TestCase):
 
     def test_rootless_and_pinned_image_check_fail_before_launch(self):
         with mock.patch.object(p.sys, "platform", "linux"), \
-             mock.patch.object(p.os, "geteuid", return_value=1000), \
+             mock.patch.object(p.os, "geteuid", return_value=1000, create=True), \
              mock.patch.object(p, "inspect_podman",
                                return_value={"rootless": False}), \
              mock.patch.object(p.subprocess, "Popen") as spawn:
@@ -123,7 +123,7 @@ class RealRecoveryProbeContracts(unittest.TestCase):
             self.assertEqual(result["reason"], "ROOTLESS")
             spawn.assert_not_called()
         with mock.patch.object(p.sys, "platform", "linux"), \
-             mock.patch.object(p.os, "geteuid", return_value=1000), \
+             mock.patch.object(p.os, "geteuid", return_value=1000, create=True), \
              mock.patch.object(p, "inspect_podman",
                                return_value={"rootless": True}), \
              mock.patch.object(p, "fixed",
@@ -141,7 +141,7 @@ class RealRecoveryProbeContracts(unittest.TestCase):
         self.assertNotIn("--network=host", p.probe_command(
             p.OWNER_IMAGE_ID, "f" * 24, 1000, 1000))
         with mock.patch.object(p.sys, "platform", "linux"), \
-             mock.patch.object(p.os, "geteuid", return_value=1000), \
+             mock.patch.object(p.os, "geteuid", return_value=1000, create=True), \
              mock.patch.object(p, "inspect_podman", side_effect=OSError("SECRET")):
             result = p.run_probe()
         self.assertEqual(result["status"], "BLOCKED")
