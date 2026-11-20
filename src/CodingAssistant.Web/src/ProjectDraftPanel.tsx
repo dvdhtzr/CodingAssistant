@@ -35,6 +35,16 @@ interface DraftSnapshot {
   job: DraftJob;
   events: DraftEvent[];
   files: DraftFile[];
+  architecture: { sha256: string; choices: {
+    topic: string; label: string; selectedOptionId: string;
+  }[] } | null;
+}
+interface ArchitectureReadiness {
+  status: 'READY' | 'INCOMPLETE' | 'LEGACY_UNBOUND' | 'SPECIFICATION_NOT_APPROVED';
+  readyForSourceGeneration: boolean;
+  architectureSha256: string | null;
+  blockingTopics: string[];
+  approvedChoices: { topic: string; label: string }[];
 }
 interface DraftResponse {
   available: boolean;
@@ -47,6 +57,7 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
   spec: SpecContract | null;
 }) {
   const [result, setResult] = useState<DraftSnapshot | null>(null);
+  const [architecture, setArchitecture] = useState<ArchitectureReadiness | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [clock, setClock] = useState(Date.now());
@@ -54,12 +65,19 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
   useEffect(() => {
     let closed = false;
     setResult(null);
+    setArchitecture(null);
     setError('');
     async function sync() {
       try {
-        const response = await api<DraftResponse>(token,
-          `/api/tasks/${taskId}/draft-build`);
-        if (!closed) setResult(response.snapshot);
+        const [response, readiness] = await Promise.all([
+          api<DraftResponse>(token, `/api/tasks/${taskId}/draft-build`),
+          api<ArchitectureReadiness>(token,
+            `/api/tasks/${taskId}/draft-build/architecture`),
+        ]);
+        if (!closed) {
+          setResult(response.snapshot);
+          setArchitecture(readiness);
+        }
       } catch {
         if (!closed) setError('Saved draft-build status could not be loaded.');
       }
@@ -67,7 +85,7 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
     void sync();
     const poll = window.setInterval(() => void sync(), 2500);
     return () => { closed = true; window.clearInterval(poll); };
-  }, [token, taskId]);
+  }, [token, taskId, spec?.sha256]);
 
   useEffect(() => {
     if (result?.job.state !== 'Running') return;
@@ -76,16 +94,25 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
   }, [result?.job.state]);
 
   async function start() {
-    if (busy || spec?.status !== 'Approved') return;
+    if (busy || spec?.status !== 'Approved' ||
+        !architecture?.readyForSourceGeneration) return;
     setBusy('start'); setError('');
     try {
+      // Refresh the immutable binding immediately before admitting a draft.
+      // The server rechecks it transactionally; stale snapshots fail closed.
+      const current = await api<ArchitectureReadiness>(token,
+        `/api/tasks/${taskId}/draft-build/architecture`);
+      setArchitecture(current);
+      if (!current.readyForSourceGeneration || !current.architectureSha256)
+        throw new Error('Complete the Solution Architect approvals before generating source.');
       const started = await api<DraftJob>(token,
         `/api/tasks/${taskId}/draft-build`, {
           specificationVersion: spec.version,
           specificationSha256: spec.sha256,
+          architectureSha256: current.architectureSha256,
         });
       setResult({
-        job: started, files: [],
+        job: started, files: [], architecture: null,
         events: [{
           sequence: 1,
           kind: 'BuildAccepted',
@@ -165,13 +192,15 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
     ? Math.max(0, Math.floor((clock - Date.parse(job.createdUtc)) / 1000)) : 0;
   return <section className="build-stage" aria-label="Task-specific project draft">
     <h2>4. Generate project files</h2>
-    <p className="hint">After approval, the local model chooses a small set of
-      source files for <em>your approved specification</em>, writes them one by one,
+    <p className="hint">After approving the Product Owner specification and both Solution Architect
+      decisions, your local model chooses a small set of source files consistent with
+      those exact decisions, writes them one by one,
       and saves the results. This stage does not execute code, install packages,
       compile, run tests, or modify your repositories. Files are unverified drafts.</p>
     <div className="actions">
       <button className="primary" type="button"
-        disabled={!!busy || spec?.status !== 'Approved' || running}
+        disabled={!!busy || spec?.status !== 'Approved' ||
+          !architecture?.readyForSourceGeneration || running}
         onClick={() => void start()}>
         {busy === 'start' ? 'Starting…' : 'Generate approved project draft'}
       </button>
@@ -191,6 +220,18 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
     </div>
     {spec?.status !== 'Approved' && <p className="hint">
       Approve a specification above before generating project files.</p>}
+    {spec?.status === 'Approved' && architecture &&
+      !architecture.readyForSourceGeneration && <p className="activity-warning">
+        Architecture approval required ({architecture.status}).
+        {architecture.blockingTopics.length > 0 &&
+          ' Review: ' + architecture.blockingTopics.join(', ') + '.'}
+        An older specification-only draft may still appear below for download,
+        but new Mission Control drafts require both approved choices.
+      </p>}
+    {architecture?.readyForSourceGeneration && <p className="hint">
+      Both architecture decisions approved. Binding SHA-256:
+      <code className="architect-hash"> {architecture.architectureSha256}</code>
+    </p>}
     {error && <div className="alert" role="alert">{error}</div>}
     {job && <div className="draft-status">
       <div className="activity-heading">
@@ -216,6 +257,17 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
       </p>
       {job.specificationSha256 !== spec?.sha256 &&
         <p className="hint">This draft belongs to an earlier specification.</p>}
+      {result?.architecture && <>
+        <p className="hint">Generation bound to owner-approved architecture:
+          <code className="architect-hash"> {result.architecture.sha256}</code></p>
+        <p className="hint">{result.architecture.choices.map(choice =>
+          choice.topic + ': ' + choice.label).join(' · ')}</p>
+        {architecture?.architectureSha256 !== result.architecture.sha256 &&
+          <p className="activity-warning">Architecture decisions have changed since
+            this draft began. Review the new decisions before generating again.</p>}
+      </>}
+      {!result?.architecture && <p className="hint">
+        Legacy specification-only draft (not bound to architecture decisions).</p>}
       <h3>Actual build activity</h3>
       <ol className="events">
         {(result?.events ?? []).map(event =>
