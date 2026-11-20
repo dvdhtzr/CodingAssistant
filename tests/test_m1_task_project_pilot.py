@@ -126,9 +126,11 @@ class TaskPilotTests(unittest.TestCase):
     def test_evaluator_is_nonroot_offline_and_has_no_model_socket(self):
         with tempfile.TemporaryDirectory() as temp:
             workspace = pathlib.Path(temp)
-            args = m.evaluator_command(
-                "f" * 64, workspace, "Service/Service.csproj",
-                ["build", "/workspace/Service/Service.csproj", "--no-restore"])
+            with mock.patch.object(m.os, "getuid", return_value=1000, create=True), \\
+                    mock.patch.object(m.os, "getgid", return_value=1000, create=True):
+                args = m.evaluator_command(
+                    "f" * 64, workspace, "Service/Service.csproj",
+                    ["build", "/workspace/Service/Service.csproj", "--no-restore"])
             for argument in ("--rm", "--pull=never", "--network=none",
                              "--read-only", "--cap-drop=all",
                              "--security-opt=no-new-privileges",
