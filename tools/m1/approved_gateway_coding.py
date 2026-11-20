@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import hashlib
 import hmac
 import http.client
@@ -25,6 +26,7 @@ import re
 import secrets
 import sqlite3
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -328,6 +330,9 @@ def broker_for(model: str, digest: str, state: dict[str, int]) -> type[BridgeHan
                 self.end_headers()
                 self.wfile.write(data)
                 self.close_connection = True
+                # Verified, delivered host-side response. No model text,
+                # token, tool args or prompts enter the event stream.
+                trace_stage("InferenceRequestVerified")
             except (OSError, ValueError, TypeError, RuntimeError,
                     http.client.HTTPException, json.JSONDecodeError):
                 with lock: state["failed"] += 1
@@ -480,6 +485,7 @@ def trace_stage(stage: str) -> None:
     if stage not in {
         "ScopeVerified", "WorkspacePrepared", "InferenceBridgeReady",
         "GatewayLaunched", "GatewayReady", "CodingRequestSent",
+        "InferenceRequestVerified",
         "CodingRequestReturned", "GatewayRemoved", "EvaluatorStarted",
         "EvaluatorPassed",
     }:
@@ -780,6 +786,21 @@ def execute(prepare: bool, journal=None, *,
             if sibling.read_text(encoding="utf-8") != "UNMOUNTED-DO-NOT-TOUCH":
                 raise ValueError("Independent evaluator touched unmounted sibling")
             trace_stage("EvaluatorPassed")
+            # Only the two verified fixed-fixture paths below are read, and
+            # only this approved C# source may be displayed. Workspace is
+            # disposable and deleted after report persistence.
+            original_text = (FIXTURES / TASK / "api" / "Program.cs").read_text(
+                encoding="utf-8")
+            repaired_text = (project / "api" / "Program.cs").read_text(
+                encoding="utf-8")
+            diff = "".join(difflib.unified_diff(
+                original_text.splitlines(keepends=True),
+                repaired_text.splitlines(keepends=True),
+                fromfile="a/api/Program.cs", tofile="b/api/Program.cs",
+                n=3))
+            report["approved_patch"] = (
+                diff if len(diff.encode("utf-8")) <= 7000 else "")
+            report["patch_omitted"] = len(diff.encode("utf-8")) > 7000
             report["status"] = "GATEWAY_APPROVED_CODING_PASS"
             report["phase"] = "complete"
     except (OSError, RuntimeError, ValueError, TypeError, KeyError,
@@ -789,6 +810,94 @@ def execute(prepare: bool, journal=None, *,
             exc.category if isinstance(exc, SafeGateBlocked)
             else type(exc).__name__)
     return report
+
+def bounded_result(report: dict, request_id: str, plan_hash: str) -> dict:
+    """Public-to-local-owner report: selected fixed metadata only.
+
+    Never return private ledger paths, raw ACP/Gateway/model logs, unapproved
+    code, host source, environment, or exception messages.
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", request_id) or not HEX64.fullmatch(plan_hash):
+        raise ValueError("Invalid bound result ID")
+    if type(report) is not dict or report.get("plan_hash") != plan_hash:
+        raise ValueError("Stored result doesn't match immutable plan")
+    status = report.get("status")
+    if status not in ("GATEWAY_APPROVED_CODING_PASS", "BLOCKED", "NOT_APPROVED"):
+        raise ValueError("Invalid final result status")
+    phase = report.get("phase", "")
+    reason = report.get("reason_code")
+    if (type(phase) is not str or not re.fullmatch(r"[a-z_]{1,45}", phase) or
+            reason is not None and (type(reason) is not str or
+            not re.fullmatch(r"[A-Za-z_]{1,64}", reason))):
+        raise ValueError("Invalid safe result category")
+    evaluator = report.get("evaluator")
+    verified = (evaluator.get("verified") if type(evaluator) is dict else None)
+    if verified is not None and type(verified) is not bool:
+        raise ValueError("Invalid evaluator verdict")
+    before = report.get("source_before")
+    after = report.get("source_after")
+    changed = (before.get("api/Program.cs") != after.get("api/Program.cs")
+               if type(before) is dict and type(after) is dict else None)
+    broker = report.get("broker")
+    calls = (broker.get("verified") if type(broker) is dict else None)
+    if calls is not None and (type(calls) is not int or not 0 <= calls <= MAX_REQUESTS):
+        raise ValueError("Invalid inference request count")
+    patch = report.get("approved_patch", "")
+    omitted = report.get("patch_omitted", False)
+    if (type(patch) is not str or len(patch.encode("utf-8")) > 7000 or
+            (patch and not patch.startswith("--- a/api/Program.cs\n")) or
+            type(omitted) is not bool):
+        raise ValueError("Invalid fixed-fixture patch")
+    if status != "GATEWAY_APPROVED_CODING_PASS" or verified is not True:
+        patch = ""  # Never present unverified code as approved output.
+        omitted = False
+    return {
+        "schema": "codingassistant-run-result-v1",
+        "available": True,
+        "runId": request_id,
+        "planHash": plan_hash,
+        "status": status,
+        "phase": phase,
+        "reasonCode": reason,
+        "evaluatorVerified": verified,
+        "sourceChanged": changed,
+        "inferenceRequests": calls,
+        "patch": patch,
+        "patchOmitted": omitted,
+    }
+
+
+def read_result_by_request(ledger: RunLedger, request_id: str) -> dict:
+    """Pure read; never starts a model, replays work or reconciles the guest."""
+    if not re.fullmatch(r"[0-9a-f]{32}", request_id):
+        raise ValueError("Invalid exact request ID")
+    row = ledger.get_by_request(request_id)
+    if row is None or not row["evidence_name"]:
+        return {"schema": "codingassistant-run-result-v1", "available": False}
+    if row["state"] not in ("SUCCEEDED", "FAILED", "DECLINED"):
+        return {"schema": "codingassistant-run-result-v1", "available": False}
+    filename = row["evidence_name"]
+    if type(filename) is not str or not re.fullmatch(
+            r"m112-approved-coding-[0-9a-f]{12}\.json", filename):
+        raise ValueError("Untrusted evidence name")
+    evidence = ARTIFACTS / filename
+    fd = os.open(evidence, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        identity = os.fstat(fd)
+        if (not stat.S_ISREG(identity.st_mode) or
+                identity.st_uid != os.geteuid() or
+                identity.st_mode & 0o077 or identity.st_size > 64_000):
+            raise ValueError("Unsafe evidence permissions or size")
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            fd = -1
+            body = stream.read(64_001)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(body) > 64_000:
+        raise ValueError("Oversized saved evidence")
+    return bounded_result(json.loads(body), request_id, row["plan_hash"])
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -807,6 +916,8 @@ def main() -> int:
                       help="Build pinned derivative offline and preview, never execute")
     mode.add_argument("--recover-request-id", metavar="32_HEX",
                       help="Reconcile by exact M2 idempotency key, never replay")
+    mode.add_argument("--result-by-request-id", metavar="32_HEX",
+                      help="Read sanitized durable fixed-fixture result, no model")
     parser.add_argument("--approval-stdin", action="store_true",
                         help="Consume exact owner authorization from one stdin line")
     parser.add_argument("--control-task-id")
@@ -817,8 +928,8 @@ def main() -> int:
                         help="Caller idempotency key; duplicate key NEVER re-executes")
     args = parser.parse_args()
     inspect_mode = (args.history or args.status or args.recover or
-                    args.recover_request_id or args.preview_json or
-                    args.prepare_only)
+                    args.recover_request_id or args.result_by_request_id or
+                    args.preview_json or args.prepare_only)
     if args.prepare and inspect_mode:
         parser.error("--prepare applies only to a new interactive coding run")
     if args.request_id is not None and inspect_mode:
@@ -850,6 +961,14 @@ def main() -> int:
     # This directory is private (0700) regardless of artifacts/m1's
     # historical permissions. No public paths or logs enter SQLite.
     with RunLedger(LEDGER_DIR) as ledger:
+        if args.result_by_request_id:
+            try:
+                print(json.dumps(read_result_by_request(
+                    ledger, args.result_by_request_id), separators=(",", ":")))
+                return 0
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                print("M1 result evidence unavailable", file=sys.stderr)
+                return 2
         if args.history:
             print(json.dumps(ledger.history(), indent=2))
             return 0

@@ -4,12 +4,31 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Http;
 
 namespace CodingAssistant.Api;
 
 public sealed record M1ExecutablePreview(string PlanHash, JsonElement Plan);
 public enum M1ExecutionOutcome { Verified, Uncertain }
+
+public sealed record M1RunResult(
+    string RunId, string PlanHash, string Status, string Phase,
+    string? ReasonCode, bool? EvaluatorVerified, bool? SourceChanged,
+    int? InferenceRequests, string Patch, bool PatchOmitted);
+
+public interface IM1ResultReader
+{
+    Task<M1RunResult?> ReadResultAsync(
+        string runId, string expectedPlanHash, CancellationToken cancellation);
+}
+
+public sealed class DisabledM1ResultReader : IM1ResultReader
+{
+    public Task<M1RunResult?> ReadResultAsync(
+        string runId, string hash, CancellationToken cancellation) =>
+        Task.FromResult<M1RunResult?>(null);
+}
 
 public interface IM1ExecutionRunner
 {
@@ -59,7 +78,8 @@ public sealed class DisabledM1Runner : IM1ExecutionRunner
 /// No arbitrary project, model, script, mount or worktree is caller-selectable.
 /// The agent process receives NO API bearer token or cloud-provider credentials.
 /// </summary>
-public sealed class M1ProcessRunner : IM1ExecutionRunner, IM1ProgressReporter
+public sealed class M1ProcessRunner :
+    IM1ExecutionRunner, IM1ProgressReporter, IM1ResultReader
 {
     private readonly string _script;
     private readonly string _root;
@@ -336,6 +356,86 @@ public sealed class M1ProcessRunner : IM1ExecutionRunner, IM1ProgressReporter
                                       StringComparison.Ordinal)
             ? M1ExecutionOutcome.Verified
             : M1ExecutionOutcome.Uncertain;
+    }
+
+    /// <summary>
+    /// Read the host-owned immutable result ledger using a bounded, fixed
+    /// Python inspection command. Never starts an agent, model or evaluator.
+    /// Validates M2 run ID and exact M1 executable hash before rendering.
+    /// Can work even when current host execution is disabled.
+    /// </summary>
+    public async Task<M1RunResult?> ReadResultAsync(
+        string runId, string expectedPlanHash, CancellationToken cancellation)
+    {
+        ExecutionStore.CheckId(runId);
+        if (!Regex.IsMatch(expectedPlanHash, "^[0-9a-f]{64}$",
+                           RegexOptions.CultureInvariant))
+            throw new ExecutionUnavailable();
+        var result = await InvokeAsync(
+            ["--result-by-request-id", runId], null,
+            TimeSpan.FromSeconds(15), cancellation);
+        if (result.Exit != 0)
+            throw new ExecutionUnavailable();
+        return ParseResult(result.Output, runId, expectedPlanHash);
+    }
+
+    public static M1RunResult? ParseResult(
+        string raw, string runId, string expectedPlanHash)
+    {
+        try
+        {
+            using var parsed = JsonDocument.Parse(raw);
+            var root = parsed.RootElement;
+            if (root.GetProperty("schema").GetString() !=
+                    "codingassistant-run-result-v1")
+                throw new ExecutionUnavailable();
+            if (!root.GetProperty("available").GetBoolean())
+                return null;
+            var id = root.GetProperty("runId").GetString() ?? "";
+            var hash = root.GetProperty("planHash").GetString() ?? "";
+            var status = root.GetProperty("status").GetString() ?? "";
+            var phase = root.GetProperty("phase").GetString() ?? "";
+            var reason = root.GetProperty("reasonCode").ValueKind ==
+                         JsonValueKind.Null ? null :
+                         root.GetProperty("reasonCode").GetString();
+            var evaluator = root.GetProperty("evaluatorVerified");
+            var verified = evaluator.ValueKind == JsonValueKind.Null ? (bool?)null :
+                evaluator.GetBoolean();
+            var changed = root.GetProperty("sourceChanged");
+            var sourceChanged = changed.ValueKind == JsonValueKind.Null ? (bool?)null :
+                changed.GetBoolean();
+            var calls = root.GetProperty("inferenceRequests");
+            var count = calls.ValueKind == JsonValueKind.Null ? (int?)null :
+                calls.GetInt32();
+            var patch = root.GetProperty("patch").GetString() ?? "";
+            var omitted = root.GetProperty("patchOmitted").GetBoolean();
+            if (!CryptographicOperations.FixedTimeEquals(
+                    Encoding.ASCII.GetBytes(id), Encoding.ASCII.GetBytes(runId)) ||
+                !CryptographicOperations.FixedTimeEquals(
+                    Encoding.ASCII.GetBytes(hash),
+                    Encoding.ASCII.GetBytes(expectedPlanHash)) ||
+                status is not ("GATEWAY_APPROVED_CODING_PASS" or "BLOCKED" or "NOT_APPROVED") ||
+                !Regex.IsMatch(phase, "^[a-z_]{1,45}$") ||
+                (reason is not null && !Regex.IsMatch(
+                    reason, "^[A-Za-z_]{1,64}$")) ||
+                count is < 0 or > 10 ||
+                patch.Length > 7000 ||
+                (patch.Length > 0 && !patch.StartsWith(
+                    "--- a/api/Program.cs\n", StringComparison.Ordinal)) ||
+                (status != "GATEWAY_APPROVED_CODING_PASS" &&
+                    (patch.Length != 0 || omitted)) ||
+                (status == "GATEWAY_APPROVED_CODING_PASS" &&
+                    verified is not true))
+                throw new ExecutionUnavailable();
+            return new M1RunResult(id, hash, status, phase,
+                reason, verified, sourceChanged, count, patch, omitted);
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or
+                                   InvalidOperationException or FormatException or
+                                   ArgumentException or OverflowException)
+        {
+            throw new ExecutionUnavailable();
+        }
     }
 
     public async Task<bool> ReconcileAsync(

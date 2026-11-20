@@ -656,6 +656,23 @@ try
                 "all eight cross-table events including fixed milestones are numbered");
         }
         Check(fake.Executions == 1, "one fake worker, no retries");
+        using (var evidence = await executionClient.GetAsync(
+            $"/api/runs/{executionRunId}/result"))
+        using (var json = await ReadJson(evidence))
+        {
+            Check(evidence.StatusCode == HttpStatusCode.OK,
+                "authenticated run output is available through the real API");
+            Check(json.RootElement.GetProperty("available").GetBoolean(),
+                "model-free saved evidence can be fetched after execution");
+            var output = json.RootElement.GetProperty("result");
+            Check(output.GetProperty("evaluatorVerified").GetBoolean() &&
+                  output.GetProperty("sourceChanged").GetBoolean() &&
+                  output.GetProperty("inferenceRequests").GetInt32() == 4,
+                "UI gets bounded independent evaluator and local inference counts");
+            Check(output.GetProperty("patch").GetString()!
+                  .StartsWith("--- a/api/Program.cs", StringComparison.Ordinal),
+                "only the approved disposable C# patch is available");
+        }
         using (var history = await executionClient.GetAsync(
             $"/api/runs/{executionRunId}/events?after=0"))
         using (var json = await ReadJson(history))
@@ -807,6 +824,43 @@ try
             }
         }
 
+        // Archived run output is a fixed, hash-bound subset of the owner
+        // private M1 ledger. Any wrong ID/scope or raw-model-output field
+        // must fail without producing an apparent verified report.
+        var sampleResult = JsonSerializer.Serialize(new
+        {
+            schema = "codingassistant-run-result-v1",
+            available = true,
+            runId = verifiedRun.Id,
+            planHash = verifiedPreview.PlanHash,
+            status = "GATEWAY_APPROVED_CODING_PASS",
+            phase = "complete",
+            reasonCode = (string?)null,
+            evaluatorVerified = (bool?)true,
+            sourceChanged = (bool?)true,
+            inferenceRequests = (int?)4,
+            patch = "--- a/api/Program.cs\n+++ b/api/Program.cs\n@@ -1 +1 @@\n-old\n+new\n",
+            patchOmitted = false
+        });
+        Check(M1ProcessRunner.ParseResult(sampleResult,
+                  verifiedRun.Id, verifiedPreview.PlanHash)?.EvaluatorVerified == true,
+            "bound fixed-fixture result accepted for owner view");
+        foreach (var (badId, badHash) in new[] {
+            (new string('f', 32), verifiedPreview.PlanHash),
+            (verifiedRun.Id, new string('f', 64))
+        })
+        {
+            try
+            {
+                M1ProcessRunner.ParseResult(sampleResult, badId, badHash);
+                throw new Exception("Unbound archived output was accepted");
+            }
+            catch (ExecutionUnavailable)
+            {
+                checks++;
+            }
+        }
+
         // A stale M2 plan must block further execution previews.
         string staleRunId;
         using (var created = await Post(executionClient,
@@ -871,7 +925,8 @@ finally
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
 }
 
-sealed class SmokeM1Runner : IM1ExecutionRunner, IM1ProgressReporter
+sealed class SmokeM1Runner :
+    IM1ExecutionRunner, IM1ProgressReporter, IM1ResultReader
 {
     public int Executions;
     public volatile bool BlockOnExecute;
@@ -920,6 +975,14 @@ sealed class SmokeM1Runner : IM1ExecutionRunner, IM1ProgressReporter
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellation);
         return M1ExecutionOutcome.Verified;
     }
+
+    public Task<M1RunResult?> ReadResultAsync(
+        string runId, string expectedPlanHash, CancellationToken cancellation) =>
+        Task.FromResult<M1RunResult?>(new M1RunResult(
+            runId, expectedPlanHash, "GATEWAY_APPROVED_CODING_PASS", "complete",
+            null, true, true, 4,
+            "--- a/api/Program.cs\n+++ b/api/Program.cs\n@@ -1 +1 @@\n-old\n+new\n",
+            false));
 
     public Task<bool> ReconcileAsync(string requestId, CancellationToken cancellation) =>
         Task.FromResult(CleanupIsVerified);

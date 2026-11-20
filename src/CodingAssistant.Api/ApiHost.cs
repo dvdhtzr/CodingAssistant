@@ -64,6 +64,19 @@ public static class ApiHost
             ? new M1ProcessRunner(settings.RepositoryRoot ??
                                   Directory.GetCurrentDirectory())
             : new DisabledM1Runner());
+        // Result inspection is deliberately read-only and available even in
+        // history-only mode. Never enable the coding runner just to display
+        // an archived result; the ledger stays owner-private on the Dell.
+        IM1ResultReader resultReader = runner as IM1ResultReader ??
+            new DisabledM1ResultReader();
+        if (runner is not IM1ResultReader && OperatingSystem.IsLinux())
+        {
+            var root = settings.RepositoryRoot ?? Directory.GetCurrentDirectory();
+            var script = Path.Combine(root, "tools", "m1",
+                                      "approved_gateway_coding.py");
+            if (Directory.Exists(root) && File.Exists(script))
+                resultReader = new M1ProcessRunner(root);
+        }
         var expected = Convert.FromHexString(settings.OwnerToken);
         // Web root must be selected BEFORE WebApplicationBuilder is created.
         // The deployed API uses assets next to the binary; repository smoke
@@ -87,6 +100,7 @@ public static class ApiHost
         builder.Services.AddSingleton(runs);
         builder.Services.AddSingleton(executions);
         builder.Services.AddSingleton<IM1ExecutionRunner>(runner);
+        builder.Services.AddSingleton<IM1ResultReader>(resultReader);
         builder.Services.AddSingleton<ExecutionCoordinator>();
         builder.Services.AddSignalR(options =>
         {
@@ -194,6 +208,16 @@ public static class ApiHost
                 string id, long? after, int? limit, RunStore db) =>
             Safe(() => Results.Ok(db.ReadEvents(
                 id, after ?? 0, limit ?? 50))));
+        app.MapGet("/api/runs/{id}/result", (
+                string id, ExecutionStore db, IM1ResultReader reader,
+                CancellationToken cancellation) =>
+            SafeAsync(async () =>
+            {
+                var plan = db.Get(id); // ID and exact approved plan are server-owned.
+                var result = await reader.ReadResultAsync(
+                    id, plan.PlanHash, cancellation);
+                return Results.Ok(new { available = result is not null, result });
+            }));
         app.MapPost("/api/runs/{id}/cancel", (
                 string id, RunStore db, RunNotifier notifier) =>
             SafeAsync(async () =>
