@@ -22,6 +22,7 @@ const activeStates = new Set(['Queued', 'Generating', 'Validating']);
 const stages: Record<string, string> = {
   Queued: 'Queued locally — no model request has been sent.',
   ModelRequestStarted: 'The approved specification was sent to local Ollama.',
+  ModelOutputReceived: 'Verified: additional response text arrived from local Ollama.',
   ModelResponseReceived: 'The local model returned proposed files.',
   DraftFilesSaved: 'Proposed source files were validated and saved.',
   SpecificationChanged: 'The approved specification changed. Discarding stale output.',
