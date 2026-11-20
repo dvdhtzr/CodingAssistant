@@ -71,6 +71,15 @@ Any serialization schema is to be explicitly versioned and exhaustively tested b
 
 **Non-goals now:** unrestricted agent shell/host access, cloud model fallback, arbitrary public skills installation/execution, autonomous dependency downloads, one fresh image build per user project, unsigned toolchain images, or announcing a generalized working coding agent on the basis of a generated ZIP.
 
+## GitHub implementation backlog
+
+- [#108](https://github.com/dvdhtzr/CodingAssistant/issues/108): record Phase 1 Product Owner live acceptance evidence.
+- [#109](https://github.com/dvdhtzr/CodingAssistant/issues/109): Phase 2 stack decisions + **non-executable** runtime capability descriptors.
+- [#110](https://github.com/dvdhtzr/CodingAssistant/issues/110): Phase 3 portable read-only skills registry and verified MAF loading.
+- [#111](https://github.com/dvdhtzr/CodingAssistant/issues/111): Phase 4 qualified Static Web evaluator and bounded repair.
+- [#107](https://github.com/dvdhtzr/CodingAssistant/issues/107): calculator cross-file regression fixture and verification target.
+- [#76](https://github.com/dvdhtzr/CodingAssistant/issues/76), [#92](https://github.com/dvdhtzr/CodingAssistant/issues/92): original execution security and task-scope gates.
+
 ## First actionable PR sequence
 
 1. Record this architecture amendment and backlog; preserve Phase 1 evidence/status.
