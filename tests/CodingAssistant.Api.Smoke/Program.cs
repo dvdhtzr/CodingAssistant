@@ -1586,6 +1586,18 @@ try
                   json.RootElement.GetProperty("specification")
                     .GetProperty("status").GetString() == "Approved",
                 "interview, spec and approval survive real API restart");
+        using (var savedRoles = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/interview"))
+        using (var json = await ReadJson(savedRoles))
+        {
+            var messages = json.RootElement.GetProperty("messages")
+                .EnumerateArray().ToArray();
+            Check(savedRoles.StatusCode == HttpStatusCode.OK &&
+                  messages.Count(m => m.GetProperty("role").GetString() == "assistant") == 3 &&
+                  messages.Count(m => m.GetProperty("role").GetString() == "owner") == 2,
+                "Product Owner display rename preserves persisted assistant/owner role contract");
+        }
+
 
         // Hold an unfinished draft in the real SQLite store. A new owner
         // answer must invalidate both subsequent file writes and final
