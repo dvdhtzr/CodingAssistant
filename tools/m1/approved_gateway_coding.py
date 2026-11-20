@@ -22,6 +22,7 @@ import os
 import pathlib
 import re
 import secrets
+import sqlite3
 import shutil
 import subprocess
 import sys
@@ -43,8 +44,10 @@ from real_qualification import pin_model, scan_workspace
 from qualification_isolation_probe import check_manifest, sealed_snapshot, FIXTURES
 from qualification_acceptance_probe import run_evaluator, IMAGE as EVAL_TAG
 from sandbox_probe import image_status, inspect_podman
+from run_ledger import RunLedger, DuplicateRequest, managed_container, LABEL as LEDGER_LABEL
 
 ARTIFACTS = ROOT / "artifacts/m1"
+LEDGER_DIR = ARTIFACTS / "private-ledger"
 CONTEXT = ROOT / "infra/m1"
 CONTAINERFILE = CONTEXT / "Containerfile.coding-turn"
 CONFIG = CONTEXT / "coding-config.json"
@@ -53,7 +56,7 @@ PLUGIN = CONTEXT / "coding-plugin"
 SOURCES = (CONTAINERFILE, CONFIG, LAUNCHER, PLUGIN / "index.mjs",
            PLUGIN / "safe-failure.mjs",
            PLUGIN / "openclaw.plugin.json", PLUGIN / "package.json",
-           pathlib.Path(__file__).resolve())
+           ROOT / "tools/m1/run_ledger.py", pathlib.Path(__file__).resolve())
 IMAGE_TAG = "localhost/codingassistant-m112-approved-coding:2026.11.5"
 METHOD = "codingassistant.coding.run"
 STATUS_METHOD = "codingassistant.coding.status"
@@ -320,12 +323,18 @@ def broker_for(model: str, digest: str, state: dict[str, int]) -> type[BridgeHan
     return Handler
 
 def container_command(image_id: str, name: str, env: pathlib.Path,
-                      workspace: pathlib.Path, socket_dir: pathlib.Path) -> list[str]:
+                      workspace: pathlib.Path, socket_dir: pathlib.Path, *,
+                      managed_run_id: str | None = None) -> list[str]:
     if (HEX64.fullmatch(image_id) is None or workspace.is_symlink() or
             not workspace.is_dir() or socket_dir.is_symlink() or
             not (socket_dir / "ollama.sock").exists()):
         raise ValueError("Invalid pinned image, worktree or IPC mount")
     args = ephemeral_gateway(image_id, name, env)
+    if managed_run_id is not None:
+        if name != managed_container(managed_run_id):
+            raise ValueError("Managed container identity mismatch")
+        args[args.index(image_id):args.index(image_id)] = [
+            "--label", LEDGER_LABEL + "=" + managed_run_id]
     at = args.index(image_id)
     args[at:at] = [
         "--volume", str(workspace.resolve()) + ":/workspace:rw,nosuid,nodev",
@@ -453,9 +462,10 @@ def query_gateway_status(name: str, plan_hash: str) -> dict[str, object] | None:
 
 
 def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
-                plan_hash: str, evidence: dict[str, object] | None = None
-                ) -> dict[str, object]:
-    name = "ca-m17-acpx-" + secrets.token_hex(6)
+                plan_hash: str, evidence: dict[str, object] | None = None, *,
+                journal=None) -> dict[str, object]:
+    name = journal.container_name() if journal else (
+        "ca-m17-acpx-" + secrets.token_hex(6))
     status = evidence if evidence is not None else {}
     status.update({
         "phase": "gateway_start", "health": None, "rpc": None,
@@ -471,7 +481,14 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
             out.write("OPENCLAW_SKIP_CHANNELS=1\n")
             out.write("OPENCLAW_SKIP_CANVAS_HOST=1\n")
         try:
-            result = fixed(container_command(image, name, env, worktree, socket_dir), timeout=45)
+            # Crash consistency: register the one managed guest BEFORE it can
+            # exist in Podman. A future reconciler will not guess by name.
+            if journal:
+                journal.advance("RUNNING", container_name=name)
+            result = fixed(container_command(
+                image, name, env, worktree, socket_dir,
+                **({"managed_run_id": journal.run_id} if journal else {})),
+                timeout=45)
             if result.returncode != 0:
                 raise SafeGateBlocked("GATEWAY_LAUNCH_FAILED")
             status["container_started"] = True
@@ -539,7 +556,7 @@ def request_exact_approval(plan_hash: str) -> bool:
     return response.strip() == approval
 
 
-def execute(prepare: bool) -> dict[str, object]:
+def execute(prepare: bool, journal=None) -> dict[str, object]:
     report: dict[str, object] = {
         "schema_version": 1, "stage": "M1.12-approved-gateway-coding",
         "utc": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -554,6 +571,8 @@ def execute(prepare: bool) -> dict[str, object]:
         "external_network_enabled": False,
     }
     try:
+        if journal:
+            journal.advance("PREFLIGHT")
         if sys.platform != "linux" or os.geteuid() == 0:
             raise ValueError("Must use Linux rootless Podman")
         if inspect_podman(20).get("rootless") is not True:
@@ -596,11 +615,17 @@ def execute(prepare: bool) -> dict[str, object]:
         print("  fixture:", TASK, "model:", MODEL)
         print("  disposable writable file:", "api/Program.cs")
         print("  exact plan SHA256:", plan_hash)
+        if journal:
+            journal.advance("AWAITING_APPROVAL", plan_hash=plan_hash)
         if not request_exact_approval(plan_hash):
             report["status"] = "NOT_APPROVED"
+            if journal:
+                journal.advance("DECLINED", result_code="NOT_APPROVED")
             print("Approval declined or incomplete; no coding session was started.")
             return report
         report["approved"] = True
+        if journal:
+            journal.advance("APPROVED")
         report["phase"] = "disposable_workspace"
 
         with tempfile.TemporaryDirectory(prefix="ca-m112-isolated-") as temporary:
@@ -624,7 +649,8 @@ def execute(prepare: bool) -> dict[str, object]:
                     broker_for(MODEL, digest, broker_state)):
                 try:
                     gateway = run_gateway(
-                        image, project, ipc, plan_hash, gateway_evidence)
+                        image, project, ipc, plan_hash, gateway_evidence,
+                        **({"journal": journal} if journal else {}))
                 finally:
                     # The disposable project survives the Gateway removal but
                     # is never uploaded to GitHub or printed with its content.
@@ -652,6 +678,8 @@ def execute(prepare: bool) -> dict[str, object]:
                 raise ValueError("Integrated model/boundary/source gate failed")
             # Isolated verification: no host Ollama socket is mounted here.
             report["phase"] = "offline_acceptance"
+            if journal:
+                journal.advance("VERIFYING")
             eval_dir = root / "offline-evaluation"
             result = run_evaluator(
                 eval_img["image_id"], TASK, project, sibling,
@@ -682,24 +710,81 @@ def execute(prepare: bool) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", action="store_true",
-                        help="Explicitly build the offline copied image before approval")
+                        help="Explicitly build offline image before exact owner approval")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--history", action="store_true",
+                      help="Read host-owned durable run history (no model)")
+    mode.add_argument("--status", metavar="RUN_ID",
+                      help="Read one durable run and its transitions (no model)")
+    mode.add_argument("--recover", metavar="RUN_ID",
+                      help="Safely reconcile one interrupted run (never replays model)")
+    parser.add_argument("--request-id", metavar="32_HEX",
+                        help="Caller idempotency key; duplicate key NEVER re-executes")
     args = parser.parse_args()
-    report = execute(prepare=args.prepare)
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    path = ARTIFACTS / ("m112-approved-coding-" + uuid.uuid4().hex[:12] + ".json")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        json.dump(report, stream, indent=2, sort_keys=True)
-        stream.write("\n")
-    print("M1.12", report["status"])
-    print("  approved:", report["approved"], "plan hash:", report["plan_hash"])
-    print("  failed/succeeded phase:", report["phase"])
-    print("  isolated Gateway / host broker:", report["gateway"], report["broker"])
-    print("  independent evaluator:", report["evaluator"])
-    if report["reason_code"]:
-        print("  stopped safely:", report["reason_code"])
-    print("Evidence:", path)
-    return 0 if report["status"] == "GATEWAY_APPROVED_CODING_PASS" else 2
+    if args.request_id is not None and (args.history or args.status or args.recover):
+        parser.error("--request-id applies only to a new approved run")
+    if args.prepare and (args.history or args.status or args.recover):
+        parser.error("--prepare applies only to a new approved run")
+    # This directory is private (0700) regardless of artifacts/m1's
+    # historical permissions. No public paths or logs enter SQLite.
+    with RunLedger(LEDGER_DIR) as ledger:
+        if args.history:
+            print(json.dumps(ledger.history(), indent=2))
+            return 0
+        if args.status:
+            print(json.dumps({
+                "run": ledger.get(args.status),
+                "transitions": ledger.transitions(args.status),
+            }, indent=2))
+            return 0
+        if args.recover:
+            if sys.platform != "linux" or os.geteuid() == 0:
+                print("Recovery blocked: Linux rootless operation required")
+                return 2
+            result = ledger.reconcile(args.recover)
+            print(json.dumps(result, indent=2))
+            return 0 if result["result"] in (
+                "INTERRUPTED_CLEAN", "ALREADY_TERMINAL", "ACTIVE") else 2
+        try:
+            journal = ledger.start(request_id=args.request_id)
+        except DuplicateRequest as prior:
+            print("IDEMPOTENCY_KEY_ALREADY_USED — no model or coding action attempted")
+            print(json.dumps(prior.record, indent=2))
+            return 3
+        try:
+            print("Durable run ID:", journal.run_id)
+            report = execute(prepare=args.prepare, journal=journal)
+            ARTIFACTS.mkdir(parents=True, exist_ok=True)
+            name = "m112-approved-coding-" + uuid.uuid4().hex[:12] + ".json"
+            path = ARTIFACTS / name
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(report, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            # A verified final DB state requires an on-disk evidence artifact.
+            final = journal.finish(report, name)
+            print("M1.12", report["status"])
+            print("  durable run:", journal.run_id, "state:", final)
+            print("  approved:", report["approved"], "plan hash:", report["plan_hash"])
+            print("  failed/succeeded phase:", report["phase"])
+            print("  isolated Gateway / host broker:", report["gateway"], report["broker"])
+            print("  independent evaluator:", report["evaluator"])
+            if report["reason_code"]:
+                print("  stopped safely:", report["reason_code"])
+            print("Evidence:", path)
+            print("Durable history: python3 tools/m1/approved_gateway_coding.py --status", journal.run_id)
+            return 0 if final == "SUCCEEDED" else 2
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+            # Fail closed. The exclusive lifetime lock is released by finally;
+            # a non-terminal row can only be reconciled, NEVER auto-resumed.
+            print("M1 durable execution BLOCKED:", type(exc).__name__)
+            print("Recover safely: python3 tools/m1/approved_gateway_coding.py --recover", journal.run_id)
+            return 2
+        finally:
+            journal.close()
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

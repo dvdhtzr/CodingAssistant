@@ -1035,3 +1035,43 @@ vertical slice, then the M2 .NET 10 + SQLite foundation and M3
 React/SignalR Mission Control. Do not repeat the already-GREEN
 M1.12 coding test without a specific regression or scope change.
 
+## M1.13 — durable approved-run ledger and fail-closed crash reconciliation
+
+The owner-verified M1.12 Gateway/ACPX/OpenCode/host-Qwen path is preserved,
+including exact typed plan approval, pinned model, isolated disposable fixture
+and independently verified offline .NET evaluation. This change makes the
+host's execution history durable without trusting guest-side agent reports.
+
+Before preflight or model execution, the operator CLI allocates a durable
+run ID in SQLite under the Git-ignored artifacts/m1/private-ledger directory.
+The journal uses owner-private directories/files, SQLite synchronous FULL,
+an OS-held exclusive per-run lock, and explicit transaction transitions.
+Only fixed run states, hashes, container identifiers and evidence filenames
+are retained; never model text, raw stderr, credentials or source code.
+An optional explicit 32-character --request-id enforces exactly-once
+admission: reuse returns the original record and NEVER starts a new model turn.
+
+Supported read/recovery operations (do not need owner coding approval):
+
+    python3 tools/m1/approved_gateway_coding.py --history
+    python3 tools/m1/approved_gateway_coding.py --status <RUN_ID>
+    python3 tools/m1/approved_gateway_coding.py --recover <RUN_ID>
+
+Before Podman starts, the journal records the derived container name.
+Podman carries a matching run-ID label. Recovery must first acquire
+the per-run exclusive OS lock; active coding returns ACTIVE and is not
+interrupted. A stale run can remove only its correctly labeled container.
+An unexpected label, inaccessible Podman or failed cleanup returns
+RECOVERY_BLOCKED without automatic retry or fabricated success.
+Successful cleanup marks INTERRUPTED_CLEAN, never SUCCEEDED.
+
+A successful journal result requires the real integrated runner to
+reach VERIFYING, save the independent evaluator evidence file, and
+complete the final journal transaction. A crash before this cannot
+produce a verified success or replay an already-approved coding turn.
+
+Model-free Ubuntu/Windows CI covers SQLite durability and transitions,
+strict idempotency, live locks, orphan cleanup and foreign-label refusal.
+These tests are NOT live Dell crash/restart or hostile-operation proofs.
+M1.12 remains GREEN on Dell; overall M1 remains YELLOW until actual
+restart/reconciliation and integrated security acceptance are observed.
