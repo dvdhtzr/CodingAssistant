@@ -71,3 +71,19 @@
 .new-project-panel label{font-size:.95rem;margin:1rem 0}
 .new-project-panel textarea{min-height:150px;line-height:1.55}
 .new-project-panel .actions{margin-top:1.3rem}
+
+/* Owner-controlled Phase 2 architecture discovery, no executable authority. */
+.architect-stage{margin-top:1.4rem;padding:1rem;border:1px solid #38678a;border-radius:10px;background:#122138}
+.architect-stage h2{margin:0 0 .7rem}
+.architect-decision{border-top:1px solid #3c4c66;margin-top:1.2rem;padding-top:1rem}
+.architect-decision .actions{margin:.4rem 0 .85rem}
+.architect-rationale{white-space:pre-wrap;overflow-wrap:anywhere;color:#dce6f4;line-height:1.55}
+.architect-hash{overflow-wrap:anywhere;word-break:break-all}
+.architect-options{border:1px solid #374d67;border-radius:9px;padding:.75rem;margin:.85rem 0}
+.architect-options legend{color:#b9cfe7;font-size:.83rem}
+.architect-option{display:flex;gap:.7rem;align-items:flex-start;background:#102034;border:1px solid #304e66;border-radius:9px;padding:.8rem;margin:.55rem 0}
+.architect-option input{width:auto;margin:.2rem 0;flex:none}
+.architect-option span{display:block;min-width:0}
+.architect-option strong{display:inline-block;margin-right:.6rem}
+.architect-option small{display:block;margin-top:.4rem;color:#b9c9de;line-height:1.4}
+.architect-stage .alert{max-width:none}
