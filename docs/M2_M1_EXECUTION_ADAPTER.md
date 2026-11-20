@@ -68,9 +68,27 @@ the fixed executable plan. It **does not** create an M1 run, start an ACP
 session, prompt a model, or grant approval. A missing local image, evaluator,
 manifest, digest or rootless boundary fails closed.
 
-The host .NET application requires a .NET 10 runtime/SDK or a separately
-validated self-contained build. Do not grant Podman socket mounts or elevate
-the API to root to work around a missing SDK.
+The host .NET application requires a .NET 10 runtime/SDK **or** the
+self-contained `codingassistant-linux-x64` artifact built by the Ubuntu PR
+CI job after model-free tests pass. That artifact can be retrieved from the
+PR's Actions run and unpacked under a private directory on the Dell:
+
+```bash
+mkdir -p "$HOME/.local/opt/codingassistant-api"
+unzip -oq "$HOME/Downloads/codingassistant-linux-x64.zip" -d "$HOME/.local/opt/codingassistant-api"
+chmod u+x "$HOME/.local/opt/codingassistant-api/CodingAssistant.Api"
+export CODINGASSISTANT_OWNER_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+export CODINGASSISTANT_ENABLE_LOCAL_EXECUTION=1
+export CODINGASSISTANT_REPOSITORY_ROOT="$HOME/CodingAssistant"
+"$HOME/.local/opt/codingassistant-api/CodingAssistant.Api"
+```
+
+The actual downloaded artifact ZIP filename may be browser-adjusted; use its
+real name. Keep the owner token only in your private session, and use the same
+token in another terminal for authenticated HTTP calls. No model starts merely
+because the API is running. Do not grant Podman socket mounts or elevate the
+API to root to work around a missing host SDK. The release artifact is a
+CI-built binary, **not** a Dell runtime/security qualification by itself.
 
 ## Owner-facing authenticated workflow
 
