@@ -2,7 +2,7 @@
 
 **Approved:** November 20, 2026  
 **Scope:** Evolve the *working* local-first project generator into a coordinated Microsoft Agent Framework engineering team.  
-**Status:** Phase 0 in progress; no v2 phase has been declared GREEN.  
+**Status:** Phase 0 baseline protection GREEN with qualified evidence below; Phase 1 Product Owner in progress. No later phase has passed its acceptance gate.  
 **Origin:** Owner-approved comprehensive handoff of November 20, 2026.
 
 ## Relationship to the original implementation plan
@@ -21,7 +21,7 @@ Our known working baseline: authenticated .NET 10 API, private SQLite, React/Typ
 6. **Traceability:** record exact source/version/model, handoffs, decisions, approvals, durable events and independent test evidence. No invented progress, passing test or executable capability.
 7. **Portability and efficiency:** .NET 10, React/TypeScript/Vite, SQLite, local Ollama; Windows and Linux; bounded deterministic, sequential collaboration before optional concurrent designs.
 
-## Phase 0 — Baseline Protection (IN PROGRESS)
+## Phase 0 — Baseline Protection (GREEN — protected baseline)
 
 **Objective:** Make the already-working objective → interview → specification → approval → file planning → source generation → ZIP download journey hard to regress.
 
@@ -47,6 +47,8 @@ The existing GitHub Actions `M0 Model-Free Checks` workflow executes this real A
 **Gate:** Existing CI checks pass; meaningful objective-to-ZIP regression coverage and independent archive/access checks pass; specification approval is enforced; existing saved records/working behavior are preserved; verification procedure is documented; any required live owner acceptance is recorded. Only then mark Phase 0 **GREEN**. Otherwise **YELLOW**, **RED**, or **BLOCKED** with a specific reason.
 
 **Deliverable:** Protected, verified baseline on `main`; a recorded gate report.
+
+**Phase 0 gate record, November 20, 2026:** [PR #103](https://github.com/dvdhtzr/CodingAssistant/pull/103) passed Linux and Windows model-free GitHub Actions and security checks before merge to `main` commit `50084cbf870c2d2aba90abb5a31aea93218e9fe3`. The real HTTP/SQLite smoke suite covers interview, version/hash approval, source-draft events and persistence, ZIP byte/SHA integrity, authentication and cross-task access. The owner separately reported that the earlier local-Ollama baseline completed objective → interview → approved spec → source ZIP on November 20. **That is owner-observed prior-version evidence**, not an independently repeated run on this merge; the host, exact model and transcript were not recorded. No live-model quality, generated-source compilation, Windows isolated execution or independent security qualification is claimed. Phase 0 is accepted as *regression protection* with this explicit qualification.
 
 ## Phase 1 — Product Owner
 

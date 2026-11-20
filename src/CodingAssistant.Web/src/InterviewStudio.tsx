@@ -52,7 +52,7 @@ export function InterviewStudio({ token, task }: {
           if (data.model) setChosenModel(data.model);
         }
       })
-      .catch(() => { if (!cancelled) setError('Unable to load the saved interview.'); });
+      .catch(() => { if (!cancelled) setError('Unable to load the saved Product Owner conversation.'); });
     return () => { cancelled = true; };
   }, [token, task.id]);
 
@@ -81,7 +81,7 @@ export function InterviewStudio({ token, task }: {
     } catch (cause) {
       const code = cause instanceof Error ? cause.message : 'Unknown error';
       setError(code.includes('STALE_INTERVIEW')
-        ? 'Your interview changed elsewhere. Reload the page to review it before continuing.'
+        ? 'Your Product Owner conversation changed elsewhere. Reload the page to review it before continuing.'
         : code.includes('MODEL_NOT_INSTALLED')
           ? 'That local model is not installed. Select an installed Ollama model.'
           : code.includes('LOCAL_MODEL_UNAVAILABLE')
@@ -100,11 +100,11 @@ export function InterviewStudio({ token, task }: {
   return <section className="panel interview-studio">
     <div className="interview-title">
       <div>
-        <span className="pill">New baseline · conversation-first</span>
-        <h2>1. Discuss your project with AI</h2>
+        <span className="pill">Product Owner · requirements discovery</span>
+        <h2>1. Discuss your project with the Product Owner</h2>
         <p className="hint">Your objective: <strong>{task.objective}</strong></p>
       </div>
-      <span className="pill">{snapshot?.lastSequence ? 'Interview saved' : 'Not started'}</span>
+      <span className="pill">{snapshot?.lastSequence ? 'Conversation saved' : 'Not started'}</span>
     </div>
 
     {!snapshot && !error && <p className="hint">Loading your saved conversation…</p>}
@@ -112,8 +112,8 @@ export function InterviewStudio({ token, task }: {
 
     {snapshot && <>
       {!snapshot.lastSequence && <div className="interview-start">
-        <p>The AI will ask relevant questions about <em>your</em> project.
-          There is no predefined questionnaire or fixed C# fixture.</p>
+        <p>Your Product Owner will ask relevant questions about <em>your</em> project.
+          Questions adapt to your answers, without a rigid questionnaire or demo task.</p>
         <label>Local AI model
           <select value={chosenModel} disabled={!!busy}
             onChange={event => setChosenModel(event.target.value)}>
@@ -126,17 +126,17 @@ export function InterviewStudio({ token, task }: {
             api<InterviewSnapshot>(token, `/api/tasks/${task.id}/interview/turn`, {
               expectedSequence: 0, model: chosenModel,
             }))}>
-          Begin AI interview
+          Begin Product Owner conversation
         </button>
       </div>}
 
       {!!snapshot.lastSequence && <>
-        <ol className="interview-transcript" aria-label="Saved interview">
+        <ol className="interview-transcript" aria-label="Saved Product Owner conversation">
           {snapshot.messages.map(message => <li
             className={message.role === 'owner' ? 'owner-message' : 'assistant-message'}
             key={message.sequence}>
             <div className="interview-speaker">
-              {message.role === 'owner' ? 'You' : 'CodingAssistant'}
+              {message.role === 'owner' ? 'You' : 'Product Owner'}
               <small>{new Date(message.createdUtc).toLocaleTimeString()}</small>
             </div>
             <div className="interview-message">{message.content}</div>
@@ -144,8 +144,8 @@ export function InterviewStudio({ token, task }: {
         </ol>
         <p className="hint">Model: {snapshot.model} · {ownerAnswers} answer(s) recorded.
           {snapshot.readyForSpecification
-            ? ' The AI believes there is enough information to draft a specification.'
-            : ' Continue the interview, or draft a first specification when you are ready.'}
+            ? ' The Product Owner believes there is enough information to draft a specification.'
+            : ' Continue discussing requirements, or draft a first specification when you are ready.'}
         </p>
         {ownerAnswers < 12 && <form onSubmit={event => {
           event.preventDefault();
@@ -159,7 +159,7 @@ export function InterviewStudio({ token, task }: {
           <label>Your answer or additional requirements
             <textarea value={answer} maxLength={2400} required
               onChange={event => setAnswer(event.target.value)}
-              placeholder="Describe what matters, or ask the AI to explain a choice…" />
+              placeholder="Describe what matters, or ask the Product Owner to explain a choice…" />
           </label>
           <button className="primary" disabled={!!busy || !answer.trim()}>
             Send answer
@@ -182,14 +182,14 @@ export function InterviewStudio({ token, task }: {
 
       <div className="specification-stage">
         <h2>2. Review and approve the specification</h2>
-        <p className="hint">The specification will reflect this interview, not a hard-coded
+        <p className="hint">The Product Owner's specification will reflect this conversation, not a hard-coded
           application template. You control when to draft and approve it.</p>
         <button type="button" disabled={!!busy || ownerAnswers < 1}
           onClick={() => void submit('draft', () => api<InterviewSnapshot>(
             token, `/api/tasks/${task.id}/interview/specification`, {
               expectedSequence: snapshot.lastSequence,
             }))}>
-          {spec ? 'Revise specification from interview' : 'Draft detailed specification'}
+          {spec ? 'Revise specification from discussion' : 'Draft detailed specification'}
         </button>
         {spec && <div className="spec-review">
           <div className="actions">
@@ -217,7 +217,7 @@ export function InterviewStudio({ token, task }: {
             ✓ Specification approved and saved. This does not start coding.
           </p>}
           {spec.status === 'Superseded' && <p className="hint">
-            The interview changed. Draft a new specification before approval.</p>}
+            The requirements changed. Draft a new specification before approval.</p>}
         </div>}
       </div>
 
