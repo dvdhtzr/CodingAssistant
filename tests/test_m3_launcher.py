@@ -73,7 +73,7 @@ class M3LauncherContracts(unittest.TestCase):
             with mock.patch.object(launcher.Path, "home", return_value=root), \
                  mock.patch.object(launcher, "public_release", return_value=None), \
                  mock.patch.object(launcher, "gh_download", return_value=False), \
-                 mock.patch.object(launcher.subprocess, "Popen",
+                 mock.patch.object(launcher, "start",
                                    side_effect=AssertionError("API unexpectedly started")), \
                  contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(launcher.LaunchError):
