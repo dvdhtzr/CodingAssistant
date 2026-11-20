@@ -381,6 +381,12 @@ public static class ApiHost
         // User-scoped draft source generation. This is not M1 agent
         // execution and runs NO model-generated code, shell or package tool.
         // Only an approved, current interview specification can start it.
+        // Read-only readiness for the new owner-facing architecture-bound
+        // source workflow. Never grants or starts a runtime.
+        app.MapGet("/api/tasks/{id}/draft-build/architecture", (
+                string id, TaskStore tasks, InterviewStore interviews) =>
+            Safe(() => Results.Ok(DraftArchitecturePolicy.Readiness(
+                tasks, interviews, id))));
         app.MapGet("/api/tasks/{id}/draft-build", (
                 string id, ProjectDraftStore drafts) =>
             Safe(() => {
@@ -634,6 +640,8 @@ public static class ApiHost
                 StatusCodes.Status503ServiceUnavailable,
             "BUILD_BUSY" or "BUILD_NOT_COMPLETE" or
                 "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
+                "ARCHITECTURE_NOT_READY" or "ARCHITECTURE_CONFLICT" or
+                "ARCHITECTURE_PLAN_CONFLICT" or
                 "STALE_DECISION" or "SPECIFICATION_NOT_APPROVED" or
                 "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
