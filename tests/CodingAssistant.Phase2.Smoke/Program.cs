@@ -44,7 +44,7 @@ var root = Path.Combine(Path.GetTempPath(),
     "ca-phase2-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 if (!OperatingSystem.IsWindows())
-    Directory.SetUnixFileMode(root,
+    File.SetUnixFileMode(root,
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 WebApplication? app = null;
 HttpClient? client = null;
