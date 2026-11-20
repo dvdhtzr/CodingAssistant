@@ -35,6 +35,15 @@ public sealed class ProjectDraftCoordinator(
         return job;
     }
 
+    private void RequireCurrentApproval(string taskId, ProjectDraftJob job)
+    {
+        var latest = interviews.Read(taskId).Specification;
+        if (latest is null || latest.Status != "Approved" ||
+            latest.Version != job.SpecificationVersion ||
+            latest.Sha256 != job.SpecificationSha256)
+            throw new StoreFailure("SPECIFICATION_CONFLICT");
+    }
+
     private async Task GenerateAsync(
         TaskItem task, InterviewSpecification spec,
         ProjectDraftJob job, CancellationTokenSource stop)
@@ -42,27 +51,32 @@ public sealed class ProjectDraftCoordinator(
         try
         {
             var token = stop.Token;
+            RequireCurrentApproval(task.Id, job);
             store.Note(task.Id, job.Id, "ModelPlanning",
                 "Asking local " + spec.Model + " to choose project files");
             var plan = ProjectDraftStore.ValidatePlan(
                 await model.PlanAsync(task.Objective, spec.Content, spec.Model, token));
             token.ThrowIfCancellationRequested();
+            RequireCurrentApproval(task.Id, job);
             store.Note(task.Id, job.Id, "PlanAccepted",
                 plan.Count + " distinct files selected from approved specification");
             foreach (var file in plan)
             {
                 token.ThrowIfCancellationRequested();
+                RequireCurrentApproval(task.Id, job);
                 store.Note(task.Id, job.Id, "FileStarted",
                     "Generating " + file.Path + " using local model");
                 var previous = store.Get(task.Id, job.Id).Files;
                 var content = await model.WriteAsync(
                     task.Objective, spec.Content, spec.Model, file, previous, token);
                 token.ThrowIfCancellationRequested();
+                RequireCurrentApproval(task.Id, job);
                 store.SaveFile(task.Id, job.Id, file, content);
             }
             store.Note(task.Id, job.Id, "StaticChecking",
                 "Bounded source and JSON syntax checks completed");
             token.ThrowIfCancellationRequested();
+            RequireCurrentApproval(task.Id, job);
             store.Finish(task.Id, job.Id, true, null);
         }
         catch (OperationCanceledException)
