@@ -90,6 +90,44 @@ because the API is running. Do not grant Podman socket mounts or elevate the
 API to root to work around a missing host SDK. The release artifact is a
 CI-built binary, **not** a Dell runtime/security qualification by itself.
 
+## Single-command Dell acceptance driver
+
+After downloading the self-contained `codingassistant-linux-x64` artifact
+from the CI run and unpacking the executable to
+`~/.local/opt/codingassistant-api/CodingAssistant.Api`, pull the merged
+repository and invoke the **owner-controlled acceptance driver**:
+
+```bash
+cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/m2/dell_acceptance.py --run
+```
+
+This orchestrates two established **real Podman / model-free** negative
+boundary probes, the offline pinned image rebuild, a private disposable
+loopback API and the fixed C# task/plan/run intent. It **then stops for the
+owner to review and type the exact full M1 executable-plan hash** before
+the agent is admitted. Declining or closing stdin never runs the model.
+
+To run only real containment prerequisites and prepare the offline image
+without executing any agent, use:
+
+```bash
+cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/m2/dell_acceptance.py --preflight-only
+```
+
+These negative prerequisites test the existing isolated Podman boundaries.
+They do **NOT** substitute for the issue #76 mandatory **ten adversarial
+cases injected against the fully integrated M2→M1 coding path**. Overall M1
+remains YELLOW until that evidence and the owner-observed real positive
+integration are complete. The driver uses a fresh private SQLite directory
+under ignored `artifacts/m2/` and an ephemeral local-only HTTP port; it
+never prints its owner token or sends it to any HTTP proxy. Unexpected
+failure or interruption never counts as PASS and does not auto-retry.
+
+If the API binary has been installed elsewhere, provide
+`--api-binary /absolute/path/to/CodingAssistant.Api`. The executable must
+be from the verified Ubuntu CI artifact; there is no in-script download,
+networked build or self-update.
+
 ## Owner-facing authenticated workflow
 
 Using the authenticated M2 API:
