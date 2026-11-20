@@ -255,10 +255,12 @@ try
     using (var body = await Body(list))
     {
         var items = body.RootElement.GetProperty("decisions");
-        Check(items.GetArrayLength() == 1 &&
-              items[0].GetProperty("specificationCurrent").GetBoolean() &&
-              items[0].GetProperty("effectiveStatus").GetString() == "Approved",
-            "current approved decision listed as planning state");
+        var technology = items.EnumerateArray().Single(d =>
+            d.GetProperty("topic").GetString() == "technology-stack");
+        Check(items.GetArrayLength() == 2 &&
+              technology.GetProperty("specificationCurrent").GetBoolean() &&
+              technology.GetProperty("effectiveStatus").GetString() == "Approved",
+            "current approved technology decision listed separately from architect proposal");
     }
     using (var status = await client.GetAsync("/api/status"))
     using (var body = await Body(status))
@@ -278,7 +280,9 @@ try
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
     {
-        var saved = body.RootElement.GetProperty("decisions")[0];
+        var saved = body.RootElement.GetProperty("decisions")
+            .EnumerateArray().Single(item =>
+                item.GetProperty("topic").GetString() == "technology-stack");
         Check(saved.GetProperty("selectedOptionId").GetString() == "legacy-dotnet" &&
               saved.GetProperty("proposalSha256").GetString() == hash,
             "SQLite selection and proposal hash survive restart");
