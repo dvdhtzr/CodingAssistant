@@ -102,7 +102,7 @@ export default function App() {
   function refreshTask() { setTaskRevision(v => v + 1); }
   function refreshRun() { setRunRevision(v => v + 1); }
   function chooseTask(id: string) {
-    if (!isHexId(id)) return;
+    if (id !== '' && !isHexId(id)) return;
     setTaskId(id);
     setHtmlArtifact(null);
     setTaskView(null);
@@ -151,7 +151,6 @@ export default function App() {
     void api<TaskItem[]>(token, '/api/tasks')
       .then(list => { if (!closed) {
         setTasks(list);
-        setTaskId(current => current || (list[0]?.id ?? ''));
       } })
       .catch(() => { if (!closed) setError('Unable to load tasks.'); });
     return () => { closed = true; };
@@ -354,26 +353,20 @@ export default function App() {
     {token && <div className="layout">
       <aside className="stack">
         <section className="panel">
-          <h2>New task</h2>
-          <form onSubmit={e => { e.preventDefault(); void action('create-task', async () => {
-            const created = await api<TaskItem>(token, '/api/tasks', {
-              title: newTitle, objective: newObjective, requestId: newRequestId(),
-            });
-            setNewTitle(''); setNewObjective('');
-            await fetchTasks();
-            chooseTask(created.id);
-          }); }}>
-            <label>Title <input value={newTitle} maxLength={120} required onChange={e => setNewTitle(e.target.value)} /></label>
-            <label>Objective <textarea value={newObjective} maxLength={4000} required onChange={e => setNewObjective(e.target.value)} /></label>
-            <button className="primary" disabled={isBusy || !newTitle.trim() || !newObjective.trim()}>Create task</button>
-          </form>
+          <button type="button" className={taskId ? 'primary' : 'outline'}
+            onClick={() => chooseTask('')} disabled={isBusy}>
+            + New project
+          </button>
+          <p className="hint">Start from your own objective. Saved projects are available below.</p>
         </section>
         <section className="panel">
           <div className="actions" style={{ justifyContent: 'space-between' }}>
-            <h2>Tasks</h2>
-            <button className="outline" disabled={isBusy} onClick={() => void action('refresh', async () => { await fetchTasks(); refreshTask(); })}>↻</button>
+            <h2>Saved projects</h2>
+            <button className="outline" disabled={isBusy}
+              aria-label="Refresh saved projects"
+              onClick={() => void action('refresh', async () => { await fetchTasks(); refreshTask(); })}>↻</button>
           </div>
-          {!tasks.length && <p className="hint">No tasks yet.</p>}
+          {!tasks.length && <p className="hint">No saved projects yet. Describe what you want to build to begin.</p>}
           {tasks.map(task => <button key={task.id}
             className={'task' + (task.id === taskId ? ' selected' : '')}
             onClick={() => chooseTask(task.id)}>
@@ -382,12 +375,50 @@ export default function App() {
         </section>
       </aside>
       <main className="stack">
-        {!taskView && <section className="panel">
-          <h2>Choose a task</h2><p className="hint">Create or select a task to review planning approval and coding history.</p>
+        {!taskId && <section className="panel new-project-panel">
+          <span className="pill">Start a project</span>
+          <h2>What would you like to build?</h2>
+          <p className="hint">Describe your idea in your own words. Your local AI will interview
+            you to clarify the requirements before you approve a specification.
+            No example project is selected automatically.</p>
+          <form onSubmit={e => { e.preventDefault(); void action('create-task', async () => {
+            const objective = newObjective.trim();
+            const created = await api<TaskItem>(token, '/api/tasks', {
+              title: newTitle.trim() || objective.replace(/\s+/g, ' ').slice(0, 100),
+              objective,
+              requestId: newRequestId(),
+            });
+            setNewTitle(''); setNewObjective('');
+            await fetchTasks();
+            chooseTask(created.id);
+          }); }}>
+            <label htmlFor="project-objective">What do you want to build?
+              <textarea id="project-objective" value={newObjective} maxLength={4000}
+                required autoFocus rows={5}
+                placeholder="Describe the app, feature, or change you have in mind…"
+                onChange={e => setNewObjective(e.target.value)} />
+            </label>
+            <label htmlFor="project-title">Project name (optional)
+              <input id="project-title" value={newTitle} maxLength={120}
+                placeholder="We'll use your objective if left blank"
+                onChange={e => setNewTitle(e.target.value)} />
+            </label>
+            <div className="actions">
+              <button className="primary" disabled={isBusy || !newObjective.trim()}>
+                {busy === 'create-task' ? 'Creating project…' : 'Create project and continue →'}
+              </button>
+            </div>
+          </form>
+          <p className="hint">Your work is saved locally. Creating a project does not
+            run code or authorize agent execution.</p>
+        </section>}
+        {taskId && !taskView && <section className="panel">
+          <h2>Opening your project…</h2>
+          <p className="hint">Loading the selected project's saved interview and history.</p>
         </section>}
         {taskView && <InterviewStudio key={taskView.task.id}
           token={token} task={taskView.task} />}
-        <details className="advanced-gate">
+        <details className="advanced-gate" hidden={!taskView}>
           <summary>Legacy single-file HTML preview (not the AI interview)</summary>
         {taskView && <section className="panel html-preview-panel">
           <h2>Make your HTML page</h2>
@@ -443,7 +474,7 @@ export default function App() {
             the general-purpose agent still needs separate workspace-scope qualification.</p>
         </section>}
         </details>
-        <details className="advanced-gate">
+        <details className="advanced-gate" hidden={!taskView}>
           <summary>Advanced: isolated C# repair qualification (not your task)</summary>
           <p className="hint">These steps always run the fixed disposable
             <code>02-build-repair/api/Program.cs</code> test fixture and do
