@@ -528,12 +528,12 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
         descriptor = os.open(env, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as out:
             out.write("OPENCLAW_GATEWAY_TOKEN=" + secrets.token_hex(32) + "\n")
-            out.write("CA_M112_PLAN_HASH=" + plan_hash + "\\n")
+            out.write("CA_M112_PLAN_HASH=" + plan_hash + "\n")
             if task_contract_sha256 is not None:
                 if HEX64.fullmatch(task_contract_sha256) is None:
                     raise ValueError("Invalid task contract hash")
                 out.write("CA_M1_TASK_CONTRACT_SHA256=" +
-                          task_contract_sha256 + "\\n")
+                          task_contract_sha256 + "\n")
             out.write("OPENCLAW_SKIP_CHANNELS=1\n")
             out.write("OPENCLAW_SKIP_CANVAS_HOST=1\n")
         try:
