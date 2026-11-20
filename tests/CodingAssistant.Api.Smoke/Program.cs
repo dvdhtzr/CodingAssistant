@@ -516,6 +516,138 @@ try
               "event head survives restart without false terminal success");
     }
 
+    // M2 #76: real SQLite state machine for one frozen, owner-operated
+    // M1-compatible demo. This test intentionally NEVER calls a model.
+    var frozenTasks = new TaskStore(data);
+    var frozenRuns = new RunStore(frozenTasks);
+    frozenRuns.Initialize();
+    var frozenTask = frozenTasks.CreateTask(new CreateTaskRequest(
+        FrozenDemo.Title, FrozenDemo.Objective, Guid.NewGuid().ToString("N")));
+    var frozenPlan = frozenTasks.DraftPlan(frozenTask.Id,
+        new DraftPlanRequest(FrozenDemo.Summary, 0));
+    frozenTasks.ApprovePlan(frozenTask.Id, new ApprovePlanRequest(
+        frozenPlan.Version, "APPROVE " + frozenPlan.PlanHash));
+    var frozenIntent = frozenRuns.CreateIntent(frozenTask.Id,
+        new CreateRunIntentRequest(frozenPlan.Version, frozenPlan.PlanHash,
+            Guid.NewGuid().ToString("N")));
+    var frozenRunId = frozenIntent.Run.Id;
+
+    await using (var observer = new HubConnectionBuilder()
+        .WithUrl(new Uri(client.BaseAddress!, "/api/progress"), options =>
+        {
+            options.Transports = HttpTransportType.WebSockets;
+            options.SkipNegotiation = true;
+            options.AccessTokenProvider = () => Task.FromResult<string?>(OwnerToken);
+        }).Build())
+    {
+        var hinted = new TaskCompletionSource<RunEvent>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var subscription = observer.On<RunEvent>("RunUpdated", evt =>
+        {
+            if (evt.RunId == frozenRunId && evt.Kind == "ExecutionStarted")
+                hinted.TrySetResult(evt);
+        });
+        await observer.StartAsync();
+        await observer.InvokeAsync<long>("WatchRun", frozenRunId);
+
+        var claimed = frozenRuns.ClaimFrozenDemo(frozenRunId);
+        Check(claimed.Run.State == "Executing" &&
+              claimed.Run.LastSequence == 2,
+              "trusted host claims exactly one execution before starting a process");
+        Check(!claimed.Run.ExecutionEnabled,
+              "claim is internal and does not grant HTTP process execution");
+        try
+        {
+            frozenRuns.ClaimFrozenDemo(frozenRunId);
+            throw new Exception("Duplicate execution claim succeeded");
+        }
+        catch (StoreFailure failure) when (failure.Code == "RUN_NOT_EXECUTABLE")
+        {
+            checks++;
+        }
+        try
+        {
+            frozenRuns.CancelIntent(frozenRunId);
+            throw new Exception("Pending-intent cancel killed a claimed worker");
+        }
+        catch (StoreFailure failure) when (failure.Code == "INVALID_STATE")
+        {
+            checks++;
+        }
+        using (var unauth = new HttpClient { BaseAddress = client.BaseAddress })
+        using (var unauthPulse = await Post(unauth, $"/api/runs/{frozenRunId}/refresh",
+            new { }))
+            Check(unauthPulse.StatusCode == HttpStatusCode.Unauthorized,
+                  "external event refresh requires owner token");
+        using (var pulse = await Post(client, $"/api/runs/{frozenRunId}/refresh",
+            new { }))
+            Check(pulse.StatusCode == HttpStatusCode.OK,
+                  "authenticated refresh publishes only persisted event tip");
+        var delivered = await hinted.Task.WaitAsync(TimeSpan.FromSeconds(12));
+        Check(delivered.Sequence == 2 && delivered.State == "Executing",
+              "SignalR observer saw committed execution claim via authenticated pulse");
+        using (var forbiddenExecution =
+            await Post(client, $"/api/runs/{frozenRunId}/execute", new { }))
+            Check(forbiddenExecution.StatusCode == HttpStatusCode.NotFound,
+                  "API cannot launch M1 runner");
+        await observer.StopAsync();
+    }
+
+    try
+    {
+        frozenRuns.FinishFrozenDemo(frozenRunId, "Verified", null);
+        throw new Exception("Fabricated evaluator success permitted");
+    }
+    catch (StoreFailure failure) when (failure.Code == "MISSING_VERIFICATION")
+    {
+        checks++;
+    }
+    var blocked = frozenRuns.FinishFrozenDemo(frozenRunId, "Blocked", null);
+    Check(blocked.Run.State == "Blocked" && blocked.Run.LastSequence == 3,
+          "model-free blocked outcome terminally persisted");
+    try
+    {
+        frozenRuns.FinishFrozenDemo(frozenRunId, "Verified", "a" + new string('0', 23));
+        throw new Exception("Terminal state was rewritten");
+    }
+    catch (StoreFailure failure) when (failure.Code == "INVALID_STATE")
+    {
+        checks++;
+    }
+    using (var executionReplay =
+        await client.GetAsync($"/api/runs/{frozenRunId}/events?after=1&limit=5"))
+    {
+        using var body = await ReadJson(executionReplay);
+        var events = body.RootElement.GetProperty("events");
+        Check(events.GetArrayLength() == 2 &&
+              events[0].GetProperty("kind").GetString() == "ExecutionStarted" &&
+              events[1].GetProperty("kind").GetString() == "ExecutionBlocked" &&
+              events[1].GetProperty("sequence").GetInt64() == 3,
+              "unified SQLite replay merges run-intent and execution events");
+    }
+    var foreignTask = frozenTasks.CreateTask(new CreateTaskRequest(
+        "Arbitrary user job", "Cannot be run by frozen M1 execution bridge",
+        Guid.NewGuid().ToString("N")));
+    var foreignPlan = frozenTasks.DraftPlan(foreignTask.Id,
+        new DraftPlanRequest("Attempt arbitrary coding", 0));
+    frozenTasks.ApprovePlan(foreignTask.Id,
+        new ApprovePlanRequest(1, "APPROVE " + foreignPlan.PlanHash));
+    var foreignIntent = frozenRuns.CreateIntent(foreignTask.Id,
+        new CreateRunIntentRequest(1, foreignPlan.PlanHash,
+            Guid.NewGuid().ToString("N")));
+    try
+    {
+        frozenRuns.ClaimFrozenDemo(foreignIntent.Run.Id);
+        throw new Exception("Unqualified arbitrary task started");
+    }
+    catch (StoreFailure failure) when (failure.Code == "SCOPE_NOT_QUALIFIED")
+    {
+        checks++;
+    }
+    Check(frozenRuns.Get(foreignIntent.Run.Id).State ==
+          "AwaitingExecutionAuthorization",
+          "unqualified task remains nonexecuting and replayable");
+    checks += M1ReceiptChecks.Run();
     if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
     {
         var dirMode = File.GetUnixFileMode(data);
