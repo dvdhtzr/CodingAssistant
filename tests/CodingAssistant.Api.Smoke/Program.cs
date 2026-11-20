@@ -652,8 +652,8 @@ try
                 "independent runner verification becomes durable terminal state");
             Check(!json.RootElement.GetProperty("executionEnabled").GetBoolean(),
                 "completed runner is no longer enabled");
-            Check(json.RootElement.GetProperty("lastSequence").GetInt64() == 6,
-                "all six cross-table events are numbered transactionally");
+            Check(json.RootElement.GetProperty("lastSequence").GetInt64() == 8,
+                "all eight cross-table events including fixed milestones are numbered");
         }
         Check(fake.Executions == 1, "one fake worker, no retries");
         using (var history = await executionClient.GetAsync(
@@ -661,12 +661,15 @@ try
         using (var json = await ReadJson(history))
         {
             var events = json.RootElement.GetProperty("events");
-            Check(events.GetArrayLength() == 6,
-                "original run intent plus executable lifecycle replayed together");
-            Check(events[5].GetProperty("kind").GetString() == "ExecutionVerified",
+            Check(events.GetArrayLength() == 8,
+                "original run intent plus fixed milestones replayed together");
+            Check(events[5].GetProperty("kind").GetString() == "ExecutionStageGatewayReady" &&
+                  events[6].GetProperty("kind").GetString() == "ExecutionStageCodingRequestSent",
+                "only fixed runner milestones are persisted, not model messages");
+            Check(events[7].GetProperty("kind").GetString() == "ExecutionVerified",
                 "success event is only emitted after verified runner outcome");
             Check(events[0].GetProperty("sequence").GetInt64() == 1 &&
-                  events[5].GetProperty("sequence").GetInt64() == 6,
+                  events[7].GetProperty("sequence").GetInt64() == 8,
                 "events are gapless from intent to independent verification");
         }
         // A failed cleanup is a SECURITY BLOCKER for the entire host, not
@@ -868,7 +871,7 @@ finally
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
 }
 
-sealed class SmokeM1Runner : IM1ExecutionRunner
+sealed class SmokeM1Runner : IM1ExecutionRunner, IM1ProgressReporter
 {
     public int Executions;
     public volatile bool BlockOnExecute;
@@ -902,10 +905,17 @@ sealed class SmokeM1Runner : IM1ExecutionRunner
             M1ProcessRunner.ComputeCanonicalHash(plan), plan));
     }
 
-    public async Task<M1ExecutionOutcome> ExecuteAsync(
-        RunItem run, string hash, CancellationToken cancellation)
+    public Task<M1ExecutionOutcome> ExecuteAsync(
+        RunItem run, string hash, CancellationToken cancellation) =>
+        ExecuteWithProgressAsync(run, hash, _ => Task.CompletedTask, cancellation);
+
+    public async Task<M1ExecutionOutcome> ExecuteWithProgressAsync(
+        RunItem run, string hash,
+        Func<string, Task> onStage, CancellationToken cancellation)
     {
         Interlocked.Increment(ref Executions);
+        await onStage("GatewayReady");
+        await onStage("CodingRequestSent");
         if (BlockOnExecute)
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellation);
         return M1ExecutionOutcome.Verified;
