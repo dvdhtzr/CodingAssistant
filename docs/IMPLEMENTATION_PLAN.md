@@ -1,3 +1,5 @@
+> **New product roadmap (approved Nov 20, 2026):** [Development Plan v2.0](DEVELOPMENT_PLAN_V2.md) governs the six sequential phases of the evolving working project generator. The M0–M3 architecture, evidence and security requirements below remain preserved and binding. V2 does not relax issue #76 or #92 security gates.
+
 # Implementation plan and acceptance gates
 
 Architecture v1.0 (2026-11-18), decisions 0–39 approved. Owner granted implementation permission and GitHub development operation permission November 18.
