@@ -645,6 +645,92 @@ try
                   events[5].GetProperty("sequence").GetInt64() == 6,
                 "events are gapless from intent to independent verification");
         }
+        // A failed cleanup is a SECURITY BLOCKER for the entire host, not
+        // permission to admit the next model run in another run intent.
+        async Task<string> AuthorizedRun()
+        {
+            string id;
+            using (var intent = await Post(executionClient,
+                $"/api/tasks/{executionTaskId}/runs", new {
+                    planVersion = 1, planHash = controlHash,
+                    requestId = Guid.NewGuid().ToString("N")
+                }))
+            using (var json = await ReadJson(intent))
+                id = json.RootElement.GetProperty("id").GetString()!;
+            string hash;
+            using (var preview = await Post(executionClient,
+                $"/api/runs/{id}/execution-plan", new { }))
+            using (var json = await ReadJson(preview))
+                hash = json.RootElement.GetProperty("planHash").GetString()!;
+            using (var auth = await Post(executionClient,
+                $"/api/runs/{id}/execution-authorization",
+                new { approval = "APPROVE " + hash }))
+                Check(auth.StatusCode == HttpStatusCode.OK,
+                      "independent execution consent required per new run");
+            return id;
+        }
+
+        var blockedRunId = await AuthorizedRun();
+        fake.BlockOnExecute = true;
+        fake.CleanupIsVerified = false;
+        using (var starting = await Post(executionClient,
+            $"/api/runs/{blockedRunId}/start", new { }))
+            Check(starting.StatusCode == HttpStatusCode.Accepted,
+                  "admit distinct exactly approved fixed-fixture worker");
+
+        var queuedRunId = await AuthorizedRun();
+        using (var busy = await Post(executionClient,
+            $"/api/runs/{queuedRunId}/start", new { }))
+            Check(busy.StatusCode == HttpStatusCode.Conflict,
+                  "concurrent second owner task cannot start another worker");
+        using (var cancel = await Post(executionClient,
+            $"/api/runs/{blockedRunId}/execution-cancel", new { }))
+            Check(cancel.StatusCode == HttpStatusCode.OK,
+                  "cancel targets exact active M1 run");
+        for (var retry = 0; retry < 100; retry++)
+        {
+            using var current = await executionClient.GetAsync($"/api/runs/{blockedRunId}");
+            using var json = await ReadJson(current);
+            if (json.RootElement.GetProperty("state").GetString() == "RecoveryBlocked")
+                break;
+            await Task.Delay(30);
+        }
+        using (var uncertain = await executionClient.GetAsync($"/api/runs/{blockedRunId}"))
+        using (var json = await ReadJson(uncertain))
+            Check(json.RootElement.GetProperty("state").GetString() == "RecoveryBlocked",
+                "unknown cleanup never reports Cancelled or Succeeded");
+        using (var stillBusy = await Post(executionClient,
+            $"/api/runs/{queuedRunId}/start", new { }))
+            Check(stillBusy.StatusCode == HttpStatusCode.Conflict,
+                  "unverified orphan blocks new execution admission");
+        fake.CleanupIsVerified = true;
+        using (var recovered = await Post(executionClient,
+            $"/api/runs/{blockedRunId}/execution-recover", new { }))
+        using (var json = await ReadJson(recovered))
+            Check(json.RootElement.GetProperty("state").GetString() == "Interrupted",
+                "explicit model-free reconciliation is not reported as success");
+        fake.BlockOnExecute = false;
+        using (var resumed = await Post(executionClient,
+            $"/api/runs/{queuedRunId}/start", new { }))
+            Check(resumed.StatusCode == HttpStatusCode.Accepted,
+                  "separate approved run can start only after verified recovery");
+
+        // A new run is never a replay of the interrupted one.
+        for (var retry = 0; retry < 100; retry++)
+        {
+            using var current = await executionClient.GetAsync($"/api/runs/{queuedRunId}");
+            using var json = await ReadJson(current);
+            if (json.RootElement.GetProperty("state").GetString() == "Succeeded")
+                break;
+            await Task.Delay(30);
+        }
+        Check(fake.Executions == 3, "interrupted run was not automatically retried");
+        using (var recoveredOriginal =
+            await executionClient.GetAsync($"/api/runs/{blockedRunId}"))
+        using (var json = await ReadJson(recoveredOriginal))
+            Check(json.RootElement.GetProperty("state").GetString() == "Interrupted",
+                "interrupted run remains interrupted after another succeeds");
+
         // A stale M2 plan must block further execution previews.
         string staleRunId;
         using (var created = await Post(executionClient,
@@ -664,7 +750,7 @@ try
             $"/api/runs/{staleRunId}/execution-plan", new { }))
             Check(stalePreview.StatusCode == HttpStatusCode.Conflict,
                 "superseded M2 plan cannot create an executable preview");
-        Check(fake.Executions == 1,
+        Check(fake.Executions == 3,
             "no agent was started for rejected stale executable scope");
 
         await executionApp!.StopAsync();
@@ -712,6 +798,8 @@ finally
 sealed class SmokeM1Runner : IM1ExecutionRunner
 {
     public int Executions;
+    public volatile bool BlockOnExecute;
+    public volatile bool CleanupIsVerified = true;
 
     public Task<M1ExecutablePreview> PreviewAsync(RunItem run, CancellationToken _)
     {
@@ -741,13 +829,15 @@ sealed class SmokeM1Runner : IM1ExecutionRunner
             M1ProcessRunner.ComputeCanonicalHash(plan), plan));
     }
 
-    public Task<M1ExecutionOutcome> ExecuteAsync(
+    public async Task<M1ExecutionOutcome> ExecuteAsync(
         RunItem run, string hash, CancellationToken cancellation)
     {
         Interlocked.Increment(ref Executions);
-        return Task.FromResult(M1ExecutionOutcome.Verified);
+        if (BlockOnExecute)
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellation);
+        return M1ExecutionOutcome.Verified;
     }
 
     public Task<bool> ReconcileAsync(string requestId, CancellationToken cancellation) =>
-        Task.FromResult(true);
+        Task.FromResult(CleanupIsVerified);
 }
