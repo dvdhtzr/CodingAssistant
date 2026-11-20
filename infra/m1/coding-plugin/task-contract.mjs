@@ -9,7 +9,8 @@ export const CONTRACT_SCHEMA = "codingassistant-task-contract-v1";
 const MAX_BYTES = 24576;
 const MODEL = "qwen3.5:4b";
 const KEYSET = [
-  "schema", "taskId", "specificationVersion", "specificationSha256",
+  "schema", "taskId", "specificationVersion", "approvedSpecificationSha256",
+  "specificationSha256",
   "objective", "specification", "model", "files",
 ].sort().join("|");
 const EXTENSIONS = new Set([
@@ -53,6 +54,8 @@ export function validateTaskContract(bytes, expectedSha256) {
                value.objective.trim().length >= 8 && value.objective.length <= 4000);
   requireValid(typeof value.specification === "string" &&
                value.specification.trim().length >= 32 && value.specification.length <= 16000);
+  requireValid(typeof value.approvedSpecificationSha256 === "string" &&
+               /^[a-f0-9]{64}$/.test(value.approvedSpecificationSha256));
   requireValid(typeof value.specificationSha256 === "string" &&
                /^[a-f0-9]{64}$/.test(value.specificationSha256));
   const specSha = createHash("sha256").update(value.specification, "utf8").digest("hex");
