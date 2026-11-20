@@ -845,7 +845,7 @@ def bounded_result(report: dict, request_id: str, plan_hash: str) -> dict:
     patch = report.get("approved_patch", "")
     omitted = report.get("patch_omitted", False)
     if type(patch) is not str or len(patch.encode("utf-8")) > 7000 or (
-            patch and not patch.startswith("--- a/api/Program.cs\\n")) or
+            patch and not patch.startswith("--- a/api/Program.cs\n")) or
             type(omitted) is not bool:
         raise ValueError("Invalid fixed-fixture patch")
     if status != "GATEWAY_APPROVED_CODING_PASS" or verified is not True:
@@ -878,7 +878,7 @@ def read_result_by_request(ledger: RunLedger, request_id: str) -> dict:
         return {"schema": "codingassistant-run-result-v1", "available": False}
     filename = row["evidence_name"]
     if type(filename) is not str or not re.fullmatch(
-            r"m112-approved-coding-[0-9a-f]{12}\\.json", filename):
+            r"m112-approved-coding-[0-9a-f]{12}\.json", filename):
         raise ValueError("Untrusted evidence name")
     evidence = ARTIFACTS / filename
     fd = os.open(evidence, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
