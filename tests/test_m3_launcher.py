@@ -98,7 +98,7 @@ class M3LauncherContracts(unittest.TestCase):
         self.assertEqual(env["CODINGASSISTANT_ENABLE_LOCAL_EXECUTION"], "0")
         self.assertNotIn("CODINGASSISTANT_REPOSITORY_ROOT", env)
         self.assertEqual(env["CODINGASSISTANT_OWNER_TOKEN"], "a" * 64)
-        browser.assert_called_once_with("http://127.0.0.1:5098")
+        browser.assert_called_once_with("http://127.0.0.1:5098/")
 
     def test_occupied_port_never_launches_second_api(self):
         with mock.patch.object(launcher, "free_port", return_value=False), \
