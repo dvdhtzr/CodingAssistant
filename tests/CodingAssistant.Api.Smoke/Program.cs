@@ -678,6 +678,10 @@ try
             Check(starting.StatusCode == HttpStatusCode.Accepted,
                   "admit distinct exactly approved fixed-fixture worker");
 
+        for (var retry = 0; retry < 100 && fake.Executions < 2; retry++)
+            await Task.Delay(20);
+        Check(fake.Executions == 2,
+              "the cancellation test has a genuine active fake worker");
         var queuedRunId = await AuthorizedRun();
         using (var busy = await Post(executionClient,
             $"/api/runs/{queuedRunId}/start", new { }))
