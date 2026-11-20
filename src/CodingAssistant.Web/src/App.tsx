@@ -4,6 +4,7 @@ import {
   api, newRequestId, isHexId,
   type ApiStatus, type TaskItem, type TaskView, type RunItem,
   type RunEvent, type EventPage, type ExecutionView, type PlanItem,
+  type RunResult, type RunResultResponse,
 } from './api';
 
 const terminal = new Set(['Succeeded', 'Failed', 'Cancelled', 'Interrupted', 'RecoveryBlocked']);
@@ -60,6 +61,9 @@ export default function App() {
   const [run, setRun] = useState<RunItem | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [execution, setExecution] = useState<ExecutionView | null>(null);
+  const [result, setResult] = useState<RunResult | null>(null);
+  const [resultChecked, setResultChecked] = useState(false);
+  const [resultError, setResultError] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newObjective, setNewObjective] = useState('');
   const [planSummary, setPlanSummary] = useState('');
@@ -100,6 +104,7 @@ export default function App() {
     setRunId('');
     setRun(null);
     setExecution(null);
+    setResult(null); setResultChecked(false); setResultError(false);
     setEvents([]);
     setPlanConsent('');
     setExecutionConsent('');
@@ -109,6 +114,7 @@ export default function App() {
     setRunId(id);
     setRun(null);
     setExecution(null);
+    setResult(null); setResultChecked(false); setResultError(false);
     setEvents([]);
     setExecutionConsent('');
   }
@@ -128,6 +134,7 @@ export default function App() {
     setRuns([]);
     setRun(null);
     setExecution(null);
+    setResult(null); setResultChecked(false); setResultError(false);
     setEvents([]);
     setError('');
   }
@@ -161,9 +168,11 @@ export default function App() {
     let closed = false;
     let cursor = 0;
     let refreshing = false;
+    let resultLoaded = false;
     setEvents([]);
     setRun(null);
     setExecution(null);
+    setResult(null); setResultChecked(false); setResultError(false);
     async function sync() {
       if (refreshing || closed) return;
       refreshing = true;
@@ -193,6 +202,20 @@ export default function App() {
             if (!closed) setExecution(preview);
           } catch {
             // A pending intent legitimately has no executable preview yet.
+          }
+        }
+        if (terminal.has(current.state) && !resultLoaded) {
+          try {
+            const report = await api<RunResultResponse>(token, `/api/runs/${runId}/result`);
+            if (!closed) {
+              setResult(report.available ? report.result : null);
+              setResultChecked(true);
+              setResultError(false);
+            }
+            resultLoaded = true;
+          } catch {
+            // Do not conflate failure to read an archive with a failed code run.
+            if (!closed) { setResultError(true); setResultChecked(true); }
           }
         }
         if (!closed) setLive('Durable history synchronized');
@@ -385,6 +408,55 @@ export default function App() {
 
         {run && <section className="panel">
           <h3>3 · Run control <span className="pill">{run.state}</span></h3>
+          <section className="result-panel" aria-label="Run result">
+            <h3>Run result</h3>
+            {!terminal.has(run.state) && <p className="hint">
+              The run has not finished. Actual verification output will appear here
+              automatically when the isolated evaluator finishes or a failure is recorded.
+            </p>}
+            {terminal.has(run.state) && <>
+              <p className={run.state === 'Succeeded' ? 'success' : 'alert'}>
+                {run.state === 'Succeeded'
+                  ? '✓ Verified execution succeeded'
+                  : 'Execution ended: ' + run.state +
+                    '. A non-successful or interrupted run is never counted as verified.'}
+              </p>
+              {result && <>
+                <dl className="meta result-meta">
+                  <dt>Saved runner verdict</dt><dd>{result.status}</dd>
+                  <dt>Last stage</dt><dd>{result.phase.replaceAll('_', ' ')}</dd>
+                  <dt>Independent .NET evaluator</dt><dd>
+                    {result.evaluatorVerified === true ? 'PASS' :
+                      result.evaluatorVerified === false ? 'FAILED' : 'Not reached / not recorded'}
+                  </dd>
+                  <dt>Source changed</dt><dd>{result.sourceChanged === null ? 'Unknown' :
+                    result.sourceChanged ? 'Yes — api/Program.cs (disposable copy)' : 'No'}</dd>
+                  <dt>Verified local model responses</dt><dd>
+                    {result.inferenceRequests ?? 'Not recorded'}
+                  </dd>
+                  {result.reasonCode && <><dt>Stop reason</dt><dd>{result.reasonCode}</dd></>}
+                </dl>
+                {result.patch && <>
+                  <h4>Verified C# changes</h4>
+                  <p className="hint">Diff of the approved disposable api/Program.cs;
+                    no original project files were modified.</p>
+                  <pre className="verified-patch">{result.patch}</pre>
+                </>}
+                {result.patchOmitted && <p className="hint">
+                  The verified patch was too large for the bounded results view.</p>}
+                {!result.patch && !result.patchOmitted && <p className="hint">
+                  No code diff is archived for this run. Older runs still retain
+                  their saved verdict and evaluator result.</p>}
+              </>}
+              {resultChecked && !result && !resultError && <p className="hint">
+                No completed evidence report is available for this run. Its durable
+                event history below remains accessible.</p>}
+              {resultError && <p className="activity-warning">
+                The saved evidence could not be read safely. The execution outcome
+                above comes from the durable control-plane state; don't treat it as
+                additional evaluator evidence.</p>}
+            </>}
+          </section>
           <p className="hint">Run {run.id} · persisted event cursor {run.lastSequence}</p>
           <p className="secure">{live}</p>
           {active && <section className="activity" role="status" aria-live="off">
