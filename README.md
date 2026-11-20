@@ -19,6 +19,14 @@ Finish/cancel current M1 runs before benchmarking. This **does not change
 the execution pin** or authorize Qwen Coder inside the agent. See
 `src/CodingAssistant.Web/README.md` for runtime/deployment details.
 
+## Windows one-click launcher (Visual Studio / local Ollama)
+
+After cloning or updating `main`, **double-click `Start-CodingAssistant.cmd`** in the repository root. This is the default Windows startup path; you do not need to enter token-generation commands. The launcher builds the React UI, generates a fresh **64-character owner token**, **displays it in green in the console and copies it to your clipboard**, and runs the .NET API with autonomous code execution disabled.
+
+Open `http://127.0.0.1:5098`, paste the copied token into **Owner session**, and click **Connect locally**. Stop the API with **Ctrl+C**. If an old server is already listening on port 5098, stop it before starting a new instance. The fresh token is never stored in a repository file, URL or application log.
+
+See [Windows/Visual Studio operations](docs/OPERATIONS_VISUAL_STUDIO.md) for dependencies and troubleshooting. The Visual Studio `CodingAssistant.sln` is still the single-click solution for editing/building; for authenticated everyday running, use the Windows launcher.
+
 ## Start / restart Mission Control — one simple entry point
 
 **On your first launch after cloning/updating this version:**
