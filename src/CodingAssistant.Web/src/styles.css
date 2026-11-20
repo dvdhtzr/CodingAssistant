@@ -12,3 +12,10 @@
 @keyframes caPulse{0%,100%{opacity:.5;transform:scale(.85)}50%{opacity:1;transform:scale(1.12)}}
 @keyframes caSlide{from{transform:translateX(-100%)}to{transform:translateX(320%)}}
 @media(prefers-reduced-motion:reduce){.activity-dot,.activity-scan{animation:none}}
+
+/* Owner-only verified result; code is rendered as text, never HTML. */
+.result-panel{margin:.9rem 0;border:1px solid #35536a;border-radius:11px;padding:1rem;background:#102137}
+.result-panel h3{margin:0 0 .8rem;font-size:1.05rem}
+.result-panel .alert{margin:.6rem 0;max-width:none}
+.result-meta{margin:.6rem 0}
+.verified-patch{max-height:440px;overflow:auto;white-space:pre;tab-size:2;line-height:1.5;font: .8rem ui-monospace,SFMono-Regular,Consolas,monospace;color:#d5f1e2;background:#0b1725;border:1px solid #2a5361;border-radius:9px;padding:.95rem;user-select:text}
