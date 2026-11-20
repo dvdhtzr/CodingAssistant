@@ -59,6 +59,26 @@ public sealed class RunStore(TaskStore tasks)
             );
             CREATE INDEX IF NOT EXISTS ix_run_intents_task_created
               ON run_intents(task_id,created_utc DESC,id DESC);
+            CREATE TABLE IF NOT EXISTS run_execution (
+              run_id TEXT PRIMARY KEY NOT NULL REFERENCES run_intents(id),
+              state TEXT NOT NULL CHECK(state IN
+                  ('Executing','Verified','Blocked','Declined','Interrupted')),
+              m1_run_id TEXT,
+              result_code TEXT,
+              started_utc TEXT NOT NULL,
+              updated_utc TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS run_execution_events (
+              run_id TEXT NOT NULL REFERENCES run_intents(id),
+              sequence INTEGER NOT NULL CHECK(sequence > 0),
+              kind TEXT NOT NULL CHECK(kind IN
+                  ('ExecutionStarted','ExecutionVerified','ExecutionBlocked',
+                   'ExecutionDeclined','ExecutionInterrupted')),
+              state TEXT NOT NULL CHECK(state IN
+                  ('Executing','Verified','Blocked','Declined','Interrupted')),
+              created_utc TEXT NOT NULL,
+              PRIMARY KEY(run_id,sequence)
+            );
             """);
     }
 
@@ -82,13 +102,15 @@ public sealed class RunStore(TaskStore tasks)
         reader.GetInt64(8));
 
     private const string SelectRun = """
-        SELECT r.id,r.task_id,r.plan_version,r.plan_hash,r.state,
+        SELECT r.id,r.task_id,r.plan_version,r.plan_hash,
+          COALESCE(x.state,r.state),
           CASE WHEN r.plan_version=t.current_version AND
             p.status='Approved' THEN 1 ELSE 0 END,
           r.created_utc,r.updated_utc,r.last_sequence
         FROM run_intents r
         JOIN tasks t ON t.id=r.task_id
         JOIN plans p ON p.task_id=r.task_id AND p.version=r.plan_version
+        LEFT JOIN run_execution x ON x.run_id=r.id
         """;
 
     private static RunItem? FindRun(
@@ -227,9 +249,13 @@ public sealed class RunStore(TaskStore tasks)
         if (FindRun(db, null, runId) is null)
             throw new StoreFailure("NOT_FOUND");
         using var command = TaskStore.Command(db, null, """
-            SELECT run_id,sequence,kind,state,created_utc
-            FROM run_events WHERE run_id=@id AND sequence>@after
-            ORDER BY sequence ASC LIMIT @limit
+            SELECT run_id,sequence,kind,state,created_utc FROM (
+              SELECT run_id,sequence,kind,state,created_utc
+              FROM run_events WHERE run_id=@id AND sequence>@after
+              UNION ALL
+              SELECT run_id,sequence,kind,state,created_utc
+              FROM run_execution_events WHERE run_id=@id AND sequence>@after
+            ) ORDER BY sequence ASC LIMIT @limit
             """, ("@id", runId), ("@after", after), ("@limit", limit));
         using var reader = command.ExecuteReader();
         var events = new List<RunEvent>();
@@ -240,4 +266,119 @@ public sealed class RunStore(TaskStore tasks)
         var cursor = events.Count == 0 ? after : events[^1].Sequence;
         return new RunEventPage(events, cursor);
     }
+
+    /// <summary>
+    /// Privileged HOST-ONLY bridge entry point. No HTTP endpoint invokes it.
+    /// This gate refuses all freeform user tasks and scopes, and commits an
+    /// irrevocable execution claim before any external process can start.
+    /// </summary>
+    public RunChange ClaimFrozenDemo(string runId)
+    {
+        ValidId(runId);
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var current = FindRun(db, tx, runId) ?? throw new StoreFailure("NOT_FOUND");
+        if (current.State != "AwaitingExecutionAuthorization" ||
+            !current.PlanCurrent)
+            throw new StoreFailure("RUN_NOT_EXECUTABLE");
+        var task = TaskStore.FindTask(db, tx, current.TaskId) ??
+                   throw new StoreFailure("NOT_FOUND");
+        var plan = TaskStore.FindPlan(db, tx, current.TaskId,
+            current.PlanVersion) ?? throw new StoreFailure("NOT_FOUND");
+        if (!FrozenDemo.Matches(task, plan, current))
+            throw new StoreFailure("SCOPE_NOT_QUALIFIED");
+        var timestamp = DateTimeOffset.UtcNow.ToString("O");
+        var sequence = checked(current.LastSequence + 1);
+        TaskStore.Execute(db, tx, """
+            INSERT INTO run_execution
+              (run_id,state,m1_run_id,result_code,started_utc,updated_utc)
+            VALUES (@id,'Executing',NULL,NULL,@utc,@utc)
+            """, ("@id", runId), ("@utc", timestamp));
+        TaskStore.Execute(db, tx, """
+            UPDATE run_intents SET updated_utc=@utc,last_sequence=@seq
+            WHERE id=@id
+            """, ("@id", runId), ("@utc", timestamp), ("@seq", sequence));
+        TaskStore.Execute(db, tx, """
+            INSERT INTO run_execution_events
+              (run_id,sequence,kind,state,created_utc)
+            VALUES (@id,@seq,'ExecutionStarted','Executing',@utc)
+            """, ("@id", runId), ("@seq", sequence), ("@utc", timestamp));
+        var claimed = FindRun(db, tx, runId)!;
+        tx.Commit();
+        return new RunChange(claimed,
+            new RunEvent(runId, sequence, "ExecutionStarted",
+                "Executing", timestamp));
+    }
+
+    /// <summary>
+    /// Privileged host bridge writes a bounded outcome. A VERIFIED outcome
+    /// is allowed ONLY after separate M1 SQLite + independent evaluator
+    /// evidence has been validated by M1ReceiptVerifier. Not exposed by HTTP.
+    /// </summary>
+    public RunChange FinishFrozenDemo(
+        string runId, string outcome, string? m1RunId)
+    {
+        ValidId(runId);
+        if (outcome is not ("Verified" or "Blocked" or
+                "Declined" or "Interrupted"))
+            throw new StoreFailure("INVALID_OUTCOME");
+        if (m1RunId is not null &&
+            !Regex.IsMatch(m1RunId, "^[0-9a-f]{24}\\z", RegexOptions.CultureInvariant))
+            throw new StoreFailure("INVALID_M1_RUN_ID");
+        if (outcome == "Verified" && m1RunId is null)
+            throw new StoreFailure("MISSING_VERIFICATION");
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var current = FindRun(db, tx, runId) ?? throw new StoreFailure("NOT_FOUND");
+        if (current.State != "Executing")
+            throw new StoreFailure("INVALID_STATE");
+        var timestamp = DateTimeOffset.UtcNow.ToString("O");
+        var sequence = checked(current.LastSequence + 1);
+        var changed = TaskStore.Execute(db, tx, """
+            UPDATE run_execution SET state=@state,m1_run_id=@m1,
+              result_code=@result,updated_utc=@utc
+            WHERE run_id=@id AND state='Executing'
+            """, ("@id", runId), ("@state", outcome),
+                 ("@m1", m1RunId ?? (object)DBNull.Value),
+                 ("@result", outcome == "Verified" ?
+                     "M1_INDEPENDENT_VERIFIED" : "NO_VERIFIED_EXECUTION"),
+                 ("@utc", timestamp));
+        if (changed != 1)
+            throw new StoreFailure("INVALID_STATE");
+        TaskStore.Execute(db, tx, """
+            UPDATE run_intents SET updated_utc=@utc,last_sequence=@seq
+            WHERE id=@id
+            """, ("@id", runId), ("@utc", timestamp), ("@seq", sequence));
+        var kind = "Execution" + outcome;
+        TaskStore.Execute(db, tx, """
+            INSERT INTO run_execution_events
+              (run_id,sequence,kind,state,created_utc)
+            VALUES (@id,@seq,@kind,@state,@utc)
+            """, ("@id", runId), ("@seq", sequence),
+                 ("@kind", kind), ("@state", outcome), ("@utc", timestamp));
+        var finished = FindRun(db, tx, runId)!;
+        tx.Commit();
+        return new RunChange(finished,
+            new RunEvent(runId, sequence, kind, outcome, timestamp));
+    }
+
+    public IReadOnlyList<RunEvent> RecentExecutionEvents(long afterRowId, int limit = 50)
+    {
+        if (afterRowId < 0 || limit is < 1 or > 100)
+            throw new StoreFailure("INVALID_CURSOR");
+        using var db = tasks.Open();
+        using var command = TaskStore.Command(db, null, """
+            SELECT rowid,run_id,sequence,kind,state,created_utc
+            FROM run_execution_events WHERE rowid>@after
+            ORDER BY rowid ASC LIMIT @limit
+            """, ("@after", afterRowId), ("@limit", limit));
+        using var reader = command.ExecuteReader();
+        var result = new List<RunEvent>();
+        while (reader.Read())
+            result.Add(new RunEvent(
+                reader.GetString(1), reader.GetInt64(2), reader.GetString(3),
+                reader.GetString(4), reader.GetString(5)));
+        return result;
+    }
+
 }
