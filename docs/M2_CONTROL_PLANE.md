@@ -34,7 +34,7 @@ later audited slice and must verify its own exact execution plan.
 
 ## Next product slice — durable run intents and SignalR progress (issue #75)
 
-The API now accepts an authenticated **run intent** only against the currently
+The API accepts an authenticated **run intent** only against the currently
 approved task/plan/version/hash. This is deliberately *not* a real agent run:
 its initial state is `AwaitingExecutionAuthorization`, not `Queued` or
 `Running`, and every result has `executionEnabled: false`. Nothing can
@@ -80,6 +80,39 @@ No local model or autonomous code is run in CI.
 SignalR progress from the exact approved M1 adapter (#76), plus bounded
 cancellation and runtime reconciliation. Issue #77 will add the browser/UI
 workflow. These are product gates, *not deferred debt*.
+
+## Fixed-fixture executable integration under qualification — issue #76
+
+The control plane now has a **separate, default-disabled, Linux-only** exact
+M1 executable-plan approval path. It does not allow arbitrary source
+repositories, models or commands. `APPROVE <M2 planning hash>` remains
+non-executable. A distinct, source/image/model/evaluator/worktree-bound M1
+execution-plan hash must be previewed and approved before explicit start.
+
+On a qualified Linux owner host, opt-in requires
+`CODINGASSISTANT_ENABLE_LOCAL_EXECUTION=1` and
+`CODINGASSISTANT_REPOSITORY_ROOT` set to the reviewed checkout.
+Additional authenticated routes:
+
+| Endpoint | Contract |
+| --- | --- |
+| `POST /api/runs/{id}/execution-plan` | Model-free preflight, exact M1 plan preview and persistence |
+| `GET /api/runs/{id}/execution-plan` | Read saved executable scope and approval state |
+| `POST /api/runs/{id}/execution-authorization` | Exact `{"approval":"APPROVE <full-M1-hash>"}`; no execution |
+| `POST /api/runs/{id}/start` | One owner-initiated, journaled fixed-fixture M1 execution |
+| `POST /api/runs/{id}/execution-cancel` | Stop this worker only and reconcile trusted resources |
+| `POST /api/runs/{id}/execution-recover` | Explicit model-free cleanup after interrupted/uncertain state |
+
+An approved run is never auto-started or auto-replayed after a crash.
+Existing `GET /api/runs/{id}`, replayable event cursors and SignalR
+`RunUpdated` now include fixed-category execution lifecycle transitions.
+A failed or ambiguous cleanup blocks future execution admission rather than
+inventing completion.
+
+**Overall M1 remains YELLOW.** Do not use this as an authorization to execute
+in an unqualified environment. The local Dell positive/negative gates and
+ten required integrated adversarial cases still must pass. See
+[M2→M1 execution adapter guide](M2_M1_EXECUTION_ADAPTER.md).
 
 ## Running locally (when a .NET 10 SDK with SQLite package restore is available)
 
