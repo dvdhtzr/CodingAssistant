@@ -35,7 +35,8 @@ public static class ApiHost
 
     public static WebApplication Build(
         string[] args, ApiSettings? settings = null,
-        IM1ExecutionRunner? runnerOverride = null)
+        IM1ExecutionRunner? runnerOverride = null,
+        IHtmlPreviewGenerator? htmlGeneratorOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -58,6 +59,9 @@ public static class ApiHost
         var executions = new ExecutionStore(store);
         executions.Initialize();
         executions.MarkUnreconciledOnStartup();
+        var htmlArtifacts = new HtmlArtifactStore(store);
+        htmlArtifacts.Initialize();
+        var htmlGenerator = htmlGeneratorOverride ?? new LocalHtmlPreviewGenerator();
         var enabled = settings.EnableLocalExecution &&
             (runnerOverride is not null || OperatingSystem.IsLinux());
         var runner = runnerOverride ?? (enabled
@@ -97,6 +101,8 @@ public static class ApiHost
             options.AddServerHeader = false;
         });
         builder.Services.AddSingleton(store);
+        builder.Services.AddSingleton(htmlArtifacts);
+        builder.Services.AddSingleton<IHtmlPreviewGenerator>(htmlGenerator);
         builder.Services.AddSingleton(runs);
         builder.Services.AddSingleton(executions);
         builder.Services.AddSingleton<IM1ExecutionRunner>(runner);
@@ -176,6 +182,27 @@ public static class ApiHost
             {
                 var created = db.CreateTask(input);
                 return Results.Created($"/api/tasks/{created.Id}", created);
+            }));
+        // Static HTML generation returns text only: no agent, tools or project writes.
+        app.MapGet("/api/tasks/{id}/html", (string id, HtmlArtifactStore artifacts) =>
+            Safe(() => {
+                var artifact = artifacts.Latest(id);
+                return Results.Ok(new { available = artifact is not null, artifact });
+            }));
+        app.MapPost("/api/tasks/{id}/html", (
+                string id, CreateHtmlPreviewRequest request,
+                TaskStore db, HtmlArtifactStore artifacts,
+                IHtmlPreviewGenerator generator, CancellationToken cancellation) =>
+            SafeAsync(async () =>
+            {
+                var task = db.GetTask(id).Task;
+                var model = request.Model ?? LocalHtmlPreviewGenerator.Baseline;
+                if (!LocalHtmlPreviewGenerator.AllowedModel(model))
+                    throw new StoreFailure("INVALID_INPUT");
+                var html = await generator.GenerateAsync(
+                    task.Objective, model, cancellation);
+                var artifact = artifacts.Save(id, model, html);
+                return Results.Created($"/api/tasks/{id}/html", artifact);
             }));
         app.MapPost("/api/tasks/{id}/plans", (
                 string id, DraftPlanRequest input, TaskStore db) =>
@@ -322,6 +349,8 @@ public static class ApiHost
         var status = error.Code switch
         {
             "NOT_FOUND" => StatusCodes.Status404NotFound,
+            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" =>
+                StatusCodes.Status503ServiceUnavailable,
             "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
