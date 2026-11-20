@@ -114,7 +114,10 @@ class UnixShowTests(unittest.TestCase):
             self.assertEqual((status, count, inference), (403, 0, 0))
 
     def test_query_string_does_not_bypass_exact_path(self):
-        status, _, count, inference = self.request(b'{"model":"qwen3.5:4b"}',
+        # The invalid URL is rejected before the socket server reads a POST
+        # body. Send an empty body so an early fail-closed close does not race
+        # client.sendall() with a BrokenPipeError on Linux runners.
+        status, _, count, inference = self.request(b"",
                                                    "/api/show?verbose=true")
         self.assertEqual((status, count, inference), (403, 0, 0))
 
