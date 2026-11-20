@@ -75,3 +75,68 @@ execution or profile qualification, and the existing source-only draft generator
 does **not** consume approved architecture decisions yet. The next Phase 2 slice
 must bind the chosen stack/architecture to source planning without bypassing
 unqualified language/runtime security and provide end-to-end owner acceptance.
+
+
+## Third slice — Architecture-bound source-only draft handoff
+
+Owner-approved architecture selections now influence **both** project-file planning
+and per-file source writing. This is a planning/source-text change only, not
+build verification or a new executable runtime.
+
+### Immutable binding and admission
+
+Authenticated GET \`/api/tasks/{id}/draft-build/architecture\` reports
+\`status\`, \`readyForSourceGeneration\`, \`architectureSha256\`,
+\`blockingTopics\` and \`approvedChoices\`. New Mission Control draft generation
+is disabled until both \`technology-stack\` and \`architecture-style\`
+have **current approved selections** for the exact approved specification.
+
+Authenticated POST \`/api/tasks/{id}/draft-build\` now supports an optional
+\`architectureSha256\` request field. For a project with approved decisions,
+this hash **must** match the canonical, owner-selected architecture captured
+within the SQLite job-admission transaction. A missing or changed hash
+is rejected. If any decision has been proposed but the two-topic review is
+incomplete, generation is rejected with \`ARCHITECTURE_NOT_READY\`.
+A changed decision after admission yields \`ARCHITECTURE_CONFLICT\`.
+
+New drafts store an immutable contract per draft: specification version/hash,
+the two selected topic option IDs, labels, tradeoffs, runtime-profile
+references, proposal versions/hashes and a canonical architecture SHA-256.
+The same immutable values are appended to the planning and source-writing
+model context. The job produces a durable \`ArchitectureBound\` event and its
+stored binding is visible in the source-draft read API. During each file save
+and final successful transition, the backend revalidates the approved
+specification **and selected architecture in the same transaction**.
+A changed selection causes failure, never a false successful draft.
+
+The \`static-web\` profile is still **UNQUALIFIED**. Its owner selection now
+constrains source-only plans to include \`index.html\` and only
+\`.html\`, \`.css\`, \`.js\`, \`.json\`, \`.md\` text file types.
+An incompatible model-generated plan fails with
+\`ARCHITECTURE_PLAN_CONFLICT\`; it does not fall back to C#, silently
+replace the approved stack, run JavaScript, install packages or run browsers.
+This guard does not prove the generated source functions correctly; that
+belongs to Phase 4 independent verification.
+
+### Compatibility
+
+Historical draft jobs and ZIP files remain readable; a missing stored
+architecture binding clearly indicates a legacy specification-only draft.
+For **old API consumers with no architecture-decision rows at all** the
+spec-only source generation path remains available for backward compatibility,
+and its first durable event explicitly says \`Legacy spec-only\`.
+**Mission Control does not silently use this fallback**: it blocks new jobs
+until both decisions have been reviewed. Once a task has any architectural
+proposal, partial, deferred, superseded or stale decisions block API admission
+as well. No existing specification/decision approval becomes permission to
+execute generated code.
+
+Cross-platform model-free regression tests cover readiness, zero/partial/two
+decisions, exact fingerprint admission, the bound model plan/write prompts,
+persisted architecture hash/event, compatibility with existing source-only
+HTTP/SQLite flows, static-profile path rejection and decision-change races.
+
+**Still not verified:** actual Ollama compliance with nuanced architectural
+styles, a linked application passing build/browser tests, arbitrary language
+runtime profiles, MAF agent handoffs, skills activation and adversarial
+execution qualification. Those retain their roadmap gates.
