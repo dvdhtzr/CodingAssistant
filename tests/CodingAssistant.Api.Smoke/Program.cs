@@ -5,6 +5,7 @@ using System.Text.Json;
 using CodingAssistant.Api;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 
