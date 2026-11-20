@@ -85,6 +85,17 @@ public static class ApiHost
         });
         builder.Services.AddSingleton<RunNotifier>();
 
+        // The published self-contained API ships its own compiled, same-origin
+        // React assets. During repo smoke checks Vite writes to API/wwwroot.
+        // Never serve arbitrary owner directories or accept a path from HTTP.
+        var packagedWeb = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+        var repositoryWeb = Path.Combine(Directory.GetCurrentDirectory(),
+            "src", "CodingAssistant.Api", "wwwroot");
+        if (Directory.Exists(packagedWeb))
+            builder.WebHost.UseWebRoot(packagedWeb);
+        else if (Directory.Exists(repositoryWeb))
+            builder.WebHost.UseWebRoot(repositoryWeb);
+
         var app = builder.Build();
         app.Use(async (context, next) =>
         {
