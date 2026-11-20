@@ -32,7 +32,7 @@ public sealed class TaskStore
     public const string Model = "qwen3.5:4b";
     public const string Scope = "planning-only-no-execution";
     private static readonly Regex Hex32 =
-        new("^[0-9a-f]{32}$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
+        new("^[0-9a-f]{32}\\z", RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private readonly string _databasePath;
     private readonly string _connectionString;
 
