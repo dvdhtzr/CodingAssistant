@@ -280,7 +280,7 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         using (var cmd = TaskStore.Command(db, tx, """
             SELECT version,sha256,status FROM interview_specs
             WHERE task_id=@task ORDER BY version DESC LIMIT 1
-            """, ("@task", job.TaskId))
+            """, ("@task", job.TaskId)))
         using (var reader = cmd.ExecuteReader())
         {
             if (!reader.Read() ||
