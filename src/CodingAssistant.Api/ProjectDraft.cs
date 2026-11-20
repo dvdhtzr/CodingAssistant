@@ -90,11 +90,24 @@ public static class ProjectDraftValidation
     }
 }
 
-public sealed class LocalProjectDraftModel : IProjectDraftModel
+public interface IProjectDraftStream : IProjectDraftModel
 {
-    public async Task<IReadOnlyList<ProjectDraftFile>> GenerateAsync(
+    Task<IReadOnlyList<ProjectDraftFile>> GenerateStreamingAsync(
         string objective, string approvedSpecification, string model,
-        CancellationToken cancellation)
+        Func<Task> onVerifiedChunk, CancellationToken cancellation);
+}
+
+public sealed class LocalProjectDraftModel : IProjectDraftStream
+{
+    public Task<IReadOnlyList<ProjectDraftFile>> GenerateAsync(
+        string objective, string approvedSpecification, string model,
+        CancellationToken cancellation) =>
+        GenerateStreamingAsync(objective, approvedSpecification, model,
+            () => Task.CompletedTask, cancellation);
+
+    public async Task<IReadOnlyList<ProjectDraftFile>> GenerateStreamingAsync(
+        string objective, string approvedSpecification, string model,
+        Func<Task> onVerifiedChunk, CancellationToken cancellation)
     {
         if (!LocalInterviewModel.AllowedModel(model) ||
             objective.Length is < 1 or > 4000 ||
@@ -107,12 +120,11 @@ public sealed class LocalProjectDraftModel : IProjectDraftModel
         using var client = new HttpClient(handler)
         {
             BaseAddress = new Uri("http://127.0.0.1:11434/"),
-            Timeout = TimeSpan.FromMinutes(10),
-            MaxResponseContentBufferSize = 130000
+            Timeout = TimeSpan.FromMinutes(10)
         };
         var payload = new
         {
-            model, stream = false, think = false, format = "json",
+            model, stream = true, think = false, format = "json",
             messages = new object[]
             {
                 new { role = "system", content = """
@@ -140,7 +152,7 @@ public sealed class LocalProjectDraftModel : IProjectDraftModel
             },
             options = new { temperature = 0.1, num_predict = 5500, num_ctx = 8192 }
         };
-        using var message = new HttpRequestMessage(HttpMethod.Post, "api/chat")
+        using var request = new HttpRequestMessage(HttpMethod.Post, "api/chat")
         {
             Content = new StringContent(JsonSerializer.Serialize(payload),
                                         Encoding.UTF8, "application/json")
@@ -148,20 +160,54 @@ public sealed class LocalProjectDraftModel : IProjectDraftModel
         try
         {
             using var response = await client.SendAsync(
-                message, HttpCompletionOption.ResponseContentRead, cancellation);
+                request, HttpCompletionOption.ResponseHeadersRead, cancellation);
             if (response.StatusCode == HttpStatusCode.NotFound)
                 throw new StoreFailure("MODEL_NOT_INSTALLED");
             if (!response.IsSuccessStatusCode)
                 throw new StoreFailure("LOCAL_MODEL_UNAVAILABLE");
-            var body = await response.Content.ReadAsStringAsync(cancellation);
-            if (body.Length > 130000)
+            await using var responseStream =
+                await response.Content.ReadAsStreamAsync(cancellation);
+            using var reader = new StreamReader(responseStream, Encoding.UTF8);
+            var raw = new StringBuilder();
+            var chunks = 0;
+            var finished = false;
+            string? line;
+            while ((line = await reader.ReadLineAsync(cancellation)) is not null)
+            {
+                if (line.Length > 20000)
+                    throw new StoreFailure("DRAFT_OUTPUT_REJECTED");
+                if (line.Length == 0) continue;
+                using var update = JsonDocument.Parse(line);
+                var root = update.RootElement;
+                if (root.TryGetProperty("error", out _))
+                    throw new StoreFailure("LOCAL_MODEL_UNAVAILABLE");
+                if (root.TryGetProperty("message", out var message) &&
+                    message.TryGetProperty("content", out var part))
+                {
+                    var text = part.GetString();
+                    if (text is not null)
+                    {
+                        raw.Append(text);
+                        if (raw.Length > 100000)
+                            throw new StoreFailure("DRAFT_OUTPUT_REJECTED");
+                        ++chunks;
+                        // Only actual received local-model chunks produce an
+                        // event, at a bounded frequency. Never store raw text
+                        // or claim a proposed file has compiled.
+                        if (chunks % 70 == 0 && chunks <= 4200)
+                            await onVerifiedChunk();
+                    }
+                }
+                if (root.TryGetProperty("done", out var done) &&
+                    done.ValueKind == JsonValueKind.True)
+                {
+                    finished = true;
+                    break;
+                }
+            }
+            if (!finished)
                 throw new StoreFailure("DRAFT_OUTPUT_REJECTED");
-            using var data = JsonDocument.Parse(body);
-            var raw = data.RootElement.GetProperty("message")
-                .GetProperty("content").GetString() ?? "";
-            if (raw.Length > 100000)
-                throw new StoreFailure("DRAFT_OUTPUT_REJECTED");
-            using var proposed = JsonDocument.Parse(raw);
+            using var proposed = JsonDocument.Parse(raw.ToString());
             var files = proposed.RootElement.GetProperty("files");
             if (files.ValueKind != JsonValueKind.Array ||
                 files.GetArrayLength() > 8)
@@ -349,6 +395,24 @@ public sealed class ProjectDraftStore(TaskStore tasks, InterviewStore interviews
         return id is null ? null : Read(id);
     }
 
+    public void RecordModelCheckpoint(string draftId)
+    {
+        if (!Id.IsMatch(draftId)) throw new StoreFailure("INVALID_ID");
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var state = TaskStore.Scalar(db, tx,
+            "SELECT state FROM project_drafts WHERE id=@id", ("@id", draftId));
+        if (state != "Generating") { tx.Commit(); return; }
+        // Cap repeated progress events even when a model is verbose.
+        var count = TaskStore.Scalar(db, tx, """
+            SELECT COUNT(*) FROM project_draft_events
+            WHERE draft_id=@id AND kind='ModelOutputReceived'
+            """, ("@id", draftId));
+        if (int.TryParse(count, out var n) && n < 60)
+            Append(db, tx, draftId, "ModelOutputReceived");
+        tx.Commit();
+    }
+
     public void Advance(string draftId, string from, string state, string kind,
                         string? error = null,
                         IReadOnlyList<ProjectDraftFile>? files = null)
@@ -463,8 +527,16 @@ public sealed class ProjectDraftCoordinator(
                 return;
             }
             var objective = tasks.GetTask(run.TaskId).Task.Objective;
-            var generated = await model.GenerateAsync(
-                objective, spec.Content, run.Model, lifetime.ApplicationStopping);
+            var generated = model is IProjectDraftStream streaming
+                ? await streaming.GenerateStreamingAsync(
+                    objective, spec.Content, run.Model,
+                    () => {
+                        drafts.RecordModelCheckpoint(id);
+                        return Task.CompletedTask;
+                    }, lifetime.ApplicationStopping)
+                : await model.GenerateAsync(
+                    objective, spec.Content, run.Model,
+                    lifetime.ApplicationStopping);
             drafts.Advance(id, "Generating", "Validating", "ModelResponseReceived");
             drafts.Advance(id, "Validating", "Ready", "DraftFilesSaved",
                            files: generated);
