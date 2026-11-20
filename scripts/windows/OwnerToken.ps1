@@ -1,5 +1,8 @@
 # Windows PowerShell 5.1 / .NET 10 DPAPI CurrentUser shared credential.
 # Do not echo owner tokens, put them in source, URLs or process arguments.
+# The Windows PowerShell 5.1 host needs the .NET Framework DPAPI assembly
+# loaded explicitly. PowerShell 7 and .NET 10 use their own implementations.
+Add-Type -AssemblyName System.Security -ErrorAction Stop
 function New-CodingAssistantOwnerToken {
     $bytes = New-Object byte[] 32
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
