@@ -23,6 +23,8 @@ public sealed class LocalOllamaModelCatalog : IOllamaModelCatalog
     public static bool ValidLocalName(string? name) =>
         name is { Length: > 0 and <= 160 } &&
         ModelName.IsMatch(name) &&
+        !name.StartsWith("cloud/", StringComparison.OrdinalIgnoreCase) &&
+        !name.StartsWith("remote/", StringComparison.OrdinalIgnoreCase) &&
         !name.EndsWith(":cloud", StringComparison.OrdinalIgnoreCase) &&
         !name.EndsWith("-cloud", StringComparison.OrdinalIgnoreCase);
 
