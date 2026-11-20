@@ -155,6 +155,25 @@ public static class DraftArchitecturePolicy
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
     }
 
+    // A declared Static Web stack must not silently turn into C#/React/TS.
+    // This is bounded plan validation, NOT a browser or compile test.
+    public static void ValidatePlannedFiles(
+        DraftArchitectureContract? context, IReadOnlyList<PlannedProjectFile> files)
+    {
+        if (context?.Choices.FirstOrDefault(c =>
+            c.Topic == "technology-stack")?.RuntimeProfileId != "static-web")
+            return;
+
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".html", ".css", ".js", ".json", ".md"
+        };
+        if (!files.Any(f => string.Equals(f.Path, "index.html",
+                StringComparison.OrdinalIgnoreCase)) ||
+            files.Any(f => !allowed.Contains(Path.GetExtension(f.Path))))
+            throw new StoreFailure("ARCHITECTURE_PLAN_CONFLICT");
+    }
+
     public static string AsModelInstructions(DraftArchitectureContract context)
     {
         var lines = new List<string>
