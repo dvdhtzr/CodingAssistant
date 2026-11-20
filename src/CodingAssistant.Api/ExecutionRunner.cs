@@ -19,7 +19,18 @@ public interface IM1ExecutionRunner
     Task<bool> ReconcileAsync(string requestId, CancellationToken cancellation);
 }
 
-public sealed class ExecutionUnavailable : Exception;
+public sealed class ExecutionUnavailable : Exception { }
+
+public sealed class DisabledM1Runner : IM1ExecutionRunner
+{
+    public Task<M1ExecutablePreview> PreviewAsync(RunItem run, CancellationToken token) =>
+        throw new ExecutionUnavailable();
+    public Task<M1ExecutionOutcome> ExecuteAsync(
+        RunItem run, string hash, CancellationToken token) =>
+        throw new ExecutionUnavailable();
+    public Task<bool> ReconcileAsync(string requestId, CancellationToken token) =>
+        throw new ExecutionUnavailable();
+}
 
 /// <summary>
 /// Thin, non-shell Linux adapter to the already-qualified fixed M1.12 runner.
