@@ -1,7 +1,7 @@
 # Phase 1 — Product Owner role
 
 **Roadmap:** [Development Plan v2.0](DEVELOPMENT_PLAN_V2.md)  
-**Status:** Implemented on feature branch; acceptance gate remains **YELLOW** until real Ollama conversational behavior is observed and recorded.
+**Status:** **Owner-accepted, November 20, 2026 (attested acceptance).** The owner explicitly reported the requested acceptance exercise complete. The exact local model, machine details and conversation transcript were not supplied to the repository, so this is owner-reported sign-off, not independently replayable live-model evidence.
 
 ## Role contract
 
@@ -54,3 +54,17 @@ The owner completed a real local-Ollama Product Owner interview and downloaded a
 6. Confirm source generation/download still works as before, without mistaking generated text for independently compiled/tested source.
 
 Record the model, OS, commit, observable evidence and outcome. A good model-free CI result alone **does not** satisfy the conversational quality requirement, and past owner acceptance of the older architect/interviewer prompt is not evidence that the new Product Owner prompt works.
+
+
+## Owner acceptance sign-off — November 20, 2026
+
+After the owner was asked to run the short Product Owner quality acceptance exercise
+with a fresh book-catalog objective, requirement change, specification review and
+restart, the owner explicitly replied **"acceptance complete"**. This is recorded
+as owner-attested Phase 1 acceptance and issue #108 is closed. We have **not**
+received the exact model tag, screenshots, conversation transcript or private
+SQLite records, and do not invent them. The earlier Calculation Journal run
+already demonstrated source ZIP generation but failed real browser behavior
+(see #107); this acceptance **does not** qualify any application build, test,
+executable host sandbox or autonomous coding permission. Model-free CI evidence
+is separate from live inference and remains reproducible on Windows and Linux.
