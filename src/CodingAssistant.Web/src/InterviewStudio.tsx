@@ -86,7 +86,9 @@ export function InterviewStudio({ token, task }: {
           ? 'That local model is not installed. Select an installed Ollama model.'
           : code.includes('LOCAL_MODEL_UNAVAILABLE')
             ? 'The local model is unavailable or timed out. Your saved answers are unchanged; retry.'
-            : 'Could not complete this step: ' + code);
+            : code.includes('MODEL_OUTPUT_REJECTED')
+              ? 'The local model returned a response that was empty or could not be validated, even after recovery. No malformed AI response was saved. Your typed answer is still here; please retry.'
+              : 'Could not complete this step: ' + code);
     } finally {
       setBusy('');
     }
