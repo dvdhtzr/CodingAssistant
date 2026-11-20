@@ -120,7 +120,7 @@ export function InterviewStudio({ token, task }: {
         </label>
         <button className="primary" disabled={!!busy}
           onClick={() => void submit('start', () =>
-            api(token, `/api/tasks/${task.id}/interview/turn`, {
+            api<InterviewSnapshot>(token, `/api/tasks/${task.id}/interview/turn`, {
               expectedSequence: 0, model: chosenModel,
             }))}>
           Begin AI interview
@@ -146,7 +146,7 @@ export function InterviewStudio({ token, task }: {
         </p>
         {ownerAnswers < 12 && <form onSubmit={event => {
           event.preventDefault();
-          void submit('answer', () => api(
+          void submit('answer', () => api<InterviewSnapshot>(
             token, `/api/tasks/${task.id}/interview/turn`, {
               expectedSequence: snapshot.lastSequence,
               message: answer,
@@ -182,7 +182,7 @@ export function InterviewStudio({ token, task }: {
         <p className="hint">The specification will reflect this interview, not a hard-coded
           application template. You control when to draft and approve it.</p>
         <button type="button" disabled={!!busy || ownerAnswers < 1}
-          onClick={() => void submit('draft', () => api(
+          onClick={() => void submit('draft', () => api<InterviewSnapshot>(
             token, `/api/tasks/${task.id}/interview/specification`, {
               expectedSequence: snapshot.lastSequence,
             }))}>
@@ -203,7 +203,7 @@ export function InterviewStudio({ token, task }: {
             </label>
             <button className="primary"
               disabled={!!busy || !approveChecked}
-              onClick={() => void submit('approve', () => api(
+              onClick={() => void submit('approve', () => api<InterviewSnapshot>(
                 token, `/api/tasks/${task.id}/interview/approve`, {
                   version: spec.version, sha256: spec.sha256,
                 }))}>
