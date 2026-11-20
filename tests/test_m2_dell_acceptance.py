@@ -103,8 +103,9 @@ class DellAcceptanceContract(unittest.TestCase):
         self.assertEqual(client.origin, "http://127.0.0.1:5098")
         proxies = [handler for handler in client.opener.handlers
                    if isinstance(handler, dell.urllib.request.ProxyHandler)]
-        self.assertEqual(len(proxies), 1)
-        self.assertEqual(proxies[0].proxies, {})
+        # urllib omits the handler entirely when its configured proxy map
+        # is empty. Either form proves no ambient HTTP proxy was installed.
+        self.assertTrue(not proxies or all(p.proxies == {} for p in proxies))
         with self.assertRaises(dell.AcceptanceBlocked):
             client.call("GET", "https://example.com")
         with self.assertRaises(dell.AcceptanceBlocked):
