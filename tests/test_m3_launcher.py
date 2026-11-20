@@ -102,7 +102,7 @@ class M3LauncherContracts(unittest.TestCase):
 
     def test_execution_preflight_uses_model_free_checks_only(self):
         fake = mock.Mock(returncode=0)
-        with mock.patch.object(launcher.subprocess, "run", return_value=fake) as run, \\
+        with mock.patch.object(launcher.subprocess, "run", return_value=fake) as run, \
              contextlib.redirect_stdout(io.StringIO()):
             launcher.verify_execution_preflight()
         args = run.call_args.args[0]
@@ -114,14 +114,14 @@ class M3LauncherContracts(unittest.TestCase):
 
     def test_failed_execution_preflight_denies_launch(self):
         fake = mock.Mock(returncode=2)
-        with mock.patch.object(launcher.subprocess, "run", return_value=fake), \\
+        with mock.patch.object(launcher.subprocess, "run", return_value=fake), \
              contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaisesRegex(launcher.LaunchError, "coding remains OFF"):
                 launcher.verify_execution_preflight()
 
     def test_preflight_timeout_denies_launch(self):
         with mock.patch.object(launcher.subprocess, "run",
-                               side_effect=launcher.subprocess.TimeoutExpired("preflight", 1300)), \\
+                               side_effect=launcher.subprocess.TimeoutExpired("preflight", 1300)), \
              contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaisesRegex(launcher.LaunchError, "coding remains OFF"):
                 launcher.verify_execution_preflight()
