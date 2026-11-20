@@ -4,6 +4,18 @@ Cross-platform, **local-first** autonomous software engineering assistant. OpenC
 
 > **Current status (Nov 19, 2026): M0 GREEN on Dell at the independently reviewed evidence-assurance level.** The local `qwen3.5:4b` / OpenCode runner completed **9/9** frozen coding attempts, followed by M0.18 independent review and nine separate offline acceptance rechecks: **EVIDENCE_REVIEW_PASS / QUALIFIED**. This is *not* a production-grade autonomous developer, a cryptographic historical attestation, or a Windows-host security qualification. **M1 remains YELLOW overall, but its M1.12 Dell integrated coding sub-gate is GREEN:** an explicitly approved, disposable C# repair completed through the real OpenClaw Gateway → ACPX → OpenCode → pinned local Qwen path (6/6 host-verified inference requests, 9 tool calls, 17 ACP events), with independent offline .NET evaluator `VERIFIED` and confirmed container cleanup. Durable-state/crash recovery, broader integrated negative tests and Windows-host qualification remain outstanding. See [current handoff](docs/CURRENT_HANDOFF.md).
 
+## Start Mission Control on the Dell
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m3/launch.py
+```
+
+The launcher handles the CI application install when needed, opens the local
+browser, and prints the one-time owner token to paste into the login screen.
+If GitHub CLI cannot download the artifact automatically, one browser download
+from the official successful Actions run is necessary. Autonomous coding is
+**off by default**; see `src/CodingAssistant.Web/README.md`.
+
 ## M2 .NET control plane and gated M1 execution integration
 
 The application backend lives in

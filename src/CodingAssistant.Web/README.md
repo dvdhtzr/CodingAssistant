@@ -15,6 +15,28 @@ even executable authorization does not automatically start a model. The UI
 does not grant arbitrary-repository or model access. The backend's existing
 fixed-fixture scope, local-execution opt-in and Podman protections remain in force.
 
+## Simplest launch on the Dell
+
+Run **one line** from the existing checkout:
+
+```bash
+cd ~/CodingAssistant && git pull --ff-only && python3 tools/m3/launch.py
+```
+
+The launcher reuses the installed M3 build if present, installs an already
+downloaded GitHub Actions ZIP if available, or downloads a successful artifact
+with authenticated `gh`. If GitHub CLI is not available/authenticated, it opens
+the exact Actions page for a one-time browser ZIP download and then continues
+installation when you press Enter. It opens Firefox and prints a temporary
+owner token to paste into the login screen. It does **not** store the token,
+expose the API beyond 127.0.0.1, or enable AI execution by default. Ctrl+C
+stops only the API process that the launcher started.
+
+After independently qualified security checks, the optional
+`python3 tools/m3/launch.py --enable-execution` enables only the existing
+fixed-fixture M1 runner. Separate exact owner plan approval and explicit start
+are still required. Do not use this flag for general repository execution.
+
 ## Development
 
 ```bash
