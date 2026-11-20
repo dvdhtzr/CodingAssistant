@@ -824,6 +824,43 @@ try
             }
         }
 
+        // Archived run output is a fixed, hash-bound subset of the owner
+        // private M1 ledger. Any wrong ID/scope or raw-model-output field
+        // must fail without producing an apparent verified report.
+        var sampleResult = JsonSerializer.Serialize(new
+        {
+            schema = "codingassistant-run-result-v1",
+            available = true,
+            runId = verifiedRun.Id,
+            planHash = verifiedPreview.PlanHash,
+            status = "GATEWAY_APPROVED_CODING_PASS",
+            phase = "complete",
+            reasonCode = (string?)null,
+            evaluatorVerified = (bool?)true,
+            sourceChanged = (bool?)true,
+            inferenceRequests = (int?)4,
+            patch = "--- a/api/Program.cs\\n+++ b/api/Program.cs\\n@@ -1 +1 @@\\n-old\\n+new\\n",
+            patchOmitted = false
+        });
+        Check(M1ProcessRunner.ParseResult(sampleResult,
+                  verifiedRun.Id, verifiedPreview.PlanHash)?.EvaluatorVerified == true,
+            "bound fixed-fixture result accepted for owner view");
+        foreach (var (badId, badHash) in new[] {
+            (new string('f', 32), verifiedPreview.PlanHash),
+            (verifiedRun.Id, new string('f', 64))
+        })
+        {
+            try
+            {
+                M1ProcessRunner.ParseResult(sampleResult, badId, badHash);
+                throw new Exception("Unbound archived output was accepted");
+            }
+            catch (ExecutionUnavailable)
+            {
+                checks++;
+            }
+        }
+
         // A stale M2 plan must block further execution previews.
         string staleRunId;
         using (var created = await Post(executionClient,
