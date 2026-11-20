@@ -370,10 +370,41 @@ public sealed class ProjectDraftStore(TaskStore tasks, InterviewStore interviews
         }
         if (state == "Ready")
         {
-            var run = Read(draftId);
-            var spec = interviews.Read(run.TaskId).Specification;
-            if (spec is null || spec.Version != run.SpecificationVersion ||
-                spec.Sha256 != run.SpecificationHash || spec.Status != "Approved")
+            // Check the newest approved spec in the SAME SQLite transaction
+            // that persists source files. A concurrent interview revision
+            // cannot silently approve stale generated code.
+            string task;
+            int expectedVersion;
+            string expectedHash;
+            using (var contract = TaskStore.Command(db, tx, """
+                SELECT task_id,spec_version,spec_hash
+                FROM project_drafts WHERE id=@id
+                """, ("@id", draftId)))
+            using (var contractReader = contract.ExecuteReader())
+            {
+                if (!contractReader.Read()) throw new StoreFailure("NOT_FOUND");
+                task = contractReader.GetString(0);
+                expectedVersion = contractReader.GetInt32(1);
+                expectedHash = contractReader.GetString(2);
+            }
+            int? currentVersion = null;
+            string? currentHash = null;
+            string? currentStatus = null;
+            using (var specQuery = TaskStore.Command(db, tx, """
+                SELECT version,sha256,status FROM interview_specs
+                WHERE task_id=@task ORDER BY version DESC LIMIT 1
+                """, ("@task", task)))
+            using (var reader = specQuery.ExecuteReader())
+            {
+                if (reader.Read())
+                {
+                    currentVersion = reader.GetInt32(0);
+                    currentHash = reader.GetString(1);
+                    currentStatus = reader.GetString(2);
+                }
+            }
+            if (currentVersion != expectedVersion || currentHash != expectedHash ||
+                currentStatus != "Approved")
             {
                 state = "Superseded"; kind = "SpecificationChanged";
                 files = null; error = "SPECIFICATION_CONFLICT";
