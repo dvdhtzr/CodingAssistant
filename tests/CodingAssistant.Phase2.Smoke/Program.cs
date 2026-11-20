@@ -65,6 +65,7 @@ if (!OperatingSystem.IsWindows())
         UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
 WebApplication? app = null;
 HttpClient? client = null;
+var boundModel = new Phase2DraftModel();
 try
 {
     var tasks = new TaskStore(root);
@@ -90,7 +91,8 @@ try
         spec.Version, spec.Sha256));
 
     var settings = new ApiSettings(root, Token, "http://127.0.0.1:0");
-    app = ApiHost.Build([], settings, catalogOverride: new Phase2Catalog(),
+    app = ApiHost.Build([], settings, projectModelOverride: boundModel,
+        catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor());
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
@@ -274,7 +276,8 @@ try
     await app.DisposeAsync();
     app = null;
 
-    app = ApiHost.Build([], settings, catalogOverride: new Phase2Catalog(),
+    app = ApiHost.Build([], settings, projectModelOverride: boundModel,
+        catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor());
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
@@ -373,6 +376,194 @@ try
         new { }))
         Check(noExec.StatusCode == HttpStatusCode.NotFound,
             "Phase 2 adds no arbitrary execution endpoint");
+
+    // Phase 2 source-only handoff is an independently scoped task. A new
+    // Mission Control draft MUST bind both human-approved technical choices.
+    var taskBound = tasks.CreateTask(new CreateTaskRequest(
+        "Architecture bound browser app",
+        "Create an offline static web timer with mouse and keyboard controls",
+        Guid.NewGuid().ToString("N")));
+    var initial = interviews.CommitTurn(taskBound.Id,
+        new InterviewTurnRequest(0, null, "qwen3.5:4b"),
+        new InterviewReply("What are the timer controls?", false));
+    var answered = interviews.CommitTurn(taskBound.Id,
+        new InterviewTurnRequest(initial.LastSequence,
+            "Start, stop and reset. No server or packages.", "qwen3.5:4b"),
+        new InterviewReply("Should the timer work without internet?", true));
+    var draftBound = interviews.CommitSpecification(taskBound.Id,
+        answered.LastSequence,
+        ("Create an offline browser timer. It must support a start button, " +
+         "pause and reset using mouse and keyboard; no server or packages. " +
+         "Use approved technical choices and save files as an untested draft. ")
+        .PadRight(210, 'z'));
+    var approvedBound = interviews.Approve(taskBound.Id,
+        new ApproveSpecificationRequest(
+            draftBound.Specification!.Version, draftBound.Specification.Sha256));
+    var specBound = approvedBound.Specification!;
+    var boundPath = "/api/tasks/" + taskBound.Id + "/draft-build";
+    var architecturePath = boundPath + "/architecture";
+    var approvedRequest = new {
+        specificationVersion = specBound.Version,
+        specificationSha256 = specBound.Sha256,
+        architectureSha256 = ""
+    };
+    using (var noChoices = await client.GetAsync(architecturePath))
+    using (var body = await Body(noChoices))
+        Check(body.RootElement.GetProperty("status").GetString() == "LEGACY_UNBOUND" &&
+              !body.RootElement.GetProperty("readyForSourceGeneration").GetBoolean(),
+            "new Mission Control drafts explicitly reject legacy spec-only fallback");
+
+    var decisionStore = new ArchitectureDecisionStore(tasks);
+    var stack = decisionStore.Propose(taskBound.Id,
+        new ProposeArchitectureDecisionRequest(1, specBound.Version,
+            specBound.Sha256, "technology-stack", "static",
+            "Choose offline files with no package manager.", [
+                new("static", "Static HTML and JavaScript",
+                    "Offline, no installation", "Manual DOM interaction", "static-web"),
+                new("react", "React and TypeScript",
+                    "Reusable UI", "Requires a build system", null)
+            ], 0));
+    using (var partial = await client.GetAsync(architecturePath))
+    using (var body = await Body(partial))
+        Check(body.RootElement.GetProperty("status").GetString() == "INCOMPLETE" &&
+              !body.RootElement.GetProperty("readyForSourceGeneration").GetBoolean(),
+            "one proposed stack is not enough for drafting");
+    using (var attempt = await Post(client, boundPath, approvedRequest))
+        Check(attempt.StatusCode == HttpStatusCode.Conflict,
+            "partially approved architecture is blocked by the server");
+    decisionStore.Review(taskBound.Id, "technology-stack",
+        new ReviewArchitectureDecisionRequest(
+            1, 1, stack.ProposalSha256, "Approve", "static",
+            "APPROVE " + stack.ProposalSha256));
+    var style = decisionStore.Propose(taskBound.Id,
+        new ProposeArchitectureDecisionRequest(1, specBound.Version,
+            specBound.Sha256, "architecture-style", "modular",
+            "Simple component boundaries for a small timer.", [
+                new("modular", "Small event modules",
+                    "Low complexity", "Manual module boundaries", null),
+                new("layers", "Full layered architecture",
+                    "Explicit dependencies", "Extra boilerplate", null)
+            ], 0));
+    decisionStore.Review(taskBound.Id, "architecture-style",
+        new ReviewArchitectureDecisionRequest(
+            1, 1, style.ProposalSha256, "Approve", "modular",
+            "APPROVE " + style.ProposalSha256));
+    string architectureSha;
+    using (var ready = await client.GetAsync(architecturePath))
+    using (var body = await Body(ready))
+    {
+        var value = body.RootElement;
+        architectureSha = value.GetProperty("architectureSha256").GetString()!;
+        Check(value.GetProperty("status").GetString() == "READY" &&
+              value.GetProperty("readyForSourceGeneration").GetBoolean() &&
+              architectureSha.Length == 64 &&
+              value.GetProperty("approvedChoices").GetArrayLength() == 2,
+            "two human-approved technical choices produce stable fingerprint");
+    }
+    using (var noHash = await Post(client, boundPath, approvedRequest))
+        Check(noHash.StatusCode == HttpStatusCode.Conflict,
+            "approved architecture cannot be silently ignored by old API callers");
+    using (var substitutedHash = await Post(client, boundPath,
+        new {
+            specificationVersion = specBound.Version,
+            specificationSha256 = specBound.Sha256,
+            architectureSha256 = new string('f', 64)
+        }))
+        Check(substitutedHash.StatusCode == HttpStatusCode.Conflict,
+            "draft admission refuses substituted architecture fingerprint");
+    string boundDraftId;
+    using (var accepted = await Post(client, boundPath,
+        new {
+            specificationVersion = specBound.Version,
+            specificationSha256 = specBound.Sha256,
+            architectureSha256 = architectureSha
+        }))
+    using (var body = await Body(accepted))
+    {
+        Check(accepted.StatusCode == HttpStatusCode.Accepted,
+            "architecture-bound source job admitted on owner action");
+        boundDraftId = body.RootElement.GetProperty("id").GetString()!;
+    }
+    ProjectDraftSnapshot? boundResult = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        boundResult = new ProjectDraftStore(tasks).Get(taskBound.Id, boundDraftId);
+        if (boundResult.Job.State != "Running") break;
+        await Task.Delay(25);
+    }
+    Check(boundResult is not null && boundResult.Job.State == "Generated",
+        "source draft completed without running code");
+    Check(boundResult!.Architecture?.Sha256 == architectureSha &&
+          boundResult.Architecture.Choices.Count == 2 &&
+          boundResult.Events.Any(e => e.Kind == "ArchitectureBound"),
+        "source job persists immutable architecture options, hash and event");
+    Check(boundModel.PlanInput.Contains("Static HTML and JavaScript") &&
+          boundModel.PlanInput.Contains("Small event modules") &&
+          boundModel.WriteInput.Contains("Static HTML and JavaScript") &&
+          boundModel.WriteInput.Contains(architectureSha),
+        "both plan and write model prompts consume exact owner selections");
+    using (var archive = await client.GetAsync(
+        boundPath + "/" + boundDraftId + "/zip"))
+        Check(archive.StatusCode == HttpStatusCode.OK,
+            "architecture-bound ZIP remains source-only downloadable output");
+
+    // Independent static profile policy rejects model hallucination of C#
+    // even after owner approved a browser-only project.
+    boundModel.ReturnWrongStack = true;
+    string rejectedId;
+    using (var badBuild = await Post(client, boundPath, new {
+        specificationVersion = specBound.Version,
+        specificationSha256 = specBound.Sha256,
+        architectureSha256 = architectureSha
+    }))
+    using (var body = await Body(badBuild))
+        rejectedId = body.RootElement.GetProperty("id").GetString()!;
+    ProjectDraftSnapshot? rejected = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        rejected = new ProjectDraftStore(tasks).Get(taskBound.Id, rejectedId);
+        if (rejected.Job.State != "Running") break;
+        await Task.Delay(25);
+    }
+    Check(rejected?.Job.State == "Failed" &&
+          rejected.Job.ErrorCode == "ARCHITECTURE_PLAN_CONFLICT" &&
+          rejected.Files.Count == 0,
+        "static-web selection rejects C# source plan without writing any files");
+
+    // Changing a decision after job admission invalidates file writes and
+    // terminal success *inside the same database transaction*.
+    var boundStore = new ProjectDraftStore(tasks);
+    var changedJob = boundStore.Start(taskBound.Id,
+        specBound.Version, specBound.Sha256, specBound.Model, architectureSha);
+    _ = decisionStore.Propose(taskBound.Id, new ProposeArchitectureDecisionRequest(
+        1, specBound.Version, specBound.Sha256, "technology-stack", "static",
+        "Revisit stack after the initial approval.", [
+            new("static", "Static HTML and JavaScript",
+                "Offline", "Manual DOM", "static-web"),
+            new("react", "React and TypeScript",
+                "Components", "Build tooling", null)
+        ], 1));
+    try
+    {
+        boundStore.SaveFile(taskBound.Id, changedJob.Id,
+            new PlannedProjectFile("index.html", "Offline timer entry point"),
+            "<html><body>Timer</body></html>");
+        Check(false, "stale architecture must not save output");
+    }
+    catch (StoreFailure error) when (error.Code == "ARCHITECTURE_CONFLICT")
+    {
+        Check(true, "decision change invalidates transactional file persistence");
+    }
+    boundStore.Finish(taskBound.Id, changedJob.Id, true, null);
+    Check(boundStore.Get(taskBound.Id, changedJob.Id).Job.State == "Failed" &&
+          boundStore.Get(taskBound.Id, changedJob.Id).Job.ErrorCode ==
+            "ARCHITECTURE_CONFLICT",
+        "stale decision cannot be reported as generated successfully");
+    using (var unready = await client.GetAsync(architecturePath))
+    using (var body = await Body(unready))
+        Check(body.RootElement.GetProperty("status").GetString() == "INCOMPLETE",
+            "revised architecture requires a fresh explicit owner approval");
+
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
 finally
@@ -411,5 +602,36 @@ sealed class Phase2Advisor : IArchitectureAdvisor
                 new("clean-layers", "Layered structure",
                     "Stricter dependencies", "More files and boilerplate", null)
             }));
+    }
+}
+
+
+sealed class Phase2DraftModel : IProjectDraftModel
+{
+    public bool ReturnWrongStack { get; set; }
+    public string PlanInput { get; private set; } = "";
+    public string WriteInput { get; private set; } = "";
+
+    public Task<IReadOnlyList<PlannedProjectFile>> PlanAsync(
+        string objective, string approvedSpecification, string model,
+        CancellationToken cancellation)
+    {
+        PlanInput = approvedSpecification;
+        if (ReturnWrongStack)
+            return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
+                [new PlannedProjectFile("Program.cs", "Unexpected .NET project")]);
+        return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
+            [new PlannedProjectFile("index.html", "Offline timer interface"),
+             new PlannedProjectFile("app.js", "Keyboard and mouse handlers")]);
+    }
+
+    public Task<string> WriteAsync(string objective, string approvedSpecification,
+        string model, PlannedProjectFile file, IReadOnlyList<ProjectDraftFile> previous,
+        CancellationToken cancellation)
+    {
+        WriteInput = approvedSpecification;
+        return Task.FromResult(file.Path == "index.html"
+            ? "<!DOCTYPE html><html><body><button id=\"start\">Start</button><script src=\"app.js\"></script></body></html>"
+            : "document.getElementById('start').addEventListener('click', () => {});");
     }
 }

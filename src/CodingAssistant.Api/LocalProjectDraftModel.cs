@@ -26,6 +26,11 @@ public sealed class LocalProjectDraftModel : IStreamingProjectDraftModel
             text source/project files for an initial working draft. Pick paths
             and technologies appropriate to the actual specification, NEVER
             use a hard-coded C# repair fixture or welcome-page template.
+            If the input includes an OWNER-APPROVED ARCHITECTURE BINDING,
+            its selected stack and design choices are mandatory planning
+            constraints; they outrank unapproved technical assumptions
+            elsewhere in the product specification. Do not substitute
+            an unselected platform, framework, or architecture style.
             Return ONLY a JSON object with this exact shape:
             {"files":[{"path":"relative/source.ext","purpose":"why this file is required"}]}
             Paths must be relative, plain ASCII, no leading dot, no parent
@@ -89,8 +94,11 @@ public sealed class LocalProjectDraftModel : IStreamingProjectDraftModel
             no shell commands, no Markdown code fence, no placeholders,
             no TODO-only stubs and no invented verification claims. The
             generated output is an UNTRUSTED DRAFT that will not be
-            executed or compiled by this workflow. Keep it below 15000
-            characters and make it internally consistent with earlier files.
+            executed or compiled by this workflow. If OWNER-APPROVED
+            ARCHITECTURE BINDING appears in the input, strictly use the
+            selected technical choices; do not silently choose your own.
+            Keep it below 15000 characters and make it internally
+            consistent with earlier files.
             """;
         var prompt = "PROJECT OBJECTIVE:\n" + objective +
                      "\n\nAPPROVED SPECIFICATION:\n" + approvedSpecification +

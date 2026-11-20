@@ -21,9 +21,10 @@ public sealed record ProjectDraftJob(
     string CreatedUtc, string UpdatedUtc);
 public sealed record ProjectDraftSnapshot(
     ProjectDraftJob Job, IReadOnlyList<ProjectDraftEvent> Events,
-    IReadOnlyList<ProjectDraftFile> Files);
+    IReadOnlyList<ProjectDraftFile> Files,
+    DraftArchitectureContract? Architecture = null);
 public sealed record StartProjectDraftRequest(int SpecificationVersion,
-                                              string? SpecificationSha256);
+    string? SpecificationSha256, string? ArchitectureSha256 = null);
 
 public interface IProjectDraftModel
 {
@@ -67,7 +68,7 @@ public sealed class ProjectDraftStore(TaskStore tasks)
     {
         "BuildAccepted", "ModelPlanning", "PlanAccepted",
         "FileStarted", "FileSaved", "StaticChecking", "ModelOutputReceived",
-        "DraftGenerated", "DraftFailed", "DraftInterrupted"
+        "DraftGenerated", "DraftFailed", "DraftInterrupted", "ArchitectureBound"
     };
     public const int MaxFiles = 5;
     public const int MaxFileCharacters = 16000;
@@ -101,6 +102,11 @@ public sealed class ProjectDraftStore(TaskStore tasks)
                 detail TEXT NOT NULL,
                 created_utc TEXT NOT NULL,
                 PRIMARY KEY(draft_id,sequence)
+            );
+            CREATE TABLE IF NOT EXISTS project_draft_architecture (
+                draft_id TEXT PRIMARY KEY NOT NULL REFERENCES project_drafts(id),
+                contract_sha256 TEXT NOT NULL,
+                contract_json TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS project_draft_files (
                 draft_id TEXT NOT NULL REFERENCES project_drafts(id),
@@ -195,7 +201,8 @@ public sealed class ProjectDraftStore(TaskStore tasks)
     }
 
     public ProjectDraftJob Start(
-        string taskId, int specVersion, string specSha, string model)
+        string taskId, int specVersion, string specSha, string model,
+        string? architectureSha256 = null)
     {
         ValidateId(taskId);
         if (specVersion < 1 || specSha is null || !Sha.IsMatch(specSha) ||
@@ -212,6 +219,12 @@ public sealed class ProjectDraftStore(TaskStore tasks)
             if (approved != specSha)
                 throw new StoreFailure("SPECIFICATION_CONFLICT");
         }
+        // Architecture capture and job admission share one SQLite transaction.
+        // Any proposal/review concurrent with this transaction is serialized.
+        var architecture = DraftArchitecturePolicy.Capture(
+            db, tx, taskId, specVersion, specSha);
+        if (architecture?.Sha256 != architectureSha256)
+            throw new StoreFailure("ARCHITECTURE_CONFLICT");
         var now = DateTimeOffset.UtcNow.ToString("O");
         var id = Guid.NewGuid().ToString("N");
         try
@@ -232,8 +245,28 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         TaskStore.Execute(db, tx, """
             INSERT INTO project_draft_events(
                 draft_id,sequence,kind,detail,created_utc)
-            VALUES(@id,1,'BuildAccepted','Approved spec received; no code execution',@utc)
-            """, ("@id", id), ("@utc", now));
+            VALUES(@id,1,'BuildAccepted',@detail,@utc)
+            """, ("@id", id), ("@detail",
+                architecture is null
+                    ? "Legacy spec-only draft; no architecture decisions approved"
+                    : "Approved spec and architecture bound; no code execution"),
+            ("@utc", now));
+        if (architecture is not null)
+        {
+            TaskStore.Execute(db, tx, """
+                INSERT INTO project_draft_architecture(
+                    draft_id,contract_sha256,contract_json)
+                VALUES(@id,@hash,@json)
+                """, ("@id", id), ("@hash", architecture.Sha256),
+                ("@json", JsonSerializer.Serialize(architecture)));
+            TaskStore.Execute(db, tx, """
+                INSERT INTO project_draft_events(
+                    draft_id,sequence,kind,detail,created_utc)
+                VALUES(@id,2,'ArchitectureBound',@detail,@utc)
+                """, ("@id", id),
+                ("@detail", "Owner-approved architecture SHA-256 " + architecture.Sha256),
+                ("@utc", now));
+        }
         tx.Commit();
         return Get(taskId, id).Job;
     }
@@ -244,16 +277,24 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         // This check runs in the SAME SQLite transaction as file persistence
         // and final completion. A revised interview invalidates the build;
         // previously approved text cannot be silently resurrected.
-        using var cmd = TaskStore.Command(db, tx, """
+        using (var cmd = TaskStore.Command(db, tx, """
             SELECT version,sha256,status FROM interview_specs
             WHERE task_id=@task ORDER BY version DESC LIMIT 1
-            """, ("@task", job.TaskId));
-        using var reader = cmd.ExecuteReader();
-        if (!reader.Read() ||
-            reader.GetInt32(0) != job.SpecificationVersion ||
-            reader.GetString(1) != job.SpecificationSha256 ||
-            reader.GetString(2) != "Approved")
-            throw new StoreFailure("SPECIFICATION_CONFLICT");
+            """, ("@task", job.TaskId)))
+        using (var reader = cmd.ExecuteReader())
+        {
+            if (!reader.Read() ||
+                reader.GetInt32(0) != job.SpecificationVersion ||
+                reader.GetString(1) != job.SpecificationSha256 ||
+                reader.GetString(2) != "Approved")
+                throw new StoreFailure("SPECIFICATION_CONFLICT");
+        }
+        var hash = TaskStore.Scalar(db, tx, """
+            SELECT contract_sha256 FROM project_draft_architecture
+            WHERE draft_id=@id
+            """, ("@id", job.Id));
+        DraftArchitecturePolicy.AssertCurrent(db, tx, job.TaskId,
+            job.SpecificationVersion, job.SpecificationSha256, hash);
     }
 
     private static ProjectDraftJob ReadJob(SqliteDataReader reader) =>
@@ -272,6 +313,37 @@ public sealed class ProjectDraftStore(TaskStore tasks)
             """, ("@task", taskId), ("@id", id));
         using var reader = cmd.ExecuteReader();
         return reader.Read() ? ReadJob(reader) : null;
+    }
+
+    private static DraftArchitectureContract? ReadArchitecture(
+        SqliteConnection db, SqliteTransaction? tx, string draftId)
+    {
+        var json = TaskStore.Scalar(db, tx, """
+            SELECT contract_json FROM project_draft_architecture
+            WHERE draft_id=@id
+            """, ("@id", draftId));
+        return json is null
+            ? null : JsonSerializer.Deserialize<DraftArchitectureContract>(json);
+    }
+
+    public DraftArchitectureContract? GetArchitecture(string taskId, string id)
+    {
+        ValidateId(taskId);
+        ValidateId(id);
+        using var db = tasks.Open();
+        _ = Find(db, null, taskId, id) ?? throw new StoreFailure("NOT_FOUND");
+        return ReadArchitecture(db, null, id);
+    }
+
+    public void RequireCurrentArchitecture(string taskId, string id)
+    {
+        ValidateId(taskId);
+        ValidateId(id);
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var job = Find(db, tx, taskId, id) ?? throw new StoreFailure("NOT_FOUND");
+        RequireApprovedSpec(db, tx, job);
+        tx.Commit();
     }
 
     public ProjectDraftSnapshot? Latest(string taskId)
@@ -315,7 +387,8 @@ public sealed class ProjectDraftStore(TaskStore tasks)
                     reader.GetString(0), reader.GetString(1),
                     reader.GetString(2), reader.GetString(3),
                     reader.GetString(4)));
-        return new ProjectDraftSnapshot(job, events, files);
+        return new ProjectDraftSnapshot(job, events, files,
+            ReadArchitecture(db, null, id));
     }
 
     public void Note(string taskId, string id, string kind, string detail)
@@ -396,12 +469,13 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         if (finalState == "Generated")
         {
             try { RequireApprovedSpec(db, tx, job); }
-            catch (StoreFailure error) when (error.Code == "SPECIFICATION_CONFLICT")
+            catch (StoreFailure error) when (error.Code is
+                "SPECIFICATION_CONFLICT" or "ARCHITECTURE_CONFLICT")
             {
                 finalState = "Failed";
                 kind = "DraftFailed";
-                detail = "Specification changed; stale output is not a completed build";
-                reason = "SPECIFICATION_CONFLICT";
+                detail = "Approved inputs changed; stale output is not a completed build";
+                reason = error.Code;
             }
         }
         var now = DateTimeOffset.UtcNow.ToString("O");
@@ -436,6 +510,8 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireApprovedSpec(db, tx, job);
+        DraftArchitecturePolicy.ValidateSourcePath(
+            ReadArchitecture(db, tx, id), path);
         var files = TaskStore.Scalar(db, tx, """
             SELECT COUNT(*) FROM project_draft_files WHERE draft_id=@id
             """, ("@id", id));

@@ -25,7 +25,8 @@ public sealed class ProjectDraftCoordinator(
             request.SpecificationSha256 != spec.Sha256)
             throw new StoreFailure("SPECIFICATION_CONFLICT");
         var task = tasks.GetTask(taskId).Task;
-        var job = store.Start(taskId, spec.Version, spec.Sha256, spec.Model);
+        var job = store.Start(taskId, spec.Version, spec.Sha256, spec.Model,
+            request.ArchitectureSha256);
         var stop = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = stop;
@@ -42,6 +43,7 @@ public sealed class ProjectDraftCoordinator(
             latest.Version != job.SpecificationVersion ||
             latest.Sha256 != job.SpecificationSha256)
             throw new StoreFailure("SPECIFICATION_CONFLICT");
+        store.RequireCurrentArchitecture(taskId, job.Id);
     }
 
     private async Task GenerateAsync(
@@ -52,17 +54,23 @@ public sealed class ProjectDraftCoordinator(
         {
             var token = stop.Token;
             RequireCurrentApproval(task.Id, job);
+            var bound = store.GetArchitecture(task.Id, job.Id);
+            var sourceSpecification = bound is null
+                ? spec.Content
+                : spec.Content + "\n\n" +
+                  DraftArchitecturePolicy.AsModelInstructions(bound);
             store.Note(task.Id, job.Id, "ModelPlanning",
                 "Asking local " + spec.Model + " to choose project files");
             var planOutput = model is IStreamingProjectDraftModel streamingPlan
                 ? await streamingPlan.PlanWithProgressAsync(
-                    task.Objective, spec.Content, spec.Model,
+                    task.Objective, sourceSpecification, spec.Model,
                     () => {
                         store.NoteModelProgress(task.Id, job.Id);
                         return Task.CompletedTask;
                     }, token)
-                : await model.PlanAsync(task.Objective, spec.Content, spec.Model, token);
+                : await model.PlanAsync(task.Objective, sourceSpecification, spec.Model, token);
             var plan = ProjectDraftStore.ValidatePlan(planOutput);
+            DraftArchitecturePolicy.ValidatePlannedFiles(bound, plan);
             token.ThrowIfCancellationRequested();
             RequireCurrentApproval(task.Id, job);
             store.Note(task.Id, job.Id, "PlanAccepted",
@@ -76,13 +84,13 @@ public sealed class ProjectDraftCoordinator(
                 var previous = store.Get(task.Id, job.Id).Files;
                 var content = model is IStreamingProjectDraftModel streamingWrite
                     ? await streamingWrite.WriteWithProgressAsync(
-                        task.Objective, spec.Content, spec.Model, file, previous,
+                        task.Objective, sourceSpecification, spec.Model, file, previous,
                         () => {
                             store.NoteModelProgress(task.Id, job.Id);
                             return Task.CompletedTask;
                         }, token)
                     : await model.WriteAsync(
-                        task.Objective, spec.Content, spec.Model, file, previous, token);
+                        task.Objective, sourceSpecification, spec.Model, file, previous, token);
                 token.ThrowIfCancellationRequested();
                 RequireCurrentApproval(task.Id, job);
                 store.SaveFile(task.Id, job.Id, file, content);
