@@ -57,7 +57,7 @@ CONFIG = CONTEXT / "coding-config.json"
 LAUNCHER = CONTEXT / "coding-runner.mjs"
 PLUGIN = CONTEXT / "coding-plugin"
 SOURCES = (CONTAINERFILE, CONFIG, LAUNCHER, PLUGIN / "index.mjs",
-           PLUGIN / "safe-failure.mjs",
+           PLUGIN / "safe-failure.mjs", PLUGIN / "task-contract.mjs",
            PLUGIN / "openclaw.plugin.json", PLUGIN / "package.json",
            ROOT / "tools/m1/run_ledger.py", pathlib.Path(__file__).resolve())
 IMAGE_TAG = "localhost/codingassistant-m112-approved-coding:2026.11.5"
@@ -343,12 +343,30 @@ def broker_for(model: str, digest: str, state: dict[str, int]) -> type[BridgeHan
 
 def container_command(image_id: str, name: str, env: pathlib.Path,
                       workspace: pathlib.Path, socket_dir: pathlib.Path, *,
-                      managed_run_id: str | None = None) -> list[str]:
+                      managed_run_id: str | None = None,
+                      task_contract_dir: pathlib.Path | None = None,
+                      task_contract_sha256: str | None = None) -> list[str]:
     if (HEX64.fullmatch(image_id) is None or workspace.is_symlink() or
             not workspace.is_dir() or socket_dir.is_symlink() or
             not (socket_dir / "ollama.sock").exists()):
         raise ValueError("Invalid pinned image, worktree or IPC mount")
+    if (task_contract_dir is None) != (task_contract_sha256 is None):
+        raise ValueError("Incomplete task-specific mount binding")
+    if task_contract_dir is not None:
+        source = task_contract_dir / "task.json"
+        if (HEX64.fullmatch(task_contract_sha256) is None or
+                task_contract_dir.is_symlink() or
+                not task_contract_dir.is_dir() or source.is_symlink() or
+                not source.is_file() or source.stat().st_nlink != 1 or
+                source.stat().st_size > 24576 or
+                hashlib.sha256(source.read_bytes()).hexdigest() != task_contract_sha256):
+            raise ValueError("Invalid task-specific contract provenance")
     args = ephemeral_gateway(image_id, name, env)
+    if task_contract_dir is not None:
+        pos = args.index(image_id)
+        args[pos:pos] = [
+            "--volume", str(task_contract_dir.resolve()) +
+            ":/run/codingassistant-task:ro,nosuid,nodev"]
     if managed_run_id is not None:
         if name != managed_container(managed_run_id):
             raise ValueError("Managed container identity mismatch")
@@ -495,7 +513,8 @@ def trace_stage(stage: str) -> None:
 
 def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
                 plan_hash: str, evidence: dict[str, object] | None = None, *,
-                journal=None) -> dict[str, object]:
+                journal=None, task_contract_dir: pathlib.Path | None = None,
+                task_contract_sha256: str | None = None) -> dict[str, object]:
     name = journal.container_name() if journal else (
         "ca-m17-acpx-" + secrets.token_hex(6))
     status = evidence if evidence is not None else {}
@@ -510,6 +529,11 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
         with os.fdopen(descriptor, "w", encoding="utf-8") as out:
             out.write("OPENCLAW_GATEWAY_TOKEN=" + secrets.token_hex(32) + "\n")
             out.write("CA_M112_PLAN_HASH=" + plan_hash + "\n")
+            if task_contract_sha256 is not None:
+                if HEX64.fullmatch(task_contract_sha256) is None:
+                    raise ValueError("Invalid task contract hash")
+                out.write("CA_M1_TASK_CONTRACT_SHA256=" +
+                          task_contract_sha256 + "\n")
             out.write("OPENCLAW_SKIP_CHANNELS=1\n")
             out.write("OPENCLAW_SKIP_CANVAS_HOST=1\n")
         try:
@@ -519,7 +543,9 @@ def run_gateway(image: str, worktree: pathlib.Path, socket_dir: pathlib.Path,
                 journal.advance("RUNNING", container_name=name)
             result = fixed(container_command(
                 image, name, env, worktree, socket_dir,
-                **({"managed_run_id": journal.run_id} if journal else {})),
+                **({"managed_run_id": journal.run_id} if journal else {}),
+                task_contract_dir=task_contract_dir,
+                task_contract_sha256=task_contract_sha256),
                 timeout=45)
             if result.returncode != 0:
                 raise SafeGateBlocked("GATEWAY_LAUNCH_FAILED")

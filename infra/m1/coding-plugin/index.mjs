@@ -1,7 +1,8 @@
-// M1.12 single-turn Gateway method; never export arbitrary tool or prompt APIs.
-// The only permitted project is the owner's freshly copied frozen C# repair fixture.
+// Single-use Gateway method with exact host-owned task contract admission.
+// Without a read-only contract mount the frozen M1.12 fixture path is unchanged.
 import { getAcpRuntimeBackend } from "openclaw/plugin-sdk/acp-runtime-backend";
 import { classifyAcpSessionFailure } from "./safe-failure.mjs";
+import { loadTaskContract, taskPrompt } from "./task-contract.mjs";
 
 const METHOD = "codingassistant.coding.run";
 const STATUS_METHOD = "codingassistant.coding.status";
@@ -53,6 +54,10 @@ const plugin = {
       let toolCalls = 0;
       let timeoutId;
       try {
+        // The task contract is SHA-bound and read from a host-mounted read-only file.
+        // A malformed or absent required contract fails before the ACP turn.
+        const task = loadTaskContract();
+        const prompt = task ? taskPrompt(task) : PROMPT;
         setPhase("backend_lookup");
         const backend = getAcpRuntimeBackend("acpx");
         runtime = backend?.runtime;
@@ -77,7 +82,7 @@ const plugin = {
         setPhase("turn_start");
         const turn = runtime.startTurn({
           handle,
-          text: PROMPT,
+          text: prompt,
           mode: "prompt",
           requestId: "ca-m112-" + hash.slice(0, 24),
           onElicitation: async () => ({ action: "cancel" }),

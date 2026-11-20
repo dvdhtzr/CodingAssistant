@@ -299,6 +299,25 @@ public static class ApiHost
                 string id, string jobId, ProjectDraftStore drafts) =>
             Safe(() => Results.File(drafts.Zip(id, jobId),
                 "application/zip", "codingassistant-project-draft.zip")));
+        // Read-only preview of the real task-specific agent contract.
+        // Does not authorize a Gateway run or bypass integrated M1 security.
+        app.MapGet("/api/tasks/{id}/agent-contract-preview", (
+                string id, TaskStore tasks, InterviewStore interviews,
+                ProjectDraftStore drafts) =>
+            Safe(() =>
+            {
+                var task = tasks.GetTask(id).Task;
+                var spec = interviews.Read(id).Specification;
+                var draft = drafts.Latest(id);
+                var preview = TaskAgentContract.Preview(task, spec, draft);
+                // A changed current approval cannot survive this preview.
+                var current = interviews.Read(id).Specification;
+                if (current is null || current.Status != "Approved" ||
+                    current.Version != spec!.Version ||
+                    current.Sha256 != spec.Sha256)
+                    throw new StoreFailure("SPECIFICATION_CONFLICT");
+                return Results.Ok(preview);
+            }));
         app.MapPost("/api/tasks/{id}/plans", (
                 string id, DraftPlanRequest input, TaskStore db) =>
             Safe(() =>
