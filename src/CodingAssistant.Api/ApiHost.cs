@@ -37,7 +37,8 @@ public static class ApiHost
         string[] args, ApiSettings? settings = null,
         IM1ExecutionRunner? runnerOverride = null,
         IHtmlPreviewGenerator? htmlGeneratorOverride = null,
-        IInterviewModel? interviewModelOverride = null)
+        IInterviewModel? interviewModelOverride = null,
+        IProjectDraftModel? projectDraftModelOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -110,7 +111,8 @@ public static class ApiHost
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(projectDrafts);
-        builder.Services.AddSingleton<IProjectDraftModel>(new LocalProjectDraftModel());
+        builder.Services.AddSingleton<IProjectDraftModel>(
+            projectDraftModelOverride ?? new LocalProjectDraftModel());
         builder.Services.AddSingleton<ProjectDraftCoordinator>();
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton(htmlArtifacts);
