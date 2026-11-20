@@ -78,6 +78,9 @@ class ApiClient:
     def __init__(self, port: int, token: str):
         self.origin = f"http://127.0.0.1:{port}"
         self.token = token
+        # Even if the operator has HTTP_PROXY configured, the owner bearer
+        # must never be sent to a proxy; this client is loopback-only.
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def call(self, method: str, path: str, body: dict | None = None,
              timeout: int = 40) -> dict | list:
@@ -91,7 +94,7 @@ class ApiClient:
                 "Content-Type": "application/json",
             })
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with self.opener.open(request, timeout=timeout) as response:
                 if response.status not in (200, 201, 202):
                     raise AcceptanceBlocked("Unexpected local API response category")
                 raw = response.read(120_000)
