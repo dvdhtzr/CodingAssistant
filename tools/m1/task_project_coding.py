@@ -17,7 +17,9 @@ import os
 import pathlib
 import re
 import shutil
+import sqlite3
 import stat
+import urllib.parse
 import subprocess
 import sys
 import tempfile
@@ -129,6 +131,62 @@ def read_contract(path: pathlib.Path) -> tuple[dict, bytes, str]:
     if not projects or any(not name.endswith((".cs", ".csproj")) for name in names):
         raise ValueError("Pilot requires an offline .NET source-file plan")
     return value, data, sha(data)
+
+
+def default_database() -> pathlib.Path:
+    selected = os.environ.get("CODINGASSISTANT_DATA_DIR")
+    if selected:
+        return pathlib.Path(selected) / "codingassistant.db"
+    local = os.environ.get("XDG_DATA_HOME")
+    return pathlib.Path(local or pathlib.Path.home() / ".local" / "share") / (
+        "CodingAssistant/codingassistant.db")
+
+
+def verify_live_approval(path: pathlib.Path, contract: dict) -> None:
+    """No revoked/stale interview or obsolete file plan can admit the agent.
+
+    SQLite is the authoritative current state; a matching content/hash alone
+    is NOT sufficient after a later specification revision.
+    """
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Private local task database unavailable")
+    info = path.stat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+            info.st_uid != os.getuid() or info.st_mode & 0o077):
+        raise ValueError("Task database must be owned and private")
+    uri = "file:" + urllib.parse.quote(str(path.resolve())) + "?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True, timeout=5) as db:
+            task = db.execute(
+                "SELECT objective FROM tasks WHERE id=?",
+                (contract["taskId"],)).fetchone()
+            spec = db.execute("""
+                SELECT version,sha256,model,content,status
+                  FROM interview_specs WHERE task_id=?
+                  ORDER BY version DESC LIMIT 1
+            """, (contract["taskId"],)).fetchone()
+            job = db.execute("""
+                SELECT id,spec_version,spec_sha256,model,state
+                  FROM project_drafts WHERE task_id=?
+                  ORDER BY created_utc DESC,id DESC LIMIT 1
+            """, (contract["taskId"],)).fetchone()
+            if (task is None or task[0] != contract["objective"] or
+                spec is None or spec != (
+                    contract["specificationVersion"],
+                    contract["approvedSpecificationSha256"],
+                    contract["model"], contract["specification"], "Approved") or
+                job is None or job[1:] != (
+                    contract["specificationVersion"],
+                    contract["approvedSpecificationSha256"],
+                    contract["model"], "Generated")):
+                raise ValueError("Task approval or planned file scope has changed")
+            paths = db.execute(
+                "SELECT path FROM project_draft_files WHERE draft_id=?",
+                (job[0],)).fetchall()
+            if sorted(path[0] for path in paths) != sorted(contract["files"]):
+                raise ValueError("Planned project paths have changed")
+    except sqlite3.Error:
+        raise ValueError("Current owner approval could not be verified") from None
 
 
 def execution_plan(contract: dict, digest: str, image: str,
@@ -280,10 +338,11 @@ def save_project(workspace: pathlib.Path, hashes: dict[str, str],
 
 
 def run(contract_path: pathlib.Path, request_id: str | None, *,
-        prepare: bool = False) -> int:
+        database: pathlib.Path, prepare: bool = False) -> int:
     if sys.platform != "linux" or os.geteuid() == 0:
         raise ValueError("Pilot requires Linux rootless Podman")
     contract, raw, contract_sha = read_contract(contract_path)
+    verify_live_approval(database, contract)
     _, _, image, model_digest, evaluator, _ = preflight(prepare=prepare)
     plan, plan_sha = execution_plan(
         contract, contract_sha, image, model_digest, evaluator)
@@ -316,6 +375,9 @@ def run(contract_path: pathlib.Path, request_id: str | None, *,
                 journal.advance("DECLINED", result_code="NOT_APPROVED")
                 print("PILOT NOT_APPROVED; no agent executed")
                 return 2
+            # Owner approval is unusable if the live specification changed
+            # during preflight/confirmation.
+            verify_live_approval(database, contract)
             journal.advance("APPROVED")
             with tempfile.TemporaryDirectory(prefix="ca-task-agent-") as temporary:
                 root = pathlib.Path(temporary)
@@ -364,6 +426,7 @@ def run(contract_path: pathlib.Path, request_id: str | None, *,
                 artifact_name = "task-output-" + journal.run_id + ".zip"
                 save_project(workspace, before, PRIVATE_LEDGER / artifact_name)
                 report["artifact"] = artifact_name
+                verify_live_approval(database, contract)
                 if evaluation["build_passed"] and evaluation["tests_passed"]:
                     report["status"] = "TASK_PROJECT_VERIFIED"
                     report["phase"] = "complete"
@@ -399,6 +462,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--contract", required=True, type=pathlib.Path,
                         help="Owner-private exact JSON bytes from API agent-contract-preview")
+    parser.add_argument("--database", type=pathlib.Path, default=default_database(),
+                        help="Current owner-private CodingAssistant SQLite database")
     parser.add_argument("--request-id",
                         help="Optional 32 lowercase hex idempotency key")
     parser.add_argument("--prepare", action="store_true",
@@ -407,7 +472,8 @@ def main() -> int:
     if args.request_id is not None and not re.fullmatch(r"[0-9a-f]{32}", args.request_id):
         parser.error("Invalid idempotency key")
     try:
-        return run(args.contract, args.request_id, prepare=args.prepare)
+        return run(args.contract, args.request_id, database=args.database,
+                   prepare=args.prepare)
     except (OSError, RuntimeError, ValueError, TypeError,
             subprocess.TimeoutExpired) as error:
         print("PILOT BLOCKED:", type(error).__name__)
