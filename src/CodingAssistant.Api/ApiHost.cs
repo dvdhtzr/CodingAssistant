@@ -65,7 +65,18 @@ public static class ApiHost
                                   Directory.GetCurrentDirectory())
             : new DisabledM1Runner());
         var expected = Convert.FromHexString(settings.OwnerToken);
-        var builder = WebApplication.CreateBuilder(args);
+        // Web root must be selected BEFORE WebApplicationBuilder is created.
+        // The deployed API uses assets next to the binary; repository smoke
+        // tests may use Vite's generated source-tree output instead.
+        var packagedWeb = Path.Combine(AppContext.BaseDirectory, "wwwroot");
+        var repositoryWeb = Path.Combine(Directory.GetCurrentDirectory(),
+            "src", "CodingAssistant.Api", "wwwroot");
+        var webRoot = Directory.Exists(packagedWeb) ? packagedWeb :
+            Directory.Exists(repositoryWeb) ? repositoryWeb : null;
+        var builder = webRoot is null
+            ? WebApplication.CreateBuilder(args)
+            : WebApplication.CreateBuilder(new WebApplicationOptions
+                { Args = args, WebRootPath = webRoot });
         builder.WebHost.UseUrls(settings.BindUrl);
         builder.WebHost.ConfigureKestrel(options =>
         {
@@ -84,17 +95,6 @@ public static class ApiHost
             options.MaximumParallelInvocationsPerClient = 2;
         });
         builder.Services.AddSingleton<RunNotifier>();
-
-        // The published self-contained API ships its own compiled, same-origin
-        // React assets. During repo smoke checks Vite writes to API/wwwroot.
-        // Never serve arbitrary owner directories or accept a path from HTTP.
-        var packagedWeb = Path.Combine(AppContext.BaseDirectory, "wwwroot");
-        var repositoryWeb = Path.Combine(Directory.GetCurrentDirectory(),
-            "src", "CodingAssistant.Api", "wwwroot");
-        if (Directory.Exists(packagedWeb))
-            builder.WebHost.UseWebRoot(packagedWeb);
-        else if (Directory.Exists(repositoryWeb))
-            builder.WebHost.UseWebRoot(repositoryWeb);
 
         var app = builder.Build();
         app.Use(async (context, next) =>
