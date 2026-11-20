@@ -219,7 +219,7 @@ export function InterviewStudio({ token, task }: {
         </div>}
       </div>
 
-      <ProjectDraftPanel token={token} taskId={task.id} spec={spec} />
+      <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null} />
     </>}
   </section>;
 }
