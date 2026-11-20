@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 
@@ -317,6 +318,30 @@ public static class ApiHost
                     current.Sha256 != spec.Sha256)
                     throw new StoreFailure("SPECIFICATION_CONFLICT");
                 return Results.Ok(preview);
+            }));
+        // Download the EXACT bytes checked by the task pilot. This is
+        // planning-only export, not consent to run the agent.
+        app.MapGet("/api/tasks/{id}/agent-contract-preview/json", (
+                string id, TaskStore tasks, InterviewStore interviews,
+                ProjectDraftStore drafts) =>
+            Safe(() =>
+            {
+                var task = tasks.GetTask(id).Task;
+                var spec = interviews.Read(id).Specification;
+                var preview = TaskAgentContract.Preview(
+                    task, spec, drafts.Latest(id));
+                var bytes = Encoding.UTF8.GetBytes(preview.Contract.GetRawText());
+                var hash = Convert.ToHexString(SHA256.HashData(bytes))
+                    .ToLowerInvariant();
+                if (hash != preview.ContractSha256)
+                    throw new StoreFailure("SPECIFICATION_CONFLICT");
+                var current = interviews.Read(id).Specification;
+                if (current is null || current.Status != "Approved" ||
+                    current.Version != spec!.Version ||
+                    current.Sha256 != spec.Sha256)
+                    throw new StoreFailure("SPECIFICATION_CONFLICT");
+                return Results.File(bytes, "application/json",
+                    "codingassistant-agent-contract.json");
             }));
         app.MapPost("/api/tasks/{id}/plans", (
                 string id, DraftPlanRequest input, TaskStore db) =>
