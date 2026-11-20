@@ -1075,3 +1075,48 @@ strict idempotency, live locks, orphan cleanup and foreign-label refusal.
 These tests are NOT live Dell crash/restart or hostile-operation proofs.
 M1.12 remains GREEN on Dell; overall M1 remains YELLOW until actual
 restart/reconciliation and integrated security acceptance are observed.
+
+## M1.14 — controlled real Podman orphan recovery (Dell acceptance pending)
+
+After the 13/13 successful Dell M1.13 SQLite unit tests, its private
+run history was empty (expected: historical M1.12 evidence is not
+backfilled). The next risk is whether actual rootless Podman and
+SQLite OS locks behave correctly when the host coordinator crashes.
+
+The opt-in tools/m1/real_recovery_probe.py uses the already pinned
+M1.7 image and rootless Podman. It starts exactly ONE long-lived
+INERT Node guest with no bind mounts, no published ports, no
+network, read-only root, non-root identity, no capabilities,
+no-new-privileges, PID/CPU/memory caps and disposable tmpfs.
+No coding task, ACP session, model inference, real approval or
+arbitrary file modification occurs. A synthetic test-only plan hash
+is written to a completely separate, owner-private temporary ledger;
+the production M1.13 ledger is neither mutated nor read.
+
+While the test coordinator holds the live exclusive run lock,
+the parent invokes REAL RunLedger.reconcile and requires ACTIVE
+while the named guest remains running. The parent then instructs
+ONLY that disposable coordinator to terminate abruptly via
+os._exit(73), leaving a real detached container and durable RUNNING
+record. The parent requires that the recovered state be
+INTERRUPTED_CLEAN (never SUCCEEDED), that Podman verified the exact
+run-ID label before removing the guest, and that the guest is
+absent afterward. Reconciliation repeated must be read-only and
+the exact idempotency key must be rejected without starting a run.
+The temporary test DB is removed; sanitized fixed-shape evidence
+is recorded under the usual ignored artifacts/m1 directory.
+
+Owner Dell command after Ubuntu/Windows model-free CI and PR merge:
+
+    cd ~/CodingAssistant && git switch main && git pull --ff-only && python3 tools/m1/real_recovery_probe.py
+
+Expected: M1.14 REAL_RECOVERY_PASS, with live-owner protection,
+verified label, hard-exit, orphan state, cleanup and duplicate-request
+denial all true. Failure is BLOCKED, never a falsely GREEN outcome;
+the probe attempts safe label-verified cleanup even on failure.
+
+Scope: this is a REAL rootless Podman/SQLite crash-and-recovery test
+for a fixed inert guest, NOT an interruption of a live Qwen coding
+turn. M1.12 remains GREEN, and overall M1 stays YELLOW until
+actual integrated coding interruption/cancellation and adversarial
+security acceptance are demonstrated.
