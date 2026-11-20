@@ -49,7 +49,7 @@ an owner-facing build button wired to this flow. Baseline 1.0 is NOT GREEN.
 
 After PR merge and one-command application update, export the exact
 `contract` object from `/api/tasks/{id}/agent-contract-preview` to a
-private JSON file. **Do not put any bearer token in filenames, Git or URLs.**
+private JSON file. The pilot also rechecks the live approved specification\nand latest file plan in the local private SQLite database before admission\nand again before accepting a final result. By default it uses the conventional\nKubuntu local application data path; use \`--database /absolute/private/path/codingassistant.db\`\nwhen the launcher has been configured with a different data directory.\n**Do not put any bearer token in filenames, Git or URLs.**
 The contract is private because it contains your task and specification.
 
 The owner can then run, from the repository:
