@@ -41,7 +41,8 @@ TRANSITIONS = {
     "RECOVERY_BLOCKED": {"INTERRUPTED_CLEAN"},
 }
 RESULT_CODES = frozenset((
-    "GATEWAY_APPROVED_CODING_PASS", "BLOCKED", "NOT_APPROVED",
+    "GATEWAY_APPROVED_CODING_PASS", "TASK_PROJECT_VERIFIED",
+    "BLOCKED", "NOT_APPROVED",
     "RECOVERED_ORPHAN", "CLEANUP_UNVERIFIED",
 ))
 
@@ -386,10 +387,11 @@ class RunHandle:
         prior = self.ledger.get(self.run_id)["state"]
         if prior in TERMINAL:
             return prior
-        if report.get("status") == "GATEWAY_APPROVED_CODING_PASS":
+        if report.get("status") in ("GATEWAY_APPROVED_CODING_PASS",
+                                     "TASK_PROJECT_VERIFIED"):
             if prior != "VERIFYING":
                 raise ValueError("Cannot mark success without verified execution phase")
-            target, code = "SUCCEEDED", "GATEWAY_APPROVED_CODING_PASS"
+            target, code = "SUCCEEDED", report["status"]
         elif report.get("status") == "NOT_APPROVED":
             if prior != "DECLINED":
                 raise ValueError("Decline not journaled before completion")
