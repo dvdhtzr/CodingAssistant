@@ -5,7 +5,8 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 namespace CodingAssistant.Api;
 
 public sealed record ApiSettings(
-    string DataDirectory, string OwnerToken, string BindUrl)
+    string DataDirectory, string OwnerToken, string BindUrl,
+    bool EnableLocalExecution = false, string? RepositoryRoot = null)
 {
     public static ApiSettings FromEnvironment()
     {
@@ -21,7 +22,9 @@ public sealed record ApiSettings(
         var rawPort = Environment.GetEnvironmentVariable("CODINGASSISTANT_PORT") ?? "5098";
         if (!int.TryParse(rawPort, out var port) || port is < 1024 or > 65535)
             throw new InvalidOperationException("Invalid local-only HTTP port");
-        return new ApiSettings(directory, token ?? "", $"http://127.0.0.1:{port}");
+        return new ApiSettings(directory, token ?? "", $"http://127.0.0.1:{port}",
+            Environment.GetEnvironmentVariable("CODINGASSISTANT_ENABLE_LOCAL_EXECUTION") == "1",
+            Environment.GetEnvironmentVariable("CODINGASSISTANT_REPOSITORY_ROOT"));
     }
 }
 
@@ -30,7 +33,9 @@ public static class ApiHost
     private static readonly Regex OwnerTokenPattern =
         new("^[0-9a-f]{64}\\z", RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    public static WebApplication Build(string[] args, ApiSettings? settings = null)
+    public static WebApplication Build(
+        string[] args, ApiSettings? settings = null,
+        IM1ExecutionRunner? runnerOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -50,6 +55,15 @@ public static class ApiHost
         var store = new TaskStore(settings.DataDirectory);
         var runs = new RunStore(store);
         runs.Initialize();
+        var executions = new ExecutionStore(store);
+        executions.Initialize();
+        executions.MarkUnreconciledOnStartup();
+        var enabled = settings.EnableLocalExecution &&
+            (runnerOverride is not null || OperatingSystem.IsLinux());
+        var runner = runnerOverride ?? (enabled
+            ? new M1ProcessRunner(settings.RepositoryRoot ??
+                                  Directory.GetCurrentDirectory())
+            : new DisabledM1Runner());
         var expected = Convert.FromHexString(settings.OwnerToken);
         var builder = WebApplication.CreateBuilder(args);
         builder.WebHost.UseUrls(settings.BindUrl);
@@ -60,6 +74,9 @@ public static class ApiHost
         });
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(runs);
+        builder.Services.AddSingleton(executions);
+        builder.Services.AddSingleton<IM1ExecutionRunner>(runner);
+        builder.Services.AddSingleton<ExecutionCoordinator>();
         builder.Services.AddSignalR(options =>
         {
             options.EnableDetailedErrors = false;
@@ -107,11 +124,11 @@ public static class ApiHost
         });
 
         app.MapGet("/healthz", () => Results.Ok(
-            new { status = "ok", executionEnabled = false }));
+            new { status = "ok", executionEnabled = enabled }));
         app.MapGet("/api/status", () => Results.Ok(
             new {
                 phase = "M2-control-plane", model = TaskStore.Model,
-                executionEnabled = false, localOnly = true,
+                executionEnabled = enabled, localOnly = true,
                 plannedRunner = "OpenClaw-ACPX-OpenCode"
             }));
         app.MapGet("/api/tasks", (TaskStore db) =>
@@ -164,12 +181,49 @@ public static class ApiHost
                 return Results.Ok(change.Run);
             }));
 
+        // M2 planning consent cannot start M1. A separate exact M1 plan
+        // must be generated, reviewed, authorized, and explicitly started.
+        app.MapPost("/api/runs/{id}/execution-plan", (
+                string id, ExecutionCoordinator coordinator,
+                CancellationToken cancellation) =>
+            SafeAsync(async () =>
+                Results.Ok(await RequireRunner().PrepareAsync(id, cancellation))));
+        app.MapGet("/api/runs/{id}/execution-plan", (
+                string id, ExecutionStore db) =>
+            Safe(() => Results.Ok(db.Get(id))));
+        app.MapPost("/api/runs/{id}/execution-authorization", (
+                string id, AuthorizeExecutionRequest request,
+                ExecutionCoordinator coordinator) =>
+            SafeAsync(async () =>
+                Results.Ok(await RequireRunner().AuthorizeAsync(id, request))));
+        app.MapPost("/api/runs/{id}/start", (
+                string id, ExecutionCoordinator coordinator) =>
+            SafeAsync(async () =>
+                Results.Accepted($"/api/runs/{id}",
+                    await RequireRunner().StartAsync(id))));
+        app.MapPost("/api/runs/{id}/execution-cancel", (
+                string id, ExecutionCoordinator coordinator) =>
+            SafeAsync(async () =>
+                Results.Ok(await RequireRunner().CancelAsync(id))));
+        app.MapPost("/api/runs/{id}/execution-recover", (
+                string id, ExecutionCoordinator coordinator,
+                CancellationToken cancellation) =>
+            SafeAsync(async () =>
+                Results.Ok(await RequireRunner().RecoverAsync(id, cancellation))));
+
+        ExecutionCoordinator RequireRunner()
+        {
+            if (!enabled)
+                throw new ExecutionUnavailable();
+            return app.Services.GetRequiredService<ExecutionCoordinator>();
+        }
+
         // SignalR uses the exact same authenticated /api HTTP boundary,
         // including WebSocket handshakes. It carries no durable-only state.
         app.MapHub<RunProgressHub>("/api/progress");
 
-        // Intentionally NO /execute endpoint yet: control-plane approval
-        // is not authorization for M1 runner execution or repository mounts.
+        // There is intentionally no arbitrary command, repository, model,
+        // mount or prompt selection endpoint. M1 stays fixed-fixture-only.
         return app;
     }
 
@@ -187,6 +241,10 @@ public static class ApiHost
         {
             return DatabaseUnavailable();
         }
+        catch (ExecutionUnavailable)
+        {
+            return ExecutionDisabled();
+        }
     }
 
     private static async Task<IResult> SafeAsync(Func<Task<IResult>> action)
@@ -203,6 +261,14 @@ public static class ApiHost
         {
             return DatabaseUnavailable();
         }
+        catch (ExecutionUnavailable)
+        {
+            return ExecutionDisabled();
+        }
+        catch (OperationCanceledException)
+        {
+            return ExecutionDisabled();
+        }
     }
 
     private static IResult Rejected(StoreFailure error)
@@ -212,11 +278,16 @@ public static class ApiHost
             "NOT_FOUND" => StatusCodes.Status404NotFound,
             "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
-                "INVALID_STATE" => StatusCodes.Status409Conflict,
+                "INVALID_STATE" or "EXECUTION_BUSY" or
+                "EXECUTION_PLAN_CONFLICT" => StatusCodes.Status409Conflict,
             _ => StatusCodes.Status400BadRequest
         };
         return Results.Json(new { error = error.Code }, statusCode: status);
     }
+
+    private static IResult ExecutionDisabled() =>
+        Results.Json(new { error = "EXECUTION_UNAVAILABLE" },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
 
     private static IResult DatabaseUnavailable() =>
         Results.Json(new { error = "DATABASE_UNAVAILABLE" },
