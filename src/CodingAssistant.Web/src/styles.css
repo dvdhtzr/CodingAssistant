@@ -19,3 +19,13 @@
 .result-panel .alert{margin:.6rem 0;max-width:none}
 .result-meta{margin:.6rem 0}
 .verified-patch{max-height:440px;overflow:auto;white-space:pre;tab-size:2;line-height:1.5;font: .8rem ui-monospace,SFMono-Regular,Consolas,monospace;color:#d5f1e2;background:#0b1725;border:1px solid #2a5361;border-radius:9px;padding:.95rem;user-select:text}
+
+/* Simple task-driven HTML preview is the primary workflow, not the C# fixture. */
+.html-preview-panel{border-color:#1b9e92;box-shadow:0 0 24px #20cab10c}
+.html-preview-panel .actions{align-items:end;margin:.75rem 0;flex-wrap:wrap}
+.html-preview-panel select{background:#172941;color:#edf8ff;border:1px solid #49647c;border-radius:7px;padding:.55rem}
+.html-artifact{border:1px solid #28816e;border-radius:9px;padding:.7rem;margin-top:1rem}
+.html-artifact pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:490px}
+.advanced-gate{border:1px solid #314557;border-radius:9px;padding:1rem}
+.advanced-gate>summary{cursor:pointer;color:#d4e8fa;font-size:.9rem;font-weight:700}
+.advanced-gate>.panel{margin-top:1rem}

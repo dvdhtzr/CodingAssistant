@@ -32,9 +32,9 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object body
     await client.PostAsJsonAsync(path, body);
 
 async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveApp,
-    IM1ExecutionRunner? runner = null)
+    IM1ExecutionRunner? runner = null, IHtmlPreviewGenerator? htmlGenerator = null)
 {
-    var app = ApiHost.Build([], settings, runner);
+    var app = ApiHost.Build([], settings, runner, htmlGenerator);
     await app.StartAsync();
     saveApp(app);
     var addresses = app.Services.GetRequiredService<IServer>()
@@ -84,7 +84,9 @@ try
         }
     }
 
-    client = await Start(settings, a => appInstance = a);
+    var htmlGenerator = new SmokeHtmlGenerator();
+    client = await Start(settings, a => appInstance = a,
+                         htmlGenerator: htmlGenerator);
 
     using (var unauthenticated = new HttpClient
     {
@@ -169,6 +171,59 @@ try
         Check(taskId.Length == 32, "opaque task identity");
         Check(body.RootElement.GetProperty("status").GetString() == "Draft",
               "new task starts as draft");
+    }
+
+    // First user-visible task path: real HTML text from the stored objective,
+    // no M1 planning consent, agent, executable, model or repository mutation.
+    using (var unavailable = await client.GetAsync($"/api/tasks/{taskId}/html"))
+    using (var body = await ReadJson(unavailable))
+    {
+        Check(unavailable.StatusCode == HttpStatusCode.OK &&
+              !body.RootElement.GetProperty("available").GetBoolean(),
+            "new task has no falsely invented HTML result");
+    }
+    using (var badModel = await Post(client, $"/api/tasks/{taskId}/html",
+        new { model = "remote/claude" }))
+        Check(badModel.StatusCode == HttpStatusCode.BadRequest,
+            "HTML generator only admits two explicit local models");
+
+    using (var output = await Post(client, $"/api/tasks/{taskId}/html",
+        new { model = "qwen3.5:4b" }))
+    using (var body = await ReadJson(output))
+    {
+        Check(output.StatusCode == HttpStatusCode.Created,
+            "task-driven HTML artifact saved without agent approval");
+        Check(body.RootElement.GetProperty("html").GetString()!
+                  .Contains("Welcome, New User", StringComparison.Ordinal),
+            "first useful HTML file has actual content");
+        Check(body.RootElement.GetProperty("sha256").GetString()!.Length == 64,
+            "saved file is SHA256-identifiable");
+    }
+    Check(htmlGenerator.Calls == 1 && htmlGenerator.ObservedObjective == objective,
+        "task's original user objective reaches the bounded local generator");
+    using (var persisted = await client.GetAsync($"/api/tasks/{taskId}/html"))
+    using (var body = await ReadJson(persisted))
+        Check(persisted.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("available").GetBoolean() &&
+              body.RootElement.GetProperty("artifact").GetProperty("html")
+                .GetString()!.Contains("Welcome, New User"),
+            "HTML artifact is actually durable, not a fake browser state");
+
+    foreach (var unsafeHtml in new[] {
+        "<!DOCTYPE html><html><body><script>alert(1)</script></body></html>",
+        "<!DOCTYPE html><html><body><img src='https://remote.example/x'></body></html>",
+        "<!DOCTYPE html><html><body><div onclick='alert(1)'>Go</div></body></html>",
+    })
+    {
+        try
+        {
+            HtmlArtifactStore.Validate(unsafeHtml);
+            throw new Exception("Unsafe generated HTML was accepted");
+        }
+        catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+        {
+            checks++;
+        }
     }
 
     using (var duplicate = await Post(client, "/api/tasks", new
@@ -923,6 +978,20 @@ finally
     }
     try { Directory.Delete(root, recursive: true); }
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
+}
+
+sealed class SmokeHtmlGenerator : IHtmlPreviewGenerator
+{
+    public int Calls;
+    public string? ObservedObjective;
+    public Task<string> GenerateAsync(string objective, string model,
+                                       CancellationToken cancellation)
+    {
+        Calls++;
+        ObservedObjective = objective;
+        return Task.FromResult("<!DOCTYPE html>\n<html><head><title>Welcome</title></head>" +
+            "<body><h1>Welcome, New User</h1></body></html>");
+    }
 }
 
 sealed class SmokeM1Runner :

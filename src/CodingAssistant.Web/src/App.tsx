@@ -4,6 +4,7 @@ import {
   api, newRequestId, isHexId,
   type ApiStatus, type TaskItem, type TaskView, type RunItem,
   type RunEvent, type EventPage, type ExecutionView, type PlanItem,
+  type HtmlArtifact, type HtmlArtifactResponse,
   type RunResult, type RunResultResponse,
 } from './api';
 
@@ -64,6 +65,9 @@ export default function App() {
   const [result, setResult] = useState<RunResult | null>(null);
   const [resultChecked, setResultChecked] = useState(false);
   const [resultError, setResultError] = useState(false);
+  const [htmlArtifact, setHtmlArtifact] = useState<HtmlArtifact | null>(null);
+  const [htmlModel, setHtmlModel] = useState('qwen3.5:4b');
+  const [htmlStart, setHtmlStart] = useState(0);
   const [newTitle, setNewTitle] = useState('');
   const [newObjective, setNewObjective] = useState('');
   const [planSummary, setPlanSummary] = useState('');
@@ -99,6 +103,7 @@ export default function App() {
   function chooseTask(id: string) {
     if (!isHexId(id)) return;
     setTaskId(id);
+    setHtmlArtifact(null);
     setTaskView(null);
     setRuns([]);
     setRunId('');
@@ -130,6 +135,7 @@ export default function App() {
     setTasks([]);
     setTaskId('');
     setRunId('');
+    setHtmlArtifact(null);
     setTaskView(null);
     setRuns([]);
     setRun(null);
@@ -149,6 +155,36 @@ export default function App() {
       .catch(() => { if (!closed) setError('Unable to load tasks.'); });
     return () => { closed = true; };
   }, [token, taskRevision]);
+
+  useEffect(() => {
+    if (!token || !taskId) return;
+    let closed = false;
+    void api<HtmlArtifactResponse>(token, `/api/tasks/${taskId}/html`)
+      .then(response => {
+        if (!closed) setHtmlArtifact(response.artifact);
+      })
+      .catch(() => {
+        if (!closed) setError('Saved HTML output could not be loaded.');
+      });
+    return () => { closed = true; };
+  }, [token, taskId]);
+
+  useEffect(() => {
+    if (busy !== 'html-generate') return;
+    const ticker = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(ticker);
+  }, [busy]);
+
+  function downloadHtml(artifact: HtmlArtifact) {
+    // Download source as data, never execute model-produced markup in the UI.
+    const data = new Blob([artifact.html], { type: 'text/html;charset=utf-8' });
+    const href = URL.createObjectURL(data);
+    const anchor = document.createElement('a');
+    anchor.href = href;
+    anchor.download = 'index.html';
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(href), 2000);
+  }
 
   useEffect(() => {
     if (!token || !taskId) return;
@@ -348,6 +384,65 @@ export default function App() {
         {!taskView && <section className="panel">
           <h2>Choose a task</h2><p className="hint">Create or select a task to review planning approval and coding history.</p>
         </section>}
+        {taskView && <section className="panel html-preview-panel">
+          <h2>Make your HTML page</h2>
+          <p className="hint">This uses your task objective to generate a real <code>index.html</code>
+            with a local Ollama model. It needs no planning hash or coding approvals
+            because the model cannot run commands or edit your repository.
+            The generated HTML is saved privately and shown as source code.</p>
+          <div className="actions">
+            <label>Local model
+              <select value={htmlModel} onChange={e => setHtmlModel(e.target.value)}
+                disabled={isBusy}>
+                <option value="qwen3.5:4b">Qwen 3.5 4B (existing)</option>
+                <option value="qwen2.5-coder:3b">Qwen 2.5 Coder 3B (if installed)</option>
+              </select>
+            </label>
+            <button className="primary" disabled={isBusy}
+              onClick={() => void action('html-generate', async () => {
+                setHtmlStart(Date.now());
+                const artifact = await api<HtmlArtifact>(
+                  token, `/api/tasks/${taskId}/html`, { model: htmlModel });
+                setHtmlArtifact(artifact);
+              })}>
+              {busy === 'html-generate' ? 'Generating on the Dell…' :
+                htmlArtifact ? 'Regenerate HTML' : 'Generate index.html'}
+            </button>
+          </div>
+          {busy === 'html-generate' && <div className="activity" role="status">
+            <div className="activity-heading">
+              <span className="activity-dot" aria-hidden="true" />
+              <strong>Waiting for local {htmlModel}</strong>
+              <span className="pill">{elapsed((clock - htmlStart) / 1000)}</span>
+            </div>
+            <div className="activity-track" aria-hidden="true">
+              <div className="activity-scan" />
+            </div>
+            <p className="hint">This is a single bounded text-generation request,
+              not an autonomous coding job. The clock measures elapsed time,
+              not confirmed model progress. Existing saved output is preserved
+              if the request fails.</p>
+          </div>}
+          {htmlArtifact && <div className="html-artifact" aria-label="Generated HTML output">
+            <div className="actions">
+              <strong>index.html — saved output</strong>
+              <span className="pill">{htmlArtifact.model}</span>
+              <button type="button" className="primary"
+                onClick={() => downloadHtml(htmlArtifact)}>Download index.html</button>
+            </div>
+            <p className="hint">Saved {new Date(htmlArtifact.createdUtc).toLocaleString()}.
+              This file is a draft. No repository files have been changed or executed.</p>
+            <pre className="verified-patch">{htmlArtifact.html}</pre>
+          </div>}
+          <p className="hint">To edit your actual project or create multiple files autonomously,
+            the general-purpose agent still needs separate workspace-scope qualification.</p>
+        </section>}
+        <details className="advanced-gate">
+          <summary>Advanced: isolated C# repair qualification (not your HTML task)</summary>
+          <p className="hint">These steps always run the fixed disposable
+            <code>02-build-repair/api/Program.cs</code> test fixture and do
+            not use your task objective. They are engineering tests, not the
+            HTML generator above.</p>
         {taskView && <section className="panel">
           <h2>{taskView.task.title} <span className="pill">{taskView.task.status}</span></h2>
           <p>{taskView.task.objective}</p>
@@ -562,6 +657,7 @@ export default function App() {
           </ol>
           <p className="hint">SQLite is authoritative; SignalR only prompts a replay. Independent evaluator evidence, diffs and patch artifacts are not yet exposed by the API.</p>
         </section>}
+        </details>
       </main>
     </div>}
   </>;

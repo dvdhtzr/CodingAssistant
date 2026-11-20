@@ -46,6 +46,29 @@ consent, and an explicit Start click remain separate.
 Issue #76's ten integrated adversarial security checks remain required
 before wider autonomous execution. This is a development preview.
 
+## First useful task: standalone HTML artifact
+
+The top of Mission Control now has a **Make your HTML page** action.
+It uses the selected task's actual objective to request one standalone
+`index.html` from local Ollama, shows the source, and offers a download.
+The output is saved in owner-private SQLite and survives restart.
+
+No plan/hash approval is needed: this is bounded TEXT generation only.
+It never executes generated code, edits a repository, runs a shell,
+mounts a project, starts OpenClaw/ACPX/OpenCode or contacts cloud models.
+Only installed qwen3.5:4b (default) and qwen2.5-coder:3b are allowed.
+An unavailable model is an explicit error, not a silent provider fallback.
+The Ollama HTTP client uses loopback without proxy or redirects; the
+response has hard size/time bounds, rejects scripts, external resources
+and active HTML, and is shown only as plain text within Mission Control.
+The downloaded file is a draft, not independently verified source.
+
+The old M1 fixed C# repair approvals have been moved to an Advanced
+section explicitly labeled **not your HTML task**. That agent always
+uses the 02-build-repair fixture, and does not read the user objective.
+Arbitrary repository-scoped agent coding requires separate security
+qualification and remains a future milestone.
+
 ## Run output and code changes
 
 After selecting a run, Mission Control now shows a prominent **Run result**
