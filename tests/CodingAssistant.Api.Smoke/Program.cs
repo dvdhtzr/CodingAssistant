@@ -1209,6 +1209,42 @@ try
               fakeProject.LastSpecification.Contains("Individual users"),
             "draft builder consumed actual owner's approved specification");
 
+        // Owner can download exact immutable task-specific agent contract,
+        // but no coding process is launched by these read-only endpoints.
+        string previewSha;
+        using (var preview = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/agent-contract-preview"))
+        using (var body = await ReadJson(preview))
+        {
+            Check(preview.StatusCode == HttpStatusCode.OK &&
+                  !body.RootElement.GetProperty("executionEnabled").GetBoolean(),
+                "task-specific agent preview cannot start executable work");
+            previewSha = body.RootElement.GetProperty("contractSha256")
+                .GetString()!;
+            Check(body.RootElement.GetProperty("contract")
+                      .GetProperty("objective").GetString() == ownerObjective &&
+                  body.RootElement.GetProperty("contract")
+                      .GetProperty("approvedSpecificationSha256").GetString()
+                        == specHash,
+                "contract originates in exact current approved user objective");
+        }
+        using (var contract = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/agent-contract-preview/json"))
+        {
+            var bytes = await contract.Content.ReadAsByteArrayAsync();
+            var digest = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(bytes))
+                .ToLowerInvariant();
+            Check(contract.StatusCode == HttpStatusCode.OK &&
+                  contract.Content.Headers.ContentType?.MediaType ==
+                    "application/json" && digest == previewSha,
+                "downloaded byte-exact contract matches authenticated preview");
+            using var body = JsonDocument.Parse(bytes);
+            Check(body.RootElement.GetProperty("files").GetArrayLength() == 2 &&
+                  body.RootElement.GetProperty("taskId").GetString() == id,
+                "download file binds actual task and chosen file plan");
+        }
+
         using (var zipped = await interviewClient.GetAsync(
             $"/api/tasks/{id}/draft-build/{draftId}/zip"))
         {
