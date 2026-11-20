@@ -5,7 +5,10 @@ No mock coding engine, token-in-URL, cloud inference, extra database or server.
 
 The owner enters a 64-character API bearer token per browser session. It stays
 only in React memory: no localStorage, cookies, URL parameters or log output.
-On reload the owner must reconnect. Browsers cannot supply arbitrary headers
+On reload the owner must reconnect. On Windows, Visual Studio F5 automatically
+loads the same DPAPI CurrentUser-protected credential as the one-click launcher;
+the `Copy-CodingAssistant-Token.cmd` helper copies it to the clipboard for
+a new Owner session. No repeated token-generation setup is needed. Browsers cannot supply arbitrary headers
 to WebSocket constructors, so SignalR uses **LongPolling with Authorization
 headers**, plus durable numbered SQLite event replay after watch/reconnect.
 A disconnected notification channel never implies a lost run.
