@@ -10,6 +10,26 @@ const terminal = new Set(['Succeeded', 'Failed', 'Cancelled', 'Interrupted', 'Re
 const runtimeStates = new Set(['Previewed', 'Authorized', 'Starting', 'Running', 'Cancelling',
   'Succeeded', 'Failed', 'Cancelled', 'Interrupted', 'RecoveryBlocked']);
 
+// These descriptions correspond to fixed host-runner milestones, not model text.
+const stages: Record<string, string> = {
+  ExecutionStageScopeVerified: 'Verified the pinned model and approved disposable scope.',
+  ExecutionStageWorkspacePrepared: 'Created an isolated copy of the C# test project.',
+  ExecutionStageInferenceBridgeReady: 'Connected the restricted local Ollama socket.',
+  ExecutionStageGatewayLaunched: 'Started the isolated Gateway container.',
+  ExecutionStageGatewayReady: 'Gateway health checks passed.',
+  ExecutionStageCodingRequestSent: 'Sent the coding request to the local agent; waiting for Qwen.',
+  ExecutionStageCodingRequestReturned: 'Agent returned a result; verifying the workspace.',
+  ExecutionStageGatewayRemoved: 'Removed the isolated agent container.',
+  ExecutionStageEvaluatorStarted: 'Started independent offline .NET verification.',
+  ExecutionStageEvaluatorPassed: 'The independent evaluator passed.',
+};
+function elapsed(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  if (safe < 60) return safe + 's';
+  if (safe < 3600) return Math.floor(safe / 60) + 'm ' + String(safe % 60).padStart(2, '0') + 's';
+  return Math.floor(safe / 3600) + 'h ' + String(Math.floor(safe / 60) % 60).padStart(2, '0') + 'm';
+}
+
 function ExactConsent({ planHash, value, onChange, description }: {
   planHash: string; value: string; onChange: (v: string) => void; description: string;
 }) {
@@ -17,6 +37,9 @@ function ExactConsent({ planHash, value, onChange, description }: {
     <p className="hint">{description} Approval must match this full, immutable SHA-256:</p>
     <div className="hash">{planHash}</div>
     <p className="hint">Enter <code>APPROVE {planHash}</code> exactly (no shortened hash).</p>
+    <button type="button" className="outline" onClick={() => onChange('APPROVE ' + planHash)}>
+      Fill exact approval (does not authorize)
+    </button>
     <label>Exact approval
       <input className="token" value={value} onChange={e => onChange(e.target.value)}
         autoComplete="off" autoCapitalize="off" spellCheck={false}
@@ -47,6 +70,14 @@ export default function App() {
   const [live, setLive] = useState('Not connected');
   const [taskRevision, setTaskRevision] = useState(0);
   const [runRevision, setRunRevision] = useState(0);
+  const [clock, setClock] = useState(Date.now());
+
+  // Local display clock only; a ticking indicator is NOT a heartbeat from Qwen.
+  useEffect(() => {
+    if (!token || !runId) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [token, runId]);
 
   async function action(name: string, operation: () => Promise<void>) {
     setBusy(name);
@@ -206,6 +237,18 @@ export default function App() {
   const activeRun = run?.state ?? '';
   const canCancel = run && !terminal.has(activeRun) && activeRun !== 'Cancelling';
   const isBusy = busy !== '';
+  const active = run?.state === 'Running' || run?.state === 'Starting' || run?.state === 'Cancelling';
+  const startedEvent = events.find(event => event.kind === 'ExecutionStarted');
+  const latestEvent = events.at(-1);
+  const latestStage = [...events].reverse().find(event => event.kind.startsWith('ExecutionStage'));
+  const referenceEvent = latestStage ?? startedEvent ?? latestEvent;
+  const runSeconds = startedEvent
+    ? (clock - Date.parse(startedEvent.createdUtc)) / 1000 : 0;
+  const silenceSeconds = referenceEvent
+    ? (clock - Date.parse(referenceEvent.createdUtc)) / 1000 : 0;
+  const stageMessage = latestStage
+    ? stages[latestStage.kind] ?? 'Unrecognized milestone — examine the durable history.'
+    : 'No intermediate runner milestone recorded yet.';
 
   return <>
     <header>
@@ -344,6 +387,24 @@ export default function App() {
           <h3>3 · Run control <span className="pill">{run.state}</span></h3>
           <p className="hint">Run {run.id} · persisted event cursor {run.lastSequence}</p>
           <p className="secure">{live}</p>
+          {active && <section className="activity" role="status" aria-live="off">
+            <div className="activity-heading">
+              <span className="activity-dot" aria-hidden="true" />
+              <strong>{run.state === 'Cancelling' ? 'Cancelling / checking isolation' :
+                run.state === 'Starting' ? 'Launching isolated worker' :
+                'Isolated coding run admitted'}</strong>
+              <span className="pill">{startedEvent ? elapsed(runSeconds) : 'Preparing'}</span>
+            </div>
+            <div className="activity-track" aria-hidden="true"><div className="activity-scan" /></div>
+            <p className="activity-detail">{stageMessage}</p>
+            <p className="hint">Last confirmed runner milestone: {referenceEvent
+              ? elapsed(silenceSeconds) + ' ago' : 'not yet reported'}.
+              Browser animation shows elapsed time, <strong>not</strong> model progress or a percentage.</p>
+            {silenceSeconds >= 90 && <p className="activity-warning">
+              No new stage for {elapsed(silenceSeconds)}. The model may be computing, stalled,
+              or waiting on its deadline; activity is not confirmed. You may cancel this run.
+            </p>}
+          </section>}
           {!run.planCurrent && <p className="alert">This run refers to a superseded plan. No new execution authorized.</p>}
           {!status?.executionEnabled && <p className="hint">Real execution is disabled on this host. Run history and pending-intent cancellation remain available.</p>}
           {run.state === 'AwaitingExecutionAuthorization' && status?.executionEnabled && run.planCurrent &&
@@ -410,7 +471,10 @@ export default function App() {
           <ol className="events" aria-label="Run event history">
             {events.map(event => <li key={event.sequence}>
               <span className="number">#{event.sequence}</span>
-              <span><strong>{event.kind}</strong> · {event.state}</span>
+              <span><strong>{stages[event.kind] ? 'Runner milestone' : event.kind}</strong> · {event.state}
+                {stages[event.kind] && <small className="trace-note">{stages[event.kind]}</small>}
+                <small className="trace-note">{new Date(event.createdUtc).toLocaleTimeString()}</small>
+              </span>
             </li>)}
           </ol>
           <p className="hint">SQLite is authoritative; SignalR only prompts a replay. Independent evaluator evidence, diffs and patch artifacts are not yet exposed by the API.</p>
