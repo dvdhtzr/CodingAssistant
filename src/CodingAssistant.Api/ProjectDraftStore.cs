@@ -227,6 +227,24 @@ public sealed class ProjectDraftStore(TaskStore tasks)
         return Get(taskId, id).Job;
     }
 
+    private static void RequireApprovedSpec(
+        SqliteConnection db, SqliteTransaction tx, ProjectDraftJob job)
+    {
+        // This check runs in the SAME SQLite transaction as file persistence
+        // and final completion. A revised interview invalidates the build;
+        // previously approved text cannot be silently resurrected.
+        using var cmd = TaskStore.Command(db, tx, """
+            SELECT version,sha256,status FROM interview_specs
+            WHERE task_id=@task ORDER BY version DESC LIMIT 1
+            """, ("@task", job.TaskId));
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read() ||
+            reader.GetInt32(0) != job.SpecificationVersion ||
+            reader.GetString(1) != job.SpecificationSha256 ||
+            reader.GetString(2) != "Approved")
+            throw new StoreFailure("SPECIFICATION_CONFLICT");
+    }
+
     private static ProjectDraftJob ReadJob(SqliteDataReader reader) =>
         new(reader.GetString(0), reader.GetString(1), reader.GetInt32(2),
             reader.GetString(3), reader.GetString(4), reader.GetString(5),
@@ -330,6 +348,17 @@ public sealed class ProjectDraftStore(TaskStore tasks)
             tx.Commit();
             return;
         }
+        if (finalState == "Generated")
+        {
+            try { RequireApprovedSpec(db, tx, job); }
+            catch (StoreFailure error) when (error.Code == "SPECIFICATION_CONFLICT")
+            {
+                finalState = "Failed";
+                kind = "DraftFailed";
+                detail = "Specification changed; stale output is not a completed build";
+                reason = "SPECIFICATION_CONFLICT";
+            }
+        }
         var now = DateTimeOffset.UtcNow.ToString("O");
         var sequence = Convert.ToInt32(TaskStore.Scalar(db, tx, """
             SELECT COALESCE(MAX(sequence),0)+1 FROM project_draft_events
@@ -361,6 +390,7 @@ public sealed class ProjectDraftStore(TaskStore tasks)
             throw new StoreFailure("NOT_FOUND");
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
+        RequireApprovedSpec(db, tx, job);
         var files = TaskStore.Scalar(db, tx, """
             SELECT COUNT(*) FROM project_draft_files WHERE draft_id=@id
             """, ("@id", id));
