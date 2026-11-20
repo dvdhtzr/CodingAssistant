@@ -21,6 +21,28 @@ public interface IM1ExecutionRunner
 
 public sealed class ExecutionUnavailable : Exception { }
 
+// Never trust arbitrary agent stdout for progress. Only fixed M1 host-runner
+// categories are mapped to durable, non-content run events.
+public static class M1StageNames
+{
+    private static readonly HashSet<string> Allowed = new(StringComparer.Ordinal)
+    {
+        "ScopeVerified", "WorkspacePrepared", "InferenceBridgeReady",
+        "GatewayLaunched", "GatewayReady", "CodingRequestSent",
+        "CodingRequestReturned", "GatewayRemoved", "EvaluatorStarted",
+        "EvaluatorPassed",
+    };
+
+    public static bool IsAllowed(string stage) => Allowed.Contains(stage);
+}
+
+public interface IM1ProgressReporter
+{
+    Task<M1ExecutionOutcome> ExecuteWithProgressAsync(
+        RunItem run, string executionHash,
+        Func<string, Task> onStage, CancellationToken cancellation);
+}
+
 public sealed class DisabledM1Runner : IM1ExecutionRunner
 {
     public Task<M1ExecutablePreview> PreviewAsync(RunItem run, CancellationToken token) =>
@@ -37,7 +59,7 @@ public sealed class DisabledM1Runner : IM1ExecutionRunner
 /// No arbitrary project, model, script, mount or worktree is caller-selectable.
 /// The agent process receives NO API bearer token or cloud-provider credentials.
 /// </summary>
-public sealed class M1ProcessRunner : IM1ExecutionRunner
+public sealed class M1ProcessRunner : IM1ExecutionRunner, IM1ProgressReporter
 {
     private readonly string _script;
     private readonly string _root;
@@ -93,16 +115,44 @@ public sealed class M1ProcessRunner : IM1ExecutionRunner
         return info;
     }
 
+    private static async Task<string> ReadSafeProgressAsync(
+        StreamReader stdout, Func<string, Task> onStage)
+    {
+        var output = new StringBuilder();
+        var stagesSeen = 0;
+        string? line;
+        while ((line = await stdout.ReadLineAsync()) is not null)
+        {
+            if (line.StartsWith("CA_M1_STAGE:", StringComparison.Ordinal))
+            {
+                var stage = line["CA_M1_STAGE:".Length..];
+                // Bound cardinality and never publish arbitrary model content.
+                if (!M1StageNames.IsAllowed(stage) || ++stagesSeen > 32)
+                    throw new ExecutionUnavailable();
+                try { await onStage(stage); }
+                catch (Exception) { /* Optional telemetry must not abort coding. */ }
+                continue;
+            }
+            if (output.Length + line.Length + 1 > 16000)
+                throw new ExecutionUnavailable();
+            output.AppendLine(line);
+        }
+        return output.ToString();
+    }
+
     private async Task<(int Exit, string Output)> InvokeAsync(
         string[] arguments, string? approval,
-        TimeSpan timeout, CancellationToken cancellation)
+        TimeSpan timeout, CancellationToken cancellation,
+        Func<string, Task>? onStage = null)
     {
         using var process = new Process { StartInfo = Command(arguments) };
         try
         {
             if (!process.Start())
                 throw new ExecutionUnavailable();
-            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stdout = onStage is null
+                ? process.StandardOutput.ReadToEndAsync()
+                : ReadSafeProgressAsync(process.StandardOutput, onStage);
             var stderr = process.StandardError.ReadToEndAsync();
             if (approval is not null)
                 await process.StandardInput.WriteLineAsync(approval);
@@ -266,13 +316,19 @@ public sealed class M1ProcessRunner : IM1ExecutionRunner
         }
     }
 
-    public async Task<M1ExecutionOutcome> ExecuteAsync(
-        RunItem run, string executionHash, CancellationToken cancellation)
+    public Task<M1ExecutionOutcome> ExecuteAsync(
+        RunItem run, string executionHash, CancellationToken cancellation) =>
+        ExecuteWithProgressAsync(run, executionHash, _ => Task.CompletedTask, cancellation);
+
+    public async Task<M1ExecutionOutcome> ExecuteWithProgressAsync(
+        RunItem run, string executionHash,
+        Func<string, Task> onStage, CancellationToken cancellation)
     {
         var args = new[] { "--approval-stdin", "--request-id", run.Id }
             .Concat(Binding(run)).ToArray();
         var result = await InvokeAsync(args, "APPROVE " + executionHash,
-                                       TimeSpan.FromMinutes(40), cancellation);
+                                       TimeSpan.FromMinutes(40), cancellation,
+                                       onStage);
         // The M1.12 runner only returns zero AFTER a separate offline .NET
         // evaluator has declared VERIFIED and a durable ledger is committed.
         return result.Exit == 0 &&
@@ -375,7 +431,15 @@ public sealed class ExecutionCoordinator(
             }
             await Publish(store.Move(run.Id, "Starting", "Running",
                                      "ExecutionStarted"));
-            var result = await runner.ExecuteAsync(run, hash, cancellation.Token);
+            var result = runner is IM1ProgressReporter progress
+                ? await progress.ExecuteWithProgressAsync(run, hash,
+                    async stage =>
+                    {
+                        var stageChange = store.RecordStage(run.Id, stage);
+                        if (stageChange is not null)
+                            await Publish(stageChange);
+                    }, cancellation.Token)
+                : await runner.ExecuteAsync(run, hash, cancellation.Token);
             if (cancellation.IsCancellationRequested)
                 await ReconcileCancellation(run.Id);
             else if (result == M1ExecutionOutcome.Verified)
