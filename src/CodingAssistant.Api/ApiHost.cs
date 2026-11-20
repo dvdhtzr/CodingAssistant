@@ -39,7 +39,8 @@ public static class ApiHost
         IM1ExecutionRunner? runnerOverride = null,
         IHtmlPreviewGenerator? htmlGeneratorOverride = null,
         IInterviewModel? interviewModelOverride = null,
-        IProjectDraftModel? projectModelOverride = null)
+        IProjectDraftModel? projectModelOverride = null,
+        IOllamaModelCatalog? catalogOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -68,6 +69,7 @@ public static class ApiHost
         var interviews = new InterviewStore(store);
         interviews.Initialize();
         var interviewModel = interviewModelOverride ?? new LocalInterviewModel();
+        var catalog = catalogOverride ?? new LocalOllamaModelCatalog();
         var projectDrafts = new ProjectDraftStore(store);
         projectDrafts.Initialize();
         projectDrafts.MarkInterruptedOnStartup();
@@ -115,6 +117,7 @@ public static class ApiHost
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
+        builder.Services.AddSingleton<IOllamaModelCatalog>(catalog);
         builder.Services.AddSingleton(projectDrafts);
         builder.Services.AddSingleton(taskBuilds);
         builder.Services.AddSingleton<IProjectDraftModel>(projectModel);
@@ -191,6 +194,13 @@ public static class ApiHost
                 executionEnabled = enabled, localOnly = true,
                 plannedRunner = "OpenClaw-ACPX-OpenCode"
             }));
+        // Authenticated discovery of models downloaded to the local Ollama
+        // server. M1 executable runner model selection remains unchanged.
+        app.MapGet("/api/models", (IOllamaModelCatalog catalog,
+                CancellationToken cancellation) =>
+            SafeAsync(async () => Results.Ok(new {
+                models = await catalog.ListAsync(cancellation)
+            })));
         app.MapGet("/api/tasks", (TaskStore db) =>
             Safe(() => Results.Ok(db.ListTasks())));
         app.MapGet("/api/tasks/{id}", (string id, TaskStore db) =>
@@ -229,7 +239,7 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/interview/turn", (
                 string id, InterviewTurnRequest input,
                 TaskStore tasks, InterviewStore db, IInterviewModel model,
-                CancellationToken cancellation) =>
+                IOllamaModelCatalog catalog, CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 var task = tasks.GetTask(id).Task;
@@ -246,6 +256,9 @@ public static class ApiHost
                     throw new StoreFailure("INVALID_MODEL");
                 if (snapshot.LastSequence == 0 && input.Message is not null)
                     throw new StoreFailure("INVALID_INPUT");
+                var localNames = await catalog.ListAsync(cancellation);
+                if (!localNames.Contains(selected, StringComparer.Ordinal))
+                    throw new StoreFailure("MODEL_NOT_INSTALLED");
                 var context = snapshot.Messages.ToList();
                 if (snapshot.LastSequence != 0)
                     context.Add(new InterviewMessage(
@@ -260,7 +273,7 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/interview/specification", (
                 string id, SpecificationRequest input,
                 TaskStore tasks, InterviewStore db, IInterviewModel model,
-                CancellationToken cancellation) =>
+                IOllamaModelCatalog catalog, CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 var task = tasks.GetTask(id).Task;
@@ -269,6 +282,9 @@ public static class ApiHost
                     !snapshot.Messages.Any(x => x.Role == "owner") ||
                     snapshot.Model is null)
                     throw new StoreFailure("STALE_INTERVIEW");
+                var localNames = await catalog.ListAsync(cancellation);
+                if (!localNames.Contains(snapshot.Model, StringComparer.Ordinal))
+                    throw new StoreFailure("MODEL_NOT_INSTALLED");
                 var content = await model.DraftAsync(
                     task.Objective, snapshot.Messages, snapshot.Model,
                     cancellation);

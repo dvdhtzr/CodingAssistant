@@ -32,7 +32,11 @@ export function InterviewStudio({ token, task }: {
   task: TaskItem;
 }) {
   const [snapshot, setSnapshot] = useState<InterviewSnapshot | null>(null);
-  const [chosenModel, setChosenModel] = useState('qwen3.5:4b');
+  const [chosenModel, setChosenModel] = useState('');
+  const [installedModels, setInstalledModels] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState('');
+  const [modelRefresh, setModelRefresh] = useState(0);
   const [answer, setAnswer] = useState('');
   const [busy, setBusy] = useState<InterviewBusy>('');
   const [error, setError] = useState('');
@@ -45,6 +49,7 @@ export function InterviewStudio({ token, task }: {
     setError('');
     setAnswer('');
     setApproveChecked(false);
+    setChosenModel('');
     void api<InterviewSnapshot>(token, `/api/tasks/${task.id}/interview`)
       .then(data => {
         if (!cancelled) {
@@ -55,6 +60,28 @@ export function InterviewStudio({ token, task }: {
       .catch(() => { if (!cancelled) setError('Unable to load the saved Product Owner conversation.'); });
     return () => { cancelled = true; };
   }, [token, task.id]);
+
+  // Only the authenticated API speaks to the fixed local Ollama port.
+  // Never silently substitute another model when the selection disappears.
+  useEffect(() => {
+    let cancelled = false;
+    setModelsLoading(true);
+    setModelsError('');
+    void api<{ models: string[] }>(token, '/api/models')
+      .then(data => {
+        if (cancelled) return;
+        setInstalledModels(data.models);
+        setChosenModel(previous => data.models.includes(previous) ? previous : '');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setInstalledModels([]);
+        setChosenModel('');
+        setModelsError('Could not query local Ollama. Confirm it is running, then refresh.');
+      })
+      .finally(() => { if (!cancelled) setModelsLoading(false); });
+    return () => { cancelled = true; };
+  }, [token, task.id, modelRefresh]);
 
   useEffect(() => {
     if (!busy) return;
@@ -114,14 +141,26 @@ export function InterviewStudio({ token, task }: {
       {!snapshot.lastSequence && <div className="interview-start">
         <p>Your Product Owner will ask relevant questions about <em>your</em> project.
           Questions adapt to your answers, without a rigid questionnaire or demo task.</p>
-        <label>Local AI model
-          <select value={chosenModel} disabled={!!busy}
+        <label>Installed local Ollama model
+          <select value={chosenModel}
+            disabled={!!busy || modelsLoading || installedModels.length === 0}
             onChange={event => setChosenModel(event.target.value)}>
-            <option value="qwen3.5:4b">Qwen 3.5 4B</option>
-            <option value="qwen2.5-coder:3b">Qwen 2.5 Coder 3B (if installed)</option>
+            <option value="">Select a downloaded model</option>
+            {installedModels.map(model => <option key={model} value={model}>{model}</option>)}
           </select>
         </label>
-        <button className="primary" disabled={!!busy}
+        <button type="button" className="outline" disabled={modelsLoading || !!busy}
+          onClick={() => setModelRefresh(previous => previous + 1)}>
+          {modelsLoading ? 'Checking Ollama…' : 'Refresh installed models'}
+        </button>
+        {modelsError && <p className="hint" role="alert">{modelsError}</p>}
+        {!modelsLoading && !modelsError && installedModels.length === 0 &&
+          <p className="hint">No downloaded local models found. Install a chat-capable model
+            in Ollama and refresh this list.</p>}
+        <p className="hint">Only downloaded local models are shown. Choose a chat-capable
+          model; embedding-only models cannot conduct interviews.</p>
+        <button className="primary"
+          disabled={!!busy || modelsLoading || !chosenModel || !installedModels.includes(chosenModel)}
           onClick={() => void submit('start', () =>
             api<InterviewSnapshot>(token, `/api/tasks/${task.id}/interview/turn`, {
               expectedSequence: 0, model: chosenModel,

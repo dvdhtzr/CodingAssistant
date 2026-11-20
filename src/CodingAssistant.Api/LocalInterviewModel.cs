@@ -14,8 +14,10 @@ public sealed class LocalInterviewModel : IInterviewModel
     public const string DefaultModel = "qwen3.5:4b";
     public const string CoderModel = "qwen2.5-coder:3b";
 
+    // Valid local names still require exact membership in the current
+    // Ollama catalog at the authenticated API boundary.
     public static bool AllowedModel(string? model) =>
-        model is DefaultModel or CoderModel;
+        LocalOllamaModelCatalog.ValidLocalName(model);
 
     // Phase 1: identity and boundaries for the requirements specialist.
     // Existing SQLite message roles and HTTP contracts remain unchanged.

@@ -22,6 +22,14 @@ The original authenticated `/api/tasks/{id}/interview/*` HTTP contract remains s
 
 The existing version/hash-controlled approval and separate source-only project generation flow remain unchanged. **Generated files are not verified builds**.
 
+## Local Ollama model picker (Phase 1 usability fix)
+
+The Product Owner model dropdown is populated by **GET `/api/models`**, an authenticated CodingAssistant API endpoint. The backend calls only `http://127.0.0.1:11434/api/tags` with proxies/redirects disabled; it returns sorted, deduplicated, safe downloaded local model names. The list can be refreshed. Cloud-tagged entries, non-downloaded placeholders and invalid names are rejected; no hosted inference fallback is enabled.
+
+The human owner **explicitly chooses a model** before beginning a new conversation. The server independently confirms that exact name is still installed, both for new/continued interview turns and specification drafting. If a pinned conversation model is removed, the workflow stops with `MODEL_NOT_INSTALLED` rather than switching silently. Stored conversations, approved specifications and the independently qualified M1 executable model pin are unaffected.
+
+Ollama's local installed list can contain embedding-only models. Those may appear in the dropdown but will not be suitable for chat; choose a chat-capable model. If Ollama is offline, the UI shows a refreshable error instead of a fabricated list. On Windows, build the current source solution to update the packaged React UI; reloading an older compiled `wwwroot` does not reflect the latest UI source.
+
 ## Deterministic verification
 
 The existing `.github/workflows/m0-tests.yml` builds the React UI and runs real HTTP/SQLite API smoke tests on both Ubuntu and Windows. The smoke suite now explicitly checks historical `assistant` and `owner` roles survive an API restart unchanged. These tests exercise persistence, contracts and UI compilation, but not model response quality.

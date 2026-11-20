@@ -36,10 +36,11 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object body
 async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveApp,
     IM1ExecutionRunner? runner = null, IHtmlPreviewGenerator? htmlGenerator = null,
     IInterviewModel? interviewModel = null,
-    IProjectDraftModel? projectModel = null)
+    IProjectDraftModel? projectModel = null,
+    IOllamaModelCatalog? catalog = null)
 {
     var app = ApiHost.Build([], settings, runner, htmlGenerator, interviewModel,
-                            projectModel);
+                            projectModel, catalog ?? new SmokeOllamaModelCatalog());
     await app.StartAsync();
     saveApp(app);
     var addresses = app.Services.GetRequiredService<IServer>()
@@ -55,6 +56,19 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     {
         BaseAddress = new Uri(address)
     };
+}
+
+// The catalog must filter cloud aliases, unsafe names and non-downloaded entries.
+{
+    var models = LocalOllamaModelCatalog.ParseTags(
+        """{"models":[{"name":"gemma4:latest","size":120000},{"name":"qwen3.5:4b","size":400},{"name":"gemma4:latest","size":120000},{"name":"gemma4:cloud","size":999},{"name":"some-model-cloud","size":100},{"name":"bad model","size":99},{"name":"not-downloaded:latest","size":0}]}""");
+    Check(models.SequenceEqual(new[] { "gemma4:latest", "qwen3.5:4b" }),
+        "catalog returns sorted, distinct, genuinely local and safe model names");
+    Check(!LocalOllamaModelCatalog.ValidLocalName("gemma4:cloud") &&
+          !LocalOllamaModelCatalog.ValidLocalName("cloud-model-cloud") &&
+          !LocalOllamaModelCatalog.ValidLocalName("evil\nmodel") &&
+          !LocalOllamaModelCatalog.ValidLocalName("https://ollama.com"),
+        "cloud and malformed identifiers never become local inference targets");
 }
 
 // Small local models may ignore JSON-only prompts; validate strict schema,
@@ -1061,13 +1075,14 @@ try
         interviewData, OwnerToken, "http://127.0.0.1:0");
     var fakeInterview = new SmokeInterviewModel();
     var fakeProject = new SmokeProjectDraftModel();
+    var fakeCatalog = new SmokeOllamaModelCatalog();
     WebApplication? interviewApp = null;
     HttpClient? interviewClient = null;
     try
     {
         interviewClient = await Start(interviewSettings,
             app => interviewApp = app, interviewModel: fakeInterview,
-            projectModel: fakeProject);
+            projectModel: fakeProject, catalog: fakeCatalog);
         interviewClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", OwnerToken);
         string id;
@@ -1084,6 +1099,20 @@ try
                 "arbitrary interview task persists");
             id = json.RootElement.GetProperty("id").GetString()!;
         }
+        // The picker uses this authenticated endpoint, not a hard-coded list.
+        using (var catalogResponse = await interviewClient.GetAsync("/api/models"))
+        using (var catalogJson = await ReadJson(catalogResponse))
+            Check(catalogResponse.StatusCode == HttpStatusCode.OK &&
+                  catalogJson.RootElement.GetProperty("models").EnumerateArray()
+                    .Select(m => m.GetString()).SequenceEqual(
+                        new[] { "gemma4:latest", "qwen2.5-coder:3b", "qwen3.5:4b" }),
+                "authenticated catalog returns current installed local models");
+        using (var anonymous = new HttpClient(new SocketsHttpHandler {
+            UseProxy = false
+        }) { BaseAddress = interviewClient.BaseAddress })
+        using (var denied = await anonymous.GetAsync("/api/models"))
+            Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+                "model catalog cannot be read without owner authentication");
         using (var empty = await interviewClient.GetAsync($"/api/tasks/{id}/interview"))
         using (var json = await ReadJson(empty))
             Check(empty.StatusCode == HttpStatusCode.OK &&
@@ -1185,6 +1214,42 @@ try
               fakeInterview.SpecCount == 1 &&
               fakeInterview.LastObjective == ownerObjective,
             "real task objective, not C# fixture, reached model interview");
+
+        // An alternate installed model is allowed for a NEW project without
+        // weakening the fixed, separate M1 executable coding model pin.
+        string alternateId;
+        using (var created = await Post(interviewClient, "/api/tasks", new {
+            title = "Alternative local model",
+            objective = "Create a note-taking CLI with searchable recent notes",
+            requestId = Guid.NewGuid().ToString("N")
+        }))
+        using (var json = await ReadJson(created))
+            alternateId = json.RootElement.GetProperty("id").GetString()!;
+        using (var first = await Post(interviewClient,
+            $"/api/tasks/{alternateId}/interview/turn", new {
+                expectedSequence = 0, model = "gemma4:latest"
+            }))
+        using (var json = await ReadJson(first))
+            Check(first.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("model").GetString() == "gemma4:latest",
+                "user-selected installed model is preserved in the new interview");
+        var beforeMissing = fakeInterview.AskCount;
+        fakeCatalog.Models.Remove("gemma4:latest");
+        using (var removed = await Post(interviewClient,
+            $"/api/tasks/{alternateId}/interview/turn", new {
+                expectedSequence = 1, message = "Local only", model = "gemma4:latest"
+            }))
+            Check(removed.StatusCode == HttpStatusCode.ServiceUnavailable &&
+                  fakeInterview.AskCount == beforeMissing,
+                "uninstalled model fails closed without sending another model request");
+        using (var blocked = await Post(interviewClient,
+            $"/api/tasks/{alternateId}/interview/turn", new {
+                expectedSequence = 1, message = "Local only", model = "qwen3.5:4b"
+            }))
+            Check(blocked.StatusCode == HttpStatusCode.BadRequest &&
+                  fakeInterview.AskCount == beforeMissing,
+                "existing conversation cannot silently switch to another model");
+        fakeCatalog.Models.Add("gemma4:latest");
 
         // No fake static HTML exercise here: approved specification drives
         // file choice and real persisted event/file state. The fake produces
@@ -1563,7 +1628,7 @@ try
         // Restart with the SAME real SQLite data: no conversation replay.
         interviewClient = await Start(interviewSettings,
             app => interviewApp = app, interviewModel: fakeInterview,
-            projectModel: fakeProject);
+            projectModel: fakeProject, catalog: fakeCatalog);
         interviewClient.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", OwnerToken);
         using (var savedDraft = await interviewClient.GetAsync(
@@ -1687,6 +1752,21 @@ finally
     }
     try { Directory.Delete(root, recursive: true); }
     catch (IOException) { /* Windows temp cleanup may lag; no owner data involved. */ }
+}
+
+sealed class SmokeOllamaModelCatalog : IOllamaModelCatalog
+{
+    public HashSet<string> Models { get; } = new(StringComparer.Ordinal)
+    {
+        "qwen3.5:4b", "qwen2.5-coder:3b", "gemma4:latest"
+    };
+
+    public Task<IReadOnlyList<string>> ListAsync(CancellationToken _)
+    {
+        IReadOnlyList<string> result = Models.OrderBy(m => m, StringComparer.Ordinal)
+            .ToArray();
+        return Task.FromResult(result);
+    }
 }
 
 sealed class SmokeProjectDraftModel : IStreamingProjectDraftModel
