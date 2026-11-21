@@ -85,6 +85,11 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
             name: "SoftwareEngineer",
             description: "Implements one approved engineering task as unverified source");
 
+        var staticWeb = input.Architecture.ApprovedChoices.Any(
+            choice => choice.Topic == "technology-stack" &&
+                choice.RuntimeProfileId == "static-web");
+        var taskIndex = input.Plan.Outline.Tasks.ToList().FindIndex(
+            task => task.Id == input.WorkItem.Id);
         var messages = new List<ChatMessage> {
             new(ChatRole.User, "PROJECT OBJECTIVE (data):\n" + input.Objective),
             new(ChatRole.User, "APPROVED PRODUCT SPECIFICATION (data):\n" +
@@ -102,6 +107,16 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 })),
             new(ChatRole.User, "ASSIGNED TASK (data):\n" +
                 JsonSerializer.Serialize(input.WorkItem)),
+            new(ChatRole.User, staticWeb
+                ? "STATIC WEB INTEGRATION REQUIREMENT: Final source must contain "
+                  + "root index.html and only HTML/CSS/JS/JSON/Markdown files. "
+                  + (taskIndex == 0
+                      ? "This is the first task: establish index.html now, even "
+                        + "if the initial UI is minimal. Later tasks will extend it."
+                      : "Preserve the existing root index.html; update it if "
+                        + "needed to connect this assigned task.")
+                : "Follow the exact selected technology runtime profile. "
+                  + "Do not silently substitute another language or framework."),
             new(ChatRole.User, "PREVIOUS COMPLETE SOURCE FILES (data, excerpted; "
                 + "all replacements must be complete):\n" +
                 JsonSerializer.Serialize(input.ExistingFiles.Select(file =>
@@ -156,7 +171,9 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 string path;
                 try { path = ProjectDraftStore.SafePath(file.Path); }
                 catch (StoreFailure) { throw new StoreFailure("MODEL_OUTPUT_REJECTED"); }
-                if (!paths.Add(path))
+                if (!paths.Add(path) ||
+                    path.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase) ||
+                    path.EndsWith("/SKILL.md", StringComparison.OrdinalIgnoreCase))
                     throw new StoreFailure("MODEL_OUTPUT_REJECTED");
                 var content = ProjectDraftStore.ValidateSource(path, file.Content);
                 files.Add(new EngineeringFileChange(path, file.Purpose.Trim(), content));
