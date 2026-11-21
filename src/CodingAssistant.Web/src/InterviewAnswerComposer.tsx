@@ -5,6 +5,19 @@ export interface InterviewChoice {
   options: string[];
 }
 
+/** Format a selection as an ordinary owner response for the unchanged API. */
+export function formatInterviewAnswer(choice: InterviewChoice | null,
+  selected: readonly string[], other: string, freeform: string): string {
+  if (!choice) return freeform.trim();
+  const chosen = choice.kind === 'single' ? selected.slice(0, 1) : selected;
+  const choiceText = chosen.length
+    ? (choice.kind === 'single' ? 'Selected option: ' : 'Selected options: ') +
+      chosen.join('; ') : '';
+  const otherText = other.trim();
+  return [choiceText, otherText ? 'Something else: ' + otherText : '']
+    .filter(Boolean).join('\n');
+}
+
 /**
  * Choices are authored by the local Product Owner model and saved with the
  * question. The owner may always type their own answer instead. We submit an
@@ -22,14 +35,8 @@ export function InterviewAnswerComposer({ choice, busy, onAnswer }: {
   const [freeform, setFreeform] = useState('');
   const guided = choice && (choice.kind === 'single' || choice.kind === 'multiple') &&
     choice.options.length >= 2 && choice.options.length <= 5;
-  const trimmedOther = other.trim();
-  const choiceText = guided && selected.length
-    ? (choice.kind === 'single' ? 'Selected option: ' : 'Selected options: ') +
-      selected.join('; ') : '';
-  const prepared = guided
-    ? [choiceText, trimmedOther ? 'Something else: ' + trimmedOther : '']
-        .filter(Boolean).join('\n')
-    : freeform.trim();
+  const prepared = formatInterviewAnswer(guided ? choice : null,
+    selected, other, freeform);
   const valid = prepared.length > 0 && prepared.length <= 2400;
 
   function toggle(option: string, checked: boolean) {
