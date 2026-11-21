@@ -59,6 +59,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             MafAgentPurpose.Architecture => "json",
             MafAgentPurpose.TechnicalLead => "json",
             MafAgentPurpose.SoftwareEngineer => "json",
+            MafAgentPurpose.QaEngineer => "json",
             _ => null
         };
         var maxTokens = purpose switch
@@ -67,6 +68,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             MafAgentPurpose.Specification => 3500,
             MafAgentPurpose.TechnicalLead => 3500,
             MafAgentPurpose.SoftwareEngineer => 6000,
+            MafAgentPurpose.QaEngineer => 2200,
             _ => 1800
         };
         var chat = new
@@ -157,7 +159,8 @@ public enum MafAgentPurpose
     Specification,
     Architecture,
     TechnicalLead,
-    SoftwareEngineer
+    SoftwareEngineer,
+    QaEngineer
 }
 
 public interface IMafChatClientFactory
