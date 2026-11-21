@@ -174,6 +174,9 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
 }) {
   const job = engine.snapshot?.job;
   const running = job?.state === 'Running';
+  const assignments = engine.snapshot?.tasks ?? [];
+  const completedCount = assignments.filter(item => item.state === 'Completed').length;
+  const activeTask = assignments.find(item => item.state === 'Running');
   const approved = engine.plan?.status === 'Approved' &&
     engine.plan.current === true;
   return <section className="engineering-workspace"
@@ -215,13 +218,44 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
       {job.state === 'Failed' && <p className="activity-warning" role="alert">
         Source generation stopped safely. Completed task files remain inspectable.
         No verification or successful full build is claimed.</p>}
-      <ol className="engineering-tasks">
-        {(engine.snapshot?.tasks ?? []).map(item => <li key={item.id}>
-          <strong>{item.title}</strong>
-          <small>Task {item.ordinal + 1} · {item.state} · {item.id}</small>
-          {item.summary && <p className="hint">{item.summary}</p>}
-        </li>)}
+      <div className="engineering-board-header">
+        <div><span className="wb-kicker">SAVED ENGINEERING ASSIGNMENTS</span>
+          <h3>Implementation workstream</h3></div>
+        <span className="engineering-board-count">{completedCount} of
+          {' '}{assignments.length} completed</span>
+      </div>
+      {running && <div className="engineering-now-working" role="status">
+        <span className="engineering-run-dot" aria-hidden="true" />
+        {activeTask ? 'Recorded active assignment: ' + activeTask.title :
+          'Engineering run active · waiting for a persisted assignment'}
+      </div>}
+      <ol className="engineering-tasks engineering-task-board"
+        aria-label="Saved Software Engineer task progression">
+        {assignments.map(item => {
+          const changedFiles = engine.snapshot?.files.filter(file =>
+            file.lastWorkItemId === item.id).length ?? 0;
+          return <li key={item.id} data-task-state={item.state}>
+            <div className="engineering-task-heading">
+              <span className="engineering-task-number" aria-hidden="true">
+                {String(item.ordinal + 1).padStart(2, '0')}</span>
+              <strong>{item.title}</strong>
+              <span className="engineering-task-state">{item.state}</span>
+            </div>
+            <div className="engineering-task-evidence">
+              <span>Task {item.ordinal + 1}</span>
+              <span>{changedFiles} saved file(s) last changed by this task</span>
+              {item.completedUtc && <span>Completed
+                {' '}{new Date(item.completedUtc).toLocaleString()}</span>}
+              {item.startedUtc && !item.completedUtc && <span>Started
+                {' '}{new Date(item.startedUtc).toLocaleString()}</span>}
+            </div>
+            {item.summary && <p className="hint">{item.summary}</p>}
+          </li>;
+        })}
       </ol>
+      {assignments.length === 0 && <p className="hint">
+        No persisted task assignments yet. This is not an estimated backlog.
+      </p>}
       <details>
         <summary>Saved engineering activity ({engine.snapshot?.events.length ?? 0})</summary>
         <ol className="events" aria-label="Software Engineer saved activity">
