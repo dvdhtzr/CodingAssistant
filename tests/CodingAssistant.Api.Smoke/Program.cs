@@ -226,8 +226,8 @@ if (OperatingSystem.IsWindows())
     Check(ReferenceEquals(format, LocalInterviewModel.InterviewOutputSchema),
         "MAF and direct Ollama use one interview response schema");
     using var formatJson = JsonDocument.Parse(JsonSerializer.Serialize(format));
-    var root = formatJson.RootElement;
-    var fields = root.GetProperty("properties");
+    var schemaRoot = formatJson.RootElement;
+    var fields = schemaRoot.GetProperty("properties");
     var choiceFields = fields.GetProperty("choice").GetProperty("properties");
     Check(fields.TryGetProperty("message", out _) &&
           fields.TryGetProperty("readyForSpecification", out _) &&
