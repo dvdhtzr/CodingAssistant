@@ -1465,6 +1465,25 @@ try
                   json.RootElement.GetProperty("specification")
                     .GetProperty("status").GetString() == "Approved",
                 "owner's exact approved specification saved");
+        using (var handoff = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/agent-handoffs"))
+        using (var json = await ReadJson(handoff))
+        {
+            var events = json.RootElement.GetProperty("events");
+            Check(handoff.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("executionAvailable").GetBoolean() == false &&
+                  events.GetArrayLength() == 1 &&
+                  events[0].GetProperty("kind").GetString() == "SpecificationHandoff" &&
+                  events[0].GetProperty("fromAgent").GetString() == "ProductOwner" &&
+                  events[0].GetProperty("toAgent").GetString() == "SolutionArchitect" &&
+                  events[0].GetProperty("current").GetBoolean() &&
+                  events[0].GetProperty("specificationSha256").GetString() == specHash,
+                "approved Product Owner spec creates immutable owner-gated agent handoff");
+        }
+        using (var anonymous = new HttpClient { BaseAddress = interviewClient.BaseAddress })
+        using (var denied = await anonymous.GetAsync($"/api/tasks/{id}/agent-handoffs"))
+            Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+                "agent handoff history is owner-authenticated");
         Check(fakeInterview.AskCount == 3 &&
               fakeInterview.SpecCount == 1 &&
               fakeInterview.LastObjective == ownerObjective,
