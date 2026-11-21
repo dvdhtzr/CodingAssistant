@@ -66,7 +66,7 @@ public sealed class ProjectDraftStore(TaskStore tasks)
     private static readonly HashSet<string> Events = new(
         StringComparer.Ordinal)
     {
-        "BuildAccepted", "ModelPlanning", "PlanAccepted",
+        "BuildAccepted", "ModelPlanning", "PlanCorrectionRequested", "PlanAccepted",
         "FileStarted", "FileSaved", "StaticChecking", "ModelOutputReceived",
         "DraftGenerated", "DraftFailed", "DraftInterrupted", "ArchitectureBound"
     };
