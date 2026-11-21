@@ -14,6 +14,7 @@ interface HandoffEvent {
   model: string;
   planSha256?: string | null;
   architectureSha256?: string | null;
+  workItemId?: string | null;
   createdUtc: string;
   current: boolean;
 }
@@ -76,6 +77,7 @@ export function MafHandoffTimeline({ token, taskId }: {
                       : 'Source changes saved for engineering task (not tested)'}</small>
           <small>Spec v{item.specificationVersion} · {item.model}
             {item.planSha256 ? ' · Plan ' + item.planSha256.slice(0, 10) : ''}
+            {item.workItemId ? ' · ' + item.workItemId : ''}
             {item.current ? '' : ' · Historical'}</small>
         </li>)}
       </ol>
