@@ -49,7 +49,8 @@ public static class ApiHost
         IOllamaModelCatalog? catalogOverride = null,
         IArchitectureAdvisor? architectureAdvisorOverride = null,
         IImplementationPlanner? implementationPlannerOverride = null,
-        IEngineeringTaskModel? engineeringModelOverride = null)
+        IEngineeringTaskModel? engineeringModelOverride = null,
+        IQaSourceReviewer? qaReviewerOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -92,6 +93,10 @@ public static class ApiHost
             store, implementationPlans);
         engineeringRuns.Initialize();
         engineeringRuns.MarkInterruptedOnStartup();
+        var qaReviews = new QaReviewStore(store, implementationPlans);
+        qaReviews.Initialize();
+        qaReviews.MarkInterruptedOnStartup();
+        var qaEngineer = qaReviewerOverride ?? new MafQaEngineer();
         var softwareEngineer = engineeringModelOverride ?? new MafSoftwareEngineer();
         var technicalLead = implementationPlannerOverride ?? (IImplementationPlanner)mafTeam;
         var catalog = catalogOverride ?? new LocalOllamaModelCatalog();
@@ -156,6 +161,9 @@ public static class ApiHost
         builder.Services.AddSingleton(engineeringRuns);
         builder.Services.AddSingleton<IEngineeringTaskModel>(softwareEngineer);
         builder.Services.AddSingleton<EngineeringRunCoordinator>();
+        builder.Services.AddSingleton(qaReviews);
+        builder.Services.AddSingleton<IQaSourceReviewer>(qaEngineer);
+        builder.Services.AddSingleton<QaReviewCoordinator>();
         builder.Services.AddSingleton<IImplementationPlanner>(technicalLead);
         builder.Services.AddSingleton<IArchitectureAdvisor>(architectModel);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
@@ -315,12 +323,12 @@ public static class ApiHost
             Safe(() => Results.Ok(db.Read(id))));
         app.MapGet("/api/tasks/{id}/agent-handoffs",
             (string id, MafHandoffStore db, ImplementationPlanStore plans,
-             EngineeringRunStore engineers) =>
+             EngineeringRunStore engineers, QaReviewStore qa) =>
                 Safe(() => Results.Ok(new {
                     engine = "Microsoft Agent Framework",
                     executionAvailable = false,
                     events = db.List(id).Concat(plans.Handoffs(id))
-                        .Concat(engineers.Handoffs(id))
+                        .Concat(engineers.Handoffs(id)).Concat(qa.Handoffs(id))
                         .OrderBy(e => e.CreatedUtc).ThenBy(e => e.Kind).ToArray()
                 })));
         app.MapPost("/api/tasks/{id}/interview/turn", (
@@ -534,6 +542,24 @@ public static class ApiHost
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.File(db.Zip(id, runId), "application/zip",
                     "codingassistant-engineering-source.zip")));
+        // Phase 5: independent, read-only MAF QA. Owner must initiate a
+        // completed, current-plan engineering run. Static review is NOT a
+        // build, execution, test run, security qualification or PASS.
+        app.MapGet("/api/tasks/{id}/qa-reviews/latest",
+            (string id, QaReviewStore db) =>
+                Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
+        app.MapPost("/api/tasks/{id}/qa-reviews",
+            (string id, StartQaReviewRequest request,
+             QaReviewCoordinator coordinator) =>
+                Safe(() => Results.Accepted(
+                    $"/api/tasks/{id}/qa-reviews",
+                    coordinator.Start(id, request))));
+        app.MapGet("/api/tasks/{id}/qa-reviews/{reviewId}",
+            (string id, string reviewId, QaReviewStore db) =>
+                Safe(() => Results.Ok(db.Get(id, reviewId))));
+        app.MapPost("/api/tasks/{id}/qa-reviews/{reviewId}/cancel",
+            (string id, string reviewId, QaReviewCoordinator coordinator) =>
+                Safe(() => Results.Ok(coordinator.Cancel(id, reviewId))));
         // User-scoped draft source generation. This is not M1 agent
         // execution and runs NO model-generated code, shell or package tool.
         // Only an approved, current interview specification can start it.
@@ -799,6 +825,7 @@ public static class ApiHost
                 "ARCHITECTURE_NOT_READY" or "ARCHITECTURE_CONFLICT" or
                 "ARCHITECTURE_PLAN_CONFLICT" or
                 "STALE_DECISION" or "STALE_IMPLEMENTATION_PLAN" or
+                "SOURCE_CHANGED" or
                 "SPECIFICATION_NOT_APPROVED" or
                 "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
