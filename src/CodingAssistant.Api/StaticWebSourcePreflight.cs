@@ -137,12 +137,13 @@ public static class StaticWebSourcePreflight
                     out var reference);
                 if (!hasRef) continue;
                 references++;
-                var localPath = LocalPath(file.Path, reference!);
+                var requested = reference ?? string.Empty;
+                var localPath = LocalPath(file.Path, requested);
                 if (localPath is null)
                 {
                     Finding("UNRESOLVED_ASSET_REFERENCE", "Error", file.Path,
                         "Asset reference is external, invalid, or outside the project: " +
-                        reference![..Math.Min(reference.Length, 140)]);
+                        requested[..Math.Min(requested.Length, 140)]);
                     continue;
                 }
                 if (!paths.ContainsKey(localPath))
