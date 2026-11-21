@@ -798,3 +798,120 @@ a { color: #91e2d8; }
 @media(max-width: 680px) {
   .interview-choice-options { grid-template-columns: 1fr; }
 }
+
+
+/*
+ * Long interview usability:
+ * The workspace is the page scroller; only the transcript scrolls within it.
+ * Do not trap the composer or the specification action behind stacked
+ * overflow containers, and do not cover conversation content with progress.
+ */
+.wb-main .journey-status-strip {
+  position: static;
+}
+.journey-stage {
+  scroll-margin-top: 1rem;
+}
+.journey-discovery .journey-stage-body {
+  max-height: none;
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+.journey-discovery .interview-studio {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.journey-discovery .interview-transcript {
+  flex: none;
+  max-height: clamp(220px, 43dvh, 480px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+  scroll-padding-block: .75rem;
+  outline-offset: -3px;
+  min-height: 0;
+  margin: .75rem 0;
+}
+.journey-discovery .journey-stage-body form {
+  position: static;
+  bottom: auto;
+  flex-shrink: 0;
+  margin-top: .75rem;
+  box-shadow: none;
+}
+.interview-objective {
+  margin-top: .75rem;
+  max-width: 100%;
+  border: 1px solid #38515e;
+  border-radius: 8px;
+  background: #112630;
+}
+.interview-objective summary {
+  cursor: pointer;
+  padding: .6rem .75rem;
+  color: #d3e3e6;
+  font-size: .76rem;
+  font-weight: 650;
+}
+.interview-objective summary span {
+  color: #91b0b8;
+  font-weight: 450;
+  margin-left: .3rem;
+}
+.interview-objective .hint {
+  margin: 0;
+  padding: .8rem;
+  border-top: 1px solid #38515e;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.interview-completion-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid #57978a;
+  border-left: 4px solid #8dd9ba;
+  border-radius: 10px;
+  background: linear-gradient(110deg, #193a37, #182b33);
+  padding: 1rem 1.1rem;
+  margin: .75rem 0 .3rem;
+}
+.interview-completion-notice div {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.interview-completion-notice strong {
+  display: block;
+  color: #e1faee;
+  font-weight: 700;
+  font-size: .94rem;
+}
+.interview-completion-notice p {
+  color: #b6d5d0;
+  font-size: .78rem;
+  line-height: 1.5;
+  margin: .4rem 0 0;
+}
+.interview-completion-notice .primary {
+  flex: none;
+  margin-left: auto;
+  font-size: .82rem;
+  white-space: normal;
+}
+.interview-ready-action {
+  margin-top: .35rem;
+  align-self: flex-end;
+  font-size: .8rem;
+}
+@media (max-width: 760px) {
+  .journey-discovery .interview-transcript {
+    max-height: min(46dvh, 440px);
+  }
+  .interview-completion-notice .primary {
+    margin-left: 0;
+    width: 100%;
+  }
+}
