@@ -99,7 +99,8 @@ export function QaReviewPanel({ token, taskId, engineering }: {
           engineeringRunId: source.id,
           planSha256: source.planSha256,
         });
-      setResult({ job: admitted, reports: [], events: [] });
+      setResult({ job: admitted, reports: [], events: [],
+        sourceState: source.state as 'Generated' | 'Failed' | 'Interrupted' });
       setReload(x => x + 1);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'QA review could not start');
