@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProjectDraftPanel } from './ProjectDraftPanel';
 import { ArchitectureStudio } from './ArchitectureStudio';
+import { TechnicalLeadStudio } from './TechnicalLeadStudio';
 import { api, type TaskItem } from './api';
 import { JourneyStage, JourneyStatusStrip, journeySteps, restoreJourneyStage,
   toggleJourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
@@ -48,8 +49,9 @@ export function InterviewStudio({ token, task }: {
   const [expanded, setExpanded] = useState<JourneyId | null>('discovery');
   const manuallySelected = useRef(false);
   const [architectureStep, setArchitectureStep] = useState<JourneyStep>(journeySteps[2]);
-  const [generationStep, setGenerationStep] = useState<JourneyStep>(journeySteps[3]);
-  const [deliveryStep, setDeliveryStep] = useState<JourneyStep>(journeySteps[4]);
+  const [planStep, setPlanStep] = useState<JourneyStep>(journeySteps[3]);
+  const [generationStep, setGenerationStep] = useState<JourneyStep>(journeySteps[4]);
+  const [deliveryStep, setDeliveryStep] = useState<JourneyStep>(journeySteps[5]);
 
   const openStage = useCallback((id: JourneyId) => {
     manuallySelected.current = true;
@@ -59,6 +61,10 @@ export function InterviewStudio({ token, task }: {
     setArchitectureStep(previous => previous.tone === step.tone &&
       previous.status === step.status ? previous : step);
   }, []);
+  const reportPlan = useCallback((plan: JourneyStep) => {
+    setPlanStep(previous => previous.tone === plan.tone &&
+      previous.status === plan.status ? previous : plan);
+  }, []);
   const reportDraft = useCallback((generation: JourneyStep, delivery: JourneyStep) => {
     setGenerationStep(previous => previous.tone === generation.tone &&
       previous.status === generation.status ? previous : generation);
@@ -66,7 +72,10 @@ export function InterviewStudio({ token, task }: {
       previous.status === delivery.status ? previous : delivery);
   }, []);
   const architectureReady = useCallback(() => {
-    setExpanded(current => current === 'architecture' ? 'generation' : current);
+    setExpanded(current => current === 'architecture' ? 'plan' : current);
+  }, []);
+  const planReady = useCallback(() => {
+    setExpanded(current => current === 'plan' ? 'generation' : current);
   }, []);
   const generationComplete = useCallback(() => {
     setExpanded(current => current === 'generation' ? 'delivery' : current);
@@ -173,7 +182,7 @@ export function InterviewStudio({ token, task }: {
           ownerAnswers ? 'Ready to draft' : 'Waiting for interview',
   };
   const steps = [discoveryStep, specificationStep, architectureStep,
-    generationStep, deliveryStep];
+    planStep, generationStep, deliveryStep];
 
   // Saved-project restore opens the next useful stage; a human-selected stage
   // takes precedence. Only confirmed approvals and a completed running job
@@ -181,9 +190,10 @@ export function InterviewStudio({ token, task }: {
   useEffect(() => {
     if (!snapshot || manuallySelected.current) return;
     setExpanded(restoreJourneyStage(spec?.status ?? null,
-      architectureStep.tone, generationStep.tone, deliveryStep.tone));
-  }, [snapshot, spec?.status, architectureStep.tone, generationStep.tone,
-    deliveryStep.tone]);
+      architectureStep.tone, planStep.tone, generationStep.tone,
+      deliveryStep.tone));
+  }, [snapshot, spec?.status, architectureStep.tone, planStep.tone,
+    generationStep.tone, deliveryStep.tone]);
 
   return <div className="journey-shell">
     <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded} />
@@ -336,6 +346,9 @@ export function InterviewStudio({ token, task }: {
     <ArchitectureStudio token={token} taskId={task.id} spec={spec ?? null}
       expanded={expanded === 'architecture'} onExpand={openStage}
       onReady={architectureReady} onStageChange={reportArchitecture} />
+    <TechnicalLeadStudio token={token} taskId={task.id} spec={spec ?? null}
+      expanded={expanded === 'plan'} onExpand={openStage}
+      onReady={planReady} onStageChange={reportPlan} />
     <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null}
       expanded={expanded} onExpand={openStage} onGenerated={generationComplete}
       onStageChange={reportDraft} />
