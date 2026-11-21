@@ -724,6 +724,101 @@ try
         .Plan?.PlanSha256 == secondPlanHash,
         "restarted SQLite reader sees exact approved plan identity");
 
+    // Phase 4: the fourth actual MAF role is exposed by the authenticated
+    // roster, while engineer task execution is only a SOURCE-ONLY model call.
+    using (var roster = await client.GetAsync("/api/agents/roster"))
+    using (var body = await Body(roster))
+    {
+        var agents = body.RootElement.GetProperty("agents");
+        Check(roster.StatusCode == HttpStatusCode.OK &&
+              agents.GetArrayLength() == 4 &&
+              agents.EnumerateArray().Any(a =>
+                  a.GetProperty("id").GetString() == "SoftwareEngineer" &&
+                  !a.GetProperty("canExecuteCode").GetBoolean() &&
+                  a.GetProperty("backstory").GetString()!.Length > 25),
+            "authenticated roster exposes distinct fourth MAF role and no tool rights");
+    }
+    var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(engineeringPath + "/latest"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "owner-private engineering task ledger requires authentication");
+
+    using (var emptyEngineering = await client.GetAsync(engineeringPath + "/latest"))
+    using (var body = await Body(emptyEngineering))
+        Check(emptyEngineering.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("snapshot").ValueKind == JsonValueKind.Null,
+            "no engineering activity is faked before owner opts in");
+
+    using (var denied = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, firstPlanHash)))
+        Check(denied.StatusCode == HttpStatusCode.Conflict &&
+              softwareModel.AssignedIds.Count == 0,
+            "wrong Technical Lead revision digest cannot start engineering");
+
+    string engineeringRunId;
+    using (var admitted = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, secondPlanHash)))
+    using (var body = await Body(admitted))
+    {
+        engineeringRunId = body.RootElement.GetProperty("id").GetString()!;
+        Check(admitted.StatusCode == HttpStatusCode.Accepted &&
+              body.RootElement.GetProperty("planSha256").GetString() == secondPlanHash &&
+              body.RootElement.GetProperty("state").GetString() == "Running",
+            "owner starts task-by-task engineer run bound to exact approved plan");
+    }
+    EngineeringRunSnapshot? engineeringResult = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        using var progress = await client.GetAsync(
+            engineeringPath + "/" + engineeringRunId);
+        using var document = await Body(progress);
+        if (document.RootElement.GetProperty("job").GetProperty("state")
+            .GetString() == "Running")
+        {
+            await Task.Delay(25);
+            continue;
+        }
+        engineeringResult = new EngineeringRunStore(tasks,
+            new ImplementationPlanStore(tasks, interviews))
+            .Get(taskBound.Id, engineeringRunId);
+        break;
+    }
+    Check(engineeringResult?.Job.State == "Generated" &&
+          engineeringResult.Tasks.Count == 2 &&
+          engineeringResult.Tasks.All(t => t.State == "Completed") &&
+          engineeringResult.Files.Count == 2 &&
+          engineeringResult.Files.Any(f => f.Path == "index.html") &&
+          engineeringResult.Files.Any(f => f.Path == "app.js") &&
+          engineeringResult.Events.Any(e => e.Kind == "EngineeringTaskStarted") &&
+          engineeringResult.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 2,
+        "each approved engineer task persists source and exact durable event history");
+    Check(softwareModel.AssignedIds.SequenceEqual(["timer-interface","timer-state"]) &&
+          softwareModel.PreviousFileCountOnSecondTask == 1 &&
+          engineeringResult!.Files.Single(f => f.Path == "app.js")
+              .LastWorkItemId == "timer-state",
+        "Software Engineer gets prior source and records last task ownership");
+
+    using (var zip = await client.GetAsync(
+        engineeringPath + "/" + engineeringRunId + "/zip"))
+    {
+        var bytes = await zip.Content.ReadAsByteArrayAsync();
+        using var archive = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read);
+        Check(zip.StatusCode == HttpStatusCode.OK &&
+              archive.Entries.Select(e => e.FullName)
+                  .Order(StringComparer.Ordinal).SequenceEqual(["app.js","index.html"]),
+            "owner can export all completed engineer source without executing code");
+    }
+    using (var handoffs = await client.GetAsync(
+        "/api/tasks/" + taskBound.Id + "/agent-handoffs"))
+    using (var body = await Body(handoffs))
+        Check(body.RootElement.GetProperty("events").EnumerateArray()
+              .Any(e => e.GetProperty("kind").GetString() ==
+                  "EngineeringTaskCompleted" &&
+                  e.GetProperty("fromAgent").GetString() == "SoftwareEngineer" &&
+                  e.GetProperty("planSha256").GetString() == secondPlanHash),
+            "authentic MAF Software Engineer handoffs reference exact approved plan");
+
     using (var noHash = await Post(client, boundPath, approvedRequest))
         Check(noHash.StatusCode == HttpStatusCode.Conflict,
             "approved architecture cannot be silently ignored by old API callers");
