@@ -58,6 +58,34 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     }
 }
 
+// The source-file manifest is NOT the Technical Lead's engineering task
+// plan. Small local models may return unrelated JSON shapes or invalid fields.
+{
+    var sourceFiles = LocalProjectDraftModel.ParseFileManifest(
+        """{"files":[{"path":"index.html","purpose":"Browser entry point"},{"path":"app.js","purpose":"Wire user controls"}]}""");
+    Check(sourceFiles.Count == 2 && sourceFiles[0].Path == "index.html",
+        "strict local file-manifest JSON accepts the documented shape");
+    foreach (var invalid in new[] {
+        """{"tasks":[{"id":"create-ui","title":"Plan tasks"}]}""",
+        """{"files":[{"path":"index.html"}]}""",
+        """{"files":[{"path":"index.html","purpose":"bad"},{"path":"index.html","purpose":"duplicate path"}]}""",
+        """{"files":[]}""",
+        """{"files":"index.html"}""",
+        """{"files":[{"path":"app.js","purpose":"Valid JavaScript file"}]""",
+    })
+    {
+        try
+        {
+            _ = LocalProjectDraftModel.ParseFileManifest(invalid);
+            Check(false, "invalid local JSON cannot pass source plan parser");
+        }
+        catch (StoreFailure error) when (error.Code == "INVALID_PROJECT_PLAN")
+        {
+            Check(true, "malformed/missing/duplicate file-manifest data rejected");
+        }
+    }
+}
+
 // Actual MAF invocation path using an injected no-network IChatClient.
 // No direct LocalInterviewModel/LocalArchitectureAdvisor legacy path is used.
 {
@@ -861,6 +889,10 @@ sealed class Phase2DraftModel : IProjectDraftModel
     public bool ReturnWrongStack { get; set; }
     public bool OmitIndex { get; set; }
     public bool RecoverOnCorrection { get; set; }
+    public bool InvalidMetadata { get; set; }
+    public bool InvalidPath { get; set; }
+    public bool MalformedManifest { get; set; }
+    public bool RecoverInvalidManifest { get; set; }
     public int PlanAttempts { get; private set; }
     public string PlanInput { get; private set; } = "";
     public string WriteInput { get; private set; } = "";
@@ -873,6 +905,17 @@ sealed class Phase2DraftModel : IProjectDraftModel
         PlanAttempts++;
         var corrective = approvedSpecification.Contains(
             "FILE PLAN CORRECTION REQUIRED:", StringComparison.Ordinal);
+        if (!corrective || !RecoverInvalidManifest)
+        {
+            if (MalformedManifest)
+                throw new StoreFailure("INVALID_PROJECT_PLAN");
+            if (InvalidMetadata)
+                return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
+                    [new PlannedProjectFile("index.html", "x")]);
+            if (InvalidPath)
+                return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
+                    [new PlannedProjectFile("../outside.js", "Unsafe source path")]);
+        }
         if (!corrective || !RecoverOnCorrection)
         {
             if (ReturnWrongStack)
