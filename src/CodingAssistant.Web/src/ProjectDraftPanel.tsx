@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { EngineeringGenerationPanel, EngineeringDeliveryPanel, useEngineeringRun }
   from './EngineeringWorkspace';
 import { QaReviewPanel } from './QaReviewPanel';
+import { SourceArtifactExplorer } from './SourceArtifactExplorer';
 import { api } from './api';
 import { TaskBuildPanel } from './TaskBuildPanel';
 import { JourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
@@ -405,16 +406,10 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
             </button>}
         </div>
         {!job && <p className="hint">No generated files yet. Start with Source Generation.</p>}
-        {!!result?.files.length && <>
-          <h3>Generated source files (unverified)</h3>
-          <div className="draft-files">
-            {result.files.map(file => <details key={file.path}>
-              <summary><strong>{file.path}</strong> · {file.content.length} characters</summary>
-              <p className="hint">{file.purpose} · SHA-256 {file.sha256}</p>
-              <pre className="specification-text">{file.content}</pre>
-            </details>)}
-          </div>
-        </>}
+        {!!result?.files.length && job &&
+          <SourceArtifactExplorer key={job.id}
+            source="Classic generator" files={result.files} state={job.state}
+            runId={job.id} isCurrent={currentSpec && currentArchitecture}/>}
         {job?.state === 'Generated' && spec?.status === 'Approved' &&
           currentSpec &&
           <TaskBuildPanel token={token} taskId={taskId}

@@ -93,3 +93,42 @@ test('owner inbox action navigates to original architecture review stage without
   assert.match(await inbox.textContent(), /read-only navigation/);
   assert.equal(await inbox.getByRole('button', { name: /Approve/i }).count(), 0);
 });
+
+test('source explorer browses nested persisted files and preserves selection through search', async () => {
+  const explorer = page.getByRole('region', { name: 'MAF Software Engineer saved source explorer' });
+  const fileSearch = explorer.getByRole('searchbox', { name: 'FIND SAVED FILE' });
+  assert.equal(await explorer.getByText('4 of 4 saved files').isVisible(), true);
+  assert.equal(await explorer.getByRole('region', { name: /Source content: README.md/ }).isVisible(), true);
+  await fileSearch.fill('resident');
+  assert.equal(await explorer.getByText('1 of 4 saved files').isVisible(), true);
+  const resident = explorer.getByRole('button', { name: 'Resident.cs' });
+  await resident.click();
+  assert.equal(await explorer.getByRole('region',
+    { name: 'Source content: src/Models/Resident.cs' }).isVisible(), true);
+  assert.match(await explorer.textContent(), /Task 1: Build residents \(T1\)/);
+  assert.match(await explorer.textContent(), /Resident domain/);
+  assert.match(await explorer.textContent(), /bbbbbbbbbbbb/);
+  await explorer.getByRole('button', { name: 'Clear search' }).click();
+  assert.equal(await resident.getAttribute('aria-pressed'), 'true');
+  assert.equal(await explorer.getByText('4 of 4 saved files').isVisible(), true);
+});
+
+test('source preview escapes untrusted source and supports full large-file inspection', async () => {
+  const explorer = page.getByRole('region', { name: 'MAF Software Engineer saved source explorer' });
+  const fileSearch = explorer.getByRole('searchbox', { name: 'FIND SAVED FILE' });
+  await fileSearch.fill('overview.tsx');
+  await explorer.getByRole('button', { name: 'Overview.tsx' }).click();
+  const preview = explorer.getByRole('region', { name: 'Source content: src/Views/Overview.tsx' });
+  assert.match(await preview.textContent(), /<script>alert\(1\)<\/script>/);
+  assert.equal(await explorer.locator('script').count(), 0);
+  await fileSearch.fill('longpayload');
+  await explorer.getByRole('button', { name: 'LongPayload.ts' }).click();
+  assert.equal(await explorer.getByRole('button', { name: 'Show complete file' }).isVisible(), true);
+  assert.match(await explorer.textContent(), /Displaying the first 750 lines/);
+  assert.equal(await explorer.getByText('const n809 = 809;').count(), 0);
+  await explorer.getByRole('button', { name: 'Show complete file' }).click();
+  assert.match(await explorer.getByRole('region',
+    { name: 'Source content: src/LongPayload.ts' }).textContent(), /const n809 = 809;/);
+  await explorer.getByRole('button', { name: 'Return to numbered preview' }).click();
+  assert.equal(await explorer.getByText('const n809 = 809;').count(), 0);
+});
