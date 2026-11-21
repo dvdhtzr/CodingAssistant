@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using CodingAssistant.Api;
+using Microsoft.Extensions.AI;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
@@ -55,6 +56,36 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     {
         Check(true, "malformed model response rejected");
     }
+}
+
+// Actual MAF invocation path using an injected no-network IChatClient.
+// No direct LocalInterviewModel/LocalArchitectureAdvisor legacy path is used.
+{
+    var factory = new Phase3FakeMafFactory();
+    var team = new MafAgentTeam(factory);
+    var first = await team.AskAsync("Build an offline notes tracker", [],
+        "qwen3.5:4b", CancellationToken.None);
+    Check(first.Message.Contains("users") && !first.ReadyForSpecification,
+        "MAF Product Owner agent turns the objective into a real follow-up question");
+    var interview = new InterviewMessage[] {
+        new(1, "assistant", first.Message, "2026-11-20T00:00:00Z"),
+        new(2, "owner", "Just me, working offline", "2026-11-20T00:00:01Z")
+    };
+    var draft = await team.DraftAsync("Build an offline notes tracker",
+        interview, "qwen3.5:4b", CancellationToken.None);
+    Check(draft.Length >= 180 && draft.Contains("acceptance"),
+        "MAF Product Owner generates a validated specification from saved transcript");
+    var advice = await team.RecommendAsync("Build an offline notes tracker",
+        draft, "qwen3.5:4b", "technology-stack", CancellationToken.None);
+    Check(advice.Options.Count == 2 && advice.RecommendedOptionId == "static-web",
+        "distinct MAF Solution Architect agent returns proposal, not an approval");
+    Check(factory.Purposes.SequenceEqual(new[] {
+            MafAgentPurpose.Interview, MafAgentPurpose.Specification,
+            MafAgentPurpose.Architecture
+        }) && factory.SystemPoliciesSeen == 3 &&
+        factory.AllowedToolsSeen == 0 &&
+        factory.Models.All(m => m == "qwen3.5:4b"),
+        "MAF runs specialized local agents with exact model, instructions and no tools");
 }
 
 var root = Path.Combine(Path.GetTempPath(),
@@ -712,5 +743,63 @@ sealed class Phase2DraftModel : IProjectDraftModel
         return Task.FromResult(file.Path == "index.html"
             ? "<!DOCTYPE html><html><body><button id=\"start\">Start</button><script src=\"app.js\"></script></body></html>"
             : "document.getElementById('start').addEventListener('click', () => {});");
+    }
+}
+
+sealed class Phase3FakeMafFactory : IMafChatClientFactory
+{
+    public List<MafAgentPurpose> Purposes { get; } = [];
+    public List<string> Models { get; } = [];
+    public int SystemPoliciesSeen { get; private set; }
+    public int AllowedToolsSeen { get; private set; }
+
+    public IChatClient Create(string model, MafAgentPurpose purpose)
+    {
+        Purposes.Add(purpose);
+        Models.Add(model);
+        return new FakeChatClient(this, purpose);
+    }
+
+    private sealed class FakeChatClient(
+        Phase3FakeMafFactory parent, MafAgentPurpose purpose) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var history = messages.ToArray();
+            if (history.Any(m => m.Role.Value == "system" &&
+                m.Text?.Contains("You are", StringComparison.Ordinal) == true) ||
+                options?.Instructions?.Contains("You are",
+                    StringComparison.Ordinal) == true)
+                parent.SystemPoliciesSeen++;
+            parent.AllowedToolsSeen += options?.Tools?.Count ?? 0;
+            var text = purpose switch
+            {
+                MafAgentPurpose.Interview =>
+                    """{"message":"Who are your intended users?","readyForSpecification":false}""",
+                MafAgentPurpose.Specification =>
+                    ("# Project goal\nAn offline personal notes tracker. " +
+                    "## Core workflow\nOne owner saves notes and searches them " +
+                    "locally without cloud accounts. " +
+                    "## Testable acceptance criteria\nGiven an offline browser, " +
+                    "when the user creates a note, the note persists after restart. " +
+                    "Given a search phrase, the results contain matching notes. " +
+                    "## Constraints\nOnly local data, no remote dependencies."),
+                MafAgentPurpose.Architecture =>
+                    """{"recommendedOptionId":"static-web","rationale":"Offline browser storage is proportionate.","options":[{"id":"static-web","label":"Static HTML and JavaScript","benefit":"Works offline","tradeoff":"Manual DOM","runtimeProfileId":"static-web"},{"id":"react","label":"React and TypeScript","benefit":"Components","tradeoff":"Build tools","runtimeProfileId":null}]}""",
+                _ => throw new Exception("Unknown MAF purpose")
+            };
+            return Task.FromResult(new ChatResponse(
+                new ChatMessage(ChatRole.Assistant, text)));
+        }
+
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Non-streaming probe.");
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
     }
 }
