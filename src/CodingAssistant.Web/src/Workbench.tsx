@@ -5,6 +5,20 @@ import { AgentIdentityPanel } from './AgentIdentityPanel';
 
 export type WorkbenchView = 'overview' | 'studio' | 'diagnostics';
 
+interface RosterAgent {
+  id: string;
+  role: string;
+  goal: string;
+  workingStyle: string;
+  backstory: string;
+  canExecuteCode: boolean;
+}
+
+function agentInitials(role: string): string {
+  return role.split(/\s+/).slice(0, 2).map(part => part[0] ?? '').join('')
+    .toUpperCase() || 'AI';
+}
+
 // Presentation metadata only. Three planning specialists now invoke MAF,
 // but this static list is not live activity telemetry or a dynamic registry.
 const initialTeam = [
@@ -17,7 +31,10 @@ const initialTeam = [
 ];
 
 export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTask,
-  onNewProject, onChangeView, onRefresh, onDeleteTask }: {
+  onNewProject, onChangeView, onRefresh, onDeleteTask, token,
+  onOpenRoster }: {
+  token?: string;
+  onOpenRoster?: () => void;
   tasks: TaskItem[];
   selectedId: string;
   view: WorkbenchView;
@@ -30,6 +47,18 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
 }) {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const [roster, setRoster] = useState<RosterAgent[] | null>(null);
+  const [rosterError, setRosterError] = useState(false);
+  useEffect(() => {
+    if (!token) return;
+    let closed = false;
+    setRoster(null);
+    setRosterError(false);
+    void api<{ agents: RosterAgent[] }>(token, '/api/agents/roster')
+      .then(data => { if (!closed) setRoster(data.agents); })
+      .catch(() => { if (!closed) setRosterError(true); });
+    return () => { closed = true; };
+  }, [token]);
   const matchingTasks = tasks.filter(task =>
     (task.title + ' ' + task.objective).toLocaleLowerCase()
       .includes(query.trim().toLocaleLowerCase()));
@@ -104,15 +133,30 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
         </div>}
       </div>)}
     </div>
-    <details className="wb-team">
-      <summary className="wb-kicker">ENGINEERING TEAM <span>{initialTeam.length} roles</span></summary>
-      {initialTeam.map(member => <div className="wb-team-member" key={member.role}>
-        <span className="wb-avatar" aria-hidden="true">{member.initials}</span>
-        <span className="wb-member-copy"><strong>{member.role}</strong>
-          <small>{member.availability}</small></span>
-      </div>)}
-      <p className="wb-muted wb-team-note">Availability describes capabilities, not live activity.
-        Saved MAF handoffs provide the activity record.</p>
+    <details className="wb-team" open>
+      <summary className="wb-kicker">ENGINEERING TEAM <span>
+        {roster ? roster.length + ' specialists' : initialTeam.length + ' roles'}
+      </span></summary>
+      {roster ? roster.map(member =>
+        <div className="wb-team-member wb-team-live-roster" key={member.id}
+          data-agent={member.id}>
+          <span className="wb-avatar" aria-hidden="true">{agentInitials(member.role)}</span>
+          <span className="wb-member-copy"><strong>{member.role}</strong>
+            <small>{member.goal}</small>
+            <span className="wb-member-subline">MAF identity · no live status reported</span>
+          </span>
+        </div>) : initialTeam.map(member =>
+        <div className="wb-team-member" key={member.role}>
+          <span className="wb-avatar" aria-hidden="true">{member.initials}</span>
+          <span className="wb-member-copy"><strong>{member.role}</strong>
+            <small>{member.availability}</small></span>
+        </div>)}
+      {rosterError && <p className="wb-muted" role="status">
+        Saved roster unavailable. Showing descriptive roles only.</p>}
+      <p className="wb-muted wb-team-note">These are role identities, not invented
+        agent activity. Recorded assignments and handoffs are shown separately.</p>
+      {onOpenRoster && <button type="button" className="wb-open-roster"
+        onClick={onOpenRoster}>View identities and handoffs →</button>}
     </details>
   </aside>;
 }

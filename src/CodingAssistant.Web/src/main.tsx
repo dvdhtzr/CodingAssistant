@@ -5,6 +5,7 @@ import './styles.css';
 import './workbench.css';
 import './journey.css';
 import './mission-control.css';
+import './agent-presence.css';
 
 const target = document.getElementById('root');
 if (!target) throw new Error('Missing Mission Control mount');
