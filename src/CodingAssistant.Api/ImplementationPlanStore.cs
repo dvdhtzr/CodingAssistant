@@ -110,9 +110,9 @@ public sealed class ImplementationPlanStore(TaskStore tasks, InterviewStore inte
     private static ImplementationPlan? Latest(SqliteConnection db,
         SqliteTransaction? tx, string taskId)
     {
-        using var command = TaskStore.Command(db, tx, SelectColumns + """
-            WHERE task_id=@id ORDER BY revision DESC LIMIT 1
-            """, ("@id", taskId));
+        using var command = TaskStore.Command(db, tx,
+            SelectColumns + " WHERE task_id=@id ORDER BY revision DESC LIMIT 1",
+            ("@id", taskId));
         using var reader = command.ExecuteReader();
         return reader.Read() ? Decode(reader) : null;
     }
@@ -138,9 +138,9 @@ public sealed class ImplementationPlanStore(TaskStore tasks, InterviewStore inte
         var eligible = spec?.Status == "Approved" &&
             readiness.ReadyForSourceGeneration;
         using var db = tasks.Open();
-        using var command = TaskStore.Command(db, null, SelectColumns + """
-            WHERE task_id=@id ORDER BY revision ASC
-            """, ("@id", taskId));
+        using var command = TaskStore.Command(db, null,
+            SelectColumns + " WHERE task_id=@id ORDER BY revision ASC",
+            ("@id", taskId));
         using var reader = command.ExecuteReader();
         var history = new List<ImplementationPlan>();
         while (reader.Read())
