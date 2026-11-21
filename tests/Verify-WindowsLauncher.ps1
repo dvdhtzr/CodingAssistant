@@ -68,17 +68,18 @@ try {
     $copyWrapper = Get-Content -Raw (
         Join-Path $PSScriptRoot '..\Copy-CodingAssistant-Token.cmd')
     if (-not $launcher.Contains('Get-CodingAssistantOwnerToken') -or
-        -not $launcher.Contains('Set-Clipboard -Value $env:CODINGASSISTANT_OWNER_TOKEN') -or
+        $launcher.Contains('Set-Clipboard -Value $env:CODINGASSISTANT_OWNER_TOKEN') -or
         $launcher.Contains('Write-Host $env:CODINGASSISTANT_OWNER_TOKEN') -or
+        -not $launcher.Contains('Mission Control connects automatically') -or
         -not $launcher.Contains("CODINGASSISTANT_ENABLE_LOCAL_EXECUTION = '0'") -or
         -not $wrapper.Contains('scripts\windows\Start-CodingAssistant.ps1') -or
         -not $copyScript.Contains('Get-CodingAssistantOwnerToken') -or
         -not $copyScript.Contains('Set-Clipboard') -or
         -not $copyWrapper.Contains('Copy-CodingAssistant-Token.ps1')) {
-        throw 'Windows startup lost shared credential, clipboard or execution-off contract.'
+        throw 'Windows startup lost secure credential, zero-click login or execution-off contract.'
     }
 
-    Write-Host 'WINDOWS_LAUNCHER_TOKEN_PASS: random tokens, DPAPI persistence, restart reuse, corruption fail-closed, clipboard and execution-off.'
+    Write-Host 'WINDOWS_LAUNCHER_TOKEN_PASS: random tokens, DPAPI persistence, restart reuse, corruption fail-closed, zero-click login and execution-off.'
 }
 finally {
     if ([IO.Directory]::Exists($isolated)) {
