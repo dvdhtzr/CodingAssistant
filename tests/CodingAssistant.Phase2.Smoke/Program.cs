@@ -882,6 +882,92 @@ try
                   e.GetProperty("planSha256").GetString() == secondPlanHash),
             "authentic MAF Software Engineer handoffs reference exact approved plan");
 
+    // Phase 5: independent QA must not run on unfinished or stale
+    // engineering source. Human initiation is explicit; no hidden auto-QA.
+    var qaPath = "/api/tasks/" + taskBound.Id + "/qa-reviews";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(qaPath + "/latest"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "independent QA reports remain owner-private");
+    using (var absent = await client.GetAsync(qaPath + "/latest"))
+    using (var body = await Body(absent))
+        Check(absent.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("snapshot").ValueKind == JsonValueKind.Null,
+            "QA has not fabricated any report before owner requests it");
+
+    var reviewStore = new QaReviewStore(tasks,
+        new ImplementationPlanStore(tasks, interviews));
+    var engineeringStore = new EngineeringRunStore(tasks,
+        new ImplementationPlanStore(tasks, interviews));
+    var unfinished = engineeringStore.Start(taskBound.Id,
+        new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!);
+    using (var forbidden = await Post(client, qaPath,
+        new StartQaReviewRequest(unfinished.Id, secondPlanHash)))
+        Check(forbidden.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 0,
+            "QA refuses unfinished engineering source before any model call");
+    engineeringStore.Interrupt(taskBound.Id, unfinished.Id);
+
+    using (var wrong = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, firstPlanHash)))
+        Check(wrong.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 0,
+            "QA refuses obsolete Technical Lead plan identity");
+    string qaReviewId;
+    using (var admitted = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
+    using (var body = await Body(admitted))
+    {
+        qaReviewId = body.RootElement.GetProperty("id").GetString()!;
+        Check(admitted.StatusCode == HttpStatusCode.Accepted &&
+              body.RootElement.GetProperty("engineeringRunId").GetString() ==
+                  engineeringRunId &&
+              body.RootElement.GetProperty("sourceSha256").GetString()!.Length == 64 &&
+              body.RootElement.GetProperty("state").GetString() == "Running",
+            "QA admission captures exact completed source fingerprint and approved plan");
+    }
+    QaReviewSnapshot? qaResult = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        using var progress = await client.GetAsync(qaPath + "/" + qaReviewId);
+        using var document = await Body(progress);
+        if (document.RootElement.GetProperty("job").GetProperty("state")
+                .GetString() == "Running")
+        {
+            await Task.Delay(25);
+            continue;
+        }
+        qaResult = reviewStore.Get(taskBound.Id, qaReviewId);
+        break;
+    }
+    Check(qaResult?.Job.State == "Reviewed" &&
+          qaResult.Reports.Count == 2 &&
+          qaResult.Reports.Sum(report =>
+              report.Assessment.Findings.Count) == 1 &&
+          qaResult.Reports.Single(report => report.Path == "app.js")
+              .Assessment.Findings.Single().Severity == "Major" &&
+          qaResult.Events.Count(e => e.Kind == "QaFileReviewed") == 2 &&
+          qaResult.Events.Any(e => e.Kind == "QaReviewCompleted"),
+        "independent QA persists two real static file reports with potential findings");
+    Check(qaModel.ReviewedFiles.Order(StringComparer.Ordinal)
+              .SequenceEqual(["app.js", "index.html"]) &&
+          qaResult!.Job.SourceSha256 ==
+              QaReviewStore.Fingerprint(engineeringResult!.Files) &&
+          reviewStore.Latest(taskBound.Id)?.Job.Id == qaReviewId,
+        "static QA received each exact source file and reports survive SQLite reload");
+    using (var savedHandoffs = await client.GetAsync(
+        "/api/tasks/" + taskBound.Id + "/agent-handoffs"))
+    using (var body = await Body(savedHandoffs))
+        Check(body.RootElement.GetProperty("events").EnumerateArray()
+            .Any(e => e.GetProperty("kind").GetString() == "QaStaticReportSaved" &&
+                      e.GetProperty("fromAgent").GetString() == "QaEngineer" &&
+                      e.GetProperty("planSha256").GetString() == secondPlanHash),
+            "QA handoff event records a report, not a fabricated test PASS");
+    using (var cross = await client.GetAsync(
+        "/api/tasks/" + task.Id + "/qa-reviews/" + qaReviewId))
+        Check(cross.StatusCode == HttpStatusCode.NotFound,
+            "QA report cannot be read through another project's URL");
+
     using (var noHash = await Post(client, boundPath, approvedRequest))
         Check(noHash.StatusCode == HttpStatusCode.Conflict,
             "approved architecture cannot be silently ignored by old API callers");
@@ -1133,6 +1219,11 @@ try
         Check(blocked.StatusCode == HttpStatusCode.Conflict &&
               leadModel.Attempts == 2,
             "stale architecture never reaches the planning agent");
+    using (var blockedQa = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
+        Check(blockedQa.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 2,
+            "stale architecture cannot initiate new QA review of old source");
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
