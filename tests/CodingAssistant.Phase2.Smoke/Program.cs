@@ -507,9 +507,74 @@ try
         Check(archive.StatusCode == HttpStatusCode.OK,
             "architecture-bound ZIP remains source-only downloadable output");
 
-    // Independent static profile policy rejects model hallucination of C#
-    // even after owner approved a browser-only project.
+    // A small local model may ignore a selected stack on the first plan.
+    // The bounded correction attempt must preserve the exact architecture
+    // and generate only files allowed by that policy.
     boundModel.ReturnWrongStack = true;
+    boundModel.RecoverOnCorrection = true;
+    var previousPlans = boundModel.PlanAttempts;
+    string correctedDraftId;
+    using (var admitted = await Post(client, boundPath, new {
+        specificationVersion = specBound.Version,
+        specificationSha256 = specBound.Sha256,
+        architectureSha256 = architectureSha
+    }))
+    using (var body = await Body(admitted))
+    {
+        Check(admitted.StatusCode == HttpStatusCode.Accepted,
+            "architecture-bound plan correction is owner-initiated");
+        correctedDraftId = body.RootElement.GetProperty("id").GetString()!;
+    }
+    ProjectDraftSnapshot? corrected = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        corrected = new ProjectDraftStore(tasks).Get(taskBound.Id, correctedDraftId);
+        if (corrected.Job.State != "Running") break;
+        await Task.Delay(25);
+    }
+    Check(corrected?.Job.State == "Generated" &&
+          corrected.Files.Any(f => f.Path == "index.html") &&
+          corrected.Files.All(f => f.Path.EndsWith(".html") ||
+              f.Path.EndsWith(".js")),
+        "one corrected plan becomes valid source-only files");
+    Check(boundModel.PlanAttempts == previousPlans + 2 &&
+          boundModel.PlanInput.Contains("FILE PLAN CORRECTION REQUIRED:") &&
+          corrected!.Events.Count(e => e.Kind == "PlanCorrectionRequested") == 1,
+        "exactly one documented correction attempt without changing approvals");
+    Check(corrected?.Architecture?.Sha256 == architectureSha,
+        "correction keeps original approved architecture fingerprint");
+
+    // An otherwise well-formed static plan missing index.html is also
+    // corrected, rather than rejecting every recoverable small-model output.
+    boundModel.ReturnWrongStack = false;
+    boundModel.OmitIndex = true;
+    previousPlans = boundModel.PlanAttempts;
+    string missingIndexId;
+    using (var admitted = await Post(client, boundPath, new {
+        specificationVersion = specBound.Version,
+        specificationSha256 = specBound.Sha256,
+        architectureSha256 = architectureSha
+    }))
+    using (var body = await Body(admitted))
+        missingIndexId = body.RootElement.GetProperty("id").GetString()!;
+    ProjectDraftSnapshot? recoveredIndex = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        recoveredIndex = new ProjectDraftStore(tasks).Get(taskBound.Id, missingIndexId);
+        if (recoveredIndex.Job.State != "Running") break;
+        await Task.Delay(25);
+    }
+    Check(recoveredIndex?.Job.State == "Generated" &&
+          recoveredIndex.Files.Any(f => f.Path == "index.html") &&
+          boundModel.PlanAttempts == previousPlans + 2,
+        "missing index.html is recovered with one validated re-plan");
+
+    // Independent static profile policy still rejects hallucinated C#
+    // when both attempts violate the owner-approved browser-only stack.
+    boundModel.OmitIndex = false;
+    boundModel.ReturnWrongStack = true;
+    boundModel.RecoverOnCorrection = false;
+    previousPlans = boundModel.PlanAttempts;
     string rejectedId;
     using (var badBuild = await Post(client, boundPath, new {
         specificationVersion = specBound.Version,
@@ -527,8 +592,10 @@ try
     }
     Check(rejected?.Job.State == "Failed" &&
           rejected.Job.ErrorCode == "ARCHITECTURE_PLAN_CONFLICT" &&
-          rejected.Files.Count == 0,
-        "static-web selection rejects C# source plan without writing any files");
+          rejected.Files.Count == 0 &&
+          boundModel.PlanAttempts == previousPlans + 2 &&
+          rejected.Events.Count(e => e.Kind == "PlanCorrectionRequested") == 1,
+        "two invalid plans fail closed with no files and no further retries");
 
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
@@ -609,6 +676,9 @@ sealed class Phase2Advisor : IArchitectureAdvisor
 sealed class Phase2DraftModel : IProjectDraftModel
 {
     public bool ReturnWrongStack { get; set; }
+    public bool OmitIndex { get; set; }
+    public bool RecoverOnCorrection { get; set; }
+    public int PlanAttempts { get; private set; }
     public string PlanInput { get; private set; } = "";
     public string WriteInput { get; private set; } = "";
 
@@ -617,9 +687,18 @@ sealed class Phase2DraftModel : IProjectDraftModel
         CancellationToken cancellation)
     {
         PlanInput = approvedSpecification;
-        if (ReturnWrongStack)
-            return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
-                [new PlannedProjectFile("Program.cs", "Unexpected .NET project")]);
+        PlanAttempts++;
+        var corrective = approvedSpecification.Contains(
+            "FILE PLAN CORRECTION REQUIRED:", StringComparison.Ordinal);
+        if (!corrective || !RecoverOnCorrection)
+        {
+            if (ReturnWrongStack)
+                return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
+                    [new PlannedProjectFile("Program.cs", "Unexpected .NET project")]);
+            if (OmitIndex)
+                return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
+                    [new PlannedProjectFile("app.js", "Missing browser entry point")]);
+        }
         return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
             [new PlannedProjectFile("index.html", "Offline timer interface"),
              new PlannedProjectFile("app.js", "Keyboard and mouse handlers")]);

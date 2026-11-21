@@ -61,16 +61,38 @@ public sealed class ProjectDraftCoordinator(
                   DraftArchitecturePolicy.AsModelInstructions(bound);
             store.Note(task.Id, job.Id, "ModelPlanning",
                 "Asking local " + spec.Model + " to choose project files");
-            var planOutput = model is IStreamingProjectDraftModel streamingPlan
-                ? await streamingPlan.PlanWithProgressAsync(
-                    task.Objective, sourceSpecification, spec.Model,
-                    () => {
-                        store.NoteModelProgress(task.Id, job.Id);
-                        return Task.CompletedTask;
-                    }, token)
-                : await model.PlanAsync(task.Objective, sourceSpecification, spec.Model, token);
-            var plan = ProjectDraftStore.ValidatePlan(planOutput);
-            DraftArchitecturePolicy.ValidatePlannedFiles(bound, plan);
+            async Task<IReadOnlyList<PlannedProjectFile>> AskPlanAsync(string context)
+            {
+                var output = model is IStreamingProjectDraftModel streamingPlan
+                    ? await streamingPlan.PlanWithProgressAsync(
+                        task.Objective, context, spec.Model,
+                        () => {
+                            store.NoteModelProgress(task.Id, job.Id);
+                            return Task.CompletedTask;
+                        }, token)
+                    : await model.PlanAsync(task.Objective, context, spec.Model, token);
+                return ProjectDraftStore.ValidatePlan(output);
+            }
+
+            var plan = await AskPlanAsync(sourceSpecification);
+            try
+            {
+                DraftArchitecturePolicy.ValidatePlannedFiles(bound, plan);
+            }
+            catch (StoreFailure error) when (bound is not null &&
+                error.Code == "ARCHITECTURE_PLAN_CONFLICT")
+            {
+                // Small local models can ignore an exact selected stack. One
+                // explicit corrective plan attempt is allowed, never an
+                // unbounded retry or a silent relaxation of validation.
+                token.ThrowIfCancellationRequested();
+                RequireCurrentApproval(task.Id, job);
+                store.Note(task.Id, job.Id, "PlanCorrectionRequested",
+                    "First file plan conflicted with approved architecture; asking local model to correct it");
+                plan = await AskPlanAsync(sourceSpecification + "\n\n" +
+                    DraftArchitecturePolicy.PlanningCorrectionInstructions(bound));
+                DraftArchitecturePolicy.ValidatePlannedFiles(bound, plan);
+            }
             token.ThrowIfCancellationRequested();
             RequireCurrentApproval(task.Id, job);
             store.Note(task.Id, job.Id, "PlanAccepted",

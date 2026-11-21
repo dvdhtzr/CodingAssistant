@@ -202,7 +202,45 @@ public static class DraftArchitecturePolicy
             lines.Add("Declared runtime profile: " +
                 (choice.RuntimeProfileId ?? "none; not qualified"));
         }
+        if (StaticWeb(context))
+        {
+            lines.Add("STATIC WEB SOURCE PLAN RULES (mandatory):");
+            lines.Add("The plan MUST contain the root entry file index.html.");
+            lines.Add("Every path MUST end in .html, .css, .js, .json or .md.");
+            lines.Add("Do NOT plan .ts, .tsx, .jsx, .cs, .csproj or Python files.");
+            lines.Add("For interactive functionality, use plain JavaScript (.js).");
+            lines.Add("Use at most five safe relative files. No package installation.");
+        }
         lines.Add("Output remains unverified source only; do not execute anything.");
         return string.Join("\n", lines);
+    }
+
+    /// <summary>
+    /// Re-plan instructions after the model's first file list violates the
+    /// approved architecture. This is not permission to change that approval.
+    /// </summary>
+    public static string PlanningCorrectionInstructions(DraftArchitectureContract context)
+    {
+        if (StaticWeb(context))
+            return """
+                FILE PLAN CORRECTION REQUIRED:
+                Your previous source-file list violated the immutable
+                owner-approved Static Web architecture. Return a NEW file
+                plan consistent with the original specification and BOTH
+                approved decisions. Do NOT change or re-interpret them.
+                Include root index.html (exact filename).
+                Only .html, .css, .js, .json, .md files are permitted.
+                No React, TypeScript, C#, .tsx, .ts, .jsx, .csproj, .py,
+                package installs or build tooling. Use plain JavaScript for
+                browser interactions. Return between 1 and 5 valid relative
+                paths. Each file needs a meaningful purpose.
+                This is a file PLAN only; do not produce source text.
+                """;
+        return """
+            FILE PLAN CORRECTION REQUIRED:
+            The previous file list was incompatible with the owner-approved
+            architecture. Plan again without changing the approved choices.
+            Return only the bounded file plan in the required JSON shape.
+            """;
     }
 }
