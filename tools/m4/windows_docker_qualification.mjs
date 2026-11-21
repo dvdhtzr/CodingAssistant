@@ -148,8 +148,13 @@ export function runFixture({
     const pin = validatePinnedImage(imageInfo);
     report.imageId = pin.imageId;
     report.registryDigest = pin.registryDigest;
-    // Refuse any existing container bearing our randomly generated name.
-    const collision = docker(['ps', '-a', '--filter', 'name=^/' + name + ' only the exact observed immutable local image ID runs.
+    // Refuse an existing container with the same random name.
+    const collision = docker(['ps', '-a', '--filter', 'name=^/' + name + '$',
+      '--format', '{{.ID}}']);
+    if (collision.status !== 0 || collision.stdout.trim() !== '')
+      fail('Disposable Docker name already exists or preflight failed');
+
+    // No remote pull; the observed immutable local image ID is required.
     attempted = true;
     const guest = docker(dockerArgs(pin.imageId, name), 95000);
     if (guest.timedOut) fail('Disposable guest timed out');
