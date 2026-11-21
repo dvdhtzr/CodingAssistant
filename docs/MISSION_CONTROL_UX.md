@@ -334,3 +334,7 @@ and authenticated task/run-scoped real HTTP checks. #76, #92 and #111 remain
 required for *actual* independent Node/Chromium execution, bounded
 repair, signed test evidence and VERIFIED artifacts. This is the static
 source preflight foundation only, not qualification of the runtime profile.
+
+## UX-6C — Windows-first Calculation Journal real-browser regression
+
+The [trusted Chromium fixture harness](WINDOWS_STATIC_WEB_ACCEPTANCE.md) now runs both broken and working hand-authored calculator fixtures in real Chromium on **Windows and Ubuntu CI**, with actual mouse, keyboard, History and browser-restart persistence checks. This qualifies the acceptance *harness*, not the current generated ZIP, untrusted JavaScript, or Windows Docker Desktop isolation. No production executor or VERIFIED status is enabled. The optional Windows Docker Desktop metadata doctor is read-only and cannot authorize execution.

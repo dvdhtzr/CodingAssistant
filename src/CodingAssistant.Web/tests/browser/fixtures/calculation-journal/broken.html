@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Calculation Journal — frozen broken example</title>
+</head>
+<body>
+<main>
+<h1>Calculation Journal (broken regression)</h1>
+<output id="display" aria-label="Result">0</output>
+<div><button type="button" data-number="2">2</button>
+<button type="button" class="equals" data-action="equals">=</button></div>
+</main>
+<!-- Exactly the #107 failure pattern: placeholder inline script, unlinked JS. -->
+<script>/* TODO connect calculator handlers */</script>
+</body>
+</html>

@@ -53,14 +53,23 @@ jobs:
           npm install --no-audit --no-fund
           npm run test:workbench
           npm run build
-      # UX-2: actual headless browser input/focus/scroll assertions.
-      # Run on Linux to avoid redundant browser downloads in the OS matrix.
-      - name: Browser-level Mission Control UX-2 interactions (no model)
+      # UX-6C: trusted fixed-fixture Chromium interactions on BOTH OSes.
+      # Neither runner executes arbitrary model-generated application source.
+      - name: Install Chromium browser for trusted fixtures (Linux)
         if: runner.os == 'Linux'
         working-directory: src/CodingAssistant.Web
-        run: |
-          npx playwright install --with-deps chromium
-          npm run test:browser
+        run: npx playwright install --with-deps chromium
+      - name: Install Chromium browser for trusted fixtures (Windows)
+        if: runner.os == 'Windows'
+        working-directory: src/CodingAssistant.Web
+        run: npx playwright install chromium
+      - name: Real Chromium Mission Control and Calculation Journal fixture tests
+        working-directory: src/CodingAssistant.Web
+        run: npm run test:browser
+      - name: Check Windows Docker readiness probe remains non-executing by default
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/Verify-WindowsStaticWebDoctor.ps1
       - name: Install .NET 10 SDK for local control-plane checks
         uses: actions/setup-dotnet@v4
         with:
