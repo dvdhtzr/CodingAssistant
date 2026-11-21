@@ -135,7 +135,8 @@ export function useEngineeringRun(token: string, taskId: string) {
   }
 
   async function download() {
-    if (!snapshot || snapshot.job.state !== 'Generated' || busy) return;
+    if (!snapshot || !['Generated', 'Failed', 'Interrupted'].includes(
+      snapshot.job.state) || snapshot.files.length === 0 || busy) return;
     setBusy('download');
     setError('');
     try {
@@ -152,7 +153,9 @@ export function useEngineeringRun(token: string, taskId: string) {
       const href = URL.createObjectURL(await response.blob());
       const element = document.createElement('a');
       element.href = href;
-      element.download = 'codingassistant-engineering-source.zip';
+      element.download = snapshot.job.state === 'Generated'
+        ? 'codingassistant-engineering-source.zip'
+        : 'codingassistant-engineering-PARTIAL-unverified.zip';
       element.click();
       window.setTimeout(() => URL.revokeObjectURL(href), 3000);
     } catch (cause) {
@@ -242,12 +245,21 @@ export function EngineeringDeliveryPanel({ engine }: {
     <h3>Software Engineer source artifacts (unverified)</h3>
     <p className="hint">Plan v{job.planRevision} ·
       {files.length} saved file(s) · state {job.state}.
-      These files are distinct from the legacy source generator's ZIP.</p>
-    {job.state === 'Generated' && <div className="actions">
+      These files are distinct from the legacy source generator's ZIP.
+      {job.errorCode ? ' Failure category: ' + job.errorCode + '.' : ''}</p>
+    {job.state !== 'Generated' && files.length > 0 && <p className="activity-warning">
+      Partial source only: the engineering run did not finish. The code is
+      unverified and missing planned work; QA can now inspect these saved files.
+    </p>}
+    {files.length > 0 &&
+      ['Generated', 'Failed', 'Interrupted'].includes(job.state) &&
+      <div className="actions">
       <button type="button" disabled={!!engine.busy}
         onClick={() => void engine.download()}>
         {engine.busy === 'download' ? 'Preparing ZIP…' :
-          'Download Software Engineer ZIP'}
+          job.state === 'Generated'
+            ? 'Download Software Engineer ZIP'
+            : 'Download PARTIAL source ZIP'}
       </button>
     </div>}
     {files.length > 0 && <div className="draft-files">
