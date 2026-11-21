@@ -101,7 +101,7 @@ test('source explorer browses nested persisted files and preserves selection thr
   assert.equal(await explorer.getByRole('region', { name: /Source content: README.md/ }).isVisible(), true);
   await fileSearch.fill('resident');
   assert.equal(await explorer.getByText('1 of 4 saved files').isVisible(), true);
-  const resident = explorer.getByRole('button', { name: '≡ Resident.cs' });
+  const resident = explorer.getByRole('button', { name: 'Resident.cs' });
   await resident.click();
   assert.equal(await explorer.getByRole('region',
     { name: 'Source content: src/Models/Resident.cs' }).isVisible(), true);
@@ -117,12 +117,12 @@ test('source preview escapes untrusted source and supports full large-file inspe
   const explorer = page.getByRole('region', { name: 'MAF Software Engineer saved source explorer' });
   const fileSearch = explorer.getByRole('searchbox', { name: 'FIND SAVED FILE' });
   await fileSearch.fill('overview.tsx');
-  await explorer.getByRole('button', { name: '≡ Overview.tsx' }).click();
+  await explorer.getByRole('button', { name: 'Overview.tsx' }).click();
   const preview = explorer.getByRole('region', { name: 'Source content: src/Views/Overview.tsx' });
   assert.match(await preview.textContent(), /<script>alert\(1\)<\/script>/);
   assert.equal(await explorer.locator('script').count(), 0);
   await fileSearch.fill('longpayload');
-  await explorer.getByRole('button', { name: '≡ LongPayload.ts' }).click();
+  await explorer.getByRole('button', { name: 'LongPayload.ts' }).click();
   assert.equal(await explorer.getByRole('button', { name: 'Show complete file' }).isVisible(), true);
   assert.match(await explorer.textContent(), /Displaying the first 750 lines/);
   assert.equal(await explorer.getByText('const n809 = 809;').count(), 0);
