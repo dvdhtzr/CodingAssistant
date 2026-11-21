@@ -7,6 +7,7 @@ import { createServer } from 'vite';
 let vite;
 let JourneyStage;
 let JourneyStatusStrip;
+let restoreJourneyStage;
 let steps;
 let InterviewStudio;
 
@@ -27,7 +28,7 @@ before(async () => {
     appType: 'custom',
   });
   const journey = await vite.ssrLoadModule('/src/ProjectJourney.tsx');
-  ({ JourneyStage, JourneyStatusStrip } = journey);
+  ({ JourneyStage, JourneyStatusStrip, restoreJourneyStage } = journey);
   steps = journey.journeySteps;
   ({ InterviewStudio } = await vite.ssrLoadModule('/src/InterviewStudio.tsx'));
 });
@@ -97,4 +98,13 @@ test('interview renders all five accordion headers with exactly one stage open',
     assert.match(html, new RegExp('id="journey-panel-' + id + '"'));
   }
   assert.match(html, /Loading your saved conversation/);
+});
+
+test('saved work restores to its next useful stage without treating source as tested', () => {
+  assert.equal(restoreJourneyStage(null, 'pending', 'pending', 'pending'), 'discovery');
+  assert.equal(restoreJourneyStage('Draft', 'pending', 'pending', 'pending'), 'specification');
+  assert.equal(restoreJourneyStage('Approved', 'active', 'pending', 'pending'), 'architecture');
+  assert.equal(restoreJourneyStage('Approved', 'complete', 'active', 'pending'), 'generation');
+  assert.equal(restoreJourneyStage('Approved', 'complete', 'complete', 'complete'), 'delivery');
+  assert.equal(restoreJourneyStage('Approved', 'blocked', 'pending', 'attention'), 'architecture');
 });
