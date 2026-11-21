@@ -273,3 +273,32 @@ UX-5 is not a pluggable SKILL.md loader, executor or independent test
 runner. Local skill packages need a later host-admitted, versioned,
 audited capability contract. UX-6 requires independent build/test
 evidence and security qualification before VERIFIED claims.
+
+## UX-6A — Persisted verification evidence timeline (read-only foundation)
+
+A collapsible **Execution & Verification Timeline** in Engineering Studio reads
+only existing authenticated host records:
+`engineering-runs/latest`, `qa-reviews/latest`,
+`implementation-plan`, and `runtime-profiles`. It renders chronological,
+persisted per-run engineering and static-QA events with timestamps, record
+sequence numbers, provenance and current/historical plan binding. It does not
+infer progress from model prose or fabricate a source generation, test or repair.
+
+Three separate evidence lanes distinguish source-generation attempts,
+model-based static QA inspection, and independently qualified build/test/browser
+evaluation. Source is always **GENERATED · NOT TESTED** or a clearly marked
+partial/historical state, regardless of static-QA conclusions. The
+`static-web` runtime descriptor remains **UNQUALIFIED**, non-executable and
+subject to security gate #76 and task objective gate #92. Missing or
+unreadable evidence is not treated as a test failure or a passing test.
+
+The current UI intentionally shows only latest MAF engineer/QA histories;
+older episodes remain in existing per-run stores, and the separately scoped
+legacy M1 C# pilot is not presented as a task-specific project verifier.
+No new API endpoint, execution permission, approval contract, evaluator,
+model call, or browser runner is introduced. Completing UX-6 requires
+separately persisted, independently produced verification/repair evidence
+after #76/#92/#111 acceptance. Existing browser and model-free React tests
+cover chronological ordering, historical bindings, empty/failed states,
+source escaping, honest qualification labels and UI interaction. Owner
+Windows browser review remains separate from CI.

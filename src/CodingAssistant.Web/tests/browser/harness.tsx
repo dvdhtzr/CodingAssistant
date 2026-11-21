@@ -5,6 +5,7 @@ import { InterviewAnswerComposer } from '../../src/InterviewAnswerComposer';
 import { DecisionInboxView, buildDecisionInbox } from '../../src/OwnerDecisionInbox';
 import { SourceArtifactExplorer } from '../../src/SourceArtifactExplorer';
 import { TeamWorkroomView, type TeamEvidence } from '../../src/TeamWorkroom';
+import { VerificationTimelineView } from '../../src/VerificationTimeline';
 import { JourneyStage, JourneyStatusStrip, journeySteps, type JourneyId }
   from '../../src/ProjectJourney';
 import '../../src/styles.css';
@@ -14,6 +15,7 @@ import '../../src/conversation-workroom.css';
 import '../../src/owner-decision-inbox.css';
 import '../../src/source-explorer.css';
 import '../../src/team-workroom.css';
+import '../../src/verification-timeline.css';
 
 const seed: WorkroomMessage[] = Array.from({ length: 12 }, (_, index) => ({
   sequence: index + 1,
@@ -127,6 +129,22 @@ function BrowserScenario() {
       </section> : <p>Stage content: {step.title}. Existing controls stay mounted.</p>}
     </JourneyStage>)}
     <TeamWorkroomView evidence={teamFixture} onNavigate={setActive}/>
+    <VerificationTimelineView evidence={{
+      engineering: { ...teamFixture.engineering!,
+        events: [{ sequence: 1, kind: 'SourceFileSaved', detail: 'Saved index.html',
+          createdUtc: '2026-11-21T15:03:00Z' }] },
+      qa: { ...teamFixture.qa!, job: { ...teamFixture.qa!.job,
+        sourceSha256: 'a'.repeat(64), model: 'qwen3.5:9b', errorCode: null,
+        createdUtc: '2026-11-21T15:04:00Z' },
+        events: [{ sequence: 1, kind: 'QaReviewAdmitted',
+          detail: 'Static review accepted', createdUtc: '2026-11-21T15:04:00Z' }] },
+      plan: { revision: 1, planSha256: 'b'.repeat(64),
+        status: 'Approved', current: true },
+      profile: { id: 'static-web', version: '0.1.0',
+        qualificationStatus: 'UNQUALIFIED', executableViaRegistry: false,
+        requiredIndependentTests: ['Linked asset integrity', 'Chromium interactions'] },
+      registryExecutionAvailable: false,
+    }}/>
     <SourceArtifactExplorer
       source="MAF Software Engineer"
       state="Generated" runId={'f'.repeat(32)} isCurrent

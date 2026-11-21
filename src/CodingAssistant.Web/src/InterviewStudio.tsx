@@ -4,6 +4,7 @@ import { InterviewAnswerComposer, type InterviewChoice } from './InterviewAnswer
 import { ConversationWorkroom } from './ConversationWorkroom';
 import { OwnerDecisionInbox } from './OwnerDecisionInbox';
 import { TeamWorkroom } from './TeamWorkroom';
+import { VerificationTimeline } from './VerificationTimeline';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { TechnicalLeadStudio } from './TechnicalLeadStudio';
 import { api, type TaskItem } from './api';
@@ -246,6 +247,7 @@ export function InterviewStudio({ token, task }: {
     <OwnerDecisionInbox token={token} taskId={task.id}
       refreshSignal={inboxSignal} onNavigate={navigateToStage} />
     <TeamWorkroom token={token} taskId={task.id} onNavigate={navigateToStage} />
+    <VerificationTimeline token={token} taskId={task.id} />
     {!!busy && <div className="activity" role="status" aria-live="polite">
       <div className="activity-heading">
         <span className="activity-dot" aria-hidden="true" />
