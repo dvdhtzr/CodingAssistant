@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { EngineeringGenerationPanel, EngineeringDeliveryPanel, useEngineeringRun }
   from './EngineeringWorkspace';
+import { QaReviewPanel } from './QaReviewPanel';
 import { api } from './api';
 import { TaskBuildPanel } from './TaskBuildPanel';
 import { JourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
@@ -383,6 +384,7 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
       open={expanded === 'delivery'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Project files and delivery">
         <EngineeringDeliveryPanel engine={engineer} />
+        <QaReviewPanel token={token} taskId={taskId} engineering={engineer} />
         <p className="hint">Inspect saved source files and export them. Generated source
           is not an independently tested or verified build.</p>
         {error && <div className="alert" role="alert">{error}</div>}

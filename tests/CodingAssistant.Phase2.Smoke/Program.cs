@@ -143,17 +143,19 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     }
 }
 
-// Four true MAF roles have separate goals, fictional work histories and
+// Five true MAF roles have separate goals, fictional work histories and
 // no rights to use executable tools or load skills merely by naming them.
 {
     var roster = EngineeringAgentRoster.All;
-    Check(roster.Count == 4 &&
-          roster.Select(a => a.Id).Distinct().Count() == 4 &&
+    Check(roster.Count == 5 &&
+          roster.Select(a => a.Id).Distinct().Count() == 5 &&
           roster.All(a => a.Goal.Length > 25 &&
               a.Backstory.Length > 25 && !a.CanExecuteCode) &&
           EngineeringAgentRoster.Get("SoftwareEngineer")
-              .AllowedSkillScopes.Contains("source-implementation"),
-        "four distinct role/goals/backstories and non-executable skill scopes");
+              .AllowedSkillScopes.Contains("source-implementation") &&
+          EngineeringAgentRoster.Get("QaEngineer")
+              .AllowedSkillScopes.Contains("static-code-review"),
+        "five distinct role/goals/backstories and non-executable skill scopes");
 
     var manifest = MafSoftwareEngineer.Parse(
         """{"summary":"Implemented the task with a functional browser entry page.","files":[{"path":"index.html","purpose":"Complete browser interface","content":"<!doctype html><html><body><button id='save'>Save</button></body></html>"}],"verificationNotes":["Click the Save button in a browser"]}""");
@@ -203,6 +205,64 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "fourth real MAF agent gets independent identity, task, exact model and no tools");
 }
 
+// Phase 5 QA: strict review-only JSON, separate MAF identity and exact
+// approved source with NO ability to run tests or call external tools.
+{
+    var parsed = MafQaEngineer.Parse(
+        """{"summary":"The source has an event handler but does not yet demonstrate persistence.","findings":[{"severity":"Major","requirement":"Tasks survive reload","evidence":"The code only logs clicks and has no storage call","recommendation":"Add storage and verify reload in a browser"}],"manualChecks":["Reload browser after saving a task and inspect storage"]}""");
+    Check(parsed.Findings.Count == 1 &&
+          parsed.Findings[0].Severity == "Major",
+        "independent QA accepts only bounded potential findings, not test results");
+    foreach (var invalid in new[] {
+        """{"summary":"This does not count as a test pass.","findings":[],"manualChecks":[]}""",
+        """{"summary":"This does not count as a test pass.","findings":[{"severity":"Passed","requirement":"Store tasks","evidence":"Mock evidence should not be accepted","recommendation":"Check the actual browser later"}],"manualChecks":["Reload the browser and inspect storage"]}""",
+        """{"summary":"This does not count as a test pass.","findings":"looks fine","manualChecks":["Test it in a real browser later"]}""",
+        """{"status":"PASS","summary":"Runs fine!"}"""
+    })
+    {
+        try { _ = MafQaEngineer.Parse(invalid); Check(false, "invalid QA output accepted"); }
+        catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+        { Check(true, "QA cannot output invented PASS or malformed review"); }
+    }
+    var fakeFactory = new Phase5FakeMafFactory();
+    var fakePlan = new ImplementationPlan(
+        new string('a', 32), 1, 1, new string('b', 64),
+        new string('c', 64), "qwen3.5:4b",
+        new ImplementationOutline(
+            "Build a small offline notes tracker with clickable save controls.",
+            [new ImplementationWorkItem("create-ui", "Create working controls",
+                "Implement a complete page with functional buttons.", [],
+                ["Save button responds to mouse and keyboard"])],
+            ["Verify click and reload behaviors independently"], []),
+        new string('d', 64), "Approved", "2026-11-21T00:00:00Z",
+        "2026-11-21T00:01:00Z", true, "Approved");
+    var arch = new DraftArchitectureReadiness("READY", true,
+        new string('c', 64), [],
+        [new DraftArchitectureChoice("technology-stack", 1,
+            new string('e', 64), "static-web", "Static Web", "Offline",
+            "No server", "static-web"),
+         new DraftArchitectureChoice("architecture-style", 1,
+            new string('f', 64), "simple", "Simple modules",
+            "Fast", "Manual interfaces", null)]);
+    var run = new EngineeringRun(new string('9', 32), fakePlan.TaskId,
+        1, fakePlan.PlanSha256, 1, fakePlan.SpecificationSha256,
+        fakePlan.ArchitectureSha256, fakePlan.Model,
+        "Generated", "SourceOnlyGenerated", null,
+        "2026-11-21T00:02:00Z", "2026-11-21T00:03:00Z");
+    var file = new EngineeringSourceFile("index.html", "Offline app entry",
+        "<html><body><button>Save</button></body></html>",
+        new string('8', 64), "create-ui", "2026-11-21T00:03:00Z");
+    var assessment = await new MafQaEngineer(fakeFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(assessment.Findings.Count == 1 &&
+          fakeFactory.Purposes.SequenceEqual([MafAgentPurpose.QaEngineer]) &&
+          fakeFactory.Models.SequenceEqual(["qwen3.5:4b"]) &&
+          fakeFactory.QaRoleSeen && fakeFactory.NoTools &&
+          fakeFactory.SourceSeen,
+        "fifth real MAF agent independently inspects exact source without tools");
+}
+
 var root = Path.Combine(Path.GetTempPath(),
     "ca-phase2-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -214,6 +274,7 @@ HttpClient? client = null;
 var boundModel = new Phase2DraftModel();
 var leadModel = new Phase2TechnicalLeadPlanner();
 var softwareModel = new Phase4EngineeringModel();
+var qaModel = new Phase5QaModel();
 try
 {
     var tasks = new TaskStore(root);
@@ -243,7 +304,8 @@ try
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
-        engineeringModelOverride: softwareModel);
+        engineeringModelOverride: softwareModel,
+        qaReviewerOverride: qaModel);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -430,7 +492,8 @@ try
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
-        engineeringModelOverride: softwareModel);
+        engineeringModelOverride: softwareModel,
+        qaReviewerOverride: qaModel);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -731,7 +794,7 @@ try
     {
         var agents = body.RootElement.GetProperty("agents");
         Check(roster.StatusCode == HttpStatusCode.OK &&
-              agents.GetArrayLength() == 4 &&
+              agents.GetArrayLength() == 5 &&
               agents.EnumerateArray().Any(a =>
                   a.GetProperty("id").GetString() == "SoftwareEngineer" &&
                   !a.GetProperty("canExecuteCode").GetBoolean() &&
@@ -755,6 +818,32 @@ try
         Check(denied.StatusCode == HttpStatusCode.Conflict &&
               softwareModel.AssignedIds.Count == 0,
             "wrong Technical Lead revision digest cannot start engineering");
+
+    // Phase 5: independent QA must not run on unfinished or stale
+    // engineering source. Human initiation is explicit; no hidden auto-QA.
+    var qaPath = "/api/tasks/" + taskBound.Id + "/qa-reviews";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(qaPath + "/latest"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "independent QA reports remain owner-private");
+    using (var absent = await client.GetAsync(qaPath + "/latest"))
+    using (var body = await Body(absent))
+        Check(absent.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("snapshot").ValueKind == JsonValueKind.Null,
+            "QA has not fabricated any report before owner requests it");
+
+    var reviewStore = new QaReviewStore(tasks,
+        new ImplementationPlanStore(tasks, interviews));
+    var engineeringStore = new EngineeringRunStore(tasks,
+        new ImplementationPlanStore(tasks, interviews));
+    var unfinished = engineeringStore.Start(taskBound.Id,
+        new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!);
+    using (var forbidden = await Post(client, qaPath,
+        new StartQaReviewRequest(unfinished.Id, secondPlanHash)))
+        Check(forbidden.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 0,
+            "QA refuses unfinished engineering source before any model call");
+    engineeringStore.Interrupt(taskBound.Id, unfinished.Id);
 
     string engineeringRunId;
     using (var admitted = await Post(client, engineeringPath,
@@ -818,6 +907,77 @@ try
                   e.GetProperty("fromAgent").GetString() == "SoftwareEngineer" &&
                   e.GetProperty("planSha256").GetString() == secondPlanHash),
             "authentic MAF Software Engineer handoffs reference exact approved plan");
+
+    using (var wrong = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, firstPlanHash)))
+        Check(wrong.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 0,
+            "QA refuses obsolete Technical Lead plan identity");
+    string qaReviewId;
+    using (var admitted = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
+    using (var body = await Body(admitted))
+    {
+        qaReviewId = body.RootElement.GetProperty("id").GetString()!;
+        Check(admitted.StatusCode == HttpStatusCode.Accepted &&
+              body.RootElement.GetProperty("engineeringRunId").GetString() ==
+                  engineeringRunId &&
+              body.RootElement.GetProperty("sourceSha256").GetString()!.Length == 64 &&
+              body.RootElement.GetProperty("state").GetString() == "Running",
+            "QA admission captures exact completed source fingerprint and approved plan");
+    }
+    QaReviewSnapshot? qaResult = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        using var progress = await client.GetAsync(qaPath + "/" + qaReviewId);
+        using var document = await Body(progress);
+        if (document.RootElement.GetProperty("job").GetProperty("state")
+                .GetString() == "Running")
+        {
+            await Task.Delay(25);
+            continue;
+        }
+        qaResult = reviewStore.Get(taskBound.Id, qaReviewId);
+        break;
+    }
+    Check(qaResult?.Job.State == "Reviewed" &&
+          qaResult.Reports.Count == 2 &&
+          qaResult.Reports.Sum(report =>
+              report.Assessment.Findings.Count) == 1 &&
+          qaResult.Reports.Single(report => report.Path == "app.js")
+              .Assessment.Findings.Single().Severity == "Major" &&
+          qaResult.Events.Count(e => e.Kind == "QaFileReviewed") == 2 &&
+          qaResult.Events.Any(e => e.Kind == "QaReviewCompleted"),
+        "independent QA persists two real static file reports with potential findings");
+    Check(qaModel.ReviewedFiles.Order(StringComparer.Ordinal)
+              .SequenceEqual(["app.js", "index.html"]) &&
+          qaResult!.Job.SourceSha256 ==
+              QaReviewStore.Fingerprint(engineeringResult!.Files) &&
+          reviewStore.Latest(taskBound.Id)?.Job.Id == qaReviewId,
+        "static QA received each exact source file and reports survive SQLite reload");
+    using (var savedHandoffs = await client.GetAsync(
+        "/api/tasks/" + taskBound.Id + "/agent-handoffs"))
+    using (var body = await Body(savedHandoffs))
+        Check(body.RootElement.GetProperty("events").EnumerateArray()
+            .Any(e => e.GetProperty("kind").GetString() == "QaStaticReportSaved" &&
+                      e.GetProperty("fromAgent").GetString() == "QaEngineer" &&
+                      e.GetProperty("planSha256").GetString() == secondPlanHash),
+            "QA handoff event records a report, not a fabricated test PASS");
+    using (var cross = await client.GetAsync(
+        "/api/tasks/" + task.Id + "/qa-reviews/" + qaReviewId))
+        Check(cross.StatusCode == HttpStatusCode.NotFound,
+            "QA report cannot be read through another project's URL");
+
+    // Even an approved plan does not make an older engineering submission
+    // authoritative after a newer run exists; retain historical QA safely.
+    var supersedingSource = engineeringStore.Start(taskBound.Id,
+        new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!);
+    using (var historicalSource = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
+        Check(historicalSource.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 2,
+            "QA refuses superseded engineering source even under the same plan");
+    engineeringStore.Interrupt(taskBound.Id, supersedingSource.Id);
 
     using (var noHash = await Post(client, boundPath, approvedRequest))
         Check(noHash.StatusCode == HttpStatusCode.Conflict,
@@ -1070,6 +1230,11 @@ try
         Check(blocked.StatusCode == HttpStatusCode.Conflict &&
               leadModel.Attempts == 2,
             "stale architecture never reaches the planning agent");
+    using (var blockedQa = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
+        Check(blockedQa.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 2,
+            "stale architecture cannot initiate new QA review of old source");
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
@@ -1338,6 +1503,82 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
             IEnumerable<ChatMessage> messages, ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("Task protocol is nonstreaming.");
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+}
+
+sealed class Phase5QaModel : IQaSourceReviewer
+{
+    public List<string> ReviewedFiles { get; } = [];
+
+    public Task<QaFileAssessment> ReviewAsync(
+        QaReviewInput input, CancellationToken cancellation)
+    {
+        if (input.SourceRun.State != "Generated" ||
+            input.Plan.Status != "Approved" || !input.Plan.Current ||
+            input.Plan.PlanSha256 != input.SourceRun.PlanSha256 ||
+            input.Plan.Model != "qwen3.5:4b" ||
+            !input.Architecture.ReadyForSourceGeneration ||
+            input.Architecture.ArchitectureSha256 != input.Plan.ArchitectureSha256 ||
+            input.AllFiles.Count != 2 ||
+            !input.AllFiles.Any(f => f.Path == input.File.Path &&
+                f.Sha256 == input.File.Sha256))
+            throw new Exception("Independent QA received wrong source or stale approval");
+        ReviewedFiles.Add(input.File.Path);
+        return Task.FromResult(input.File.Path == "app.js"
+            ? new QaFileAssessment(
+                "The timer code registers a button listener but lacks a persistent timer.",
+                [new QaFinding("Major", "Start advances timer state",
+                    "The handler logs start but does not update a visible timer.",
+                    "Implement timer state and check it with a real browser")],
+                ["Click Start and observe the timer after several seconds"])
+            : new QaFileAssessment(
+                "The HTML source references a script and a clickable button.",
+                [],
+                ["Load index.html offline and verify the script is linked"]));
+    }
+}
+
+sealed class Phase5FakeMafFactory : IMafChatClientFactory
+{
+    public List<MafAgentPurpose> Purposes { get; } = [];
+    public List<string> Models { get; } = [];
+    public bool QaRoleSeen { get; private set; }
+    public bool SourceSeen { get; private set; }
+    public bool NoTools { get; private set; }
+
+    public IChatClient Create(string model, MafAgentPurpose purpose)
+    {
+        Models.Add(model);
+        Purposes.Add(purpose);
+        return new Fake(this);
+    }
+
+    private sealed class Fake(Phase5FakeMafFactory parent) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var history = messages.ToArray();
+            parent.QaRoleSeen =
+                (options?.Instructions?.Contains("Professional backstory:",
+                    StringComparison.Ordinal) ?? false) &&
+                (options?.Instructions?.Contains("independent QA Engineer",
+                    StringComparison.Ordinal) ?? false);
+            parent.SourceSeen = history.Any(m => m.Role.Value == "user" &&
+                m.Text?.Contains("<html><body><button>Save",
+                    StringComparison.Ordinal) == true);
+            parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
+            return Task.FromResult(new ChatResponse(new ChatMessage(
+                ChatRole.Assistant,
+                """{"summary":"The static source exposes an interactive control but its behavior is unknown.","findings":[{"severity":"Minor","requirement":"The Save button must work","evidence":"A button is declared but no listener is present in this source","recommendation":"Inspect linked scripts and test saving notes in a browser"}],"manualChecks":["Click Save and reload the page in a real browser"]}""")));
+        }
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("QA only allows bounded nonstreaming turns.");
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
     }

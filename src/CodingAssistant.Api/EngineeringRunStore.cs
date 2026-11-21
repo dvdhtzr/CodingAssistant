@@ -132,7 +132,7 @@ public sealed class EngineeringRunStore(
         return reader.Read() ? ReadRun(reader) : null;
     }
 
-    private static void RequireBinding(SqliteConnection db, SqliteTransaction tx,
+    internal static void RequireBinding(SqliteConnection db, SqliteTransaction tx,
         EngineeringRun job)
     {
         var plan = TaskStore.Scalar(db, tx, """

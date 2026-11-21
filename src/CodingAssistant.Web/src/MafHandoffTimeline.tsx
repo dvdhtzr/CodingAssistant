@@ -5,7 +5,8 @@ interface HandoffEvent {
   taskId: string;
   kind: 'SpecificationHandoff' | 'ArchitectureProposalSaved' |
     'ArchitectureHandoff' | 'PlanProposed' | 'PlanApproved' |
-    'EngineeringTaskAssigned' | 'EngineeringTaskCompleted';
+    'EngineeringTaskAssigned' | 'EngineeringTaskCompleted' |
+    'QaReviewRequested' | 'QaStaticReportSaved';
   fromAgent: string;
   toAgent: string;
   specificationVersion: number;
@@ -74,7 +75,11 @@ export function MafHandoffTimeline({ token, taskId }: {
                     ? 'Owner approved plan for engineering backlog (not executed)'
                     : item.kind === 'EngineeringTaskAssigned'
                       ? 'Engineering task assigned to Software Engineer'
-                      : 'Source changes saved for engineering task (not tested)'}</small>
+                      : item.kind === 'EngineeringTaskCompleted'
+                        ? 'Source changes saved for engineering task (not tested)'
+                        : item.kind === 'QaReviewRequested'
+                          ? 'Independent static source review requested'
+                          : 'QA report saved (hypotheses only; no tests run)'}</small>
           <small>Spec v{item.specificationVersion} · {item.model}
             {item.planSha256 ? ' · Plan ' + item.planSha256.slice(0, 10) : ''}
             {item.workItemId ? ' · ' + item.workItemId : ''}
