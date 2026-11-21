@@ -162,6 +162,12 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         }
         if (source.State != "Generated")
             throw new StoreFailure("BUILD_NOT_COMPLETE");
+        var latestSource = TaskStore.Scalar(db, tx, """
+            SELECT id FROM engineering_runs WHERE task_id=@task
+            ORDER BY created_utc DESC,id DESC LIMIT 1
+            """, ("@task", job.TaskId));
+        if (source.Id != latestSource)
+            throw new StoreFailure("SOURCE_CHANGED");
         if (source.PlanRevision != job.PlanRevision ||
             source.PlanSha256 != job.PlanSha256 ||
             source.SpecificationVersion != job.SpecificationVersion ||
