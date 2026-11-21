@@ -202,3 +202,36 @@ tests cover approved, proposed, missing, deferred and stale states; a
 Playwright browser fixture verifies inbox navigation enters the real
 Architecture panel without generating approval. This is not a claim of
 live-model behavior, build/test verification, or owner production acceptance.
+
+## UX-4 — Source & Artifact Explorer (MAF and classic generation)
+
+Artifacts & Delivery now shows a shared, **read-only** source explorer for
+both the real MAF Software Engineer run and the distinct classic-generator
+fallback. It consumes each workflow's *existing authenticated saved snapshot*;
+it does not introduce file-system traversal, arbitrary file fetches, a new
+artifact store, execution privileges or approval mutations.
+
+The explorer provides a nested, keyboard-accessible saved file tree, filename
+and purpose filtering, selected-file source display with line numbers,
+language labels based on filename, source path and content copying, and
+provenance: saved purpose, exact SHA-256, timestamp, and originating MAF work
+item (where recorded). Classic drafts explicitly say that per-file task
+provenance was not recorded. It also shows whether the source is current with
+the saved approval binding, and distinguishes Generated from partial,
+interrupted and failed source. The MAF ZIP and classic ZIP download controls
+remain in their original stages; static QA inspection stays separate.
+
+For performance, the initial numbered source preview is limited to 750 lines;
+a real "Show complete file" control reveals the entire saved content when
+needed, and "Copy source" always copies the complete text. The viewer never
+evaluates HTML, JS, or code. File text is rendered as escaped React text, not
+as DOM from the source file. Responsive laptop/mobile layouts use one or two
+columns as space permits; code panes scroll without trapping navigation.
+
+The new model-free tests validate file hierarchy, provenance, safe rendering,
+empty and partial source states, long previews, and existing CSS integration.
+Chromium interaction tests exercise actual file selection, search, provenance,
+source escaping and full-file reveal, on top of the existing UX-2/UX-3 tests.
+Cross-platform frontend/API/SQLite and Linux browser CI remain required.
+This milestone does **not** implement file diffs or independent verification;
+those require separately grounded historical source and evaluator evidence.
