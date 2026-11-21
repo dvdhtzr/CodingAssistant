@@ -263,6 +263,58 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "fifth real MAF agent independently inspects exact source without tools");
 }
 
+// UX-6B: a pure host-owned static preflight catches the frozen Calculation
+// Journal defect. It never evaluates model JavaScript or claims a browser pass.
+{
+    EngineeringSourceFile Source(string path, string content) =>
+        new(path, "Static preflight fixture", content,
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(content))).ToLowerInvariant(),
+            "fixture", "2026-11-21T17:00:00Z");
+    StaticWebPreflightReport CheckFiles(string state, params EngineeringSourceFile[] files)
+    {
+        var run = new EngineeringRun(new string('8', 32), new string('a', 32),
+            2, new string('b', 64), 2, new string('c', 64),
+            new string('d', 64), "qwen3.5:4b", state, "SourceOnlyGenerated",
+            null, "2026-11-21T17:00:00Z", "2026-11-21T17:01:00Z");
+        return StaticWebSourcePreflight.Inspect(new EngineeringRunSnapshot(
+            run, [], [], files));
+    }
+    var broken = CheckFiles("Generated",
+        Source("calculator.html", "<!doctype html><html><button data-number='2' class='equals'>=</button><script>/* TODO wire calculator.js */</script></html>"),
+        Source("calculator.js", "document.querySelector('.number').addEventListener('click', () => {}); document.getElementById('equals').addEventListener('click', () => {});"));
+    Check(broken.Status == "POTENTIAL_ISSUES" &&
+          broken.Findings.Any(f => f.Code == "NO_LINKED_JAVASCRIPT") &&
+          broken.Findings.Any(f => f.Code == "COMMENT_ONLY_INLINE_SCRIPT") &&
+          broken.Findings.Count(f => f.Code == "SELECTOR_NOT_DECLARED") == 2 &&
+          broken.VerificationStatus == "GENERATED_NOT_TESTED" &&
+          broken.SourceSha256?.Length == 64,
+        "frozen calculator regression detects unwired JS and missing selectors without execution");
+    var healthy = CheckFiles("Generated",
+        Source("index.html", "<!doctype html><html><head><link href='styles/app.css' rel='stylesheet'></head><body><button class='go' id='start'>Go</button><script src='scripts/app.js'></script></body></html>"),
+        Source("styles/app.css", ".go{display:block}"),
+        Source("scripts/app.js", "document.querySelector('.go'); document.getElementById('start');"));
+    Check(healthy.Findings.Count == 0 && healthy.Status == "NO_ISSUES_DETECTED" &&
+          healthy.HtmlFileCount == 1 && healthy.ReferencedAssets == 2 &&
+          healthy.VerificationStatus == "GENERATED_NOT_TESTED",
+        "coherent relative HTML/CSS/JS links have no detected preflight findings, remain untested");
+    var escapes = CheckFiles("Failed",
+        Source("pages/index.html", "<script src='../../secrets.js'></script><script src='https://example.com/inject.js'></script><link rel='stylesheet' href='../missing.css'>"),
+        Source("pages/app.js", "alert('Never executed by source preflight');"));
+    Check(escapes.Findings.Count(f => f.Code == "UNRESOLVED_ASSET_REFERENCE") == 2 &&
+          escapes.Findings.Any(f => f.Code == "MISSING_LINKED_ASSET") &&
+          escapes.VerificationStatus == "GENERATED_NOT_TESTED",
+        "source preflight rejects escapes/external references without running scripts");
+    var notWeb = CheckFiles("Generated", Source("Program.cs", "class Program {}"));
+    Check(notWeb.Status == "NOT_STATIC_WEB" &&
+          notWeb.Findings.Count == 0 &&
+          notWeb.VerificationStatus == "GENERATED_NOT_TESTED",
+        "non-HTML projects are not falsely classified as browser-verified");
+    var active = CheckFiles("Running", Source("index.html", "<html></html>"));
+    Check(active.Status == "PENDING_SOURCE" && active.SourceSha256 is null,
+        "in-progress mutable source is not reported as a final preflight");
+}
+
 var root = Path.Combine(Path.GetTempPath(),
     "ca-phase2-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -888,6 +940,33 @@ try
               .LastWorkItemId == "timer-state",
         "Software Engineer gets prior source and records last task ownership");
 
+    // UX-6B HTTP: preflight is bounded to the requested task/run, requires
+    // authentication and does not mutate source or perform execution.
+    var preflightPath = engineeringPath + "/" + engineeringRunId + "/static-web-preflight";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var forbidden = await anonymous.GetAsync(preflightPath))
+        Check(forbidden.StatusCode == HttpStatusCode.Unauthorized,
+            "static source preflight requires owner authentication");
+    using (var preflight = await client.GetAsync(preflightPath))
+    using (var body = await Body(preflight))
+        Check(preflight.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("runId").GetString() == engineeringRunId &&
+              body.RootElement.GetProperty("sourceSha256").GetString() ==
+                  QaReviewStore.Fingerprint(engineeringResult!.Files) &&
+              body.RootElement.GetProperty("status").GetString() == "NO_ISSUES_DETECTED" &&
+              body.RootElement.GetProperty("verificationStatus").GetString() ==
+                  "GENERATED_NOT_TESTED" &&
+              body.RootElement.GetProperty("findings").GetArrayLength() == 0,
+            "authenticated preflight scans the correct saved source without calling tests");
+    using (var wrongRun = await client.GetAsync(
+        engineeringPath + "/" + new string('0', 32) + "/static-web-preflight"))
+        Check(wrongRun.StatusCode == HttpStatusCode.NotFound,
+            "preflight never reads an unrelated or nonexistent engineering run");
+    using (var wrongTask = await client.GetAsync(
+        "/api/tasks/" + new string('0', 32) + "/engineering-runs/" +
+        engineeringRunId + "/static-web-preflight"))
+        Check(wrongTask.StatusCode == HttpStatusCode.NotFound,
+            "preflight cannot mix task IDs or reuse another task's run");
     using (var zip = await client.GetAsync(
         engineeringPath + "/" + engineeringRunId + "/zip"))
     {
