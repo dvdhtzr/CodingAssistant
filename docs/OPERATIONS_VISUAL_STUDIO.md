@@ -40,10 +40,10 @@ The launcher uses Windows PowerShell 5.1 and:
 1. Checks .NET/npm availability and whether port 5098 is already occupied.
 2. Builds the React UI from the current checkout (installs frontend packages on first launch, retries a failed build once after refreshing packages).
 3. Reuses a **stable, cryptographically random 64-character owner token** encrypted with Windows DPAPI **CurrentUser** under `%LOCALAPPDATA%\CodingAssistant\owner-token.dpapi`. The same account's Visual Studio F5 process reads that credential automatically; no manually defined environment variable or `launchSettings.json` secret is needed.
-4. Copies that token to the clipboard **without printing or logging it**.
+4. Keeps that DPAPI-protected owner token internal to the server—**nothing is printed or copied to the clipboard**.
 5. Explicitly disables Windows autonomous code execution and starts the .NET API in that console.
 
-Open **http://127.0.0.1:5098**, press **Ctrl+V** into **Owner session**, and click **Connect locally**. Leave the launcher console open; Ctrl+C stops the API. Restarts reuse the same owner credential, so you no longer have to generate one every time. It is **not stored as plaintext**, embedded in source/config/URLs or printed in logs. The clipboard temporarily holds the token, so avoid pasting it into unrelated software.
+Open **http://127.0.0.1:5098**. Mission Control **connects automatically**—no pasted token, username, password or Connect click. Leave the launcher console open; Ctrl+C stops the API. Restarts reuse the same protected owner credential. The browser obtains a temporary 12-hour same-origin session in memory without ever receiving the long-lived owner token. Refreshing the page obtains a new temporary session automatically; no cookies, localStorage, token URL parameters or credentials in logs.
 
 You can also start the exact same workflow from PowerShell:
 
@@ -58,7 +58,9 @@ If PowerShell blocks direct script invocation under your local execution policy,
 
 **F5 now works without manual token configuration.** The API automatically creates or reuses the same Windows DPAPI CurrentUser credential that the launcher uses. You can set `CodingAssistant.Api` as the startup project, press **F5**, and browse to `http://127.0.0.1:5098`. No copied `launchSettings.json`, hard-coded token or hand-created environment variable is required.
 
-To sign into a **new browser session** after pressing F5, double-click **`Copy-CodingAssistant-Token.cmd`** (next to the solution). It places the existing credential on the clipboard without changing the server token or printing a secret. Then paste once into the Owner session box. The React UI deliberately keeps bearer tokens only in tab memory; it does not persist them in browser local storage. Reconnecting after a refresh may still require pasting from the copy helper.
+After pressing F5, simply open **http://127.0.0.1:5098**. A Windows-local, same-origin browser session is established automatically. There is no login ceremony and you never need to use `Copy-CodingAssistant-Token.cmd` during normal operation. That older helper is retained for exceptional troubleshooting and non-browser API clients only.
+
+Browser protection: the session bootstrap requires the exact `127.0.0.1` Host and Origin, a same-origin browser fetch-metadata header, and a non-simple app header (no cross-origin CORS). It issues a short-lived HMAC-authenticated token, **not** the stored DPAPI owner secret. Other API endpoints and SignalR still require authenticated bearer requests; the browser holds its temporary bearer in memory only. This protects against ordinary unrelated websites but **does not protect against hostile local programs that can directly make HTTP requests and forge headers**. CodingAssistant remains a single-user, trusted-local-machine application; use OS account security and do not expose it on a shared/untrusted computer.
 
 If you deliberately provide `CODINGASSISTANT_OWNER_TOKEN`, that explicit value still takes precedence; an invalid nonempty value is rejected rather than silently overridden. Stop the existing API before switching between F5 and the launcher on the same port. The credential is shared, but two processes cannot both listen on 5098.
 
