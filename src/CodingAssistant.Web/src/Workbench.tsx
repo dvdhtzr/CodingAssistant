@@ -12,7 +12,7 @@ const initialTeam = [
   { role: 'Solution Architect', initials: 'SA', availability: 'MAF · local Ollama (on request)' },
   { role: 'Technical Lead', initials: 'TL', availability: 'MAF · local Ollama (on request)' },
   { role: 'Software Engineer', initials: 'SE', availability: 'MAF · task-by-task source (on request)' },
-  { role: 'QA Engineer', initials: 'QA', availability: 'Planned — no live agent' },
+  { role: 'QA Engineer', initials: 'QA', availability: 'MAF · independent static source review' },
   { role: 'Security Reviewer', initials: 'SR', availability: 'Planned — no live agent' },
 ];
 
