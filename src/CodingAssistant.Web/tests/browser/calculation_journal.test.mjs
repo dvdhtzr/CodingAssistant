@@ -51,10 +51,16 @@ async function result(page) {
 
 test('frozen broken calculator looks rendered but is genuinely inert', async () => {
   await withFixture('broken.html', async page => {
-    assert.equal(await page.locator('script[src]').count(), 0,
-      'original failure must keep unlinked JavaScript');
-    assert.equal(await page.locator('script').count(), 1,
-      'original failure includes placeholder-only inline script');
+    // Vite may inject its own development client while serving the trusted
+    // fixture. Assert only the APPLICATION script is absent, not the server's.
+    const sources = await page.locator('script[src]').evaluateAll(elements =>
+      elements.map(element => element.getAttribute('src')));
+    assert.ok(!sources.some(source => source?.includes('broken.js')),
+      'original application JavaScript must remain unlinked');
+    const inlineScripts = await page.locator('script:not([src])').allTextContents();
+    assert.ok(inlineScripts.some(source =>
+      source.includes('TODO connect calculator handlers')),
+      'original failure includes placeholder-only inline application script');
     await page.getByRole('button', { name: '2' }).click();
     await page.getByRole('button', { name: '=' }).click();
     assert.equal(await result(page), '0',
