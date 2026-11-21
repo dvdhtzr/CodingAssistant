@@ -182,9 +182,12 @@ export function OwnerDecisionInbox({ token, taskId, refreshSignal, onNavigate }:
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
     let closed = false;
+    let loading = false;
     setData(null);
     setError('');
     async function load() {
+      if (loading) return;
+      loading = true;
       try {
         const [interview, decisions, plan] = await Promise.all([
           api<{ specification: InboxSpec | null; messages: { role: string }[];
@@ -195,19 +198,31 @@ export function OwnerDecisionInbox({ token, taskId, refreshSignal, onNavigate }:
           api<{ plan: InboxPlan | null }>(
             token, '/api/tasks/' + taskId + '/implementation-plan'),
         ]);
-        if (!closed) setData({
-          specification: interview.specification,
-          ownerAnswers: interview.messages.filter(message => message.role === 'owner').length,
-          readyForSpecification: interview.readyForSpecification,
-          decisions: decisions.decisions,
-          plan: plan.plan,
-        });
+        if (!closed) {
+          setData({
+            specification: interview.specification,
+            ownerAnswers: interview.messages.filter(message => message.role === 'owner').length,
+            readyForSpecification: interview.readyForSpecification,
+            decisions: decisions.decisions,
+            plan: plan.plan,
+          });
+          setError('');
+        }
       } catch {
-        if (!closed) setError('Unable to read all saved approvals; no review state is inferred.');
+        if (!closed) {
+          // Never keep displaying stale approval state after a failed refresh.
+          setData(null);
+          setError('Unable to read all saved approvals; no review state is inferred.');
+        }
+      } finally {
+        loading = false;
       }
     }
     void load();
-    return () => { closed = true; };
+    // Saved recommendation revisions can change while the parent stage keeps
+    // the same status label. Poll the ledger, not a fabricated agent heartbeat.
+    const interval = window.setInterval(() => void load(), 8000);
+    return () => { closed = true; window.clearInterval(interval); };
   }, [token, taskId, refreshSignal, refresh]);
 
   return <div className="owner-decision-shell">
