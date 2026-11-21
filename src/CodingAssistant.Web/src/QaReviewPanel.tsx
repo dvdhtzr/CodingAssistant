@@ -32,6 +32,7 @@ interface QaReviewJob {
 }
 interface QaReviewSnapshot {
   job: QaReviewJob;
+  sourceState: 'Generated' | 'Failed' | 'Interrupted' | 'Unavailable';
   reports: QaFileReport[];
   events: {
     sequence: number;
@@ -74,9 +75,14 @@ export function QaReviewPanel({ token, taskId, engineering }: {
 
   const source = engineering.snapshot?.job;
   const plan = engineering.plan;
-  const eligible = !!source && source.state === 'Generated' &&
+  const terminalSource = !!source &&
+    ['Generated', 'Failed', 'Interrupted'].includes(source.state);
+  const hasSavedSource = (engineering.snapshot?.files.length ?? 0) > 0;
+  const eligible = terminalSource && hasSavedSource &&
     !!plan && plan.status === 'Approved' && plan.current &&
-    source.planSha256 === plan.planSha256;
+    source?.planSha256 === plan.planSha256;
+  const partialSource = source?.state === 'Failed' ||
+    source?.state === 'Interrupted';
   const running = result?.job.state === 'Running';
   const currentReport = !!source &&
     result?.job.engineeringRunId === source.id &&
@@ -123,23 +129,38 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       <strong>QA Engineer · independent source review</strong>
       <span className="pill">MAF · static analysis only</span>
     </div>
-    <p className="hint">An independent QA specialist inspects each completed
-      Software Engineer file against the approved specification and Technical Lead
-      acceptance criteria, recording possible defects and checks for later.
+    <p className="hint">An independent QA specialist inspects saved
+      Software Engineer files against the approved specification and Technical
+      Lead acceptance criteria, recording possible defects and checks for later.
       <strong> No build, browser test, or runtime verification is performed.</strong></p>
 
+    {partialSource && hasSavedSource && <p className="activity-warning">
+      The Software Engineer run ended <strong>{source?.state}</strong> with
+      { ' '}{engineering.snapshot?.files.length} saved file(s).
+      QA can inspect this <strong>incomplete, partial source</strong> to
+      identify possible issues, but cannot certify the application complete.
+      The engineering failure still needs attention.
+      {source?.errorCode ? ' Failure: ' + source.errorCode : ''}
+    </p>}
     {!eligible && <p className="hint">
-      QA review becomes available after the current approved Software Engineer
-      run finishes generating all its source files. It will not interrupt
-      the engineer while tasks are running.</p>}
+      {source?.state === 'Running'
+        ? 'Engineering is still modifying source. QA cannot start until the run stops.'
+        : !hasSavedSource
+          ? 'QA requires at least one saved Software Engineer source file.'
+          : 'Approve the current Technical Lead plan to review this source.'}
+      {' '}A failed or interrupted run with saved files is eligible for
+      explicitly requested partial-source review.</p>
 
     <div className="actions">
       <button type="button" className="primary"
         disabled={!eligible || running || !!busy}
         onClick={() => void start()}>
         {busy === 'start' ? 'Starting QA…' :
-          result ? 'Request a fresh static QA review' :
-            'Ask QA Engineer to inspect generated source'}
+          result ? (partialSource
+            ? 'Request a fresh partial-source QA review'
+            : 'Request a fresh static QA review') :
+            (partialSource ? 'Ask QA to inspect partial source' :
+              'Ask QA Engineer to inspect generated source')}
       </button>
       {running && <button type="button" className="danger"
         disabled={!!busy} onClick={() => void cancel()}>
@@ -153,12 +174,21 @@ export function QaReviewPanel({ token, taskId, engineering }: {
     {error && <p className="activity-warning" role="alert">{error}</p>}
     {result && <>
       <p className="hint" role="status">
-        <strong>{result.job.state === 'Reviewed' ? 'Static review saved' :
-          result.job.state}</strong>
+        <strong>{result.job.state === 'Reviewed'
+          ? result.sourceState === 'Generated'
+            ? 'Static review saved'
+            : 'Partial-source static review saved'
+          : result.job.state}</strong>
         {' · '} {result.reports.length} file(s) inspected
         {' · '} {potentialIssues} potential issue(s)
         {result.job.errorCode ? ' · ' + result.job.errorCode : ''}
       </p>
+      {result.sourceState !== 'Generated' &&
+        <p className="activity-warning">
+          QA inspected only saved files from a {result.sourceState} engineering
+          run. Unfinished tasks remain unverified; this report is not
+          evidence of a complete application.
+        </p>}
       {!currentReport && <p className="activity-warning">
         Historical QA report: the latest engineering source or plan has changed.
         These findings are retained for reference, not current verification.</p>}
