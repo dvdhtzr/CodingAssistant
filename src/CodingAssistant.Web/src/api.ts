@@ -127,6 +127,26 @@ export async function api<T>(
   }
   return response.json() as Promise<T>;
 }
+/** Authenticated destructive operation. Never place credentials in URLs or storage. */
+export async function deleteTask(token: string, taskId: string): Promise<void> {
+  if (!/^[0-9a-f]{64}$/.test(token))
+    throw new Error('Owner token must be 64 lowercase hex characters.');
+  if (!isHexId(taskId)) throw new Error('Invalid project identifier.');
+  const response = await fetch('/api/tasks/' + taskId, {
+    method: 'DELETE',
+    cache: 'no-store',
+    credentials: 'omit',
+    referrerPolicy: 'no-referrer',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const data: unknown = await response.json().catch(() => null);
+    const code = data && typeof data === 'object' && 'error' in data &&
+      typeof data.error === 'string' ? data.error : 'REQUEST_REJECTED';
+    throw new ApiError(response.status, code);
+  }
+}
+
 export function newRequestId(): string {
   return crypto.randomUUID().replaceAll('-', '');
 }
