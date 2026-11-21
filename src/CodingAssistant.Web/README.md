@@ -3,14 +3,16 @@
 React + TypeScript, served by the existing ASP.NET Core API on **IPv4 loopback**.
 No mock coding engine, token-in-URL, cloud inference, extra database or server.
 
-The owner enters a 64-character API bearer token per browser session. It stays
-only in React memory: no localStorage, cookies, URL parameters or log output.
-On reload the owner must reconnect. On Windows, Visual Studio F5 automatically
-loads the same DPAPI CurrentUser-protected credential as the one-click launcher;
-the `Copy-CodingAssistant-Token.cmd` helper copies it to the clipboard for
-a new Owner session. No repeated token-generation setup is needed. Browsers cannot supply arbitrary headers
-to WebSocket constructors, so SignalR uses **LongPolling with Authorization
-headers**, plus durable numbered SQLite event replay after watch/reconnect.
+On Windows, Mission Control connects automatically on `http://127.0.0.1:5098`.
+A strict same-origin POST bootstrap returns a short-lived 64-character
+browser bearer (HMAC-authenticated, 12-hour expiry) while the persistent
+DPAPI owner token stays server-side. No typing, clipboard or login UI.
+Sessions are stored only in React memory: no localStorage, cookies, URL
+parameters or log output. A browser reload obtains a new session. On Linux,
+the existing explicit owner-token login remains unchanged. Browsers cannot
+supply arbitrary headers to WebSocket constructors, so SignalR uses
+**LongPolling with Authorization headers**, plus durable numbered SQLite event
+replay after watch/reconnect.
 A disconnected notification channel never implies a lost run.
 
 Planning hash consent and executable hash consent are entirely separate;

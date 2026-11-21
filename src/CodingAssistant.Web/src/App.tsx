@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
 import * as signalR from '@microsoft/signalr';
 import {
-  api, newRequestId, isHexId,
+  api, bootstrapLocalSession, newRequestId, isHexId,
   type ApiStatus, type TaskItem, type TaskView, type RunItem,
   type RunEvent, type EventPage, type ExecutionView, type PlanItem,
   type HtmlArtifact, type HtmlArtifactResponse,
@@ -54,6 +54,8 @@ function ExactConsent({ planHash, value, onChange, description }: {
 export default function App() {
   const [tokenEntry, setTokenEntry] = useState('');
   const [token, setToken] = useState('');
+  const [sessionMode, setSessionMode] = useState<
+    'checking' | 'automatic' | 'manual' | 'failed'>('checking');
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [taskId, setTaskId] = useState('');
@@ -80,6 +82,34 @@ export default function App() {
   const [taskRevision, setTaskRevision] = useState(0);
   const [runRevision, setRunRevision] = useState(0);
   const [clock, setClock] = useState(Date.now());
+
+  // Windows opens Mission Control immediately: browser JS requests a new
+  // short-lived same-origin bearer, never the owner's persisted DPAPI token.
+  // Linux keeps the existing manual bearer login.
+  useEffect(() => {
+    let closed = false;
+    void (async () => {
+      try {
+        const localToken = await bootstrapLocalSession();
+        if (closed) return;
+        if (localToken === null) {
+          setSessionMode('manual');
+          return;
+        }
+        const connected = await api<ApiStatus>(localToken, '/api/status');
+        if (!connected.localOnly)
+          throw new Error('Refusing a non-local control plane.');
+        if (!closed) {
+          setStatus(connected);
+          setToken(localToken);
+          setSessionMode('automatic');
+        }
+      } catch {
+        if (!closed) setSessionMode('failed');
+      }
+    })();
+    return () => { closed = true; };
+  }, []);
 
   // Local display clock only; a ticking indicator is NOT a heartbeat from Qwen.
   useEffect(() => {
@@ -321,13 +351,32 @@ export default function App() {
       </div>
       {token && <div className="actions">
         <span className="pill">{status?.executionEnabled ? 'Local execution enabled' : 'Execution disabled'}</span>
-        <button className="outline" onClick={disconnect}>Disconnect</button>
+        {sessionMode === 'automatic'
+          ? <button className="outline" onClick={() => window.location.reload()}>
+              Refresh local session
+            </button>
+          : <button className="outline" onClick={disconnect}>Disconnect</button>}
       </div>}
     </header>
 
     {error && <div className="alert" role="alert">{error}</div>}
 
-    {!token && <section className="panel login">
+    {!token && sessionMode === 'checking' && <section className="panel login"
+      role="status">
+      <h2>Connecting to your local workspace…</h2>
+      <p className="hint">Establishing a short-lived local session without
+        copying or pasting credentials.</p>
+    </section>}
+    {!token && sessionMode === 'failed' && <section className="panel login"
+      role="alert">
+      <h2>Local connection unavailable</h2>
+      <p className="hint">Mission Control could not establish a secure local
+        browser session. Open this app at <code>http://127.0.0.1:5098</code>,
+        confirm the API is running, then retry. No token entry is needed.</p>
+      <button className="primary" type="button"
+        onClick={() => window.location.reload()}>Retry local connection</button>
+    </section>}
+    {!token && sessionMode === 'manual' && <section className="panel login">
       <h2>Owner session</h2>
       <p className="hint">Connect to the local API using your existing bearer token.
         The token stays in this tab’s memory, never in browser storage, URLs or logs.</p>

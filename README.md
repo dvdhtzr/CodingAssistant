@@ -21,9 +21,9 @@ the execution pin** or authorize Qwen Coder inside the agent. See
 
 ## Windows one-click launcher (Visual Studio / local Ollama)
 
-After cloning or updating `main`, **double-click `Start-CodingAssistant.cmd`** in the repository root. The launcher builds the React UI, automatically creates or reuses an owner token **encrypted for your Windows account**, copies it to the clipboard **without printing the secret**, and starts the .NET API with autonomous code execution disabled.
+After cloning or updating `main`, **double-click `Start-CodingAssistant.cmd`** in the repository root. The launcher builds the React UI and starts the Windows-local API with autonomous code execution disabled.
 
-**Visual Studio F5 also works without token setup.** The API automatically loads that same user-protected credential if no owner token environment variable is supplied. For a new browser session when using F5, double-click **`Copy-CodingAssistant-Token.cmd`** to copy the existing token, then paste in **Owner session** at `http://127.0.0.1:5098`. The bearer is not saved in browser storage or URLs.
+**Visual Studio F5 works too.** Open `http://127.0.0.1:5098` and Mission Control **connects automatically**. **No owner token, clipboard, password prompt, or login button is needed on Windows.** The Windows account's DPAPI-protected owner credential remains server-side. The browser receives a temporary, cryptographically authenticated 12-hour bearer via an origin-checked, Windows-only localhost endpoint. It lives only in tab memory and automatically renews when the page reloads; no cookies or browser persistent storage. Cross-site browser requests cannot bootstrap a session. Explicit per-project and per-execution approvals remain mandatory.
 
 The encrypted credential lives outside Git at `%LOCALAPPDATA%\CodingAssistant\owner-token.dpapi`. Restarts reuse it. Stop the server with **Ctrl+C**, and stop an earlier server before starting another on port 5098.
 

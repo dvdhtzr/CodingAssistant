@@ -355,6 +355,105 @@ try
             "unauthenticated mutation blocked");
     }
 
+    // Zero-click Windows browser sign-in. The long-lived owner token stays
+    // server-side, and all other anonymous API routes remain unauthorized.
+    using (var browser = new HttpClient(new SocketsHttpHandler
+    {
+        UseProxy = false
+    }) { BaseAddress = client.BaseAddress })
+    {
+        using (var wrongVerb = await browser.GetAsync("/api/local-session"))
+            Check(wrongVerb.StatusCode == HttpStatusCode.Unauthorized,
+                "browser bootstrap cannot use unguarded GET navigation");
+        using (var noHeaders = await browser.PostAsJsonAsync(
+            "/api/local-session", new { }))
+            Check(noHeaders.StatusCode == (OperatingSystem.IsWindows()
+                ? HttpStatusCode.Forbidden : HttpStatusCode.NotFound),
+                "anonymous or non-Windows browser bootstrap cannot issue credentials");
+
+        HttpRequestMessage SessionRequest(string origin, string site,
+            string? hostOverride = null)
+        {
+            var request = new HttpRequestMessage(HttpMethod.Post,
+                "/api/local-session")
+            {
+                Content = JsonContent.Create(new { })
+            };
+            request.Headers.Add("Origin", origin);
+            request.Headers.Add("Sec-Fetch-Site", site);
+            request.Headers.Add("X-CodingAssistant-Client", "mission-control");
+            if (hostOverride is not null) request.Headers.Host = hostOverride;
+            return request;
+        }
+        var localOrigin = client.BaseAddress!.GetLeftPart(UriPartial.Authority);
+        using (var foreign = SessionRequest("http://malicious.example",
+            "cross-site"))
+        using (var response = await browser.SendAsync(foreign))
+            Check(response.StatusCode == (OperatingSystem.IsWindows()
+                ? HttpStatusCode.Forbidden : HttpStatusCode.NotFound),
+                "drive-by cross-site requests cannot bootstrap owner session");
+        using (var fakeSite = SessionRequest(localOrigin, "cross-site"))
+        using (var response = await browser.SendAsync(fakeSite))
+            Check(response.StatusCode == (OperatingSystem.IsWindows()
+                ? HttpStatusCode.Forbidden : HttpStatusCode.NotFound),
+                "browser fetch metadata blocks cross-site requests even if origin is forged");
+        using (var rebinding = SessionRequest(localOrigin, "same-origin",
+            "attacker.example:" + client.BaseAddress.Port))
+        using (var response = await browser.SendAsync(rebinding))
+            Check(response.StatusCode == (OperatingSystem.IsWindows()
+                ? HttpStatusCode.Forbidden : HttpStatusCode.NotFound),
+                "DNS rebinding with foreign Host cannot obtain a browser bearer");
+
+        if (OperatingSystem.IsWindows())
+        {
+            using var allowed = SessionRequest(localOrigin, "same-origin");
+            using var sessionResponse = await browser.SendAsync(allowed);
+            using var payload = await ReadJson(sessionResponse);
+            var shortToken = payload.RootElement.GetProperty("sessionToken").GetString()!;
+            Check(sessionResponse.StatusCode == HttpStatusCode.OK &&
+                  System.Text.RegularExpressions.Regex.IsMatch(
+                      shortToken, "^[0-9a-f]{64}$") &&
+                  shortToken != OwnerToken &&
+                  payload.RootElement.GetProperty("lifetimeSeconds").GetInt32() ==
+                  12 * 60 * 60,
+                "same-origin Windows UI receives only a 12-hour scoped bearer");
+            Check(!sessionResponse.Headers.Contains("Set-Cookie"),
+                "automatic browser session never creates a cookie");
+            using var actualBrowser = new HttpClient(new SocketsHttpHandler
+            {
+                UseProxy = false
+            }) { BaseAddress = client.BaseAddress };
+            actualBrowser.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", shortToken);
+            using (var projectList = await actualBrowser.GetAsync("/api/tasks"))
+                Check(projectList.StatusCode == HttpStatusCode.OK,
+                    "auto-issued bearer reads authenticated owner APIs");
+            // An intentionally invalid payload reaches input validation,
+            // proving the bearer passed auth without changing test fixtures.
+            using (var invalid = await Post(actualBrowser, "/api/tasks", new {
+                title = "Browser auto-auth sample",
+                objective = "Verify automatic Windows browser authorization",
+                requestId = "invalid"
+            }))
+                Check(invalid.StatusCode == HttpStatusCode.BadRequest,
+                    "auto-issued bearer reaches authenticated mutation validation");
+            var altered = shortToken[..63] +
+                (shortToken[^1] == '0' ? '1' : '0');
+            actualBrowser.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", altered);
+            using (var rejected = await actualBrowser.GetAsync("/api/tasks"))
+                Check(rejected.StatusCode == HttpStatusCode.Unauthorized,
+                    "tampering with HMAC browser bearer is denied");
+            // Session authentication does not enable unsafe Windows execution.
+            actualBrowser.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", shortToken);
+            using var status = await actualBrowser.GetAsync("/api/status");
+            using var json = await ReadJson(status);
+            Check(!json.RootElement.GetProperty("executionEnabled").GetBoolean(),
+                "zero-click browser auth does not turn on autonomous code execution");
+        }
+    }
+
     client.DefaultRequestHeaders.Authorization =
         new AuthenticationHeaderValue("Bearer", OwnerToken);
     using (var authenticatedStatus = await client.GetAsync("/api/status"))

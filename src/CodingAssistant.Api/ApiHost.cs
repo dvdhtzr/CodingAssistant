@@ -105,6 +105,8 @@ public static class ApiHost
                 resultReader = new M1ProcessRunner(root);
         }
         var expected = Convert.FromHexString(settings.OwnerToken);
+        // Browser login never discloses this persistent owner token.
+        var browserSessions = new LocalBrowserSessions(expected);
         // Web root must be selected BEFORE WebApplicationBuilder is created.
         // The deployed API uses assets next to the binary; repository smoke
         // tests may use Vite's generated source-tree output instead.
@@ -123,6 +125,7 @@ public static class ApiHost
             options.Limits.MaxRequestBodySize = 16 * 1024;
             options.AddServerHeader = false;
         });
+        builder.Services.AddSingleton(browserSessions);
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(architectureDecisions);
@@ -166,6 +169,15 @@ public static class ApiHost
                 return;
             }
 
+            // Only the tightly-validated bootstrap may enter without a bearer.
+            // Every other API and SignalR request still requires a bearer.
+            if (context.Request.Path == "/api/local-session" &&
+                HttpMethods.IsPost(context.Request.Method))
+            {
+                await next(context);
+                return;
+            }
+
             var header = context.Request.Headers.Authorization.ToString();
             if (header.Length != 7 + 64 ||
                 !header.StartsWith("Bearer ", StringComparison.Ordinal))
@@ -174,12 +186,14 @@ public static class ApiHost
                 return;
             }
 
-            // Strict ASCII hex token, fixed-length decoded bytes, constant-time
-            // comparison; no token is ever written to SQLite or request logs.
+            // Valid owner bearer OR short-lived, in-memory browser session.
+            // No token is written to SQLite, cookies, URLs or request logs.
             try
             {
-                var provided = Convert.FromHexString(header.AsSpan(7));
-                if (!CryptographicOperations.FixedTimeEquals(provided, expected))
+                var token = header[7..];
+                var provided = Convert.FromHexString(token);
+                if (!CryptographicOperations.FixedTimeEquals(provided, expected) &&
+                    !browserSessions.IsValid(token))
                 {
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
@@ -193,10 +207,26 @@ public static class ApiHost
             await next(context);
         });
 
-        // UI assets are static and unauthenticated; all data/operations still
-        // require the exact owner bearer in an Authorization header.
+        // UI assets are static and unauthenticated. All data/operations require
+        // the owner bearer or an ephemeral authenticated local browser session.
         app.UseDefaultFiles();
         app.UseStaticFiles();
+
+        // Same-origin, Windows-only bootstrap: short-lived bearer returned
+        // only to this app's own JS. No cookie and no persistent owner secret.
+        app.MapPost("/api/local-session", (HttpContext context,
+                LocalBrowserSessions sessions) =>
+        {
+            if (!OperatingSystem.IsWindows())
+                return Results.NotFound();
+            if (!LocalBrowserSessions.MayBootstrap(context))
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            return Results.Ok(new
+            {
+                sessionToken = sessions.Issue(),
+                lifetimeSeconds = 12 * 60 * 60
+            });
+        });
 
         app.MapGet("/healthz", () => Results.Ok(
             new { status = "ok", executionEnabled = enabled }));
