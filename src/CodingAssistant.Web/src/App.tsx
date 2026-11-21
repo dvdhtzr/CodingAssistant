@@ -4,7 +4,7 @@ import { ProjectOverview, WorkbenchInspector, WorkbenchSidebar,
   type WorkbenchView } from './Workbench';
 import * as signalR from '@microsoft/signalr';
 import {
-  api, bootstrapLocalSession, newRequestId, isHexId,
+  api, deleteTask, bootstrapLocalSession, newRequestId, isHexId,
   type ApiStatus, type TaskItem, type TaskView, type RunItem,
   type RunEvent, type EventPage, type ExecutionView, type PlanItem,
   type HtmlArtifact, type HtmlArtifactResponse,
@@ -414,6 +414,11 @@ export default function App() {
         onNewProject={() => chooseTask('')} onChangeView={setView}
         onRefresh={() => void action('refresh', async () => {
           await fetchTasks(); refreshTask();
+        })}
+        onDeleteTask={async id => action('delete-task', async () => {
+          await deleteTask(token, id);
+          setTasks(previous => previous.filter(task => task.id !== id));
+          if (taskId === id) chooseTask('');
         })} />
       <main className="stack wb-main">
         {!taskId && <section className="panel new-project-panel">
