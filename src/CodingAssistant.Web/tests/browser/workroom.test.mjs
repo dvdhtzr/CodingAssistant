@@ -82,3 +82,14 @@ test('all six stage controls are keyboard-focusable and link to real panels', as
       'journey-panel-' + ids[i]);
   }
 });
+
+test('owner inbox action navigates to original architecture review stage without approval', async () => {
+  const inbox = page.getByRole('region', { name: 'Owner decision inbox' });
+  assert.match(await inbox.textContent(), /Review technology stack v1/);
+  await inbox.getByRole('button', { name: 'Open Solution Architecture' }).click();
+  assert.equal(await page.locator('#journey-panel-architecture').isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: /^Open Solution Architecture:/ })
+    .getAttribute('aria-current'), 'step');
+  assert.match(await inbox.textContent(), /read-only navigation/);
+  assert.equal(await inbox.getByRole('button', { name: /Approve/i }).count(), 0);
+});
