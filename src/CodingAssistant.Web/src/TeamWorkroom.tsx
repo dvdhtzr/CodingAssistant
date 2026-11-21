@@ -205,8 +205,10 @@ export function TeamWorkroomView({ evidence, onNavigate }: {
               <strong>{event.fromAgent} → {event.toAgent}</strong>
               <span>{event.kind}{event.workItemId ? ' · task ' +
                 event.workItemId : ''}</span>
-              <small>Spec v{event.specificationVersion} ·
-                { ' '}{new Date(event.createdUtc).toLocaleString()} ·
+              <small>Spec v{event.specificationVersion} ·{' '}
+                <time dateTime={event.createdUtc}>
+                  {new Date(event.createdUtc).toLocaleString()}
+                </time> ·
                 {event.current ? ' Current binding' : ' Historical binding'}</small>
             </li>)}
             </ol> : <p className="team-ledger-empty">
