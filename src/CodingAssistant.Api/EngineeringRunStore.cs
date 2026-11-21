@@ -495,7 +495,7 @@ public sealed class EngineeringRunStore(
                 "TechnicalLead", "SoftwareEngineer", reader.GetInt32(2),
                 reader.GetString(3), revision, reader.GetString(5),
                 reader.GetString(6), currentBinding, planSha,
-                reader.GetString(4));
+                reader.GetString(4), reader.GetString(7));
             if (!reader.IsDBNull(9))
                 result.Add(baseEvent with { CreatedUtc = reader.GetString(9) });
             if (!reader.IsDBNull(10))
