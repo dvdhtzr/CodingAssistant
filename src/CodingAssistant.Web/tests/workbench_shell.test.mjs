@@ -36,7 +36,7 @@ test('Workbench sidebar exposes only functional navigation and honest agent desc
   const html = renderToStaticMarkup(React.createElement(WorkbenchSidebar, {
     tasks: [task], selectedId: task.id, view: 'studio', disabled: false,
     onSelectTask: noop, onNewProject: noop, onChangeView: noop, onRefresh: noop,
-    onDeleteTask: async () => {},
+    onDeleteTask: async () => true,
   }));
   assert.match(html, /aria-label="Workspace navigation"/);
   assert.match(html, /Overview/);
