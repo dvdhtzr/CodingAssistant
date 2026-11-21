@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
+import { ProjectOverview, WorkbenchInspector, WorkbenchSidebar,
+  type WorkbenchView } from './Workbench';
 import * as signalR from '@microsoft/signalr';
 import {
   api, bootstrapLocalSession, newRequestId, isHexId,
@@ -59,6 +61,7 @@ export default function App() {
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [taskId, setTaskId] = useState('');
+  const [view, setView] = useState<WorkbenchView>('studio');
   const [taskView, setTaskView] = useState<TaskView | null>(null);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [runId, setRunId] = useState('');
@@ -133,6 +136,7 @@ export default function App() {
   function refreshRun() { setRunRevision(v => v + 1); }
   function chooseTask(id: string) {
     if (id !== '' && !isHexId(id)) return;
+    setView('studio');
     setTaskId(id);
     setHtmlArtifact(null);
     setTaskView(null);
@@ -344,18 +348,23 @@ export default function App() {
     : 'No intermediate runner milestone recorded yet.';
 
   return <>
-    <header>
-      <div>
-        <h1>◈ CodingAssistant <span className="pill">Mission Control / M3</span></h1>
-        <p>Local-first coding • OpenClaw → ACPX → OpenCode → Ollama</p>
+    <header className="wb-header">
+      <div className="wb-brand">
+        <span className="wb-mark" aria-hidden="true">◇</span>
+        <div>
+          <h1>CodingAssistant <span className="pill">Engineering Workbench</span></h1>
+          <p>Mission Control · Local-first software engineering</p>
+        </div>
       </div>
       {token && <div className="actions">
-        <span className="pill">{status?.executionEnabled ? 'Local execution enabled' : 'Execution disabled'}</span>
+        <span className="pill">Local workspace</span>
+        <span className="pill">{status?.executionEnabled ?
+          'Execution available with approval' : 'Execution unavailable'}</span>
         {sessionMode === 'automatic'
-          ? <button className="outline" onClick={() => window.location.reload()}>
+          ? <button type="button" className="outline" onClick={() => window.location.reload()}>
               Refresh local session
             </button>
-          : <button className="outline" onClick={disconnect}>Disconnect</button>}
+          : <button type="button" className="outline" onClick={disconnect}>Disconnect</button>}
       </div>}
     </header>
 
@@ -399,31 +408,14 @@ export default function App() {
       <p className="secure">No cloud AI • no automatic coding • explicit approval required</p>
     </section>}
 
-    {token && <div className="layout">
-      <aside className="stack">
-        <section className="panel">
-          <button type="button" className={taskId ? 'primary' : 'outline'}
-            onClick={() => chooseTask('')} disabled={isBusy}>
-            + New project
-          </button>
-          <p className="hint">Start from your own objective. Saved projects are available below.</p>
-        </section>
-        <section className="panel">
-          <div className="actions" style={{ justifyContent: 'space-between' }}>
-            <h2>Saved projects</h2>
-            <button className="outline" disabled={isBusy}
-              aria-label="Refresh saved projects"
-              onClick={() => void action('refresh', async () => { await fetchTasks(); refreshTask(); })}>↻</button>
-          </div>
-          {!tasks.length && <p className="hint">No saved projects yet. Describe what you want to build to begin.</p>}
-          {tasks.map(task => <button key={task.id}
-            className={'task' + (task.id === taskId ? ' selected' : '')}
-            onClick={() => chooseTask(task.id)}>
-            {task.title}<small>{task.status} · plan v{task.currentVersion}</small>
-          </button>)}
-        </section>
-      </aside>
-      <main className="stack">
+    {token && <div className="layout wb-layout">
+      <WorkbenchSidebar tasks={tasks} selectedId={taskId} view={view}
+        disabled={isBusy} onSelectTask={chooseTask}
+        onNewProject={() => chooseTask('')} onChangeView={setView}
+        onRefresh={() => void action('refresh', async () => {
+          await fetchTasks(); refreshTask();
+        })} />
+      <main className="stack wb-main">
         {!taskId && <section className="panel new-project-panel">
           <span className="pill">Start a project</span>
           <h2>What would you like to build?</h2>
@@ -465,9 +457,20 @@ export default function App() {
           <h2>Opening your project…</h2>
           <p className="hint">Loading the selected project's saved Product Owner conversation and history.</p>
         </section>}
-        {taskView && <InterviewStudio key={taskView.task.id}
-          token={token} task={taskView.task} />}
-        <details className="advanced-gate" hidden={!taskView}>
+        {view === 'overview' && taskView && <ProjectOverview
+          token={token} task={taskView.task}
+          onContinue={() => setView('studio')}
+          onDiagnostics={() => setView('diagnostics')} />}
+        {taskView && <div hidden={view !== 'studio'}>
+          <InterviewStudio key={taskView.task.id}
+            token={token} task={taskView.task} />
+        </div>}
+        {view === 'diagnostics' && taskView && <div className="wb-diagnostic-heading">
+          <h2>Legacy diagnostics</h2>
+          <p className="hint">Historical HTML and fixed C# qualification workflows.
+            These are not execution steps for your current project.</p>
+        </div>}
+        {view === 'diagnostics' && <details className="advanced-gate" hidden={!taskView}>
           <summary>Legacy single-file HTML preview (not the Product Owner workflow)</summary>
         {taskView && <section className="panel html-preview-panel">
           <h2>Make your HTML page</h2>
@@ -522,8 +525,8 @@ export default function App() {
           <p className="hint">To edit your actual project or create multiple files autonomously,
             the general-purpose agent still needs separate workspace-scope qualification.</p>
         </section>}
-        </details>
-        <details className="advanced-gate" hidden={!taskView}>
+        </details>}
+        {view === 'diagnostics' && <details className="advanced-gate" hidden={!taskView}>
           <summary>Advanced: isolated C# repair qualification (not your task)</summary>
           <p className="hint">These steps always run the fixed disposable
             <code>02-build-repair/api/Program.cs</code> test fixture and do
@@ -743,8 +746,10 @@ export default function App() {
           </ol>
           <p className="hint">SQLite is authoritative; SignalR only prompts a replay. Independent evaluator evidence, diffs and patch artifacts are not yet exposed by the API.</p>
         </section>}
-        </details>
+        </details>}
       </main>
+      <WorkbenchInspector view={view} taskView={taskView} run={run} status={status}
+        onContinue={() => setView('studio')} />
     </div>}
   </>;
 }
