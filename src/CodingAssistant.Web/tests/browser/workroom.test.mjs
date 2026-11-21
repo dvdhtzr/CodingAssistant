@@ -170,3 +170,18 @@ test('QA role shows independent static report as historical, not verified runtim
   assert.match(await team.textContent(), /static-code-review/);
   assert.equal(await team.getByRole('button', { name: 'Open Artifacts & Delivery' }).count(), 1);
 });
+
+test('UX-6 renders stored source and static QA activity without invented verification', async () => {
+  const ledger = page.getByRole('region',
+    { name: 'Qualified execution and verification timeline' });
+  assert.equal(await ledger.isVisible(), true);
+  assert.match(await ledger.textContent(), /GENERATED · NOT TESTED/);
+  assert.match(await ledger.textContent(), /UNQUALIFIED/);
+  assert.match(await ledger.textContent(), /SourceFileSaved/);
+  assert.match(await ledger.textContent(), /QaReviewAdmitted/);
+  assert.match(await ledger.textContent(), /Build, test, and browser outcomes: NOT TESTED/);
+  assert.equal(await ledger.getByRole('list', {
+    name: 'Recorded engineering and QA evidence events' }).locator('li').count(), 2);
+  assert.equal(await ledger.getByRole('button', { name: /Run verification/i }).count(), 0);
+  assert.match(await ledger.textContent(), /historical binding/);
+});

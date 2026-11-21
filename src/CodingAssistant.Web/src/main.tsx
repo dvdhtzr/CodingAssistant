@@ -10,6 +10,7 @@ import './conversation-workroom.css';
 import './owner-decision-inbox.css';
 import './source-explorer.css';
 import './team-workroom.css';
+import './verification-timeline.css';
 
 const target = document.getElementById('root');
 if (!target) throw new Error('Missing Mission Control mount');
