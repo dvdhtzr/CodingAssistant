@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProjectDraftPanel } from './ProjectDraftPanel';
 import { InterviewAnswerComposer, type InterviewChoice } from './InterviewAnswerComposer';
 import { ConversationWorkroom } from './ConversationWorkroom';
+import { OwnerDecisionInbox } from './OwnerDecisionInbox';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { TechnicalLeadStudio } from './TechnicalLeadStudio';
 import { api, type TaskItem } from './api';
@@ -222,6 +223,10 @@ export function InterviewStudio({ token, task }: {
   };
   const steps = [discoveryStep, specificationStep, architectureStep,
     planStep, generationStep, deliveryStep];
+  const inboxSignal = [
+    snapshot?.lastSequence ?? 0, spec?.sha256 ?? '', spec?.status ?? '',
+    architectureStep.status, planStep.status,
+  ].join('|');
 
   // Saved-project restore opens the next useful stage; a human-selected stage
   // takes precedence. Only confirmed approvals and a completed running job
@@ -237,6 +242,8 @@ export function InterviewStudio({ token, task }: {
   return <div className="journey-shell">
     <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded}
       onNavigate={navigateToStage} />
+    <OwnerDecisionInbox token={token} taskId={task.id}
+      refreshSignal={inboxSignal} onNavigate={navigateToStage} />
     {!!busy && <div className="activity" role="status" aria-live="polite">
       <div className="activity-heading">
         <span className="activity-dot" aria-hidden="true" />
