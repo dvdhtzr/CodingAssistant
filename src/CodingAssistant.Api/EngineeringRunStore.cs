@@ -30,7 +30,7 @@ public sealed record EngineeringRunSnapshot(
 /// revisions in one transaction. No agent can execute, approve, or bypass gates.
 /// </summary>
 public sealed class EngineeringRunStore(
-    TaskStore tasks, InterviewStore interviews, ImplementationPlanStore plans)
+    TaskStore tasks, ImplementationPlanStore plans)
 {
     private static readonly Regex Id = new("^[0-9a-f]{32}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
