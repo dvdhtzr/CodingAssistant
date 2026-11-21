@@ -26,14 +26,18 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             throw new StoreFailure("INVALID_INPUT"); // Planning agents have no tools.
         var history = messages.ToArray();
         if (history.Length is < 1 or > 35 ||
-            history.Any(m => m.Role != ChatRole.System &&
-                m.Role != ChatRole.User && m.Role != ChatRole.Assistant))
+            history.Any(m => m.Role.Value is not ("system" or "user" or "assistant")))
             throw new StoreFailure("INVALID_INPUT");
-        var conversation = history.Select(message => new
-        {
-            role = message.Role.Value,
-            content = message.Text ?? string.Empty
-        }).ToArray();
+        var conversation = history.Select(message => (
+            role: message.Role.Value, content: message.Text ?? string.Empty)).ToList();
+        // Microsoft Agent Framework can express agent instructions via the
+        // ChatOptions rather than an explicit system message. Never drop them.
+        if (!string.IsNullOrWhiteSpace(options?.Instructions) &&
+            !conversation.Any(item => item.role == "system" &&
+                item.content == options.Instructions))
+            conversation.Insert(0, (role: "system", content: options.Instructions));
+        if (!conversation.Any(item => item.role == "system"))
+            throw new StoreFailure("INVALID_INPUT");
         if (conversation.Any(x => x.content.Length > 18000) ||
             conversation.Sum(x => x.content.Length) > 58000)
             throw new StoreFailure("INVALID_INPUT");
@@ -67,7 +71,11 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             stream = false,
             think = false,
             format,
-            messages = conversation,
+            messages = conversation.Select(item => new
+            {
+                role = item.role,
+                content = item.content
+            }).ToArray(),
             options = new
             {
                 temperature = purpose == MafAgentPurpose.Architecture ? 0.15 : 0.2,
