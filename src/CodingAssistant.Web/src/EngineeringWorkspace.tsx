@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
+import { SourceArtifactExplorer } from './SourceArtifactExplorer';
 
 export interface EngineerRun {
   id: string;
@@ -296,13 +297,12 @@ export function EngineeringDeliveryPanel({ engine }: {
             : 'Download PARTIAL source ZIP'}
       </button>
     </div>}
-    {files.length > 0 && <div className="draft-files">
-      {files.map(file => <details key={file.path}>
-        <summary><strong>{file.path}</strong> · {file.content.length} characters</summary>
-        <p className="hint">Last changed by task {file.lastWorkItemId} ·
-          SHA-256 {file.sha256}</p>
-        <pre className="specification-text">{file.content}</pre>
-      </details>)}
-    </div>}
+    {files.length > 0 && <SourceArtifactExplorer key={job.id}
+      source="MAF Software Engineer" files={files} state={job.state}
+      runId={job.id} isCurrent={!!engine.plan?.current &&
+        engine.plan.status === 'Approved' &&
+        engine.plan.planSha256 === job.planSha256}
+      assignments={engine.snapshot.tasks}/>}
+
   </section>;
 }
