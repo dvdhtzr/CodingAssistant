@@ -79,13 +79,39 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         draft, "qwen3.5:4b", "technology-stack", CancellationToken.None);
     Check(advice.Options.Count == 2 && advice.RecommendedOptionId == "static-web",
         "distinct MAF Solution Architect agent returns proposal, not an approval");
+    var technicalPlan = await team.PlanAsync(
+        "Build an offline notes tracker", draft,
+        new DraftArchitectureReadiness("READY", true, new string('a', 64), [],
+            [
+                new DraftArchitectureChoice("technology-stack", 1,
+                    new string('b', 64), "static-web", "Static HTML and JavaScript",
+                    "Offline", "Manual DOM", "static-web"),
+                new DraftArchitectureChoice("architecture-style", 1,
+                    new string('c', 64), "small-modules", "Small modules",
+                    "Simple to test", "Manual boundaries", null)
+            ]),
+        "qwen3.5:4b", CancellationToken.None);
+    Check(technicalPlan.Tasks.Count == 2 &&
+          technicalPlan.Tasks[1].DependsOn.SequenceEqual(["create-ui"]) &&
+          technicalPlan.Tasks[1].AcceptanceCriteria.Count > 0,
+        "real MAF Technical Lead returns dependency-ordered, checkable work");
     Check(factory.Purposes.SequenceEqual(new[] {
             MafAgentPurpose.Interview, MafAgentPurpose.Specification,
-            MafAgentPurpose.Architecture
-        }) && factory.SystemPoliciesSeen == 3 &&
+            MafAgentPurpose.Architecture, MafAgentPurpose.TechnicalLead
+        }) && factory.SystemPoliciesSeen == 4 &&
         factory.AllowedToolsSeen == 0 &&
         factory.Models.All(m => m == "qwen3.5:4b"),
-        "MAF runs specialized local agents with exact model, instructions and no tools");
+        "three MAF specialists keep exact model, policies and no tools");
+    try
+    {
+        _ = ImplementationPlanContract.Parse(
+            """{"summary":"A valid plan summary for offline notes.","tasks":[{"id":"one-task","title":"Create working UI","description":"Implement user controls","dependsOn":["later-task"],"acceptanceCriteria":["Clicks visibly work"]},{"id":"later-task","title":"Persist local data","description":"Store offline notes","dependsOn":[],"acceptanceCriteria":["Reload retains notes"]}],"testStrategy":["Independently click buttons"],"risks":[]}""");
+        Check(false, "forward dependencies must be rejected");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(true, "Technical Lead model cannot create cyclic or forward dependencies");
+    }
 }
 
 var root = Path.Combine(Path.GetTempPath(),
@@ -788,6 +814,8 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                     "## Constraints\nOnly local data, no remote dependencies."),
                 MafAgentPurpose.Architecture =>
                     """{"recommendedOptionId":"static-web","rationale":"Offline browser storage is proportionate.","options":[{"id":"static-web","label":"Static HTML and JavaScript","benefit":"Works offline","tradeoff":"Manual DOM","runtimeProfileId":"static-web"},{"id":"react","label":"React and TypeScript","benefit":"Components","tradeoff":"Build tools","runtimeProfileId":null}]}""",
+                MafAgentPurpose.TechnicalLead =>
+                    """{"summary":"Build a minimal offline notes application with working controls and persistence.","tasks":[{"id":"create-ui","title":"Create the browser interface","description":"Create accessible controls for notes and search","dependsOn":[],"acceptanceCriteria":["A user can type into the note editor and click Save"]},{"id":"persist-notes","title":"Save notes and wire search","description":"Connect controls to browser local storage and implement search behavior","dependsOn":["create-ui"],"acceptanceCriteria":["Saved notes survive a full page reload","A search returns matching notes"]}],"testStrategy":["Independently check button clicks using keyboard and mouse","Reload and verify persistence"],"risks":["Static Web runtime is not yet independently qualified"]}""",
                 _ => throw new Exception("Unknown MAF purpose")
             };
             return Task.FromResult(new ChatResponse(
