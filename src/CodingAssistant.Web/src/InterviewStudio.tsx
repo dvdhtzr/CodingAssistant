@@ -158,8 +158,9 @@ export function InterviewStudio({ token, task }: {
     // Stage headers stay mounted. Scroll the actual owner action into view
     // after expanding instead of leaving it below a long conversation.
     window.requestAnimationFrame(() => {
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
       document.getElementById('journey-label-specification')
-        ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        ?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
     });
   }, []);
 
