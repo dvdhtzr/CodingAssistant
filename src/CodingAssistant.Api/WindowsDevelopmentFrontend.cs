@@ -22,13 +22,16 @@ public static class WindowsDevelopmentFrontend
     private static string? _preparedWebRoot = null;
     public static string? PreparedWebRoot => _preparedWebRoot;
 
-    public static string? EnsureCurrent()
+    public static string? EnsureCurrent(bool verifyOnReleaseForSmoke = false)
     {
-#if !DEBUG
-        return null;
-#else
         if (!OperatingSystem.IsWindows())
             return null;
+#if !DEBUG
+        // Published/Release applications NEVER invoke npm unless the explicit
+        // model-free test harness opts into a source-checkout verification.
+        if (!verifyOnReleaseForSmoke)
+            return null;
+#endif
 
         var checkout = FindCheckout();
         if (checkout is null)
@@ -69,7 +72,6 @@ public static class WindowsDevelopmentFrontend
 
         _preparedWebRoot = webRoot;
         return webRoot;
-#endif
     }
 
     private static string? FindCheckout()
