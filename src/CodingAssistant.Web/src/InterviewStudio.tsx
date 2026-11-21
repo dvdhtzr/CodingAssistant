@@ -32,6 +32,27 @@ interface InterviewSnapshot {
   specification: InterviewSpecification | null;
 }
 type InterviewBusy = 'start' | 'answer' | 'draft' | 'approve' | '';
+const MAX_OWNER_ANSWERS = 12;
+
+/** A visible route forward when the backend's interview limit has been reached. */
+export function InterviewCompletionNotice({ ownerAnswers, hasSpecification, onContinue }: {
+  ownerAnswers: number;
+  hasSpecification: boolean;
+  onContinue: () => void;
+}) {
+  if (ownerAnswers < MAX_OWNER_ANSWERS) return null;
+  return <div className="interview-completion-notice" role="status">
+    <div>
+      <strong>Product discovery is ready for your review</strong>
+      <p>All {MAX_OWNER_ANSWERS} interview answers are saved.
+        The interview has reached its question limit, so there is no more answer form.
+        Your next step is to {hasSpecification ? 'review the saved' : 'draft a'} specification.</p>
+    </div>
+    <button type="button" className="primary" onClick={onContinue}>
+      {hasSpecification ? 'Review specification' : 'Continue to specification'} →
+    </button>
+  </div>;
+}
 
 export function InterviewStudio({ token, task }: {
   token: string;
@@ -49,6 +70,7 @@ export function InterviewStudio({ token, task }: {
   const [elapsed, setElapsed] = useState(0);
   const [expanded, setExpanded] = useState<JourneyId | null>('discovery');
   const manuallySelected = useRef(false);
+  const transcriptRef = useRef<HTMLOListElement>(null);
   const [architectureStep, setArchitectureStep] = useState<JourneyStep>(journeySteps[2]);
   const [planStep, setPlanStep] = useState<JourneyStep>(journeySteps[3]);
   const [generationStep, setGenerationStep] = useState<JourneyStep>(journeySteps[4]);
@@ -121,6 +143,26 @@ export function InterviewStudio({ token, task }: {
     return () => { cancelled = true; };
   }, [token, task.id, modelRefresh]);
 
+  // Reopening a long saved conversation shows the newest message. The
+  // transcript, not the entire page, is the only nested scroll area.
+  useEffect(() => {
+    const transcript = transcriptRef.current;
+    if (transcript && snapshot?.lastSequence) {
+      transcript.scrollTop = transcript.scrollHeight;
+    }
+  }, [task.id, snapshot?.lastSequence]);
+
+  const continueToSpecification = useCallback(() => {
+    manuallySelected.current = true;
+    setExpanded('specification');
+    // Stage headers stay mounted. Scroll the actual owner action into view
+    // after expanding instead of leaving it below a long conversation.
+    window.requestAnimationFrame(() => {
+      document.getElementById('journey-label-specification')
+        ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  }, []);
+
   useEffect(() => {
     if (!busy) return;
     const start = Date.now();
@@ -165,10 +207,13 @@ export function InterviewStudio({ token, task }: {
 
   const spec = snapshot?.specification;
   const ownerAnswers = snapshot?.messages.filter(item => item.role === 'owner').length ?? 0;
+  const discoveryReady = !!spec || !!snapshot?.readyForSpecification ||
+    ownerAnswers >= MAX_OWNER_ANSWERS;
   const discoveryStep: JourneyStep = { ...journeySteps[0],
-    tone: spec ? 'complete' : snapshot?.lastSequence ? 'active' : 'pending',
+    tone: discoveryReady ? 'complete' : snapshot?.lastSequence ? 'active' : 'pending',
     status: spec ? ownerAnswers + ' answer(s) · interview captured' :
-      snapshot?.lastSequence ? ownerAnswers + ' answer(s) saved' : 'Not started',
+      discoveryReady ? ownerAnswers + ' answer(s) · ready to draft' :
+        snapshot?.lastSequence ? ownerAnswers + ' answer(s) saved' : 'Not started',
   };
   const specificationStep: JourneyStep = { ...journeySteps[1],
     tone: spec?.status === 'Approved' ? 'complete' :
@@ -215,7 +260,10 @@ export function InterviewStudio({ token, task }: {
       <div>
         <span className="pill">Product Owner · requirements discovery</span>
         <h2>1. Discuss your project with the Product Owner</h2>
-        <p className="hint">Your objective: <strong>{task.objective}</strong></p>
+        <details className="interview-objective">
+          <summary>Project objective <span>View original brief</span></summary>
+          <p className="hint">{task.objective}</p>
+        </details>
       </div>
       <span className="pill">{snapshot?.lastSequence ? 'Conversation saved' : 'Not started'}</span>
     </div>
@@ -256,7 +304,8 @@ export function InterviewStudio({ token, task }: {
       </div>}
 
       {!!snapshot.lastSequence && <>
-        <ol className="interview-transcript" aria-label="Saved Product Owner conversation">
+        <ol className="interview-transcript" aria-label="Saved Product Owner conversation"
+          ref={transcriptRef} tabIndex={0}>
           {snapshot.messages.map(message => <li
             className={message.role === 'owner' ? 'owner-message' : 'assistant-message'}
             key={message.sequence}>
@@ -272,7 +321,7 @@ export function InterviewStudio({ token, task }: {
             ? ' The Product Owner believes there is enough information to draft a specification.'
             : ' Continue discussing requirements, or draft a first specification when you are ready.'}
         </p>
-        {ownerAnswers < 12 && <InterviewAnswerComposer
+        {ownerAnswers < MAX_OWNER_ANSWERS && <InterviewAnswerComposer
           key={snapshot.lastSequence}
           choice={snapshot.messages[snapshot.messages.length - 1]?.choice ?? null}
           busy={!!busy}
@@ -282,6 +331,15 @@ export function InterviewStudio({ token, task }: {
               message,
               model: snapshot.model,
             }))} />}
+        {ownerAnswers >= MAX_OWNER_ANSWERS &&
+          <InterviewCompletionNotice ownerAnswers={ownerAnswers}
+            hasSpecification={!!spec} onContinue={continueToSpecification} />}
+        {ownerAnswers > 0 && ownerAnswers < MAX_OWNER_ANSWERS &&
+          snapshot.readyForSpecification && !spec &&
+          <button type="button" className="outline interview-ready-action"
+            disabled={!!busy} onClick={continueToSpecification}>
+            Ready to draft? Open Specification →
+          </button>}
       </>}
 
     </>}
