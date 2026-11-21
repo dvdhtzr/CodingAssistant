@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProjectDraftPanel } from './ProjectDraftPanel';
 import { InterviewAnswerComposer, type InterviewChoice } from './InterviewAnswerComposer';
+import { ConversationWorkroom } from './ConversationWorkroom';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { TechnicalLeadStudio } from './TechnicalLeadStudio';
 import { api, type TaskItem } from './api';
@@ -70,7 +71,6 @@ export function InterviewStudio({ token, task }: {
   const [elapsed, setElapsed] = useState(0);
   const [expanded, setExpanded] = useState<JourneyId | null>('discovery');
   const manuallySelected = useRef(false);
-  const transcriptRef = useRef<HTMLOListElement>(null);
   const [architectureStep, setArchitectureStep] = useState<JourneyStep>(journeySteps[2]);
   const [planStep, setPlanStep] = useState<JourneyStep>(journeySteps[3]);
   const [generationStep, setGenerationStep] = useState<JourneyStep>(journeySteps[4]);
@@ -79,6 +79,17 @@ export function InterviewStudio({ token, task }: {
   const openStage = useCallback((id: JourneyId) => {
     manuallySelected.current = true;
     setExpanded(current => toggleJourneyStage(current, id));
+  }, []);
+  const navigateToStage = useCallback((id: JourneyId) => {
+    // Direct navigation opens the requested panel; clicking its progress tile
+    // again must not collapse it. Honor deliberate navigation over polling.
+    manuallySelected.current = true;
+    setExpanded(id);
+    window.requestAnimationFrame(() => {
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+      document.getElementById('journey-label-' + id)
+        ?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
+    });
   }, []);
   const reportArchitecture = useCallback((step: JourneyStep) => {
     setArchitectureStep(previous => previous.tone === step.tone &&
@@ -143,26 +154,9 @@ export function InterviewStudio({ token, task }: {
     return () => { cancelled = true; };
   }, [token, task.id, modelRefresh]);
 
-  // Reopening a long saved conversation shows the newest message. The
-  // transcript, not the entire page, is the only nested scroll area.
-  useEffect(() => {
-    const transcript = transcriptRef.current;
-    if (transcript && snapshot?.lastSequence) {
-      transcript.scrollTop = transcript.scrollHeight;
-    }
-  }, [task.id, snapshot?.lastSequence]);
-
   const continueToSpecification = useCallback(() => {
-    manuallySelected.current = true;
-    setExpanded('specification');
-    // Stage headers stay mounted. Scroll the actual owner action into view
-    // after expanding instead of leaving it below a long conversation.
-    window.requestAnimationFrame(() => {
-      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      document.getElementById('journey-label-specification')
-        ?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
-    });
-  }, []);
+    navigateToStage('specification');
+  }, [navigateToStage]);
 
   useEffect(() => {
     if (!busy) return;
@@ -241,7 +235,8 @@ export function InterviewStudio({ token, task }: {
     generationStep.tone, deliveryStep.tone]);
 
   return <div className="journey-shell">
-    <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded} />
+    <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded}
+      onNavigate={navigateToStage} />
     {!!busy && <div className="activity" role="status" aria-live="polite">
       <div className="activity-heading">
         <span className="activity-dot" aria-hidden="true" />
@@ -305,18 +300,7 @@ export function InterviewStudio({ token, task }: {
       </div>}
 
       {!!snapshot.lastSequence && <>
-        <ol className="interview-transcript" aria-label="Saved Product Owner conversation"
-          ref={transcriptRef} tabIndex={0}>
-          {snapshot.messages.map(message => <li
-            className={message.role === 'owner' ? 'owner-message' : 'assistant-message'}
-            key={message.sequence}>
-            <div className="interview-speaker">
-              {message.role === 'owner' ? 'You' : 'Product Owner'}
-              <small>{new Date(message.createdUtc).toLocaleTimeString()}</small>
-            </div>
-            <div className="interview-message">{message.content}</div>
-          </li>)}
-        </ol>
+        <ConversationWorkroom messages={snapshot.messages} />
         <p className="hint">Model: {snapshot.model} · {ownerAnswers} answer(s) recorded.
           {snapshot.readyForSpecification
             ? ' The Product Owner believes there is enough information to draft a specification.'
