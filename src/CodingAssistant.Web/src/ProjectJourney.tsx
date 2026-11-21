@@ -25,6 +25,20 @@ export const journeySteps: readonly JourneyStep[] = [
     status: 'No files yet', tone: 'pending' },
 ];
 
+/**
+ * Restore the most useful saved stage. Never use this to override a manually
+ * selected header or a currently focused form.
+ */
+export function restoreJourneyStage(specStatus: string | null,
+  architecture: JourneyTone, generation: JourneyTone,
+  delivery: JourneyTone): JourneyId {
+  if (delivery === 'complete') return 'delivery';
+  if (generation === 'complete' || architecture === 'complete') return 'generation';
+  if (specStatus === 'Approved') return 'architecture';
+  if (specStatus === 'Draft') return 'specification';
+  return 'discovery';
+}
+
 export function JourneyStage({ step, index, open, onOpen, children }: {
   step: JourneyStep;
   index: number;
