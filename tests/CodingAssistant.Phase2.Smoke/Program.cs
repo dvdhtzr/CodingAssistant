@@ -1511,21 +1511,24 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
 sealed class Phase5QaModel : IQaSourceReviewer
 {
     public List<string> ReviewedFiles { get; } = [];
+    public List<string> ReviewedSourceStates { get; } = [];
 
     public Task<QaFileAssessment> ReviewAsync(
         QaReviewInput input, CancellationToken cancellation)
     {
-        if (input.SourceRun.State != "Generated" ||
+        if (!QaReviewStore.IsReviewableSource(
+                input.SourceRun.State, input.AllFiles.Count) ||
             input.Plan.Status != "Approved" || !input.Plan.Current ||
             input.Plan.PlanSha256 != input.SourceRun.PlanSha256 ||
             input.Plan.Model != "qwen3.5:4b" ||
             !input.Architecture.ReadyForSourceGeneration ||
             input.Architecture.ArchitectureSha256 != input.Plan.ArchitectureSha256 ||
-            input.AllFiles.Count != 2 ||
+            input.AllFiles.Count is < 1 or > 2 ||
             !input.AllFiles.Any(f => f.Path == input.File.Path &&
                 f.Sha256 == input.File.Sha256))
             throw new Exception("Independent QA received wrong source or stale approval");
         ReviewedFiles.Add(input.File.Path);
+        ReviewedSourceStates.Add(input.SourceRun.State);
         return Task.FromResult(input.File.Path == "app.js"
             ? new QaFileAssessment(
                 "The timer code registers a button listener but lacks a persistent timer.",
