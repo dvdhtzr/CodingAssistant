@@ -61,7 +61,9 @@ export default function App() {
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [taskId, setTaskId] = useState('');
-  const [view, setView] = useState<WorkbenchView>('studio');
+  const [view, setView] = useState<WorkbenchView>('overview');
+  const [inspectorOpen, setInspectorOpen] = useState(() =>
+    typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches);
   const [taskView, setTaskView] = useState<TaskView | null>(null);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [runId, setRunId] = useState('');
@@ -134,9 +136,9 @@ export default function App() {
   }
   function refreshTask() { setTaskRevision(v => v + 1); }
   function refreshRun() { setRunRevision(v => v + 1); }
-  function chooseTask(id: string) {
+  function chooseTask(id: string, initialView: WorkbenchView = 'overview') {
     if (id !== '' && !isHexId(id)) return;
-    setView('studio');
+    setView(initialView);
     setTaskId(id);
     setHtmlArtifact(null);
     setTaskView(null);
@@ -349,17 +351,28 @@ export default function App() {
 
   return <>
     <header className="wb-header">
+      <a className="wb-skip-link" href="#mission-workspace">Skip to workspace</a>
       <div className="wb-brand">
-        <span className="wb-mark" aria-hidden="true">◇</span>
+        <span className="wb-mark" aria-hidden="true"><span>◆</span></span>
         <div>
-          <h1>CodingAssistant <span className="pill">Engineering Workbench</span></h1>
-          <p>Mission Control · Local-first software engineering</p>
+          <h1>CodingAssistant</h1>
+          <p><span>MISSION CONTROL</span><span aria-hidden="true"> / </span>
+            <span>LOCAL ENGINEERING ENVIRONMENT</span></p>
         </div>
       </div>
+      {token && <div className="wb-header-context" title={taskView?.task.title ?? ''}>
+        <span className="wb-header-context-label">ACTIVE PROJECT</span>
+        <strong>{taskView?.task.title ?? (taskId ? 'Opening project…' : 'No project selected')}</strong>
+      </div>}
       {token && <div className="actions">
-        <span className="pill">Local workspace</span>
-        <span className="pill">{status?.executionEnabled ?
-          'Execution available with approval' : 'Execution unavailable'}</span>
+        <span className="pill wb-local-pill"><span className="wb-local-dot" aria-hidden="true" />Local session</span>
+        <span className="pill wb-execution-pill">{status?.executionEnabled ?
+          'Execution requires approval' : 'Execution unavailable'}</span>
+        <button type="button" className="outline wb-inspector-toggle"
+          aria-expanded={inspectorOpen} aria-controls="mission-inspector"
+          onClick={() => setInspectorOpen(value => !value)}>
+          {inspectorOpen ? 'Hide inspector' : 'Show inspector'}
+        </button>
         {sessionMode === 'automatic'
           ? <button type="button" className="outline" onClick={() => window.location.reload()}>
               Refresh local session
@@ -408,7 +421,8 @@ export default function App() {
       <p className="secure">No cloud AI • no automatic coding • explicit approval required</p>
     </section>}
 
-    {token && <div className="layout wb-layout">
+    {token && <div className={'layout wb-layout' +
+      (!inspectorOpen ? ' wb-layout--inspector-closed' : '')}>
       <WorkbenchSidebar tasks={tasks} selectedId={taskId} view={view}
         disabled={isBusy} onSelectTask={chooseTask}
         onNewProject={() => chooseTask('')} onChangeView={setView}
@@ -433,7 +447,7 @@ export default function App() {
             setBusy('');
           }
         }} />
-      <main className="stack wb-main">
+      <main className="stack wb-main" id="mission-workspace" tabIndex={-1}>
         {!taskId && <section className="panel new-project-panel">
           <span className="pill">Start a project</span>
           <h2>What would you like to build?</h2>
@@ -449,7 +463,7 @@ export default function App() {
             });
             setNewTitle(''); setNewObjective('');
             await fetchTasks();
-            chooseTask(created.id);
+            chooseTask(created.id, 'studio');
           }); }}>
             <label htmlFor="project-objective">What do you want to build?
               <textarea id="project-objective" value={newObjective} maxLength={4000}
@@ -766,8 +780,11 @@ export default function App() {
         </section>}
         </details>}
       </main>
-      <WorkbenchInspector token={token} view={view} taskView={taskView} run={run} status={status}
-        onContinue={() => setView('studio')} />
+      <div id="mission-inspector" className="wb-inspector-host" hidden={!inspectorOpen}>
+        <WorkbenchInspector token={token} view={view} taskView={taskView} run={run}
+          status={status} collapsed={!inspectorOpen}
+          onContinue={() => setView('studio')} />
+      </div>
     </div>}
   </>;
 }

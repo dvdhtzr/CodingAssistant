@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
-    "test:workbench": "node --test tests/workbench_shell.test.mjs tests/project_journey.test.mjs"
+    "test:workbench": "node --test tests/workbench_shell.test.mjs tests/project_journey.test.mjs tests/mission_control_foundation.test.mjs"
   },
   "dependencies": {
     "@microsoft/signalr": "10.0.11",
