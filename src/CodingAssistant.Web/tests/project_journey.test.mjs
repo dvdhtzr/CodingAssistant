@@ -36,11 +36,12 @@ before(async () => {
 
 after(async () => { if (vite) await vite.close(); });
 
-test('the five stages have stable identities, order and genuine process labels', () => {
+test('the six stages have stable identities, order and genuine process labels', () => {
   assert.deepEqual(steps.map(step => step.id),
-    ['discovery', 'specification', 'architecture', 'generation', 'delivery']);
+    ['discovery', 'specification', 'architecture', 'plan', 'generation', 'delivery']);
   assert.equal(steps[0].title, 'Product Discovery');
-  assert.equal(steps[4].title, 'Artifacts & Delivery');
+  assert.equal(steps[3].title, 'Implementation Plan');
+  assert.equal(steps[5].title, 'Artifacts & Delivery');
 });
 
 test('closed stage keeps its mounted child and removes it from keyboard navigation', () => {
@@ -82,32 +83,40 @@ test('progress uses colored state segments, not imaginary percentages', () => {
     activeId: 'specification',
   }));
   assert.match(html, /Stage 2/);
-  assert.match(html, /1 of 5 stages completed/);
+  assert.match(html, /1 of 6 stages completed/);
   assert.match(html, /1 requiring review/);
   assert.match(html, /journey-progress-segment journey-complete/);
   assert.doesNotMatch(html, /% complete/);
 });
 
-test('interview renders all five accordion headers with exactly one stage open', () => {
+test('interview renders all six accordion headers with exactly one stage open', () => {
   const html = renderToStaticMarkup(React.createElement(InterviewStudio, {
     token: 'f'.repeat(64), task,
   }));
-  assert.equal((html.match(/class="journey-stage journey-/g) ?? []).length, 5);
+  assert.equal((html.match(/class="journey-stage journey-/g) ?? []).length, 6);
   assert.equal((html.match(/aria-expanded="true"/g) ?? []).length, 1);
-  assert.equal((html.match(/aria-expanded="false"/g) ?? []).length, 4);
-  for (const id of ['discovery', 'specification', 'architecture', 'generation', 'delivery']) {
+  assert.equal((html.match(/aria-expanded="false"/g) ?? []).length, 5);
+  for (const id of ['discovery', 'specification', 'architecture', 'plan', 'generation', 'delivery']) {
     assert.match(html, new RegExp('id="journey-panel-' + id + '"'));
   }
   assert.match(html, /Loading your saved conversation/);
 });
 
-test('saved work restores to its next useful stage without treating source as tested', () => {
-  assert.equal(restoreJourneyStage(null, 'pending', 'pending', 'pending'), 'discovery');
-  assert.equal(restoreJourneyStage('Draft', 'pending', 'pending', 'pending'), 'specification');
-  assert.equal(restoreJourneyStage('Approved', 'active', 'pending', 'pending'), 'architecture');
-  assert.equal(restoreJourneyStage('Approved', 'complete', 'active', 'pending'), 'generation');
-  assert.equal(restoreJourneyStage('Approved', 'complete', 'complete', 'complete'), 'delivery');
-  assert.equal(restoreJourneyStage('Approved', 'blocked', 'pending', 'attention'), 'architecture');
+test('saved work restores to Technical Lead before source generation', () => {
+  assert.equal(restoreJourneyStage(null, 'pending', 'pending', 'pending', 'pending'),
+    'discovery');
+  assert.equal(restoreJourneyStage('Draft', 'pending', 'pending', 'pending', 'pending'),
+    'specification');
+  assert.equal(restoreJourneyStage('Approved', 'active', 'pending', 'pending', 'pending'),
+    'architecture');
+  assert.equal(restoreJourneyStage('Approved', 'complete', 'attention', 'pending', 'pending'),
+    'plan');
+  assert.equal(restoreJourneyStage('Approved', 'complete', 'complete', 'pending', 'pending'),
+    'generation');
+  assert.equal(restoreJourneyStage('Approved', 'complete', 'complete', 'complete', 'complete'),
+    'delivery');
+  assert.equal(restoreJourneyStage('Approved', 'blocked', 'pending', 'pending', 'attention'),
+    'architecture');
 });
 
 test('repeated header press collapses all panels, while the next opens one', () => {
@@ -125,4 +134,14 @@ test('progress strip remains understandable with no expanded stage', () => {
   assert.match(html, /All stages collapsed/);
   assert.match(html, /No stage open/);
   assert.doesNotMatch(html, /Stage 0/);
+});
+
+test('Technical Lead stage has a mounted, accessible plan-review region', () => {
+  const html = renderToStaticMarkup(React.createElement(InterviewStudio, {
+    token: 'f'.repeat(64), task,
+  }));
+  assert.match(html, /id="journey-panel-plan"/);
+  assert.match(html, /Technical Lead/);
+  assert.match(html, /Implementation Plan/);
+  assert.match(html, /aria-expanded="false"/);
 });
