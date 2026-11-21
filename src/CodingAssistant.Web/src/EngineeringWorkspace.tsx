@@ -20,7 +20,7 @@ export interface EngineerAssignment {
   id: string;
   ordinal: number;
   title: string;
-  state: 'Pending' | 'Running' | 'Completed';
+  state: 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Interrupted';
   summary: string | null;
   startedUtc: string | null;
   completedUtc: string | null;
