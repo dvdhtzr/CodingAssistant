@@ -423,7 +423,8 @@ export default function App() {
 
     {token && <div className={'layout wb-layout' +
       (!inspectorOpen ? ' wb-layout--inspector-closed' : '')}>
-      <WorkbenchSidebar tasks={tasks} selectedId={taskId} view={view}
+      <WorkbenchSidebar token={token} tasks={tasks} selectedId={taskId} view={view}
+        onOpenRoster={() => setInspectorOpen(true)}
         disabled={isBusy} onSelectTask={chooseTask}
         onNewProject={() => chooseTask('')} onChangeView={setView}
         onRefresh={() => void action('refresh', async () => {
