@@ -134,13 +134,10 @@ export function InterviewStudio({ token, task }: {
       setSnapshot(updated);
       setApproveChecked(false);
       if (operation === 'answer') setAnswer('');
-      if (operation === 'draft') {
-        manuallySelected.current = true;
-        setExpanded('specification');
-      }
       if (operation === 'approve') {
         manuallySelected.current = true;
-        setExpanded('architecture');
+        // Honor a deliberate collapse while the approval request was in flight.
+        setExpanded(current => current === 'specification' ? 'architecture' : current);
       }
     } catch (cause) {
       const code = cause instanceof Error ? cause.message : 'Unknown error';
