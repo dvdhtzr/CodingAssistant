@@ -218,6 +218,29 @@ if (OperatingSystem.IsWindows())
         "cloud and malformed identifiers never become local inference targets");
 }
 
+// Regression: MAF must use the SAME guided-answer schema as the parser.
+// Without the choice property Ollama's structured-output mode cannot return
+// radio or checkbox options even if the Product Owner requests them.
+{
+    var format = LocalMafChatClient.ResponseFormat(MafAgentPurpose.Interview);
+    Check(ReferenceEquals(format, LocalInterviewModel.InterviewOutputSchema),
+        "MAF and direct Ollama use one interview response schema");
+    using var formatJson = JsonDocument.Parse(JsonSerializer.Serialize(format));
+    var schemaRoot = formatJson.RootElement;
+    var fields = schemaRoot.GetProperty("properties");
+    var choiceFields = fields.GetProperty("choice").GetProperty("properties");
+    Check(fields.TryGetProperty("message", out _) &&
+          fields.TryGetProperty("readyForSpecification", out _) &&
+          choiceFields.GetProperty("kind").GetProperty("enum")
+            .EnumerateArray().Select(item => item.GetString())
+            .SequenceEqual(new[] { "single", "multiple" }) &&
+          choiceFields.GetProperty("options").GetProperty("minItems").GetInt32() == 2 &&
+          choiceFields.GetProperty("options").GetProperty("maxItems").GetInt32() == 5,
+        "MAF interview format admits 2-5 radio/checkbox options");
+    Check(LocalMafChatClient.ResponseFormat(MafAgentPurpose.Specification) is null,
+        "specification drafting remains Markdown, not the interview response schema");
+}
+
 // Small local models may ignore JSON-only prompts; validate strict schema,
 // bounded plain-question recovery, and fail-closed malformed reasoning without
 // making real Ollama requests in model-free CI.

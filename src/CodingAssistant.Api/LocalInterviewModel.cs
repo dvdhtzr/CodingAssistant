@@ -19,6 +19,36 @@ public sealed class LocalInterviewModel : IInterviewModel
     public static bool AllowedModel(string? model) =>
         LocalOllamaModelCatalog.ValidLocalName(model);
 
+    // One contract for both the legacy direct Ollama path and the production
+    // MAF ChatClientAgent adapter. Keep this schema synchronized with
+    // ParseInterviewReply and InterviewStore.ValidChoice.
+    public static object InterviewOutputSchema { get; } = new
+    {
+        type = "object",
+        properties = new
+        {
+            message = new { type = "string" },
+            readyForSpecification = new { type = "boolean" },
+            choice = new
+            {
+                type = "object",
+                properties = new
+                {
+                    kind = new { type = "string", @enum = new[] { "single", "multiple" } },
+                    options = new
+                    {
+                        type = "array", minItems = 2, maxItems = 5,
+                        items = new { type = "string" }
+                    }
+                },
+                required = new[] { "kind", "options" },
+                additionalProperties = false
+            }
+        },
+        required = new[] { "message", "readyForSpecification" },
+        additionalProperties = false
+    };
+
     // Phase 1: identity and boundaries for the requirements specialist.
     // Existing SQLite message roles and HTTP contracts remain unchanged.
     internal static readonly string InterviewPolicy =
@@ -36,11 +66,17 @@ public sealed class LocalInterviewModel : IInterviewModel
         Identify assumptions, contradictory answers and meaningful omissions.
         Ask intelligent follow-up questions specific to the current project.
 
-        Ask ONE high-value question per turn. Adapt to all prior answers;
-        do not repeat resolved questions or follow a rigid checklist.
-        When appropriate, propose 2 to 5 concise, realistic answer options,
-        based on the owner's actual objective and prior replies, never a
-        fixed list. Set "choice":{"kind":"single","options":[...]} when
+        Ask exactly ONE high-value decision question per turn, based on the
+        objective and the owner's previous answers. Do not combine two decisions
+        in one question: e.g. ask whether personality can change first, and
+        ask how conflicts are handled on the next turn.
+        For any question that can reasonably be answered by selecting from
+        alternatives, ALWAYS provide 2 to 5 concise, project-specific options,
+        not a rigid, prewritten list. Prefer guided options for faster owner
+        feedback, but leave nuanced decisions to the owner. Never invent
+        consent or infer that an option was chosen.
+        Only omit the choice field when genuinely open-ended input is needed
+        or when providing a readiness summary. Set "choice":{"kind":"single","options":[...]} when
         ONE option is intended, or kind "multiple" when selecting several
         answers is meaningful. Do not use multiple selection just to ask
         separate questions. Options are suggestions, not owner approvals.
@@ -248,27 +284,6 @@ public sealed class LocalInterviewModel : IInterviewModel
         // Ollama's JSON schema constrains the shape more reliably than the
         // generic "json" mode, particularly with the small local models.
         // No free-form response is granted access to tools or commands.
-        var interviewSchema = new
-        {
-            type = "object",
-            properties = new
-            {
-                message = new { type = "string" },
-                readyForSpecification = new { type = "boolean" },
-                choice = new {
-                    type = "object",
-                    properties = new {
-                        kind = new { type = "string", @enum = new[] { "single", "multiple" } },
-                        options = new { type = "array", minItems = 2, maxItems = 5,
-                            items = new { type = "string" } }
-                    },
-                    required = new[] { "kind", "options" },
-                    additionalProperties = false
-                }
-            },
-            required = new[] { "message", "readyForSpecification" },
-            additionalProperties = false
-        };
         var conversation = new object[]
         {
             new { role = "system", content = policy }
@@ -280,7 +295,7 @@ public sealed class LocalInterviewModel : IInterviewModel
             model,
             stream = false,
             think = false,
-            format = json ? (object)interviewSchema : null,
+            format = json ? InterviewOutputSchema : null,
             messages = conversation.ToArray(),
             options = new
             {
