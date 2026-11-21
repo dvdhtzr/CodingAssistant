@@ -766,7 +766,7 @@ export default function App() {
         </section>}
         </details>}
       </main>
-      <WorkbenchInspector view={view} taskView={taskView} run={run} status={status}
+      <WorkbenchInspector token={token} view={view} taskView={taskView} run={run} status={status}
         onContinue={() => setView('studio')} />
     </div>}
   </>;
