@@ -29,9 +29,18 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
   onDeleteTask: (id: string) => Promise<boolean>;
 }) {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const matchingTasks = tasks.filter(task =>
+    (task.title + ' ' + task.objective).toLocaleLowerCase()
+      .includes(query.trim().toLocaleLowerCase()));
   return <aside className="wb-sidebar" aria-label="Workspace navigation">
+    <div className="wb-sidebar-intro">
+      <span className="wb-sidebar-rail" aria-hidden="true" />
+      <div><span className="wb-kicker">YOUR WORKSPACE</span>
+        <strong>Command center</strong><small>Private · on this machine</small></div>
+    </div>
     <button type="button" className="wb-new-project" disabled={disabled}
-      onClick={onNewProject}>+ New project</button>
+      onClick={onNewProject}><span aria-hidden="true">＋</span> New project</button>
     {selectedId && <nav aria-label="Project views" className="wb-navigation">
       <p className="wb-kicker">WORKSPACE</p>
       {([
@@ -42,16 +51,26 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
         <button type="button" key={id}
           aria-current={view === id ? 'page' : undefined}
           className={'wb-nav-item' + (view === id ? ' wb-selected' : '')}
-          onClick={() => onChangeView(id)}>{label}</button>)}
+          onClick={() => onChangeView(id)}>
+          <span className="wb-nav-icon" aria-hidden="true">{id === 'overview' ? '◫' :
+            id === 'studio' ? '⌘' : '⌁'}</span>{label}
+        </button>)}
     </nav>}
     <div className="wb-projects">
       <div className="wb-section-title">
-        <span className="wb-kicker">SAVED PROJECTS</span>
+        <span className="wb-kicker">SAVED PROJECTS <span className="wb-project-count">{tasks.length}</span></span>
         <button type="button" className="wb-refresh" disabled={disabled}
           aria-label="Refresh saved projects" onClick={onRefresh}>↻</button>
       </div>
+      {tasks.length > 0 && <label className="wb-project-search-label">
+        <span className="wb-visually-hidden">Search saved projects</span>
+        <input type="search" value={query} onChange={event => setQuery(event.target.value)}
+          placeholder="Find a project…" aria-label="Search saved projects" />
+      </label>}
       {tasks.length === 0 && <p className="wb-muted">Start with your own objective.</p>}
-      {tasks.map(task => <div className="wb-project-entry" key={task.id}>
+      {tasks.length > 0 && matchingTasks.length === 0 && <p className="wb-muted">
+        No projects match your search.</p>}
+      {matchingTasks.map(task => <div className="wb-project-entry" key={task.id}>
         <div className="wb-project-entry-row">
           <button type="button"
             className={'wb-project-link' + (selectedId === task.id ? ' wb-project-active' : '')}
@@ -85,19 +104,21 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
         </div>}
       </div>)}
     </div>
-    <div className="wb-team">
-      <p className="wb-kicker">ENGINEERING TEAM</p>
+    <details className="wb-team">
+      <summary className="wb-kicker">ENGINEERING TEAM <span>{initialTeam.length} roles</span></summary>
       {initialTeam.map(member => <div className="wb-team-member" key={member.role}>
         <span className="wb-avatar" aria-hidden="true">{member.initials}</span>
         <span className="wb-member-copy"><strong>{member.role}</strong>
           <small>{member.availability}</small></span>
       </div>)}
-      <p className="wb-muted wb-team-note">Team availability is descriptive. Only saved MAF handoffs are shown; no live agent status is invented.</p>
-    </div>
+      <p className="wb-muted wb-team-note">Availability describes capabilities, not live activity.
+        Saved MAF handoffs provide the activity record.</p>
+    </details>
   </aside>;
 }
 
-export function WorkbenchInspector({ token, view, taskView, run, status, onContinue }: {
+export function WorkbenchInspector({ token, view, taskView, run, status, onContinue, collapsed }: {
+  collapsed?: boolean;
   token: string;
   view: WorkbenchView;
   taskView: TaskView | null;
@@ -105,7 +126,7 @@ export function WorkbenchInspector({ token, view, taskView, run, status, onConti
   status: ApiStatus | null;
   onContinue: () => void;
 }) {
-  return <aside className="wb-inspector" aria-label="Project inspector">
+  return <aside className="wb-inspector" aria-label="Project inspector" hidden={collapsed}>
     <p className="wb-kicker">PROJECT INSPECTOR</p>
     <h2>Current context</h2>
     {taskView ? <>
@@ -120,8 +141,15 @@ export function WorkbenchInspector({ token, view, taskView, run, status, onConti
       {view !== 'studio' && <button type="button" className="wb-inspector-action"
         onClick={onContinue}>Open Engineering Studio</button>}
     </> : <p className="wb-muted">Create or open a project to inspect its work.</p>}
-    {taskView && <MafHandoffTimeline token={token} taskId={taskView.task.id} />}
-    <AgentIdentityPanel token={token} />
+    <details className="wb-inspector-disclosure" open>
+      <summary>Recorded handoffs</summary>
+      {taskView && <MafHandoffTimeline token={token} taskId={taskView.task.id} />}
+      {!taskView && <p className="wb-muted">Select a project to view recorded events.</p>}
+    </details>
+    <details className="wb-inspector-disclosure">
+      <summary>Agent identities & backstories</summary>
+      <AgentIdentityPanel token={token} />
+    </details>
     <div className="wb-inspector-divider" />
     <p className="wb-kicker">CONTROL PLANE</p>
     <div className="wb-inspector-row"><span>Inference</span><strong>Local Ollama</strong></div>
@@ -134,10 +162,23 @@ export function WorkbenchInspector({ token, view, taskView, run, status, onConti
 
 interface OverviewSnapshot {
   specification: { version: number; status: string } | null;
-  architecture: { status: string; readyForSourceGeneration: boolean; blockingTopics: string[] } | null;
-  draft: { job: { state: string; phase: string } } | null;
+  architecture: {
+    status: string; readyForSourceGeneration: boolean; blockingTopics: string[];
+  } | null;
+  draft: { job: { state: string; phase: string; errorCode: string | null } } | null;
+  plan: {
+    revision: number; status: string; current: boolean;
+    outline: { tasks: { id: string; title: string }[] };
+  } | null;
+  engineering: {
+    job: { state: string; phase: string; errorCode: string | null };
+    tasks: { id: string; title: string; state: string }[];
+    files: { path: string }[];
+    events: { kind: string; detail: string; createdUtc: string }[];
+  } | null;
 }
 
+/** Read-only overview of actual saved state; it never starts or authorizes work. */
 export function ProjectOverview({ token, task, onContinue, onDiagnostics }: {
   token: string;
   task: TaskItem;
@@ -148,64 +189,168 @@ export function ProjectOverview({ token, task, onContinue, onDiagnostics }: {
   const [error, setError] = useState('');
   useEffect(() => {
     let closed = false;
+    let loading = false;
     setData(null);
     setError('');
-    void Promise.all([
-      api<{ specification: OverviewSnapshot['specification'] }>(token,
-        '/api/tasks/' + task.id + '/interview'),
-      api<NonNullable<OverviewSnapshot['architecture']>>(token,
-        '/api/tasks/' + task.id + '/draft-build/architecture'),
-      api<{ snapshot: OverviewSnapshot['draft'] }>(token,
-        '/api/tasks/' + task.id + '/draft-build'),
-    ]).then(([interview, architecture, response]) => {
-      if (!closed) setData({
-        specification: interview.specification,
-        architecture,
-        draft: response.snapshot,
-      });
-    }).catch(() => {
-      if (!closed) setError('Unable to load the saved project summary. Your work is unchanged.');
-    });
-    return () => { closed = true; };
+    async function load() {
+      if (loading) return;
+      loading = true;
+      try {
+        const [interview, architecture, legacy, plans, engineering] = await Promise.all([
+          api<{ specification: OverviewSnapshot['specification'] }>(token,
+            '/api/tasks/' + task.id + '/interview'),
+          api<NonNullable<OverviewSnapshot['architecture']>>(token,
+            '/api/tasks/' + task.id + '/draft-build/architecture'),
+          api<{ snapshot: OverviewSnapshot['draft'] }>(token,
+            '/api/tasks/' + task.id + '/draft-build'),
+          api<{ plan: OverviewSnapshot['plan'] }>(token,
+            '/api/tasks/' + task.id + '/implementation-plan'),
+          api<{ snapshot: OverviewSnapshot['engineering'] }>(token,
+            '/api/tasks/' + task.id + '/engineering-runs/latest'),
+        ]);
+        if (!closed) {
+          setData({
+            specification: interview.specification,
+            architecture, draft: legacy.snapshot, plan: plans.plan,
+            engineering: engineering.snapshot,
+          });
+          setError('');
+        }
+      } catch {
+        if (!closed) setError('Unable to refresh the saved project summary. Your work is unchanged.');
+      } finally {
+        loading = false;
+      }
+    }
+    void load();
+    const interval = window.setInterval(() => void load(), 8000);
+    return () => { closed = true; window.clearInterval(interval); };
   }, [token, task.id]);
 
   const spec = data?.specification;
   const architecture = data?.architecture;
-  const draft = data?.draft?.job;
+  const plan = data?.plan;
+  const run = data?.engineering;
+  const job = run?.job;
+  const completed = run?.tasks.filter(item => item.state === 'Completed').length ?? 0;
+  const currentTask = run?.tasks.find(item => item.state === 'Running');
+  const nextAction = spec?.status !== 'Approved' ? 'Review specification' :
+    !architecture?.readyForSourceGeneration ? 'Review architecture' :
+      plan?.status !== 'Approved' || !plan.current ? 'Review implementation plan' :
+        job?.state === 'Running' ? 'Watch engineering' : 'Open Engineering Studio';
+  const engineeringLabel = !job ? 'Not started' :
+    job.state === 'Generated' ? 'Source generated · unverified' :
+      job.state === 'Failed' ? 'Failed · inspect partial source' :
+        job.state === 'Interrupted' ? 'Interrupted · inspect saved source' :
+          job.state === 'Running' ? 'Engineering in progress' : job.state;
+
   return <section className="wb-overview" aria-label="Project overview">
-    <p className="wb-kicker">PROJECT OVERVIEW</p>
-    <h2>{task.title}</h2>
-    <p className="wb-objective">{task.objective}</p>
+    <div className="wb-overview-hero">
+      <div>
+        <p className="wb-kicker">MISSION CONTROL / PROJECT OVERVIEW</p>
+        <h2>{task.title}</h2>
+        <p className="wb-objective">{task.objective}</p>
+      </div>
+      <div className="wb-overview-hero-status">
+        <span className="wb-overview-status-label">PROJECT RECORD</span>
+        <strong>{task.status}</strong>
+        <small>SQLite · local workspace</small>
+      </div>
+    </div>
     <div className="wb-overview-actions">
       <button type="button" className="primary" onClick={onContinue}>
-        Continue in Engineering Studio
+        {data ? nextAction : 'Continue in Engineering Studio'} <span aria-hidden="true">→</span>
       </button>
       <button type="button" className="outline" onClick={onDiagnostics}>Legacy diagnostics</button>
     </div>
-    <h3>Project work</h3>
     {error && <div className="alert" role="alert">{error}</div>}
     {!data && !error && <p className="hint" role="status">Loading saved project state…</p>}
-    {data && <div className="wb-status-grid">
-      <article className="wb-status-card"><span>01 · Product Owner</span>
-        <strong>{spec ? 'Specification v' + spec.version : 'Discovery not completed'}</strong>
-        <small>{spec ? spec.status : 'Start or continue the Product Owner conversation'}</small>
-      </article>
-      <article className="wb-status-card"><span>02 · Solution Architect</span>
-        <strong>{architecture?.readyForSourceGeneration ? 'Architecture approved' :
-          'Review required'}</strong>
-        <small>{architecture?.status ?? 'Not available'}{
-          architecture?.blockingTopics.length ? ' · ' + architecture.blockingTopics.join(', ') : ''
-        }</small>
-      </article>
-      <article className="wb-status-card"><span>03 · Project artifacts</span>
-        <strong>{draft ? draft.state : 'Not generated'}</strong>
-        <small>{draft ? draft.phase : 'Source files will appear after approved decisions'}</small>
-      </article>
-    </div>}
+    {data && <>
+      <div className="wb-overview-section-heading">
+        <div><span className="wb-kicker">APPROVAL PATH</span><h3>Engineering readiness</h3></div>
+        <span className="wb-overview-caption">Persisted decisions · no estimated progress</span>
+      </div>
+      <div className="wb-status-grid">
+        <article className="wb-status-card" data-state={spec?.status === 'Approved' ? 'complete' :
+          spec?.status === 'Draft' ? 'attention' : 'pending'}>
+          <span>01 / PRODUCT OWNER</span>
+          <strong>{spec ? 'Specification v' + spec.version : 'Discovery not completed'}</strong>
+          <small>{spec ? spec.status : 'Interview and requirements awaiting review'}</small>
+        </article>
+        <article className="wb-status-card" data-state={
+          architecture?.readyForSourceGeneration ? 'complete' : 'pending'}>
+          <span>02 / SOLUTION ARCHITECT</span>
+          <strong>{architecture?.readyForSourceGeneration ? 'Architecture approved' : 'Review required'}</strong>
+          <small>{architecture?.status ?? 'Not available'}
+            {architecture?.blockingTopics.length
+              ? ' · ' + architecture.blockingTopics.join(', ') : ''}</small>
+        </article>
+        <article className="wb-status-card" data-state={
+          plan?.status === 'Approved' && plan.current ? 'complete' :
+            plan?.status === 'Proposed' ? 'attention' : 'pending'}>
+          <span>03 / TECHNICAL LEAD</span>
+          <strong>{plan ? plan.status + ' · revision ' + plan.revision : 'No implementation plan'}</strong>
+          <small>{plan ? plan.outline.tasks.length + ' planned work items' +
+            (plan.current ? '' : ' · not current') :
+            'An approved architecture is required first'}</small>
+        </article>
+        <article className="wb-status-card" data-state={
+          job?.state === 'Running' ? 'active' :
+            job?.state === 'Generated' ? 'complete' :
+              job?.state === 'Failed' || job?.state === 'Interrupted' ? 'blocked' : 'pending'}>
+          <span>04 / SOFTWARE ENGINEER</span>
+          <strong>{engineeringLabel}</strong>
+          <small>{run ? completed + ' / ' + run.tasks.length + ' saved tasks completed · ' +
+            run.files.length + ' source files' : 'No MAF engineering run saved'}</small>
+        </article>
+      </div>
+      <div className="wb-overview-lower">
+        <section className="wb-overview-operations" aria-label="Engineering activity">
+          <div className="wb-overview-section-heading">
+            <div><span className="wb-kicker">ENGINEERING RUN</span><h3>Current operation</h3></div>
+            {job?.state === 'Running' && <span className="wb-operating-indicator">
+              <span aria-hidden="true" />Running</span>}
+          </div>
+          {!job && <p className="wb-muted">No MAF engineering run yet. Open Engineering
+            Studio to review the plan and initiate source generation with explicit approvals.</p>}
+          {job && <>
+            <p className="wb-operation-title">{currentTask?.title ??
+              (job.state === 'Running' ? 'Awaiting the next persisted task update' :
+                'Most recent engineering run: ' + job.state)}</p>
+            <p className="wb-muted">{job.phase}{job.errorCode ? ' · ' + job.errorCode : ''}</p>
+            {run && run.tasks.length > 0 && <div className="wb-task-counter">
+              <strong>{completed}</strong><span>of {run.tasks.length} assignments completed
+                {job.state === 'Generated' ? ' · source only' : ''}</span>
+            </div>}
+            {run && run.events.length > 0 && <ol className="wb-overview-events">
+              {run.events.slice(-3).reverse().map((event, index) => <li
+                key={event.createdUtc + ':' + event.kind + ':' + index}>
+                <span>{event.kind}</span><p>{event.detail}</p>
+              </li>)}
+            </ol>}
+          </>}
+        </section>
+        <section className="wb-overview-operations" aria-label="Source and delivery">
+          <div className="wb-overview-section-heading">
+            <div><span className="wb-kicker">ARTIFACT EVIDENCE</span><h3>Source & delivery</h3></div>
+          </div>
+          <p className="wb-operation-title">{run?.files.length
+            ? run.files.length + ' saved MAF source files' : 'No MAF source files saved'}</p>
+          {run && run.files.length > 0 && <ul className="wb-overview-files">
+            {run.files.slice(0, 4).map(file => <li key={file.path}>{file.path}</li>)}
+            {run.files.length > 4 && <li>+ {run.files.length - 4} additional files</li>}
+          </ul>}
+          <div className="wb-legacy-state"><span>LEGACY GENERATION · SEPARATE WORKFLOW</span>
+            <strong>{data.draft?.job.state ?? 'Not generated'}</strong>
+            <small>{data.draft?.job.phase ?? 'No saved legacy artifacts'}</small></div>
+        </section>
+      </div>
+    </>}
     <section className="wb-guardrail" aria-label="Verification status">
-      <strong>Evidence first</strong>
-      <p>Source generation and independent execution are different stages. Any project files shown
-        in Engineering Studio remain unverified unless separate evaluator evidence says otherwise.</p>
+      <strong>Source is not a verified application</strong>
+      <p>Engineering tasks and ZIP exports record generated files, not a successful
+        compilation, test run, or security review. QA currently reports static
+        findings only; independently verified builds require separate evidence.</p>
     </section>
   </section>;
 }
