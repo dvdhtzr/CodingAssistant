@@ -41,11 +41,15 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
         if (!LocalInterviewModel.AllowedModel(model))
             throw new StoreFailure("INVALID_MODEL");
         using var client = _clients.Create(model, purpose);
-        AIAgent agent = new ChatClientAgent(client,
-            instructions: policy, name: name,
-            description: name == "ProductOwner"
+        AIAgent agent = new ChatClientAgent(client, new ChatClientAgentOptions
+        {
+            Name = name,
+            Instructions = policy,
+            Description = name == "ProductOwner"
                 ? "Requirements discovery and reviewable product specification"
-                : "Technical alternatives and tradeoffs for owner approval");
+                : "Technical alternatives and tradeoffs for owner approval",
+            UseProvidedChatClientAsIs = true
+        });
         var reply = await agent.RunAsync(messages, cancellationToken: cancellation);
         if (string.IsNullOrWhiteSpace(reply.Text))
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
