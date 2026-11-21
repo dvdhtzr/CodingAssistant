@@ -89,7 +89,7 @@ public static class ApiHost
         var implementationPlans = new ImplementationPlanStore(store, interviews);
         implementationPlans.Initialize();
         var engineeringRuns = new EngineeringRunStore(
-            store, interviews, implementationPlans);
+            store, implementationPlans);
         engineeringRuns.Initialize();
         engineeringRuns.MarkInterruptedOnStartup();
         var softwareEngineer = engineeringModelOverride ?? new MafSoftwareEngineer();
