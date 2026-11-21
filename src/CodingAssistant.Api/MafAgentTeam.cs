@@ -43,7 +43,8 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
             throw new StoreFailure("INVALID_MODEL");
         using var client = _clients.Create(model, purpose);
         AIAgent agent = new ChatClientAgent(client,
-            instructions: policy, name: name,
+            instructions: EngineeringAgentRoster.Instructions(name) + "\n" + policy,
+            name: name,
             description: name == "ProductOwner"
                 ? "Requirements discovery and reviewable product specification"
                 : name == "SolutionArchitect"
