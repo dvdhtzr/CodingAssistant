@@ -54,21 +54,15 @@ try {
         }
     }
 
-    # The launcher and Visual Studio F5 now use exactly the same reusable,
-    # DPAPI CurrentUser-protected credential. Never print this secret.
+    # The long-lived credential stays internal to Windows and the API.
+    # Browser JS obtains a 12-hour session on this loopback origin; no
+    # credentials are printed, copied or manually entered at startup.
     $env:CODINGASSISTANT_OWNER_TOKEN = Get-CodingAssistantOwnerToken
     $env:CODINGASSISTANT_ENABLE_LOCAL_EXECUTION = '0'
 
     Write-Host ''
-    try {
-        Set-Clipboard -Value $env:CODINGASSISTANT_OWNER_TOKEN
-        Write-Host 'Saved Windows owner credential copied to clipboard.' -ForegroundColor Green
-    }
-    catch {
-        Write-Host 'Clipboard unavailable; double-click Copy-CodingAssistant-Token.cmd to retry.' -ForegroundColor Yellow
-    }
-    Write-Host ''
-    Write-Host "Open $healthUrl and paste the token into Owner session." -ForegroundColor Cyan
+    Write-Host "Open $healthUrl -- Mission Control connects automatically." -ForegroundColor Green
+    Write-Host 'No owner token or clipboard step is needed.' -ForegroundColor Cyan
     Write-Host 'Keep this terminal open while using CodingAssistant. Press Ctrl+C to stop.' -ForegroundColor Gray
     Write-Host 'Windows autonomous code execution remains DISABLED.' -ForegroundColor Yellow
     Write-Host ''
