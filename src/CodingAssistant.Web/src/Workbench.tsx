@@ -24,7 +24,7 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
   onNewProject: () => void;
   onChangeView: (view: WorkbenchView) => void;
   onRefresh: () => void;
-  onDeleteTask: (id: string) => Promise<void>;
+  onDeleteTask: (id: string) => Promise<boolean>;
 }) {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   return <aside className="wb-sidebar" aria-label="Workspace navigation">
@@ -62,7 +62,7 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
             aria-label={'Delete project ' + task.title} title={'Delete project ' + task.title}
             aria-expanded={confirmingId === task.id}
             onClick={() => setConfirmingId(current => current === task.id ? null : task.id)}>
-            <span aria-hidden="true">×</span>
+            Delete
           </button>
         </div>
         {confirmingId === task.id && <div className="wb-delete-confirm"
@@ -72,7 +72,9 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
             will be permanently deleted. This cannot be undone.</p>
           <div className="wb-delete-actions">
             <button type="button" className="danger" disabled={disabled}
-              onClick={() => void onDeleteTask(task.id).then(() => setConfirmingId(null))}>
+              onClick={() => void onDeleteTask(task.id).then(success => {
+                if (success) setConfirmingId(null);
+              })}>
               Delete permanently
             </button>
             <button type="button" className="outline" disabled={disabled}
