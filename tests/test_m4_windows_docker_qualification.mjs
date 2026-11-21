@@ -24,6 +24,7 @@ const goodCases = Object.fromEntries(CASES.map(name => [name, true]));
 function result(status, stdout = '') { return { status, stdout }; }
 function fakeDocker(overrides = {}) {
   const calls = [];
+  let psCalls = 0;
   function docker(args) {
     calls.push(args);
     if (args[0] === 'context' && args[1] === 'show')
@@ -43,9 +44,16 @@ function fakeDocker(overrides = {}) {
         JSON.stringify(overrides.cases ?? goodCases)),
       timedOut: overrides.timeout ?? false,
     };
+    if (args[0] === 'container' && args[1] === 'inspect')
+      return result(overrides.ownerMissing ? 1 : 0,
+        JSON.stringify({ 'codingassistant.m4': overrides.ownerLabel ?? NAME }));
     if (args[0] === 'rm') return result(0);
-    if (args[0] === 'ps') return result(overrides.cleanupStatus ?? 0,
-      overrides.cleanupOutput ?? '');
+    if (args[0] === 'ps') {
+      psCalls += 1;
+      return psCalls === 1
+        ? result(overrides.collisionStatus ?? 0, overrides.collisionOutput ?? '')
+        : result(overrides.cleanupStatus ?? 0, overrides.cleanupOutput ?? '');
+    }
     throw new Error('Unexpected fake Docker operation: ' + args.join(' '));
   }
   return { docker, calls };
@@ -159,7 +167,7 @@ test('passing simulated Windows guest remains explicitly NOT product-qualified',
   ]) assert.equal(report[key], false, key);
   assert.equal(mock.calls.filter(a => a[0] === 'run').length, 1);
   assert.equal(mock.calls.filter(a => a[0] === 'rm').length, 1);
-  assert.equal(mock.calls.filter(a => a[0] === 'ps').length, 1);
+  assert.equal(mock.calls.filter(a => a[0] === 'ps').length, 2);
   const run = mock.calls.find(a => a[0] === 'run');
   assert.equal(run.at(-2), '--', 'Guest entrypoint must not have extra executable calls');
   assert.ok(mock.calls.every(a => !a.includes('pull')));
@@ -175,6 +183,7 @@ test('malformed guest outputs, failed constraints and cleanup fail closed', () =
     ['guest-timeout', { timeout: true }],
     ['cleanup-unconfirmed', { cleanupOutput: 'leftover-id' }],
     ['cleanup-api-failed', { cleanupStatus: 1 }],
+    ['wrong-label', { ownerLabel: 'other-owner' }],
   ];
   for (const [title, changes] of scenarios) {
     const mock = fakeDocker(changes);
@@ -182,9 +191,12 @@ test('malformed guest outputs, failed constraints and cleanup fail closed', () =
       platform: 'win32', docker: mock.docker, name: NAME, env: {},
     });
     assert.equal(report.status, 'BLOCKED', title);
-    assert.equal(report.guestRemoved, title.startsWith('cleanup-') ? false : true);
-    assert.equal(mock.calls.filter(a => a[0] === 'rm').length, 1);
-    assert.equal(mock.calls.filter(a => a[0] === 'ps').length, 1);
+    assert.equal(report.guestRemoved,
+      title.startsWith('cleanup-') || title === 'wrong-label' ? false : true);
+    assert.equal(mock.calls.filter(a => a[0] === 'rm').length,
+      title === 'wrong-label' ? 0 : 1);
+    assert.equal(mock.calls.filter(a => a[0] === 'ps').length,
+      title === 'wrong-label' ? 1 : 2);
     assert.equal(report.generatedCodeExecutionEnabled, false);
   }
 });
@@ -195,6 +207,8 @@ test('remote daemon, missing image and spoofed registry digest cannot start Dock
     { info: { ...INFO, OSType: 'windows' } },
     { imageStatus: 1 },
     { image: { ...IMAGE, RepoDigests: [] } },
+    { collisionOutput: 'existing-container' },
+    { collisionStatus: 1 },
   ];
   for (const changes of scenarios) {
     const mock = fakeDocker(changes);
