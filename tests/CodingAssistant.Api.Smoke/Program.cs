@@ -58,6 +58,45 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     };
 }
 
+// Reproduce the Windows Visual Studio stale-wwwroot failure using a safe,
+// temporary fake bundle. The real API program rebuilds the current source
+// before selecting a static WebRoot; no old Owner session should be served.
+{
+    var obsoleteRoot = Path.Combine(Path.GetTempPath(),
+        "ca-obsolete-ui-" + Guid.NewGuid().ToString("N"));
+    var assets = Path.Combine(obsoleteRoot, "assets");
+    Directory.CreateDirectory(assets);
+    try
+    {
+        File.WriteAllText(Path.Combine(obsoleteRoot, "index.html"),
+            """<html><script type="module" src="/assets/index-old.js"></script></html>""");
+        File.WriteAllText(Path.Combine(assets, "index-old.js"),
+            "document.body.innerHTML='Owner session: paste token';");
+        Check(!WindowsDevelopmentFrontend.HasAutoSessionBundle(obsoleteRoot),
+            "old token-entry frontend cannot pass current UI verification");
+        File.WriteAllText(Path.Combine(assets, "index-old.js"),
+            "fetch('/api/local-session',{headers:{'X-CodingAssistant-Client':'mission-control'}})");
+        Check(WindowsDevelopmentFrontend.HasAutoSessionBundle(obsoleteRoot),
+            "built UI must contain real same-origin auto-login client");
+    }
+    finally
+    {
+        Directory.Delete(obsoleteRoot, recursive: true);
+    }
+}
+if (OperatingSystem.IsWindows())
+{
+    var prepared = WindowsDevelopmentFrontend.EnsureCurrent(verifyOnReleaseForSmoke: true);
+    Check(prepared is not null &&
+          File.Exists(Path.Combine(prepared, "index.html")) &&
+          WindowsDevelopmentFrontend.HasAutoSessionBundle(prepared),
+        "Windows F5 builds and selects current React UI rather than stale bin assets");
+    Check(File.Exists(Path.Combine(prepared!, ".codingassistant-dev-ui.sha256")),
+        "Windows F5 persists a nonsecret source fingerprint after verified build");
+    Check(WindowsDevelopmentFrontend.EnsureCurrent(verifyOnReleaseForSmoke: true) == prepared,
+        "restarting Windows F5 reuses the current built UI without token entry");
+}
+
 // Windows Visual Studio F5 and the one-click launcher must share a stable,
 // encrypted, owner-private credential without requiring manual environment setup.
 if (OperatingSystem.IsWindows())
@@ -307,6 +346,12 @@ try
     var htmlGenerator = new SmokeHtmlGenerator();
     client = await Start(settings, a => appInstance = a,
                          htmlGenerator: htmlGenerator);
+    if (OperatingSystem.IsWindows() &&
+        WindowsDevelopmentFrontend.PreparedWebRoot is { } builtWebRoot)
+        Check(Path.GetFullPath(appInstance!.Environment.WebRootPath) ==
+              Path.GetFullPath(builtWebRoot),
+            "API actually serves freshly built source UI, not stale bin/Debug/wwwroot");
+
 
     using (var unauthenticated = new HttpClient
     {
@@ -319,6 +364,9 @@ try
         using var healthBody = await ReadJson(publicHealth);
         Check(!healthBody.RootElement.GetProperty("executionEnabled").GetBoolean(),
             "health does not advertise execution");
+        Check(healthBody.RootElement.GetProperty("uiVersion").GetString() ==
+              WindowsDevelopmentFrontend.UiVersion,
+            "public health exposes fixed UI version for stale-client diagnostics");
         // M3's compiled React UI is served from the exact same loopback
         // origin. Static assets are public, but /api never is.
         var uiSource = Path.Combine(Directory.GetCurrentDirectory(),

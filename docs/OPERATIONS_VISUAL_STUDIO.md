@@ -24,10 +24,9 @@ node --version
 ollama list
 ```
 
-Open `CodingAssistant.sln` in Visual Studio, then **Build > Build Solution**
-(Ctrl+Shift+B). Building the JavaScript project runs npm install and
-`npm run build`. Vite places the compiled UI in ignored
-`src/CodingAssistant.Api/wwwroot`, where the API serves it.
+Open `CodingAssistant.sln` in Visual Studio. **F5 now also verifies the frontend**: in a Windows Debug checkout it compares a SHA-256 fingerprint of current React/Vite sources to the last successful generated UI. If that build is missing, outdated, or doesn't contain the automatic sign-in client, startup runs `npm run build` (installing frontend dependencies first only when necessary) and serves **the freshly generated source-tree UI**, not an old `bin/Debug/net10.0/wwwroot` copy. A failed build stops startup instead of silently showing the old token-entry screen.
+
+Building the full solution with Ctrl+Shift+B still works and creates the Vite output in `src/CodingAssistant.Api/wwwroot`. On repeated F5 runs without source changes, the frontend build is reused. The SHA fingerprint contains no credentials. This developer-only behavior does not change published/Release binaries or Linux.
 
 Do not run npm in `C:\Users\<username>` or the repository root: the
 `package.json` is inside `src/CodingAssistant.Web`.
@@ -53,6 +52,16 @@ cd "$HOME\source\repos\CodingAssistant"
 ```
 
 If PowerShell blocks direct script invocation under your local execution policy, double-click the repository's `Start-CodingAssistant.cmd` wrapper. Its execution-policy override applies only to the new PowerShell process for this checked-out script.
+
+## Confirm you're not running an old API process
+
+After pulling current `main`, **stop any older CodingAssistant server** before pressing F5. The new process reports a harmless, fixed UI version when you open `http://127.0.0.1:5098/healthz`:
+
+```json
+{"status":"ok","executionEnabled":false,"uiVersion":"windows-auto-session-v1","uiSource":"source-current"}
+```
+
+If `uiVersion` is absent, you're still connected to an **older API process** or an outdated checkout. Stop it and launch the current version; a browser hard reload cannot upgrade a server that hasn't been restarted. If `uiVersion` is present but `uiSource` is `packaged`, you're running a packaged build instead of the current Windows Debug checkout. The old copied frontend is no longer silently preferred.
 
 ## Starting directly from Visual Studio F5
 
