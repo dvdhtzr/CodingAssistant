@@ -133,3 +133,32 @@ export function newRequestId(): string {
 export function isHexId(value: string): boolean {
   return /^[0-9a-f]{32}$/.test(value);
 }
+
+
+/** Windows-only same-origin bootstrap. This is intentionally not a cookie:
+ * it returns a short-lived browser bearer, never the persisted owner token.
+ * Linux returns 404 and keeps the existing explicit-session workflow.
+ */
+export async function bootstrapLocalSession(): Promise<string | null> {
+  const response = await fetch('/api/local-session', {
+    method: 'POST',
+    mode: 'same-origin',
+    credentials: 'omit',
+    cache: 'no-store',
+    referrerPolicy: 'no-referrer',
+    headers: {
+      'X-CodingAssistant-Client': 'mission-control',
+      'Content-Type': 'application/json',
+    },
+    body: '{}',
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error('Local Windows session could not be established.');
+  const payload: unknown = await response.json();
+  if (!payload || typeof payload !== 'object' ||
+      !('sessionToken' in payload) || typeof payload.sessionToken !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(payload.sessionToken)) {
+    throw new Error('Local session response was invalid.');
+  }
+  return payload.sessionToken;
+}
