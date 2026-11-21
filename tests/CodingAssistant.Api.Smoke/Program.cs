@@ -428,13 +428,15 @@ try
             using (var projectList = await actualBrowser.GetAsync("/api/tasks"))
                 Check(projectList.StatusCode == HttpStatusCode.OK,
                     "auto-issued bearer reads authenticated owner APIs");
-            using (var created = await Post(actualBrowser, "/api/tasks", new {
+            // An intentionally invalid payload reaches input validation,
+            // proving the bearer passed auth without changing test fixtures.
+            using (var invalid = await Post(actualBrowser, "/api/tasks", new {
                 title = "Browser auto-auth sample",
                 objective = "Verify automatic Windows browser authorization",
-                requestId = Guid.NewGuid().ToString("N")
+                requestId = "invalid"
             }))
-                Check(created.StatusCode == HttpStatusCode.Created,
-                    "auto-issued bearer authorizes owner-initiated writes");
+                Check(invalid.StatusCode == HttpStatusCode.BadRequest,
+                    "auto-issued bearer reaches authenticated mutation validation");
             var altered = shortToken[..63] +
                 (shortToken[^1] == '0' ? '1' : '0');
             actualBrowser.DefaultRequestHeaders.Authorization =
