@@ -968,6 +968,17 @@ try
         Check(cross.StatusCode == HttpStatusCode.NotFound,
             "QA report cannot be read through another project's URL");
 
+    // Even an approved plan does not make an older engineering submission
+    // authoritative after a newer run exists; retain historical QA safely.
+    var supersedingSource = engineeringStore.Start(taskBound.Id,
+        new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!);
+    using (var historicalSource = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
+        Check(historicalSource.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 2,
+            "QA refuses superseded engineering source even under the same plan");
+    engineeringStore.Interrupt(taskBound.Id, supersedingSource.Id);
+
     using (var noHash = await Post(client, boundPath, approvedRequest))
         Check(noHash.StatusCode == HttpStatusCode.Conflict,
             "approved architecture cannot be silently ignored by old API callers");
