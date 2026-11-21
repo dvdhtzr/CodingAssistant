@@ -15,7 +15,7 @@ const initialTeam = [
 ];
 
 export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTask,
-  onNewProject, onChangeView, onRefresh }: {
+  onNewProject, onChangeView, onRefresh, onDeleteTask }: {
   tasks: TaskItem[];
   selectedId: string;
   view: WorkbenchView;
@@ -24,7 +24,9 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
   onNewProject: () => void;
   onChangeView: (view: WorkbenchView) => void;
   onRefresh: () => void;
+  onDeleteTask: (id: string) => Promise<void>;
 }) {
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
   return <aside className="wb-sidebar" aria-label="Workspace navigation">
     <button type="button" className="wb-new-project" disabled={disabled}
       onClick={onNewProject}>+ New project</button>
@@ -47,12 +49,37 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
           aria-label="Refresh saved projects" onClick={onRefresh}>↻</button>
       </div>
       {tasks.length === 0 && <p className="wb-muted">Start with your own objective.</p>}
-      {tasks.map(task => <button type="button" key={task.id}
-        className={'wb-project-link' + (selectedId === task.id ? ' wb-project-active' : '')}
-        onClick={() => onSelectTask(task.id)} aria-current={selectedId === task.id ? 'true' : undefined}>
-        <strong>{task.title}</strong>
-        <small>{task.status}</small>
-      </button>)}
+      {tasks.map(task => <div className="wb-project-entry" key={task.id}>
+        <div className="wb-project-entry-row">
+          <button type="button"
+            className={'wb-project-link' + (selectedId === task.id ? ' wb-project-active' : '')}
+            onClick={() => { setConfirmingId(null); onSelectTask(task.id); }}
+            aria-current={selectedId === task.id ? 'true' : undefined}>
+            <strong>{task.title}</strong>
+            <small>{task.status}</small>
+          </button>
+          <button type="button" className="wb-project-delete" disabled={disabled}
+            aria-label={'Delete project ' + task.title} title={'Delete project ' + task.title}
+            aria-expanded={confirmingId === task.id}
+            onClick={() => setConfirmingId(current => current === task.id ? null : task.id)}>
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+        {confirmingId === task.id && <div className="wb-delete-confirm"
+          role="group" aria-label={'Confirm deletion of ' + task.title}>
+          <strong>Delete “{task.title}”?</strong>
+          <p>Its conversation, decisions, generated files and saved run history
+            will be permanently deleted. This cannot be undone.</p>
+          <div className="wb-delete-actions">
+            <button type="button" className="danger" disabled={disabled}
+              onClick={() => void onDeleteTask(task.id).then(() => setConfirmingId(null))}>
+              Delete permanently
+            </button>
+            <button type="button" className="outline" disabled={disabled}
+              onClick={() => setConfirmingId(null)}>Cancel</button>
+          </div>
+        </div>}
+      </div>)}
     </div>
     <div className="wb-team">
       <p className="wb-kicker">ENGINEERING TEAM</p>
