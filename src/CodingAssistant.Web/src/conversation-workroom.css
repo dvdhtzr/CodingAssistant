@@ -1,0 +1,210 @@
+/*
+ * UX-2 — Product Owner workroom and actionable journey navigation.
+ * Presentation only: saved turns and stage states still come from the host.
+ */
+.journey-quick-nav {
+  display: flex;
+  gap: .45rem;
+  margin-top: .85rem;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: .1rem .1rem .35rem;
+  scrollbar-width: thin;
+  scrollbar-color: #42636c transparent;
+}
+.journey-quick-step {
+  position: relative;
+  flex: 1 1 0;
+  display: flex;
+  gap: .5rem;
+  align-items: center;
+  min-width: 115px;
+  min-height: 43px;
+  padding: .45rem .55rem .6rem;
+  border: 1px solid #38525c;
+  border-radius: 7px;
+  background: #13222c;
+  box-shadow: none;
+  color: #b8ced3;
+  font-size: .72rem;
+  font-weight: 640;
+  text-align: left;
+  overflow: hidden;
+}
+.journey-quick-step:hover:not(:disabled) {
+  background: #1f3540;
+  border-color: #6c9c9b;
+}
+.journey-quick-step:focus-visible {
+  outline: 2px solid #a4e8d9;
+  outline-offset: -2px;
+}
+.journey-quick-step.journey-quick-current {
+  border-color: #80c7bb;
+  background: #1b3a3d;
+  color: #effef8;
+}
+.journey-quick-index {
+  flex: none;
+  font: 750 .63rem ui-monospace, Consolas, monospace;
+  color: #86aab5;
+}
+.journey-quick-name {
+  display: block;
+  line-height: 1.26;
+  overflow-wrap: anywhere;
+}
+.journey-quick-tone {
+  position: absolute;
+  height: 3px;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  background: #4a6470;
+}
+.journey-quick-step.journey-complete .journey-quick-tone { background: var(--mc-good); }
+.journey-quick-step.journey-active .journey-quick-tone { background: var(--mc-accent); }
+.journey-quick-step.journey-attention .journey-quick-tone { background: var(--mc-warning); }
+.journey-quick-step.journey-blocked .journey-quick-tone { background: var(--mc-error); }
+.journey-quick-current .journey-quick-index { color: #bcf1e5; }
+.journey-strip-summary { line-height: 1.4; }
+
+/* Keep one clear question at eye level and preserve the complete transcript
+ * under a disclosure. No nested scroller around the answer composer. */
+.conversation-workroom { display: grid; gap: .7rem; min-width: 0; margin: .6rem 0 .8rem; }
+.conversation-current {
+  min-width: 0;
+  padding: clamp(.9rem, 1.65vw, 1.4rem);
+  border: 1px solid #588e88;
+  border-left: 4px solid #7bd6c2;
+  border-radius: 11px;
+  background:
+    radial-gradient(circle at 95% 0%, #36675f4a, transparent 43%),
+    linear-gradient(125deg, #1a373a, #142a33 70%);
+  box-shadow: inset 0 1px #ffffff15, 0 9px 25px #0002;
+}
+.conversation-current-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  margin: 0 0 .7rem;
+}
+.conversation-current-heading .wb-kicker { color: #9ae6d4; margin: 0; }
+.conversation-current-number {
+  color: #b1cdc8;
+  border: 1px solid #53776f;
+  background: #1a3537;
+  font: 700 .65rem ui-monospace, Consolas, monospace;
+  padding: .22rem .48rem;
+  border-radius: 5px;
+}
+.conversation-current .interview-speaker {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: .6rem;
+  margin: 0 0 .55rem;
+  font-size: .78rem;
+  color: #c8e8e2;
+}
+.conversation-current .interview-speaker time {
+  color: #a8c5c8;
+  font-size: .69rem;
+  font-weight: 400;
+}
+.conversation-current-content {
+  color: #ebf6f3;
+  font-size: clamp(.93rem, 1.22vw, 1.05rem);
+  font-weight: 510;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.conversation-history {
+  min-width: 0;
+  border: 1px solid #334c58;
+  border-radius: 9px;
+  background: #111e27;
+}
+.conversation-history > summary {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .7rem .8rem;
+  list-style: none;
+  cursor: pointer;
+  color: #c2d6dc;
+  font-size: .77rem;
+  font-weight: 650;
+}
+.conversation-history > summary::-webkit-details-marker { display: none; }
+.conversation-history > summary:hover { background: #1b3039; }
+.conversation-history > summary:focus-visible {
+  outline: 2px solid var(--mc-accent-strong);
+  outline-offset: -3px;
+}
+.conversation-history-icon {
+  flex: none;
+  color: #9ad2ce;
+  font-size: .75rem;
+  transition: transform .16s ease;
+}
+.conversation-history[open] .conversation-history-icon { transform: rotate(90deg); }
+.conversation-history > summary small {
+  margin-left: auto;
+  color: #9bb6be;
+  font-size: .66rem;
+  font-weight: 450;
+}
+.journey-discovery .conversation-history .interview-transcript {
+  margin: 0 .5rem .5rem;
+  padding: .65rem .5rem;
+  border-top: 1px solid #334c58;
+  max-height: min(49dvh, 550px);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+.conversation-history .interview-transcript li { padding: .75rem .85rem; }
+.conversation-history .interview-speaker time {
+  color: #a8c1c9;
+  font-size: .69rem;
+  font-weight: 450;
+}
+.conversation-history .interview-speaker {
+  display: flex;
+  justify-content: space-between;
+  gap: .5rem;
+}
+.conversation-history .interview-message { line-height: 1.6; }
+.interview-studio > .interview-title .pill { font-size: .71rem; }
+.interview-studio > .hint {
+  font-size: .75rem;
+  line-height: 1.5;
+  color: #a8c8cc;
+}
+/* The composer and the completion action retain full access to the canvas. */
+.journey-discovery .interview-answer-composer {
+  border: 1px solid #476d71;
+  border-radius: 10px;
+  padding: clamp(.85rem, 1.4vw, 1.2rem);
+  background: #142a32;
+  margin-top: 0;
+}
+.journey-discovery .interview-completion-notice { margin-top: .55rem; }
+@media (max-width: 1250px) {
+  .journey-quick-step { flex: 0 0 145px; }
+}
+@media (max-width: 760px) {
+  .journey-quick-step { flex: 0 0 140px; min-height: 39px; }
+  .conversation-current { padding: .9rem; }
+  .conversation-current-content { font-size: .93rem; }
+  .journey-discovery .conversation-history .interview-transcript {
+    max-height: 45dvh;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-history-icon { transition: none; }
+}
