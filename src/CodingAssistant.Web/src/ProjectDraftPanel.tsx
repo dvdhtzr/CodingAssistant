@@ -294,15 +294,22 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
               The animation is not a model heartbeat or an invented percentage.</p>
           </>}
           {job.errorCode && <div className="activity-warning" role="alert">
-            {job.errorCode === 'ARCHITECTURE_PLAN_CONFLICT' ? <>
-              <strong>Source file plan did not match the approved architecture.</strong>
-              <p>The local model proposed incompatible filenames or omitted a
-                required entry file. A single bounded correction was attempted,
-                but the plan still failed independent validation.</p>
-              <p>{result?.files.length ? 'Any partially saved files are available under Artifacts & Delivery.' :
-                'No project files were saved.'}
-                {' '}You can select <strong>Generate approved project draft</strong> again
-                without repeating the Product Owner interview or architectural approvals.</p>
+            {['INVALID_PROJECT_PLAN', 'INVALID_PROJECT_PATH',
+              'ARCHITECTURE_PLAN_CONFLICT'].includes(job.errorCode) ? <>
+              <strong>Source file manifest was rejected.</strong>
+              <p>{job.errorCode === 'ARCHITECTURE_PLAN_CONFLICT'
+                ? 'The proposed files did not match your approved architecture.'
+                : job.errorCode === 'INVALID_PROJECT_PATH'
+                  ? 'The model proposed an unsafe or unsupported relative file path.'
+                  : 'The model supplied an invalid JSON file list, missing or duplicate paths, or invalid file descriptions.'}
+                {' '}The generator attempted one bounded correction; the result
+                still did not pass independent validation. No validation rules
+                or approvals were bypassed.</p>
+              <p>{result?.files.length ? 'Partially saved source remains available under Artifacts & Delivery.' :
+                'No project source files were saved.'}
+                {' '}You may select <strong>Generate approved project draft</strong> again,
+                without repeating the interview, architecture approvals, or
+                Technical Lead review. This stage still generates unverified source.</p>
             </> : <>
               Safe failure category: {job.errorCode}. Any partial files remain
               available under Artifacts & Delivery; no complete or verified
