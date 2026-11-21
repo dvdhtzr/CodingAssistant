@@ -36,8 +36,17 @@ public sealed class LocalInterviewModel : IInterviewModel
         Identify assumptions, contradictory answers and meaningful omissions.
         Ask intelligent follow-up questions specific to the current project.
 
-        Ask only one or two high-value questions per turn. Adapt to all prior
-        answers; do not repeat resolved questions or follow a rigid checklist.
+        Ask ONE high-value question per turn. Adapt to all prior answers;
+        do not repeat resolved questions or follow a rigid checklist.
+        When appropriate, propose 2 to 5 concise, realistic answer options,
+        based on the owner's actual objective and prior replies, never a
+        fixed list. Set "choice":{"kind":"single","options":[...]} when
+        ONE option is intended, or kind "multiple" when selecting several
+        answers is meaningful. Do not use multiple selection just to ask
+        separate questions. Options are suggestions, not owner approvals.
+        For an open-ended or readiness-summary reply, omit "choice" or
+        set it to null. Never require the owner to select a suggestion:
+        there is always a "Something else" answer field.
         Keep the conversation proportionate to project size and be concise.
         When a question involves deep technology or architecture design,
         identify it for later Solution Architect discovery rather than silently
@@ -49,9 +58,13 @@ public sealed class LocalInterviewModel : IInterviewModel
         write code, run tools, access files, claim to have built anything, or
         approve decisions on the human owner's behalf.
 
-        Return ONLY a JSON object:
-          {"message":"your next questions or readiness summary",
-           "readyForSpecification":false}
+        Return ONLY a JSON object with a human-readable question in "message":
+          {"message":"Who is the primary audience?",
+           "readyForSpecification":false,
+           "choice":{"kind":"single",
+                     "options":["Personal use","Small team","General public"]}}
+        For purely open-ended questions or a readiness summary, omit "choice"
+        or use null. Never place the answer options only in message text.
         When sufficient information is present for a useful, reviewable first
         product specification, briefly summarize the agreed scope and set
         readyForSpecification=true. Do not claim unasked technical choices were
@@ -122,9 +135,23 @@ public sealed class LocalInterviewModel : IInterviewModel
                 !root.TryGetProperty("readyForSpecification", out var readiness) ||
                 readiness.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            InterviewChoice? choice = null;
+            if (root.TryGetProperty("choice", out var proposal) &&
+                proposal.ValueKind == JsonValueKind.Object &&
+                proposal.TryGetProperty("kind", out var kind) &&
+                kind.ValueKind == JsonValueKind.String &&
+                proposal.TryGetProperty("options", out var options) &&
+                options.ValueKind == JsonValueKind.Array &&
+                options.GetArrayLength() is >= 2 and <= 5 &&
+                options.EnumerateArray().All(item => item.ValueKind == JsonValueKind.String))
+            {
+                choice = InterviewStore.ValidChoice(new InterviewChoice(
+                    kind.GetString() ?? "",
+                    options.EnumerateArray().Select(item => item.GetString() ?? "").ToArray()));
+            }
             return new InterviewReply(
                 InterviewStore.ValidAssistantMessage(message.GetString()),
-                readiness.GetBoolean());
+                readiness.GetBoolean(), choice);
         }
         catch (JsonException)
         {
@@ -162,8 +189,9 @@ public sealed class LocalInterviewModel : IInterviewModel
                 json: true, maxTokens: 750, cancellation,
                 correction: "The previous answer was unusable. Respond with " +
                     "one valid JSON object containing a nonempty 'message' " +
-                    "with one or two project-specific questions and a " +
-                    "boolean 'readyForSpecification'. No reasoning, " +
+                    "with one project-specific question, a boolean " +
+                    "'readyForSpecification', and an optional 'choice' " +
+                    "object with kind single/multiple and 2-5 options. No reasoning, " +
                     "code fences, or surrounding commentary.");
             return ParseInterviewReply(retry);
         }
@@ -226,7 +254,17 @@ public sealed class LocalInterviewModel : IInterviewModel
             properties = new
             {
                 message = new { type = "string" },
-                readyForSpecification = new { type = "boolean" }
+                readyForSpecification = new { type = "boolean" },
+                choice = new {
+                    type = "object",
+                    properties = new {
+                        kind = new { type = "string", @enum = new[] { "single", "multiple" } },
+                        options = new { type = "array", minItems = 2, maxItems = 5,
+                            items = new { type = "string" } }
+                    },
+                    required = new[] { "kind", "options" },
+                    additionalProperties = false
+                }
             },
             required = new[] { "message", "readyForSpecification" },
             additionalProperties = false
