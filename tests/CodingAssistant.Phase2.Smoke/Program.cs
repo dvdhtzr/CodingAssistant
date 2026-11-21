@@ -123,6 +123,7 @@ if (!OperatingSystem.IsWindows())
 WebApplication? app = null;
 HttpClient? client = null;
 var boundModel = new Phase2DraftModel();
+var leadModel = new Phase2TechnicalLeadPlanner();
 try
 {
     var tasks = new TaskStore(root);
@@ -150,7 +151,8 @@ try
     var settings = new ApiSettings(root, Token, "http://127.0.0.1:0");
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
         catalogOverride: new Phase2Catalog(),
-        architectureAdvisorOverride: new Phase2Advisor());
+        architectureAdvisorOverride: new Phase2Advisor(),
+        implementationPlannerOverride: leadModel);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -335,7 +337,8 @@ try
 
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
         catalogOverride: new Phase2Catalog(),
-        architectureAdvisorOverride: new Phase2Advisor());
+        architectureAdvisorOverride: new Phase2Advisor(),
+        implementationPlannerOverride: leadModel);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -829,5 +832,42 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
+    }
+}
+
+sealed class Phase2TechnicalLeadPlanner : IImplementationPlanner
+{
+    public int Attempts { get; private set; }
+
+    public Task<ImplementationOutline> PlanAsync(
+        string objective, string specification,
+        DraftArchitectureReadiness architecture, string model,
+        CancellationToken cancellation)
+    {
+        if (model != "qwen3.5:4b" ||
+            !objective.Contains("timer", StringComparison.OrdinalIgnoreCase) ||
+            !specification.Contains("offline browser timer", StringComparison.OrdinalIgnoreCase) ||
+            !architecture.ReadyForSourceGeneration ||
+            architecture.ApprovedChoices.Count != 2 ||
+            architecture.ApprovedChoices[0].RuntimeProfileId != "static-web")
+            throw new Exception("Technical Lead received wrong owner-approved handoff");
+        Attempts++;
+        return Task.FromResult(new ImplementationOutline(
+            "Implement an offline timer in two separately testable milestones.",
+            [
+                new ImplementationWorkItem("timer-interface",
+                    "Build accessible timer controls",
+                    "Implement HTML controls using the approved static web stack.",
+                    [],
+                    ["Buttons are operable using mouse and keyboard"]),
+                new ImplementationWorkItem("timer-state",
+                    "Connect timer state behavior",
+                    "Write plain JavaScript to manage start pause and reset.",
+                    ["timer-interface"],
+                    ["Start advances the displayed timer", "Reset returns to zero"])
+            ],
+            ["Execute independent browser mouse and keyboard checks",
+             "Validate static file dependencies without network"],
+            ["Static Web execution is not qualified on this host"]));
     }
 }
