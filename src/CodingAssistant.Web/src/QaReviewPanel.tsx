@@ -81,7 +81,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const currentReport = !!source &&
     result?.job.engineeringRunId === source.id &&
     result.job.planSha256 === plan?.planSha256 &&
-    plan.current === true;
+    plan?.current === true;
 
   async function start() {
     if (busy || !eligible || !source || running) return;
