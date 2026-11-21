@@ -235,3 +235,41 @@ source escaping and full-file reveal, on top of the existing UX-2/UX-3 tests.
 Cross-platform frontend/API/SQLite and Linux browser CI remain required.
 This milestone does **not** implement file diffs or independent verification;
 those require separately grounded historical source and evaluator evidence.
+
+## UX-5 — Real MAF team workroom and skill scope descriptors
+
+Engineering Studio now has a collapsible Team Workroom beside the existing
+decision inbox. It reads the existing authenticated agent-roster,
+agent-handoffs, engineering-runs/latest, and qa-reviews/latest endpoints;
+there is no fabricated agent thinking or new orchestrator in this slice.
+
+Each immutable, host-defined Product Owner, Solution Architect, Technical
+Lead, Software Engineer, and QA Engineer profile has an individually
+selectable, keyboard-accessible identity card. The selected profile
+displays mission, working style, fictional backstory, read-only declared
+future skill scopes and the fact that no SKILL.md package is installed by
+the view. Displaying a scope never enables execution or grants permissions.
+
+Saved handoffs are filtered to the selected participant with actual
+timestamps and current/historical binding labels. The Software Engineer
+shows its latest persisted run and per-task states/summary; completed tasks
+mean source saved rather than tested. QA displays its saved independent
+static review, file report count, and whether it references the latest
+recorded engineering run and plan hash; it does not certify tests.
+Unrelated role cards show recorded handoff counts, not inferred presence.
+Links open the original owner-controlled journey stages, without approval.
+
+To minimize resource use on small local hosts, the panel fetches data
+only while expanded, polling saved records every eight seconds.
+Errors clear evidence rather than treating unknown data as no work.
+
+Regression coverage includes deterministic React checks of independent
+identities, counts, historical bindings, skill limitations, empty history,
+engineering/QA states; Chromium exercises role selection, task evidence,
+QA historical warnings, and stage navigation without approval.
+Both Windows/Linux UI and API/SQLite checks remain merge prerequisites.
+
+UX-5 is not a pluggable SKILL.md loader, executor or independent test
+runner. Local skill packages need a later host-admitted, versioned,
+audited capability contract. UX-6 requires independent build/test
+evidence and security qualification before VERIFIED claims.
