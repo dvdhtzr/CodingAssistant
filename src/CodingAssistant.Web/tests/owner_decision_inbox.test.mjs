@@ -81,7 +81,7 @@ test('deferred and missing decisions do not falsely unlock implementation', () =
     ],
   });
   assert.deepEqual(items.map(x => [x.id, x.kind]), [
-    ['architecture-style','next'], ['technology-stack','next'],
+    ['technology-stack','next'], ['architecture-style','next'],
   ]);
 });
 
