@@ -13,6 +13,7 @@ let toggleJourneyStage;
 let steps;
 let InterviewStudio;
 let InterviewCompletionNotice;
+let ConversationWorkroom;
 
 const task = {
   id: 'a'.repeat(32),
@@ -35,6 +36,7 @@ before(async () => {
   steps = journey.journeySteps;
   ({ InterviewStudio, InterviewCompletionNotice } =
     await vite.ssrLoadModule('/src/InterviewStudio.tsx'));
+  ({ ConversationWorkroom } = await vite.ssrLoadModule('/src/ConversationWorkroom.tsx'));
 });
 
 after(async () => { if (vite) await vite.close(); });
@@ -182,7 +184,68 @@ test('interview scroll is bounded to conversation history, not the composer or s
   assert.match(css, /\.journey-discovery \.interview-transcript\s*\{[\s\S]*?overflow-y: auto;/);
   assert.match(css, /\.journey-discovery \.journey-stage-body form\s*\{\s*position: static;/);
   const source = readFileSync('src/InterviewStudio.tsx', 'utf8');
-  assert.match(source, /ref=\{transcriptRef\} tabIndex=\{0\}/);
+  assert.match(source, /<ConversationWorkroom messages=\{snapshot.messages\} \/>/);
   assert.match(source, /<details className="interview-objective">/);
   assert.match(source, /<InterviewCompletionNotice ownerAnswers=\{ownerAnswers\}/);
+});
+
+test('the six-stage project rail uses real buttons for direct navigation', () => {
+  const html = renderToStaticMarkup(React.createElement(JourneyStatusStrip, {
+    title: task.title,
+    steps: [
+      { ...steps[0], tone: 'complete', status: 'Interview captured' },
+      { ...steps[1], tone: 'attention', status: 'Review specification' },
+      ...steps.slice(2),
+    ],
+    activeId: 'specification', onNavigate: () => {},
+  }));
+  assert.match(html, /aria-label="Jump to a project stage"/);
+  assert.equal((html.match(/class="journey-quick-step /g) ?? []).length, 6);
+  assert.match(html, /aria-label="Open Product Discovery: Interview captured"/);
+  assert.match(html, /aria-label="Open Specification: Review specification"/);
+  assert.match(html, /aria-current="step"/);
+  assert.match(html, /aria-controls="journey-panel-specification"/);
+  assert.match(html, /journey-quick-current/);
+  assert.doesNotMatch(html, /% complete/);
+});
+
+test('the latest Product Owner question stays in the foreground with full saved history', () => {
+  const messages = [
+    { sequence: 1, role: 'assistant', content: 'Who will use this?', createdUtc: '2026-11-21T14:00:00Z' },
+    { sequence: 2, role: 'owner', content: 'A small team', createdUtc: '2026-11-21T14:01:00Z' },
+    { sequence: 3, role: 'assistant',
+      content: 'Choose autonomy for Oddville <script>alert(1)</script>?',
+      createdUtc: '2026-11-21T14:02:00Z' },
+  ];
+  const html = renderToStaticMarkup(React.createElement(ConversationWorkroom, { messages }));
+  assert.match(html, /CURRENT PRODUCT OWNER QUESTION/);
+  assert.match(html, /Turn 3/);
+  assert.match(html, /Choose autonomy for Oddville &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /Earlier conversation/);
+  assert.match(html, /2 saved messages/);
+  assert.equal((html.match(/class="interview-message"/g) ?? []).length, 2);
+  assert.match(html, /Who will use this\?/);
+  assert.match(html, /A small team/);
+});
+
+test('workroom never fabricates an assistant question from a last saved owner reply', () => {
+  const html = renderToStaticMarkup(React.createElement(ConversationWorkroom, {
+    messages: [{ sequence: 4, role: 'owner', content: 'Something else',
+      createdUtc: '2026-11-21T14:02:00Z' }],
+  }));
+  assert.match(html, /LAST SAVED OWNER ANSWER/);
+  assert.doesNotMatch(html, /CURRENT PRODUCT OWNER QUESTION/);
+  assert.doesNotMatch(html, /Earlier conversation/);
+});
+
+test('UX-2 stylesheet keeps history bounded while composer stays outside it', () => {
+  const bootstrap = readFileSync('src/main.tsx', 'utf8');
+  const css = readFileSync('src/conversation-workroom.css', 'utf8');
+  assert.ok(bootstrap.indexOf("import './conversation-workroom.css'") >
+    bootstrap.indexOf("import './agent-presence.css'"));
+  assert.match(css, /\.journey-quick-nav/);
+  assert.match(css, /\.journey-discovery \.conversation-history \.interview-transcript/);
+  assert.match(css, /max-height: min\(49dvh, 550px\)/);
+  assert.match(css, /prefers-reduced-motion/);
 });
