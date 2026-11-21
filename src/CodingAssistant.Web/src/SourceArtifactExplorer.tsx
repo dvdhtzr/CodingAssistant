@@ -83,7 +83,7 @@ function FolderTree({ folder, selectedPath, onSelect, depth, searching }: {
   return <>
     {folder.folders.map(child => <details
       className="source-tree-folder" key={child.path}
-      open={searching ? true : undefined}>
+      open={searching || selectedPath.startsWith(child.path + '/') ? true : undefined}>
       <summary>
         <span className="source-tree-folder-symbol" aria-hidden="true">▸</span>
         <span className="source-tree-folder-name">{child.name}</span>
