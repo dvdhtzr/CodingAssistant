@@ -71,7 +71,7 @@ public sealed class EngineeringRunStore(
                 ordinal INTEGER NOT NULL,
                 title TEXT NOT NULL,
                 state TEXT NOT NULL CHECK(state IN
-                    ('Pending','Running','Completed')),
+                    ('Pending','Running','Completed','Failed','Interrupted')),
                 summary TEXT, started_utc TEXT, completed_utc TEXT,
                 PRIMARY KEY(run_id,work_item_id),
                 UNIQUE(run_id,ordinal)
@@ -99,11 +99,18 @@ public sealed class EngineeringRunStore(
     public void MarkInterruptedOnStartup()
     {
         using var db = tasks.Open();
-        TaskStore.Execute(db, null, """
+        using var tx = db.BeginTransaction();
+        TaskStore.Execute(db, tx, """
+            UPDATE engineering_run_tasks SET state='Interrupted'
+            WHERE state='Running' AND run_id IN (
+                SELECT id FROM engineering_runs WHERE state='Running')
+            """);
+        TaskStore.Execute(db, tx, """
             UPDATE engineering_runs SET state='Interrupted',
                 phase='RestartInterrupted',error_code='PROCESS_INTERRUPTED',
                 updated_utc=@now WHERE state='Running'
             """, ("@now", DateTimeOffset.UtcNow.ToString("O")));
+        tx.Commit();
     }
 
     private static EngineeringRun ReadRun(SqliteDataReader reader) => new(
@@ -417,6 +424,11 @@ public sealed class EngineeringRunStore(
                 paths);
         }
         var now = DateTimeOffset.UtcNow.ToString("O");
+        if (!success)
+            TaskStore.Execute(db, tx, """
+                UPDATE engineering_run_tasks SET state='Failed'
+                WHERE run_id=@run AND state='Running'
+                """, ("@run", runId));
         TaskStore.Execute(db, tx, """
             UPDATE engineering_runs SET state=@state,phase=@phase,
                 error_code=@error,updated_utc=@now WHERE id=@run
@@ -439,6 +451,10 @@ public sealed class EngineeringRunStore(
             throw new StoreFailure("NOT_FOUND");
         if (job.State == "Running")
         {
+            TaskStore.Execute(db, tx, """
+                UPDATE engineering_run_tasks SET state='Interrupted'
+                WHERE run_id=@run AND state='Running'
+                """, ("@run", runId));
             TaskStore.Execute(db, tx, """
                 UPDATE engineering_runs SET state='Interrupted',
                     phase='Interrupted',error_code='OWNER_CANCELLED',
