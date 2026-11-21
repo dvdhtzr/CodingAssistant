@@ -541,7 +541,7 @@ try
           boundModel.PlanInput.Contains("FILE PLAN CORRECTION REQUIRED:") &&
           corrected!.Events.Count(e => e.Kind == "PlanCorrectionRequested") == 1,
         "exactly one documented correction attempt without changing approvals");
-    Check(corrected.Architecture?.Sha256 == architectureSha,
+    Check(corrected?.Architecture?.Sha256 == architectureSha,
         "correction keeps original approved architecture fingerprint");
 
     // An otherwise well-formed static plan missing index.html is also
