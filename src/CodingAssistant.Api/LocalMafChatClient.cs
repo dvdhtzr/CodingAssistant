@@ -42,26 +42,10 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             conversation.Sum(x => x.content.Length) > 58000)
             throw new StoreFailure("INVALID_INPUT");
 
-        var interviewSchema = new
-        {
-            type = "object",
-            properties = new
-            {
-                message = new { type = "string" },
-                readyForSpecification = new { type = "boolean" }
-            },
-            required = new[] { "message", "readyForSpecification" },
-            additionalProperties = false
-        };
-        object? format = purpose switch
-        {
-            MafAgentPurpose.Interview => interviewSchema,
-            MafAgentPurpose.Architecture => "json",
-            MafAgentPurpose.TechnicalLead => "json",
-            MafAgentPurpose.SoftwareEngineer => "json",
-            MafAgentPurpose.QaEngineer => "json",
-            _ => null
-        };
+        // MAF and direct Ollama must send the same schema. The previous MAF
+        // transport silently excluded the choice property, so the Product
+        // Owner could not return radio/checkbox answers to the UI.
+        object? format = ResponseFormat(purpose);
         var maxTokens = purpose switch
         {
             MafAgentPurpose.Interview => 750,
@@ -140,6 +124,18 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
         }
     }
+
+    // Public for model-free contract regression checks; no credentials/tools
+    // are exposed. All interview calls share the parser's JSON schema.
+    public static object? ResponseFormat(MafAgentPurpose purpose) => purpose switch
+    {
+        MafAgentPurpose.Interview => LocalInterviewModel.InterviewOutputSchema,
+        MafAgentPurpose.Architecture => "json",
+        MafAgentPurpose.TechnicalLead => "json",
+        MafAgentPurpose.SoftwareEngineer => "json",
+        MafAgentPurpose.QaEngineer => "json",
+        _ => null
+    };
 
     // The first MAF milestone intentionally uses bounded, non-streaming turns.
     // Future streaming must retain the same loopback and output validation.
