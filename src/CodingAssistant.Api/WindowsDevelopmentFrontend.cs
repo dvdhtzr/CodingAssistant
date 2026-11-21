@@ -19,7 +19,7 @@ public static class WindowsDevelopmentFrontend
         "src=\"/assets/([^\"/]+\\.js)\"",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    private static string? _preparedWebRoot;
+    private static string? _preparedWebRoot = null;
     public static string? PreparedWebRoot => _preparedWebRoot;
 
     public static string? EnsureCurrent()
