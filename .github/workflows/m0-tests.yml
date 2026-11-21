@@ -40,7 +40,7 @@ jobs:
       - name: Execute M1 ACP typed-error classifier security tests (no agent/model)
         run: node --test tests/test_m1_safe_acp_failure.mjs tests/test_m1_task_contract.mjs
       - name: Compile Python tools
-        run: python -m compileall -q tools/m0 tools/m1 tools/m2 tools/m3 tools/mvp benchmarks/acceptance tests
+        run: python -m compileall -q tools/m0 tools/m1 tools/m2 tools/m3 tools/m4 tools/mvp benchmarks/acceptance tests
       - name: Model-free tests
         run: python -m unittest discover -s tests -v
       - name: Verify Windows launcher token generation (PowerShell 5.1, no secrets logged)
