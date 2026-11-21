@@ -153,7 +153,8 @@ public enum MafAgentPurpose
 {
     Interview,
     Specification,
-    Architecture
+    Architecture,
+    TechnicalLead
 }
 
 public interface IMafChatClientFactory
