@@ -9,6 +9,7 @@ import './agent-presence.css';
 import './conversation-workroom.css';
 import './owner-decision-inbox.css';
 import './source-explorer.css';
+import './team-workroom.css';
 
 const target = document.getElementById('root');
 if (!target) throw new Error('Missing Mission Control mount');
