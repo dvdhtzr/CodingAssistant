@@ -149,7 +149,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
           ? 'QA requires at least one saved Software Engineer source file.'
           : 'Approve the current Technical Lead plan to review this source.'}
       {' '}A failed or interrupted run with saved files is eligible for
-      explicitly requested partial-source review.</p>
+      explicitly requested partial-source review.</p>}
 
     <div className="actions">
       <button type="button" className="primary"
