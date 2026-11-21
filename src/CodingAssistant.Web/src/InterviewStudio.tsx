@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProjectDraftPanel } from './ProjectDraftPanel';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { api, type TaskItem } from './api';
+import { JourneyStage, JourneyStatusStrip, journeySteps, restoreJourneyStage,
+  type JourneyId, type JourneyStep } from './ProjectJourney';
 
 interface InterviewMessage {
   sequence: number;
@@ -43,6 +45,30 @@ export function InterviewStudio({ token, task }: {
   const [error, setError] = useState('');
   const [approveChecked, setApproveChecked] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [expanded, setExpanded] = useState<JourneyId>('discovery');
+  const manuallySelected = useRef(false);
+  const [architectureStep, setArchitectureStep] = useState<JourneyStep>(journeySteps[2]);
+  const [generationStep, setGenerationStep] = useState<JourneyStep>(journeySteps[3]);
+  const [deliveryStep, setDeliveryStep] = useState<JourneyStep>(journeySteps[4]);
+
+  const openStage = useCallback((id: JourneyId) => {
+    manuallySelected.current = true;
+    setExpanded(id);
+  }, []);
+  const reportArchitecture = useCallback((step: JourneyStep) => {
+    setArchitectureStep(previous => previous.tone === step.tone &&
+      previous.status === step.status ? previous : step);
+  }, []);
+  const reportDraft = useCallback((generation: JourneyStep, delivery: JourneyStep) => {
+    setGenerationStep(previous => previous.tone === generation.tone &&
+      previous.status === generation.status ? previous : generation);
+    setDeliveryStep(previous => previous.tone === delivery.tone &&
+      previous.status === delivery.status ? previous : delivery);
+  }, []);
+  const architectureReady = useCallback(() => { setExpanded('generation'); }, []);
+  const generationComplete = useCallback(() => {
+    setExpanded(current => current === 'generation' ? 'delivery' : current);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -106,6 +132,14 @@ export function InterviewStudio({ token, task }: {
       setSnapshot(updated);
       setApproveChecked(false);
       if (operation === 'answer') setAnswer('');
+      if (operation === 'draft') {
+        manuallySelected.current = true;
+        setExpanded('specification');
+      }
+      if (operation === 'approve') {
+        manuallySelected.current = true;
+        setExpanded('architecture');
+      }
     } catch (cause) {
       const code = cause instanceof Error ? cause.message : 'Unknown error';
       setError(code.includes('STALE_INTERVIEW')
@@ -124,8 +158,51 @@ export function InterviewStudio({ token, task }: {
 
   const spec = snapshot?.specification;
   const ownerAnswers = snapshot?.messages.filter(item => item.role === 'owner').length ?? 0;
+  const discoveryStep: JourneyStep = { ...journeySteps[0],
+    tone: spec ? 'complete' : snapshot?.lastSequence ? 'active' : 'pending',
+    status: spec ? ownerAnswers + ' answer(s) · interview captured' :
+      snapshot?.lastSequence ? ownerAnswers + ' answer(s) saved' : 'Not started',
+  };
+  const specificationStep: JourneyStep = { ...journeySteps[1],
+    tone: spec?.status === 'Approved' ? 'complete' :
+      spec?.status === 'Superseded' ? 'blocked' :
+        spec?.status === 'Draft' ? 'attention' :
+          ownerAnswers ? 'active' : 'pending',
+    status: spec?.status === 'Approved' ? 'Approved · v' + spec.version :
+      spec?.status === 'Superseded' ? 'Requirements changed' :
+        spec?.status === 'Draft' ? 'Approval required · v' + spec.version :
+          ownerAnswers ? 'Ready to draft' : 'Waiting for interview',
+  };
+  const steps = [discoveryStep, specificationStep, architectureStep,
+    generationStep, deliveryStep];
 
-  return <section className="panel interview-studio">
+  // Saved-project restore opens the next useful stage; a human-selected stage
+  // takes precedence. Only confirmed approvals and a completed running job
+  // can move the user forward once they have interacted.
+  useEffect(() => {
+    if (!snapshot || manuallySelected.current) return;
+    setExpanded(restoreJourneyStage(spec?.status ?? null,
+      architectureStep.tone, generationStep.tone, deliveryStep.tone));
+  }, [snapshot, spec?.status, architectureStep.tone, generationStep.tone,
+    deliveryStep.tone]);
+
+  return <div className="journey-shell">
+    <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded} />
+    {!!busy && <div className="activity" role="status" aria-live="polite">
+      <div className="activity-heading">
+        <span className="activity-dot" aria-hidden="true" />
+        <strong>{busy === 'draft' ? 'Drafting your specification' :
+          busy === 'approve' ? 'Recording specification approval' :
+          'Waiting for the local model'}</strong>
+        <span className="pill">{elapsed}s</span>
+      </div>
+      <div className="activity-track" aria-hidden="true"><div className="activity-scan" /></div>
+      <p className="hint">The timer is not confirmed model progress.
+        The API saves only a complete, validated result.</p>
+    </div>}
+    <JourneyStage step={discoveryStep} index={0}
+      open={expanded === 'discovery'} onOpen={openStage}>
+    <section className="interview-studio">
     <div className="interview-title">
       <div>
         <span className="pill">Product Owner · requirements discovery</span>
@@ -207,20 +284,13 @@ export function InterviewStudio({ token, task }: {
         </form>}
       </>}
 
-      {!!busy && <div className="activity" role="status" aria-live="polite">
-        <div className="activity-heading">
-          <span className="activity-dot" aria-hidden="true" />
-          <strong>{busy === 'draft' ? 'Drafting your specification' :
-            busy === 'approve' ? 'Recording specification approval' :
-            'Waiting for the local model'}</strong>
-          <span className="pill">{elapsed}s</span>
-        </div>
-        <div className="activity-track" aria-hidden="true"><div className="activity-scan" /></div>
-        <p className="hint">The timer is not confirmed model progress.
-          The API will save the result only after a complete, valid response.</p>
-      </div>}
+    </>}
+    </section>
+    </JourneyStage>
 
-      <div className="specification-stage">
+    <JourneyStage step={specificationStep} index={1}
+      open={expanded === 'specification'} onOpen={openStage}>
+      {snapshot ?       <div className="specification-stage">
         <h2>2. Review and approve the specification</h2>
         <p className="hint">The Product Owner's specification will reflect this conversation, not a hard-coded
           application template. You control when to draft and approve it.</p>
@@ -261,8 +331,14 @@ export function InterviewStudio({ token, task }: {
         </div>}
       </div>
 
-      <ArchitectureStudio token={token} taskId={task.id} spec={spec ?? null} />
-      <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null} />
-    </>}
-  </section>;
+      : <p className="hint">Loading the saved specification…</p>}
+    </JourneyStage>
+
+    <ArchitectureStudio token={token} taskId={task.id} spec={spec ?? null}
+      expanded={expanded === 'architecture'} onExpand={openStage}
+      onReady={architectureReady} onStageChange={reportArchitecture} />
+    <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null}
+      expanded={expanded} onExpand={openStage} onGenerated={generationComplete}
+      onStageChange={reportDraft} />
+  </div>;
 }

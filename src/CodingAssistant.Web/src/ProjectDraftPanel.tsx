@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { TaskBuildPanel } from './TaskBuildPanel';
+import { JourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
 
 interface SpecContract {
   version: number;
@@ -51,10 +52,15 @@ interface DraftResponse {
   snapshot: DraftSnapshot | null;
 }
 
-export function ProjectDraftPanel({ token, taskId, spec }: {
+export function ProjectDraftPanel({ token, taskId, spec, expanded,
+  onExpand, onGenerated, onStageChange }: {
   token: string;
   taskId: string;
   spec: SpecContract | null;
+  expanded: JourneyId;
+  onExpand: (stage: JourneyId) => void;
+  onGenerated: () => void;
+  onStageChange: (generation: JourneyStep, delivery: JourneyStep) => void;
 }) {
   const [result, setResult] = useState<DraftSnapshot | null>(null);
   const [architecture, setArchitecture] = useState<ArchitectureReadiness | null>(null);
@@ -194,115 +200,173 @@ export function ProjectDraftPanel({ token, taskId, spec }: {
   const running = job?.state === 'Running';
   const seconds = job
     ? Math.max(0, Math.floor((clock - Date.parse(job.createdUtc)) / 1000)) : 0;
-  return <section className="build-stage" aria-label="Task-specific project draft">
-    <h2>4. Generate project files</h2>
-    <p className="hint">After approving the Product Owner specification and both Solution Architect
-      decisions, your local model chooses a small set of source files consistent with
-      those exact decisions, writes them one by one,
-      and saves the results. This stage does not execute code, install packages,
-      compile, run tests, or modify your repositories. Files are unverified drafts.</p>
-    <div className="actions">
-      <button className="primary" type="button"
-        disabled={!!busy || spec?.status !== 'Approved' ||
-          !architecture?.readyForSourceGeneration || running}
-        onClick={() => void start()}>
-        {busy === 'start' ? 'Starting…' : 'Generate approved project draft'}
-      </button>
-      {running && <button type="button" className="danger"
-        disabled={!!busy} onClick={() => void cancel()}>
-        Stop generation
-      </button>}
-      {job?.state === 'Generated' && <button type="button"
-        disabled={!!busy} onClick={() => void download()}>
-        Download project ZIP
-      </button>}
-      {job?.state === 'Generated' && spec?.status === 'Approved' &&
-        <button type="button" disabled={!!busy}
-          onClick={() => void downloadAgentContract()}>
-          {busy === 'contract' ? 'Preparing…' : 'Download agent pilot contract'}
-        </button>}
-    </div>
-    {spec?.status !== 'Approved' && <p className="hint">
-      Approve a specification above before generating project files.</p>}
-    {spec?.status === 'Approved' && architecture &&
-      !architecture.readyForSourceGeneration && <p className="activity-warning">
-        Architecture approval required ({architecture.status}).
-        {architecture.blockingTopics.length > 0 &&
-          ' Review: ' + architecture.blockingTopics.join(', ') + '.'}
-        An older specification-only draft may still appear below for download,
-        but new Mission Control drafts require both approved choices.
-      </p>}
-    {architecture?.readyForSourceGeneration && <p className="hint">
-      Both architecture decisions approved. Binding SHA-256:
-      <code className="architect-hash"> {architecture.architectureSha256}</code>
-    </p>}
-    {error && <div className="alert" role="alert">{error}</div>}
-    {job && <div className="draft-status">
-      <div className="activity-heading">
-        {running && <span className="activity-dot" aria-hidden="true" />}
-        <strong>{job.state === 'Generated' ? 'Files generated (NOT TESTED)' :
-          job.state === 'Running' ? 'Generating real source files' :
-          'Generation stopped: ' + job.state}</strong>
-        <span className="pill">{job.phase}</span>
-      </div>
-      {running && <>
-        <div className="activity-track" aria-hidden="true">
-          <div className="activity-scan" />
+  const currentSpec = !!spec && job?.specificationSha256 === spec.sha256;
+  const currentArchitecture = !result?.architecture ||
+    result.architecture.sha256 === architecture?.architectureSha256;
+  const generated = job?.state === 'Generated' && !!result?.files.length;
+
+  const generationStep: JourneyStep = {
+    id: 'generation', title: 'Source Generation', detail: 'Create project source files',
+    ...(job?.state === 'Running'
+      ? { tone: 'active' as const, status: 'Generating files locally' }
+      : job?.state === 'Failed' || job?.state === 'Interrupted'
+        ? { tone: 'blocked' as const, status: 'Generation ' + job.state.toLowerCase() }
+        : generated && currentSpec && currentArchitecture
+          ? { tone: 'complete' as const, status: 'Generated — not tested' }
+          : job && !currentSpec
+            ? { tone: 'attention' as const, status: 'Older specification — review' }
+            : spec?.status !== 'Approved'
+              ? { tone: 'pending' as const, status: 'Waiting for specification' }
+              : architecture?.readyForSourceGeneration
+                ? { tone: 'active' as const, status: 'Ready to generate' }
+                : { tone: 'pending' as const, status: 'Waiting for architecture' }),
+  };
+  const deliveryStep: JourneyStep = {
+    id: 'delivery', title: 'Artifacts & Delivery', detail: 'Inspect files and download ZIP',
+    ...(generated
+      ? currentSpec && currentArchitecture
+        ? { tone: 'complete' as const,
+          status: result?.files.length + ' file(s) — unverified' }
+        : { tone: 'attention' as const, status: 'Historical files — review bindings' }
+      : (result?.files.length ?? 0) > 0
+        ? { tone: 'blocked' as const, status: 'Partial files — not verified' }
+        : { tone: 'pending' as const, status: 'No generated files yet' }),
+  };
+  useEffect(() => { onStageChange(generationStep, deliveryStep); },
+    [onStageChange, generationStep.tone, generationStep.status,
+      deliveryStep.tone, deliveryStep.status]);
+
+  // Navigate forward only when an observed running job completes. Merely opening
+  // a saved completed project must not silently interrupt the owner's navigation.
+  const previousJobState = useRef<string | null>(null);
+  useEffect(() => {
+    if (previousJobState.current === 'Running' && job?.state === 'Generated')
+      onGenerated();
+    previousJobState.current = job?.state ?? null;
+  }, [job?.state, onGenerated]);
+
+  return <>
+    <JourneyStage step={generationStep} index={3}
+      open={expanded === 'generation'} onOpen={onExpand}>
+      <section className="build-stage" aria-label="Task-specific project draft generation">
+        <p className="hint">With an approved Product Owner specification and both
+          Solution Architect decisions, your local model writes source files one by one.
+          This does not execute, compile, test, or install anything. Files are unverified drafts.</p>
+        <div className="actions">
+          <button className="primary" type="button"
+            disabled={!!busy || spec?.status !== 'Approved' ||
+              !architecture?.readyForSourceGeneration || running}
+            onClick={() => void start()}>
+            {busy === 'start' ? 'Starting…' : 'Generate approved project draft'}
+          </button>
+          {running && <button type="button" className="danger"
+            disabled={!!busy} onClick={() => void cancel()}>
+            Stop generation
+          </button>}
         </div>
-        <p className="hint">Elapsed: {Math.floor(seconds / 60)}m {seconds % 60}s.
-          The animation is not a model heartbeat or an invented percentage.</p>
-      </>}
-      {job.errorCode && <p className="activity-warning">
-        Safe failure category: {job.errorCode}. Partial files remain visible,
-        but no result is claimed as complete.</p>}
-      <p className="hint">
-        Specification version {job.specificationVersion} · model {job.model} ·
-        {result?.files.length ?? 0} actual file(s) saved.
-      </p>
-      {job.specificationSha256 !== spec?.sha256 &&
-        <p className="hint">This draft belongs to an earlier specification.</p>}
-      {result?.architecture && <>
-        <p className="hint">Generation bound to owner-approved architecture:
-          <code className="architect-hash"> {result.architecture.sha256}</code></p>
-        <p className="hint">{result.architecture.choices.map(choice =>
-          choice.topic + ': ' + choice.label).join(' · ')}</p>
-        {architecture?.architectureSha256 !== result.architecture.sha256 &&
-          <p className="activity-warning">Architecture decisions have changed since
-            this draft began. Review the new decisions before generating again.</p>}
-      </>}
-      {!result?.architecture && <p className="hint">
-        Legacy specification-only draft (not bound to architecture decisions).</p>}
-      <h3>Actual build activity</h3>
-      <ol className="events">
-        {(result?.events ?? []).map(event =>
-          <li key={event.sequence}>
-            <span className="number">#{event.sequence}</span>
-            <span><strong>{event.kind}</strong> · {event.detail}
-              <small className="trace-note">
-                {new Date(event.createdUtc).toLocaleTimeString()}
-              </small>
-            </span>
-          </li>)}
-      </ol>
-      {!!result?.files.length && <>
-        <h3>Generated source files (unverified)</h3>
-        <div className="draft-files">
-          {result.files.map(file => <details key={file.path}>
-            <summary><strong>{file.path}</strong> · {file.content.length} characters</summary>
-            <p className="hint">{file.purpose} · SHA-256 {file.sha256}</p>
-            <pre className="specification-text">{file.content}</pre>
-          </details>)}
+        {spec?.status !== 'Approved' && <p className="hint">
+          Approve a specification before generating project files.</p>}
+        {spec?.status === 'Approved' && architecture &&
+          !architecture.readyForSourceGeneration && <p className="activity-warning">
+            Architecture approval required ({architecture.status}).
+            {architecture.blockingTopics.length > 0 &&
+              ' Review: ' + architecture.blockingTopics.join(', ') + '.'}
+            An older draft, if present, remains inspectable in Artifacts & Delivery.
+          </p>}
+        {architecture?.readyForSourceGeneration && <p className="hint">
+          Both architecture decisions approved. Binding SHA-256:
+          <code className="architect-hash"> {architecture.architectureSha256}</code>
+        </p>}
+        {error && <div className="alert" role="alert">{error}</div>}
+        {job && <div className="draft-status">
+          <div className="activity-heading">
+            {running && <span className="activity-dot" aria-hidden="true" />}
+            <strong>{job.state === 'Generated' ? 'Files generated (NOT TESTED)' :
+              job.state === 'Running' ? 'Generating source files' :
+              'Generation stopped: ' + job.state}</strong>
+            <span className="pill">{job.phase}</span>
+          </div>
+          {running && <>
+            <div className="activity-track" aria-hidden="true">
+              <div className="activity-scan" />
+            </div>
+            <p className="hint">Elapsed: {Math.floor(seconds / 60)}m {seconds % 60}s.
+              The animation is not a model heartbeat or an invented percentage.</p>
+          </>}
+          {job.errorCode && <p className="activity-warning">
+            Safe failure category: {job.errorCode}. Partial files remain visible,
+            but no result is claimed complete.</p>}
+          <p className="hint">
+            Specification v{job.specificationVersion} · model {job.model} ·
+            {result?.files.length ?? 0} file(s) saved.
+          </p>
+          {result?.architecture && <>
+            <p className="hint">Generation bound to owner-approved architecture:
+              <code className="architect-hash"> {result.architecture.sha256}</code></p>
+            <p className="hint">{result.architecture.choices.map(choice =>
+              choice.topic + ': ' + choice.label).join(' · ')}</p>
+            {!currentArchitecture && <p className="activity-warning">
+              Architecture decisions have changed since this draft began.</p>}
+          </>}
+          {!result?.architecture && <p className="hint">
+            Legacy specification-only draft (not bound to architecture decisions).</p>}
+          <h3>Saved generation activity</h3>
+          <ol className="events" aria-label="Saved generation activity">
+            {(result?.events ?? []).map(event => <li key={event.sequence}>
+              <span className="number">#{event.sequence}</span>
+              <span><strong>{event.kind}</strong> · {event.detail}
+                <small className="trace-note">
+                  {new Date(event.createdUtc).toLocaleTimeString()}
+                </small>
+              </span>
+            </li>)}
+          </ol>
+        </div>}
+      </section>
+    </JourneyStage>
+
+    <JourneyStage step={deliveryStep} index={4}
+      open={expanded === 'delivery'} onOpen={onExpand}>
+      <section className="build-stage" aria-label="Project files and delivery">
+        <p className="hint">Inspect saved source files and export them. Generated source
+          is not an independently tested or verified build.</p>
+        {error && <div className="alert" role="alert">{error}</div>}
+        {job && <p className="hint">
+          Source job: {job.state} · specification v{job.specificationVersion}.
+          {!currentSpec && ' These files belong to an earlier specification.'}
+          {!currentArchitecture && ' Architecture decisions have changed.'}
+        </p>}
+        <div className="actions">
+          {job?.state === 'Generated' && <button type="button"
+            disabled={!!busy} onClick={() => void download()}>
+            {busy === 'download' ? 'Preparing ZIP…' : 'Download project ZIP'}
+          </button>}
+          {job?.state === 'Generated' && spec?.status === 'Approved' &&
+            <button type="button" disabled={!!busy}
+              onClick={() => void downloadAgentContract()}>
+              {busy === 'contract' ? 'Preparing…' : 'Download agent pilot contract'}
+            </button>}
         </div>
-      </>}
-    </div>}
-    {job?.state === 'Generated' && spec?.status === 'Approved' &&
-      job.specificationSha256 === spec.sha256 &&
-      <TaskBuildPanel token={token} taskId={taskId}
-        specificationSha256={spec.sha256} />}
-    <p className="hint">The source-only project draft and task-specific build review
-      are separate from independently verified coding. The Linux-only OpenCode
-      pilot remains a manual qualification path (docs/M1_TASK_PROJECT_PILOT.md).
-      The security-negative cases in issue #76 must pass before executable coding
-      can be enabled in Mission Control.</p>
-  </section>;
+        {!job && <p className="hint">No generated files yet. Start with Source Generation.</p>}
+        {!!result?.files.length && <>
+          <h3>Generated source files (unverified)</h3>
+          <div className="draft-files">
+            {result.files.map(file => <details key={file.path}>
+              <summary><strong>{file.path}</strong> · {file.content.length} characters</summary>
+              <p className="hint">{file.purpose} · SHA-256 {file.sha256}</p>
+              <pre className="specification-text">{file.content}</pre>
+            </details>)}
+          </div>
+        </>}
+        {job?.state === 'Generated' && spec?.status === 'Approved' &&
+          currentSpec &&
+          <TaskBuildPanel token={token} taskId={taskId}
+            specificationSha256={spec.sha256} />}
+        <p className="hint">Source-only generation and task-specific scope review
+          are separate from independently verified coding. The restricted
+          OpenCode pilot remains a separate qualification path, and security
+          issue #76 must be cleared before executable coding can be enabled.</p>
+      </section>
+    </JourneyStage>
+  </>;
 }

@@ -92,3 +92,40 @@ These UX slices augment, not reorder, Development Plan v2 phases 0–5. Each sli
 ## Explicit limitations
 
 UX-1 does not add React Router, deep links, a unified event store, automated browser UI tests, agent execution or MAF integration. The overview is a saved snapshot fetched on opening, not a live heartbeat. UX-2 will add browser-level interaction tests; UX-5 and UX-6 require their corresponding real backend milestones.
+
+## UX-2 Project Journey accordion (implemented)
+
+The Engineering Studio now presents five independently status-aware stages:
+Product Discovery, Specification, Solution Architecture, Source Generation, and
+Artifacts & Delivery. Exactly one stage body is visible. Switching stages
+uses persistent mounted components, rather than unmounting local interview
+drafts, Architecture choice forms, or draft-generation polling. Every header
+is a keyboard-focusable button with aria-expanded and a stable labelled
+content region. A collapsed stage remains accessible by clicking its header,
+including a stage whose prerequisites are not met (to explain the blockers).
+
+Header bands use subdued colors alongside explicit text: green for complete,
+teal for active, amber for human review, slate for pending, and red for blocked
+or stale. Completion means that stage's *own* work is complete. The generated
+source and ZIP are explicitly marked unverified; no colored band implies
+successful compilation or evaluator approval. A compact status strip summarizes
+saved work. Percent-complete and synthetic model heartbeat are prohibited.
+
+The Product Owner transcript is separately scrollable and the answer composer
+remains accessible. The open stage has a bounded scroll region. The existing
+Product Owner model picker, full conversation, specification content and SHA
+approval, Architecture proposals/choices with exact confirmation, draft
+generation/cancellation, source inspection, ZIP download and task scope review
+retain the same API endpoints and authorizations.
+
+Successful specification drafting opens Specification; successful approval
+opens Solution Architecture; the second approved architecture topic opens
+Source Generation; an *observed* Running-to-Generated transition opens Artifacts
+only when the owner is still viewing Source Generation. Returning to a saved
+project defaults to the next useful stage. After explicit manual navigation,
+background polling cannot steal focus or change the expanded stage.
+
+The existing legacy diagnostics and workspace navigation remain outside the
+accordion. This stage UI is not a new task engine or live MAF agent registry.
+The five current stages are declared as data, allowing later server-driven
+stages and work products without tying the layout to fixed numbers.
