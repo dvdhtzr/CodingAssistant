@@ -51,6 +51,7 @@ jobs:
         working-directory: src/CodingAssistant.Web
         run: |
           npm install --no-audit --no-fund
+          npm run test:workbench
           npm run build
       - name: Install .NET 10 SDK for local control-plane checks
         uses: actions/setup-dotnet@v4
