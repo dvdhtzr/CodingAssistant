@@ -74,23 +74,46 @@ public sealed class ProjectDraftCoordinator(
                 return ProjectDraftStore.ValidatePlan(output);
             }
 
-            var plan = await AskPlanAsync(sourceSpecification);
+            IReadOnlyList<PlannedProjectFile> plan;
             try
             {
+                plan = await AskPlanAsync(sourceSpecification);
                 DraftArchitecturePolicy.ValidatePlannedFiles(bound, plan);
             }
-            catch (StoreFailure error) when (bound is not null &&
-                error.Code == "ARCHITECTURE_PLAN_CONFLICT")
+            catch (StoreFailure error) when (error.Code is
+                "INVALID_PROJECT_PLAN" or "INVALID_PROJECT_PATH" or
+                "ARCHITECTURE_PLAN_CONFLICT")
             {
-                // Small local models can ignore an exact selected stack. One
-                // explicit corrective plan attempt is allowed, never an
-                // unbounded retry or a silent relaxation of validation.
+                // The model's file manifest is independent of the Technical
+                // Lead's engineering task plan. A malformed JSON manifest,
+                // bad/duplicate file metadata or stack mismatch deserves one
+                // corrective model call, but never weaker validation.
+                // Invalid files are never saved, and no second retry is made.
                 token.ThrowIfCancellationRequested();
                 RequireCurrentApproval(task.Id, job);
                 store.Note(task.Id, job.Id, "PlanCorrectionRequested",
-                    "First file plan conflicted with approved architecture; asking local model to correct it");
-                plan = await AskPlanAsync(sourceSpecification + "\n\n" +
-                    DraftArchitecturePolicy.PlanningCorrectionInstructions(bound));
+                    "File manifest rejected (" + error.Code +
+                    "); requesting one correction from the selected local model");
+                var correction = """
+                    FILE PLAN CORRECTION REQUIRED:
+                    Your previous file manifest was rejected by independent
+                    validation. Return ONLY one JSON object in the exact shape
+                    {"files":[{"path":"index.html","purpose":"Browser entry point"}]}.
+                    This is a SOURCE FILE MANIFEST, not a Technical Lead task
+                    breakdown. Do NOT return summary, tasks, dependencies,
+                    acceptanceCriteria, a top-level array or source code.
+                    Include 1 to 5 distinct safe relative paths, each with
+                    a meaningful purpose of 5 to 240 characters. Paths must
+                    contain only ASCII letters, numbers, _, -, . and /;
+                    no leading dots, absolute paths, parent traversal,
+                    scripts, credentials or generated build directories.
+                    Respect the owner-approved specification and BOTH exact
+                    architecture choices. No new tools or dependencies.
+                    """;
+                if (bound is not null)
+                    correction += "\n\n" +
+                        DraftArchitecturePolicy.PlanningCorrectionInstructions(bound);
+                plan = await AskPlanAsync(sourceSpecification + "\n\n" + correction);
                 DraftArchitecturePolicy.ValidatePlannedFiles(bound, plan);
             }
             token.ThrowIfCancellationRequested();
