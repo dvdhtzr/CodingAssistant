@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 import { api, type ApiStatus, type RunItem, type TaskItem, type TaskView } from './api';
+import { MafHandoffTimeline } from './MafHandoffTimeline';
 
 export type WorkbenchView = 'overview' | 'studio' | 'diagnostics';
 
-// This is presentation metadata, not a runtime agent registry or activity telemetry.
-// Future MAF participants will come from a server-owned, variable-length roster.
+// Presentation metadata only. The Product Owner and Architect now invoke MAF,
+// but this static list is not live activity telemetry or a dynamic registry.
 const initialTeam = [
-  { role: 'Product Owner', initials: 'PO', availability: 'Requirements workflow available' },
-  { role: 'Solution Architect', initials: 'SA', availability: 'Decision workflow available' },
+  { role: 'Product Owner', initials: 'PO', availability: 'MAF · local Ollama (on request)' },
+  { role: 'Solution Architect', initials: 'SA', availability: 'MAF · local Ollama (on request)' },
   { role: 'Technical Lead', initials: 'TL', availability: 'Planned — no live agent' },
   { role: 'Software Engineer', initials: 'SE', availability: 'Planned — no live agent' },
   { role: 'QA Engineer', initials: 'QA', availability: 'Planned — no live agent' },
@@ -90,12 +91,13 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
         <span className="wb-member-copy"><strong>{member.role}</strong>
           <small>{member.availability}</small></span>
       </div>)}
-      <p className="wb-muted wb-team-note">Team availability is descriptive. Live agent state and handoffs arrive with MAF integration.</p>
+      <p className="wb-muted wb-team-note">Team availability is descriptive. Only saved MAF handoffs are shown; no live agent status is invented.</p>
     </div>
   </aside>;
 }
 
-export function WorkbenchInspector({ view, taskView, run, status, onContinue }: {
+export function WorkbenchInspector({ token, view, taskView, run, status, onContinue }: {
+  token: string;
   view: WorkbenchView;
   taskView: TaskView | null;
   run: RunItem | null;
@@ -117,6 +119,7 @@ export function WorkbenchInspector({ view, taskView, run, status, onContinue }: 
       {view !== 'studio' && <button type="button" className="wb-inspector-action"
         onClick={onContinue}>Open Engineering Studio</button>}
     </> : <p className="wb-muted">Create or open a project to inspect its work.</p>}
+    {taskView && <MafHandoffTimeline token={token} taskId={taskView.task.id} />}
     <div className="wb-inspector-divider" />
     <p className="wb-kicker">CONTROL PLANE</p>
     <div className="wb-inspector-row"><span>Inference</span><strong>Local Ollama</strong></div>
