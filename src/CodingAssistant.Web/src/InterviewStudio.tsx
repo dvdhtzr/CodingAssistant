@@ -191,8 +191,7 @@ export function InterviewStudio({ token, task }: {
     deliveryStep.tone]);
 
   return <div className="journey-shell">
-    <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded}>
-    </JourneyStatusStrip>
+    <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded} />
     {!!busy && <div className="activity" role="status" aria-live="polite">
       <div className="activity-heading">
         <span className="activity-dot" aria-hidden="true" />
