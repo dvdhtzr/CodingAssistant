@@ -76,3 +76,14 @@
 .wb-delete-confirm p{font-size:.73rem;line-height:1.5;color:#f0bac5}
 .wb-delete-actions{display:flex;gap:.35rem;flex-wrap:wrap}
 .wb-delete-actions button{font-size:.73rem;padding:.45rem .55rem}
+
+/* Authenticated, saved MAF handoff evidence. Never infer agent activity. */
+.wb-maf-handoffs{padding:.8rem 0;border-top:1px solid #36485a}
+.wb-maf-handoff-title{display:flex;align-items:center;justify-content:space-between;gap:.5rem}
+.wb-maf-handoff-title .wb-kicker{margin:0}
+.wb-maf-events{padding:0;margin:.6rem 0;list-style:none;display:grid;gap:.45rem}
+.wb-maf-events li{border-left:3px solid #438fa4;background:#1a3040;
+  padding:.45rem .55rem;min-width:0;border-radius:0 7px 7px 0}
+.wb-maf-events strong,.wb-maf-events small{display:block;overflow-wrap:anywhere}
+.wb-maf-events strong{font-size:.75rem;color:#d9f4f4;font-weight:700}
+.wb-maf-events small{font-size:.7rem;color:#bdd0de;margin-top:.2rem}

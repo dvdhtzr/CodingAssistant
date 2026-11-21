@@ -28,7 +28,7 @@ public sealed class LocalArchitectureAdvisor : IArchitectureAdvisor
     public static bool AllowedTopic(string? topic) =>
         topic is "technology-stack" or "architecture-style";
 
-    private const string Policy = """
+    internal const string Policy = """
         You are the Solution Architect of a professional software engineering team.
         Your role begins after the human has APPROVED a Product Owner specification.
         Recommend proportional technical solutions, with genuine alternatives and

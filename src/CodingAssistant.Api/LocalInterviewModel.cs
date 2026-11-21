@@ -21,7 +21,7 @@ public sealed class LocalInterviewModel : IInterviewModel
 
     // Phase 1: identity and boundaries for the requirements specialist.
     // Existing SQLite message roles and HTTP contracts remain unchanged.
-    private static readonly string InterviewPolicy =
+    internal static readonly string InterviewPolicy =
         """
         You are the Product Owner on a professional software engineering team.
         You have guided software products from early ideas through delivery,
@@ -58,7 +58,7 @@ public sealed class LocalInterviewModel : IInterviewModel
         approved. The owner may also request a draft after one answered turn.
         """;
 
-    private static readonly string SpecPolicy =
+    internal static readonly string SpecPolicy =
         """
         You are the Product Owner converting an actual human-owner interview
         into a reviewable PRODUCT specification, not designing or implementing

@@ -77,7 +77,13 @@ public static class ApiHost
         interviews.Initialize();
         var architectureDecisions = new ArchitectureDecisionStore(store);
         architectureDecisions.Initialize();
-        var interviewModel = interviewModelOverride ?? new LocalInterviewModel();
+        // Phase 3: real Microsoft Agent Framework agents by default.
+        // Test overrides remain explicit; no cloud or executable tool fallback.
+        var mafTeam = new MafAgentTeam();
+        var interviewModel = interviewModelOverride ?? mafTeam;
+        var architectModel = architectureAdvisorOverride ?? mafTeam;
+        var handoffs = new MafHandoffStore(store, interviews);
+        handoffs.Initialize();
         var catalog = catalogOverride ?? new LocalOllamaModelCatalog();
         var projectDrafts = new ProjectDraftStore(store);
         projectDrafts.Initialize();
@@ -135,8 +141,8 @@ public static class ApiHost
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(architectureDecisions);
-        builder.Services.AddSingleton<IArchitectureAdvisor>(
-            architectureAdvisorOverride ?? new LocalArchitectureAdvisor());
+        builder.Services.AddSingleton(handoffs);
+        builder.Services.AddSingleton<IArchitectureAdvisor>(architectModel);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton<IOllamaModelCatalog>(catalog);
         builder.Services.AddSingleton(projectDrafts);
@@ -292,6 +298,13 @@ public static class ApiHost
         // All steps are planning-only; none can launch the M1 execution plane.
         app.MapGet("/api/tasks/{id}/interview", (string id, InterviewStore db) =>
             Safe(() => Results.Ok(db.Read(id))));
+        app.MapGet("/api/tasks/{id}/agent-handoffs",
+            (string id, MafHandoffStore db) =>
+                Safe(() => Results.Ok(new {
+                    engine = "Microsoft Agent Framework",
+                    executionAvailable = false,
+                    events = db.List(id)
+                })));
         app.MapPost("/api/tasks/{id}/interview/turn", (
                 string id, InterviewTurnRequest input,
                 TaskStore tasks, InterviewStore db, IInterviewModel model,
@@ -349,8 +362,12 @@ public static class ApiHost
             }));
         app.MapPost("/api/tasks/{id}/interview/approve", (
                 string id, ApproveSpecificationRequest input,
-                InterviewStore db) =>
-            Safe(() => Results.Ok(db.Approve(id, input))));
+                InterviewStore db, MafHandoffStore handoffs) =>
+            Safe(() => {
+                var approved = db.Approve(id, input);
+                handoffs.RecordApproved(id, approved.Specification!);
+                return Results.Ok(approved);
+            }));
         // Planning-only Phase 2 contracts. A profile descriptor is not a
         // runnable toolchain and an architecture approval is not execution consent.
         app.MapGet("/api/runtime-profiles", () => Results.Ok(new
@@ -384,7 +401,8 @@ public static class ApiHost
                 (string id, RecommendArchitectureRequest input,
                  TaskStore tasks, InterviewStore interviews,
                  ArchitectureDecisionStore decisions, IArchitectureAdvisor advisor,
-                 IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+                 MafHandoffStore handoffs, IOllamaModelCatalog catalog,
+                 CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 if (input.SchemaVersion != ArchitectureDecisionStore.SchemaVersion ||
@@ -410,6 +428,7 @@ public static class ApiHost
                     input.Topic, recommendation.RecommendedOptionId,
                     recommendation.Rationale, recommendation.Options,
                     input.ExpectedRevision));
+                handoffs.RecordProposal(id, input.Topic!, spec, created.Revision);
                 return Results.Created(
                     $"/api/tasks/{id}/architecture-decisions/{created.Topic}/history",
                     created);

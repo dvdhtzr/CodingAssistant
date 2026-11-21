@@ -2,7 +2,7 @@
 
 **Approved:** November 20, 2026  
 **Scope:** Evolve the *working* local-first project generator into a coordinated Microsoft Agent Framework engineering team.  
-**Status:** Phase 0 baseline protection GREEN; Phase 1 owner-attested acceptance on November 20, 2026 (issue #108 closed, exact model/transcript not retained). Phase 2 Solution Architect work in progress. No general-purpose execution gate has passed.  
+**Status (November 21, 2026):** Phase 0 baseline protection GREEN; Phase 1 owner-attested acceptance November 20 (issue #108 closed; model/transcript not retained). Phase 2 stack/architecture approvals and architecture-bound source generation implemented, with owner-reported end-to-end success. Phase 3 two-role MAF foundation is under acceptance: Product Owner and Solution Architect now use real local MAF ChatClientAgent calls, with host-managed, human-gated handoffs. A native durable workflow graph and general-purpose execution remain unqualified/unimplemented.  
 **Origin:** Owner-approved comprehensive handoff of November 20, 2026.
 
 ## Approved architecture extension — November 20, 2026
@@ -79,6 +79,14 @@ Examples include layered, Clean, Vertical Slice, modular monolith, hexagonal, CQ
 Migrate **Product Owner first**, with a controlled compatibility seam. Preserve authenticated API, SQLite, interview history, prompt semantics, owner approvals, durable events and execution isolation. MAF coordinates agents; it does **not** grant the Product Owner shell/file/process privileges.
 
 **Gate:** Verified MAF packages/API integration; local Ollama inference by MAF-backed Product Owner demonstrated; no cloud provider required; current persisted interviews/specifications and external API contract remain compatible; regression and live-model tests pass; no new executable authority.
+
+**Phase 3 first slice (November 21):** See [MAF_FOUNDATION.md](MAF_FOUNDATION.md).
+This introduces real MAF-backed Product Owner and Solution Architect
+participants using an IChatClient bound to exact local Ollama, records
+owner-gated handoffs and provides a read-only timeline. It is not
+the final MAF workflow graph: no agent may create its own owner approval,
+run tools, or execute code. Live Windows/Ollama acceptance is required before
+claiming the complete Phase 3 gate.
 
 ## Phase 4 — Distinct Engineering Team
 

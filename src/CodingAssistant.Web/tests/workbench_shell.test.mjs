@@ -47,14 +47,14 @@ test('Workbench sidebar exposes only functional navigation and honest agent desc
   assert.match(html, /aria-label="Delete project Offline Notes"/);
   assert.match(html, /aria-expanded="false"/);
   assert.doesNotMatch(html, /Delete permanently/);
-  assert.match(html, /Requirements workflow available/);
+  assert.match(html, /MAF · local Ollama \(on request\)/);
   assert.match(html, /Planned — no live agent/);
   assert.doesNotMatch(html, /Verified engineer run/);
 });
 
 test('Inspector distinguishes local capability from authorization', () => {
   const html = renderToStaticMarkup(React.createElement(WorkbenchInspector, {
-    view: 'overview', taskView: { task, plan: null }, run: null,
+    token: 'f'.repeat(64), view: 'overview', taskView: { task, plan: null }, run: null,
     status: { phase: 'M2-control-plane', model: 'local', executionEnabled: false, localOnly: true },
     onContinue: noop,
   }));
@@ -63,6 +63,8 @@ test('Inspector distinguishes local capability from authorization', () => {
   assert.match(html, /Unavailable on this host/);
   assert.match(html, /not a verified build/);
   assert.match(html, /Open Engineering Studio/);
+  assert.match(html, /Agent handoff history/);
+  assert.match(html, /Loading saved handoffs/);
 });
 
 test('Project overview renders its source objective as escaped text, not HTML', () => {
