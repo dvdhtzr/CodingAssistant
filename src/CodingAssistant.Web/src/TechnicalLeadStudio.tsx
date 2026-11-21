@@ -46,11 +46,12 @@ interface ArchitectureReadiness {
   architectureSha256: string | null;
 }
 
-export function TechnicalLeadStudio({ token, taskId, spec, expanded,
+export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, expanded,
   onExpand, onReady, onStageChange }: {
   token: string;
   taskId: string;
   spec: ApprovedSpec | null;
+  architectureSignal: string;
   expanded: boolean;
   onExpand: (stage: JourneyId) => void;
   onReady: () => void;
@@ -87,7 +88,7 @@ export function TechnicalLeadStudio({ token, taskId, spec, expanded,
       }
     });
     return () => { closed = true; };
-  }, [token, taskId, spec?.sha256, spec?.status]);
+  }, [token, taskId, spec?.sha256, spec?.status, architectureSignal]);
 
   const plan = saved?.plan ?? null;
   const eligible = spec?.status === 'Approved' &&
