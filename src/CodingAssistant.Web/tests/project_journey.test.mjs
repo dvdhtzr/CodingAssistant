@@ -1,5 +1,6 @@
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
@@ -11,6 +12,7 @@ let restoreJourneyStage;
 let toggleJourneyStage;
 let steps;
 let InterviewStudio;
+let InterviewCompletionNotice;
 
 const task = {
   id: 'a'.repeat(32),
@@ -31,7 +33,8 @@ before(async () => {
   const journey = await vite.ssrLoadModule('/src/ProjectJourney.tsx');
   ({ JourneyStage, JourneyStatusStrip, restoreJourneyStage, toggleJourneyStage } = journey);
   steps = journey.journeySteps;
-  ({ InterviewStudio } = await vite.ssrLoadModule('/src/InterviewStudio.tsx'));
+  ({ InterviewStudio, InterviewCompletionNotice } =
+    await vite.ssrLoadModule('/src/InterviewStudio.tsx'));
 });
 
 after(async () => { if (vite) await vite.close(); });
@@ -144,4 +147,42 @@ test('Technical Lead stage has a mounted, accessible plan-review region', () => 
   assert.match(html, /Technical Lead/);
   assert.match(html, /Implementation Plan/);
   assert.match(html, /aria-expanded="false"/);
+});
+
+test('at the 12-answer limit, discovery has an explicit action instead of a missing composer', () => {
+  const html = renderToStaticMarkup(React.createElement(InterviewCompletionNotice, {
+    ownerAnswers: 12, hasSpecification: false, onContinue: () => {},
+  }));
+  assert.match(html, /All 12 interview answers are saved/);
+  assert.match(html, /question limit/);
+  assert.match(html, /Continue to specification/);
+  assert.match(html, /type="button"/);
+  assert.match(html, /role="status"/);
+});
+
+test('an already-drafted interview offers review instead of drafting twice', () => {
+  const html = renderToStaticMarkup(React.createElement(InterviewCompletionNotice, {
+    ownerAnswers: 12, hasSpecification: true, onContinue: () => {},
+  }));
+  assert.match(html, /Review specification/);
+  assert.doesNotMatch(html, /Continue to specification/);
+});
+
+test('interviews below the answer limit retain their own composer', () => {
+  const html = renderToStaticMarkup(React.createElement(InterviewCompletionNotice, {
+    ownerAnswers: 11, hasSpecification: false, onContinue: () => {},
+  }));
+  assert.equal(html, '');
+});
+
+test('interview scroll is bounded to conversation history, not the composer or stage', () => {
+  const css = readFileSync('src/mission-control.css', 'utf8');
+  assert.match(css, /\.wb-main \.journey-status-strip\s*\{\s*position: static;/);
+  assert.match(css, /\.journey-discovery \.journey-stage-body\s*\{\s*max-height: none;\s*overflow: visible;/);
+  assert.match(css, /\.journey-discovery \.interview-transcript\s*\{[\s\S]*?overflow-y: auto;/);
+  assert.match(css, /\.journey-discovery \.journey-stage-body form\s*\{\s*position: static;/);
+  const source = readFileSync('src/InterviewStudio.tsx', 'utf8');
+  assert.match(source, /ref=\{transcriptRef\} tabIndex=\{0\}/);
+  assert.match(source, /<details className="interview-objective">/);
+  assert.match(source, /<InterviewCompletionNotice ownerAnswers=\{ownerAnswers\}/);
 });
