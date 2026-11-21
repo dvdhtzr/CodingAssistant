@@ -540,8 +540,13 @@ public static class ApiHost
                 Safe(() => Results.Ok(coordinator.Cancel(id, runId))));
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/zip",
             (string id, string runId, EngineeringRunStore db) =>
-                Safe(() => Results.File(db.Zip(id, runId), "application/zip",
-                    "codingassistant-engineering-source.zip")));
+                Safe(() => {
+                    var snapshot = db.Get(id, runId);
+                    var filename = snapshot.Job.State == "Generated"
+                        ? "codingassistant-engineering-source.zip"
+                        : "codingassistant-engineering-PARTIAL-unverified.zip";
+                    return Results.File(db.Zip(id, runId), "application/zip", filename);
+                }));
         // Phase 5: independent, read-only MAF QA. Owner must initiate a
         // completed, current-plan engineering run. Static review is NOT a
         // build, execution, test run, security qualification or PASS.
