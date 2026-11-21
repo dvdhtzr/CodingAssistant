@@ -240,8 +240,8 @@ public sealed class ImplementationPlanStore(TaskStore tasks, InterviewStore inte
                 plan.Revision, plan.Model, plan.CreatedUtc, plan.Current,
                 plan.PlanSha256, plan.ArchitectureSha256));
             if (plan.ApprovedUtc is not null)
-                events.Add(new MafHandoffEvent(taskId, "ImplementationHandoff",
-                    "HumanOwner", "SoftwareEngineer",
+                events.Add(new MafHandoffEvent(taskId, "PlanApproved",
+                    "HumanOwner", "EngineeringBacklog",
                     plan.SpecificationVersion, plan.SpecificationSha256,
                     plan.Revision, plan.Model, plan.ApprovedUtc,
                     plan.Current && plan.Status == "Approved",
