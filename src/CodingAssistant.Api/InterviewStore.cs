@@ -9,9 +9,14 @@ namespace CodingAssistant.Api;
 // Every interview and specification is bound to an existing authenticated
 // owner task. These records are planning-only; none can invoke M1 or modify
 // an approved workspace.
+// Optional, model-proposed answer affordance. The question text remains in
+// Content and free-text answers always remain valid and owner-controlled.
+public sealed record InterviewChoice(string Kind, IReadOnlyList<string> Options);
 public sealed record InterviewMessage(
-    int Sequence, string Role, string Content, string CreatedUtc);
-public sealed record InterviewReply(string Message, bool ReadyForSpecification);
+    int Sequence, string Role, string Content, string CreatedUtc,
+    InterviewChoice? Choice = null);
+public sealed record InterviewReply(string Message, bool ReadyForSpecification,
+    InterviewChoice? Choice = null);
 public sealed record InterviewSpecification(
     int Version, string Model, string Content, string Sha256, string Status,
     string CreatedUtc, string? ApprovedUtc);
@@ -58,6 +63,15 @@ public sealed class InterviewStore(TaskStore tasks)
                 created_utc TEXT NOT NULL,
                 PRIMARY KEY(task_id,sequence)
             );
+            CREATE TABLE IF NOT EXISTS interview_message_choices(
+                task_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('single','multiple')),
+                options_json TEXT NOT NULL,
+                PRIMARY KEY(task_id,sequence),
+                FOREIGN KEY(task_id,sequence) REFERENCES interview_messages(task_id,sequence)
+                    ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS interview_specs(
                 task_id TEXT NOT NULL REFERENCES tasks(id),
                 version INTEGER NOT NULL CHECK(version > 0),
@@ -87,6 +101,27 @@ public sealed class InterviewStore(TaskStore tasks)
         return message.Trim();
     }
 
+    // Malformed optional LLM suggestions degrade to the regular text composer;
+    // they never invalidate an otherwise useful question or create a new gate.
+    public static InterviewChoice? ValidChoice(InterviewChoice? choice)
+    {
+        if (choice is null) return null;
+        if (choice.Kind is not ("single" or "multiple") ||
+            choice.Options is null || choice.Options.Count is < 2 or > 5)
+            return null;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalized = new List<string>();
+        foreach (var raw in choice.Options)
+        {
+            var value = raw?.Trim();
+            if (value is null || value.Length is < 2 or > 120 ||
+                value.Any(char.IsControl) || !seen.Add(value))
+                return null;
+            normalized.Add(value);
+        }
+        return new InterviewChoice(choice.Kind, normalized);
+    }
+
     public static string ValidAssistantMessage(string? message)
     {
         if (message is null || message.Trim().Length is < 10 or > 3000 ||
@@ -109,14 +144,23 @@ public sealed class InterviewStore(TaskStore tasks)
         SqliteConnection db, SqliteTransaction? tx, string taskId)
     {
         using var cmd = TaskStore.Command(db, tx, """
-            SELECT sequence,role,content,created_utc
-            FROM interview_messages WHERE task_id=@task ORDER BY sequence
+            SELECT m.sequence,m.role,m.content,m.created_utc,c.kind,c.options_json
+            FROM interview_messages AS m
+            LEFT JOIN interview_message_choices AS c
+              ON c.task_id=m.task_id AND c.sequence=m.sequence
+            WHERE m.task_id=@task ORDER BY m.sequence
             """, ("@task", taskId));
         using var reader = cmd.ExecuteReader();
         var messages = new List<InterviewMessage>();
         while (reader.Read())
+        {
+            var choice = reader.IsDBNull(4) ? null : ValidChoice(new InterviewChoice(
+                reader.GetString(4),
+                JsonSerializer.Deserialize<string[]>(reader.GetString(5)) ?? []));
             messages.Add(new InterviewMessage(reader.GetInt32(0),
-                reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+                reader.GetString(1), reader.GetString(2), reader.GetString(3),
+                choice));
+        }
         return messages;
     }
 
@@ -165,6 +209,7 @@ public sealed class InterviewStore(TaskStore tasks)
     {
         ValidateId(taskId);
         var assistantText = ValidAssistantMessage(reply.Message);
+        var choice = ValidChoice(reply.Choice);
         var ownerMessage = input.ExpectedSequence == 0 ? null :
             ValidOwnerMessage(input.Message);
         using var db = tasks.Open();
@@ -201,6 +246,13 @@ public sealed class InterviewStore(TaskStore tasks)
             VALUES(@task,@sequence,'assistant',@content,@utc)
             """, ("@task", taskId), ("@sequence", next),
             ("@content", assistantText), ("@utc", utc));
+        if (choice is not null)
+            TaskStore.Execute(db, tx, """
+                INSERT INTO interview_message_choices(task_id,sequence,kind,options_json)
+                VALUES(@task,@sequence,@kind,@options)
+                """, ("@task", taskId), ("@sequence", next),
+                ("@kind", choice.Kind),
+                ("@options", JsonSerializer.Serialize(choice.Options)));
         var ready = reply.ReadyForSpecification ||
             messages.Count(x => x.Role == "owner") +
                 (ownerMessage is null ? 0 : 1) >= MaxOwnerAnswers;
