@@ -7,6 +7,7 @@ import './journey.css';
 import './mission-control.css';
 import './agent-presence.css';
 import './conversation-workroom.css';
+import './owner-decision-inbox.css';
 
 const target = document.getElementById('root');
 if (!target) throw new Error('Missing Mission Control mount');

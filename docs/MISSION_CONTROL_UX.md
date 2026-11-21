@@ -176,3 +176,29 @@ fixtures. They do not replace owner live-model acceptance, exercise the
 authenticated .NET backend, or claim generated source is tested. The CI
 workflow runs real browser checks on Ubuntu, and existing frontend/HTTP/SQLite
 checks on both Ubuntu and Windows.
+
+## UX-3 — read-only owner decision and approval inbox
+
+Engineering Studio now includes a small owner inbox above the six existing
+accordion stages. It reads only the existing authenticated interview,
+architecture decision and implementation-plan records. It distinguishes:
+- Draft or superseded specifications requiring exact owner review;
+- Proposed technology-stack/architecture-style options requiring explicit
+  alternatives review, and missing/deferred recommendations;
+- Stale architecture proposals bound to an older approved specification;
+- Proposed, missing or stale Technical Lead implementation plans;
+- A fully cleared approval ledger, which still does **not** mean the generated
+  source is verified.
+
+The inbox never writes approvals, bypasses prerequisite guards, or copies
+confirmation controls. Clicking its actionable items navigates to the
+**existing** specification, architecture or plan stage. The original SHA-256
+confirmation and per-stage owner gates remain authoritative. If any of the
+three reads fails, the inbox reports a load error rather than displaying a
+misleading 'all approved' state.
+
+Status derives deterministically from the saved records. React model-free
+tests cover approved, proposed, missing, deferred and stale states; a
+Playwright browser fixture verifies inbox navigation enters the real
+Architecture panel without generating approval. This is not a claim of
+live-model behavior, build/test verification, or owner production acceptance.
