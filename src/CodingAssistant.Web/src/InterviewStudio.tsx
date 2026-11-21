@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProjectDraftPanel } from './ProjectDraftPanel';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { api, type TaskItem } from './api';
-import { JourneyStage, JourneyStatusStrip, journeySteps, type JourneyId,
-  type JourneyStep } from './ProjectJourney';
+import { JourneyStage, JourneyStatusStrip, journeySteps, restoreJourneyStage,
+  type JourneyId, type JourneyStep } from './ProjectJourney';
 
 interface InterviewMessage {
   sequence: number;
@@ -181,12 +181,8 @@ export function InterviewStudio({ token, task }: {
   // can move the user forward once they have interacted.
   useEffect(() => {
     if (!snapshot || manuallySelected.current) return;
-    const next: JourneyId = deliveryStep.tone === 'complete' ? 'delivery' :
-      generationStep.tone === 'complete' || architectureStep.tone === 'complete'
-        ? 'generation' :
-        spec?.status === 'Approved' ? 'architecture' :
-          spec?.status === 'Draft' ? 'specification' : 'discovery';
-    setExpanded(next);
+    setExpanded(restoreJourneyStage(spec?.status ?? null,
+      architectureStep.tone, generationStep.tone, deliveryStep.tone));
   }, [snapshot, spec?.status, architectureStep.tone, generationStep.tone,
     deliveryStep.tone]);
 
