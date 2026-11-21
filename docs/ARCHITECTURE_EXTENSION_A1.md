@@ -1,7 +1,7 @@
 # Architecture Extension A1 — Portable Skills, Runtime Profiles and Verified Artifacts
 
 **Decision:** APPROVED by the human owner, November 20, 2026.  
-**Implementation status:** DESIGN ONLY. No new executable privilege, skills installation, containers, or verification capability is enabled by this document.  
+**Implementation status:** Partial, gated. Planning-only runtime profiles and source-text preflight now exist; the [M4.1 Node syntax isolation probe](STATIC_WEB_NODE_SYNTAX_QUALIFICATION.md) is a separate fixed-fixture Linux qualification candidate, **not yet owner-run or qualified**. No task-specific execution or independent browser verification is enabled.  
 **Authority:** Extends [Development Plan v2.0](DEVELOPMENT_PLAN_V2.md), not a replacement for its six sequential phases. Historical [M0–M3 implementation](IMPLEMENTATION_PLAN.md) and [security requirements](SECURITY.md) remain binding.
 
 ## Why we are making this change
