@@ -87,3 +87,20 @@
 .wb-maf-events strong,.wb-maf-events small{display:block;overflow-wrap:anywhere}
 .wb-maf-events strong{font-size:.75rem;color:#d9f4f4;font-weight:700}
 .wb-maf-events small{font-size:.7rem;color:#bdd0de;margin-top:.2rem}
+
+/* Owner-visible real MAF Software Engineer: task state and bounded file output. */
+.engineering-workspace{margin:.9rem 0;padding:1rem;border:1px solid #386679;
+  border-radius:11px;background:#172d38;min-width:0}
+.engineering-workspace h3{margin:.35rem 0 .65rem;font-size:.95rem}
+.engineering-tasks{list-style:decimal;padding:0 0 0 1.3rem;margin:.85rem 0;display:grid;gap:.5rem}
+.engineering-tasks li{border:1px solid #375361;border-radius:7px;padding:.55rem .8rem;
+  background:#142534;min-width:0}
+.engineering-tasks strong,.engineering-tasks small{display:block;overflow-wrap:anywhere}
+.engineering-tasks strong{font-size:.82rem}
+.engineering-tasks small{font-size:.73rem;color:#b2c8d1;margin-top:.18rem}
+.engineering-workspace .hint{overflow-wrap:anywhere}
+.wb-agent-identities{padding:.65rem 0;border-top:1px solid #36485a}
+.wb-agent-identities details{padding:.42rem .45rem;margin:.35rem 0;border:1px solid #304757;
+  border-radius:7px}
+.wb-agent-identities summary{font-size:.76rem;font-weight:650;cursor:pointer}
+.wb-agent-identities p{font-size:.71rem;line-height:1.45;margin:.4rem 0;overflow-wrap:anywhere}
