@@ -95,9 +95,9 @@ UX-1 does not add React Router, deep links, a unified event store, automated bro
 
 ## UX-2 Project Journey accordion (implemented)
 
-The Engineering Studio now presents five independently status-aware stages:
-Product Discovery, Specification, Solution Architecture, Source Generation, and
-Artifacts & Delivery. Exactly one stage body is visible. Switching stages
+The Engineering Studio now presents six independently status-aware stages:
+Product Discovery, Specification, Solution Architecture, Implementation Plan,
+Source Generation, and Artifacts & Delivery. Exactly one stage body is visible. Switching stages
 uses persistent mounted components, rather than unmounting local interview
 drafts, Architecture choice forms, or draft-generation polling. Every header
 is a keyboard-focusable button with aria-expanded and a stable labelled
@@ -145,3 +145,34 @@ plans, run intents and execution event history, atomically with SQLite FK checks
 enabled. Other projects are untouched. Active generation or execution blocks
 deletion with a conflict until cancelled/completed. The UI clears a deleted
 project selection but does not delete any workspace directory or Git repository.
+
+## UX-2 follow-up — focused Product Owner workroom and interactive stage rail
+
+The current saved Product Owner message is presented as a focused question
+above the existing radio/checkbox/free-text composer. Previous persisted
+assistant/owner turns are retained in an accessible, expandable history with
+a bounded independent scroll region. No messages are summarized, truncated,
+modified or fabricated. The current model, 12-answer maximum, owner control,
+snapshot sequence and specification approval continue unchanged.
+
+Each of the six actual journey stages now has a keyboard-accessible progress
+tile that opens the corresponding existing accordion panel and scrolls to its
+header. Direct selection never collapses an already-open stage and takes
+priority over background status refresh. Original accordion buttons can still
+be used to deliberately collapse a stage. Stage indicators reflect only
+persisted state; they do not estimate model progress.
+
+Regression coverage includes model-free React render/escaping checks and
+genuine Playwright/Chromium browser interactions (UX-2 fixture):
+- Reading the current question and expanding a long, independently scrolling
+  saved transcript.
+- Navigating between Specification and Discovery with keyboard and mouse.
+- Preserving unsent multiple-choice selections and Something else text across
+  a stage change, then exercising the composer submission callback.
+- Accessible panel association and navigation state across all six stages.
+
+These browser tests mount the actual React UI components against controlled
+fixtures. They do not replace owner live-model acceptance, exercise the
+authenticated .NET backend, or claim generated source is tested. The CI
+workflow runs real browser checks on Ubuntu, and existing frontend/HTTP/SQLite
+checks on both Ubuntu and Windows.

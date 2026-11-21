@@ -53,6 +53,14 @@ jobs:
           npm install --no-audit --no-fund
           npm run test:workbench
           npm run build
+      # UX-2: actual headless browser input/focus/scroll assertions.
+      # Run on Linux to avoid redundant browser downloads in the OS matrix.
+      - name: Browser-level Mission Control UX-2 interactions (no model)
+        if: runner.os == 'Linux'
+        working-directory: src/CodingAssistant.Web
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:browser
       - name: Install .NET 10 SDK for local control-plane checks
         uses: actions/setup-dotnet@v4
         with:
