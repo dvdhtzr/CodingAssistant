@@ -251,6 +251,12 @@ public sealed class TaskStore
             """, ("@id", id));
         if (runningDraft is not null)
             throw new StoreFailure("BUILD_BUSY");
+        var runningQa = Scalar(db, tx, """
+            SELECT 1 FROM qa_reviews WHERE task_id=@id AND state='Running'
+            LIMIT 1
+            """, ("@id", id));
+        if (runningQa is not null)
+            throw new StoreFailure("BUILD_BUSY");
         var runningEngineering = Scalar(db, tx, """
             SELECT 1 FROM engineering_runs
             WHERE task_id=@id AND state='Running' LIMIT 1
@@ -281,6 +287,9 @@ public sealed class TaskStore
             "DELETE FROM run_intents WHERE task_id=@id",
             "DELETE FROM plans WHERE task_id=@id",
             "DELETE FROM html_artifacts WHERE task_id=@id",
+            "DELETE FROM qa_review_files WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
+            "DELETE FROM qa_review_events WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
+            "DELETE FROM qa_reviews WHERE task_id=@id",
             "DELETE FROM engineering_run_files WHERE run_id IN (SELECT id FROM engineering_runs WHERE task_id=@id)",
             "DELETE FROM engineering_run_events WHERE run_id IN (SELECT id FROM engineering_runs WHERE task_id=@id)",
             "DELETE FROM engineering_run_tasks WHERE run_id IN (SELECT id FROM engineering_runs WHERE task_id=@id)",
