@@ -687,3 +687,114 @@ a { color: #91e2d8; }
 @media (max-width: 620px) {
   .wb-projects { max-height: 255px; overflow-y: auto; }
 }
+
+
+/* Product Owner: adaptive answer recommendations, never a locked questionnaire. */
+.interview-answer-composer {
+  display: grid;
+  gap: .8rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  min-width: 0;
+}
+.interview-choice-fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.interview-choice-fieldset legend {
+  width: 100%;
+  margin: 0 0 .7rem;
+  padding: 0;
+  color: #d9e9eb;
+  font-size: .85rem;
+  font-weight: 700;
+}
+.interview-choice-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: .55rem;
+}
+.interview-choice-option {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+  min-width: 0;
+  padding: .78rem .8rem;
+  margin: 0;
+  background: #101f29;
+  color: #c9dbe0;
+  border: 1px solid #385560;
+  border-radius: 9px;
+  cursor: pointer;
+  line-height: 1.35;
+  font-size: .82rem;
+  overflow-wrap: anywhere;
+  transition: background-color .15s, border-color .15s;
+}
+.interview-choice-option:hover, .interview-choice-option:focus-within {
+  border-color: #78bfb6;
+  background: #1b363c;
+}
+.interview-choice-option.interview-choice-selected {
+  background: #1b3c3b;
+  border-color: #76c3b4;
+  box-shadow: inset 0 0 0 1px #76c3b441;
+}
+.interview-choice-option input {
+  flex: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #79d6c2;
+}
+.interview-choice-letter {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 6px;
+  background: #1b3540;
+  font: 700 .68rem ui-monospace, Consolas, monospace;
+  color: #a8ced3;
+}
+.interview-choice-selected .interview-choice-letter {
+  background: #38645a;
+  color: #f0fff8;
+}
+.interview-other-label, .interview-freeform-label {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  font-weight: 660;
+  font-size: .83rem;
+  color: #d3e6e6;
+}
+.interview-other-label small {
+  color: #94aab4;
+  font-weight: 400;
+}
+.interview-other-label input {
+  display: block;
+  margin-top: .5rem;
+  font-weight: 450;
+}
+.interview-composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .7rem;
+  flex-wrap: wrap;
+}
+.interview-composer-hint {
+  color: #96b7bc;
+  font-size: .7rem;
+  line-height: 1.4;
+  max-width: 420px;
+}
+.interview-composer-footer .primary { margin-left: auto; font-size: .82rem; }
+@media(max-width: 680px) {
+  .interview-choice-options { grid-template-columns: 1fr; }
+}

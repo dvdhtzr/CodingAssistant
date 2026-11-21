@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProjectDraftPanel } from './ProjectDraftPanel';
+import { InterviewAnswerComposer, type InterviewChoice } from './InterviewAnswerComposer';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { TechnicalLeadStudio } from './TechnicalLeadStudio';
 import { api, type TaskItem } from './api';
@@ -11,6 +12,7 @@ interface InterviewMessage {
   role: 'owner' | 'assistant';
   content: string;
   createdUtc: string;
+  choice?: InterviewChoice | null;
 }
 interface InterviewSpecification {
   version: number;
@@ -41,7 +43,6 @@ export function InterviewStudio({ token, task }: {
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState('');
   const [modelRefresh, setModelRefresh] = useState(0);
-  const [answer, setAnswer] = useState('');
   const [busy, setBusy] = useState<InterviewBusy>('');
   const [error, setError] = useState('');
   const [approveChecked, setApproveChecked] = useState(false);
@@ -85,7 +86,6 @@ export function InterviewStudio({ token, task }: {
     let cancelled = false;
     setSnapshot(null);
     setError('');
-    setAnswer('');
     setApproveChecked(false);
     setChosenModel('');
     void api<InterviewSnapshot>(token, `/api/tasks/${task.id}/interview`)
@@ -142,7 +142,6 @@ export function InterviewStudio({ token, task }: {
       const updated = await work();
       setSnapshot(updated);
       setApproveChecked(false);
-      if (operation === 'answer') setAnswer('');
       if (operation === 'approve') {
         manuallySelected.current = true;
         // Honor a deliberate collapse while the approval request was in flight.
@@ -273,24 +272,16 @@ export function InterviewStudio({ token, task }: {
             ? ' The Product Owner believes there is enough information to draft a specification.'
             : ' Continue discussing requirements, or draft a first specification when you are ready.'}
         </p>
-        {ownerAnswers < 12 && <form onSubmit={event => {
-          event.preventDefault();
-          void submit('answer', () => api<InterviewSnapshot>(
+        {ownerAnswers < 12 && <InterviewAnswerComposer
+          key={snapshot.lastSequence}
+          choice={snapshot.messages[snapshot.messages.length - 1]?.choice ?? null}
+          busy={!!busy}
+          onAnswer={message => void submit('answer', () => api<InterviewSnapshot>(
             token, `/api/tasks/${task.id}/interview/turn`, {
               expectedSequence: snapshot.lastSequence,
-              message: answer,
+              message,
               model: snapshot.model,
-            }));
-        }}>
-          <label>Your answer or additional requirements
-            <textarea value={answer} maxLength={2400} required
-              onChange={event => setAnswer(event.target.value)}
-              placeholder="Describe what matters, or ask the Product Owner to explain a choice…" />
-          </label>
-          <button className="primary" disabled={!!busy || !answer.trim()}>
-            Send answer
-          </button>
-        </form>}
+            }))} />}
       </>}
 
     </>}

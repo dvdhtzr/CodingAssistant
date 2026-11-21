@@ -228,6 +228,21 @@ if (OperatingSystem.IsWindows())
           !structured.ReadyForSpecification,
           "schema-constrained interview response is parsed");
 
+    var guided = LocalInterviewModel.ParseInterviewReply(
+        """{"message":"Which users need this?","readyForSpecification":false,"choice":{"kind":"single","options":["Personal use","Small teams","Public users"]}}""");
+    Check(guided.Choice?.Kind == "single" &&
+          guided.Choice.Options.SequenceEqual(new[] {
+              "Personal use", "Small teams", "Public users" }),
+          "valid single-choice suggestions are parsed without changing the question");
+    var multiple = LocalInterviewModel.ParseInterviewReply(
+        """{"message":"Which features matter most?","readyForSpecification":false,"choice":{"kind":"multiple","options":["Search","Export","Offline mode"]}}""");
+    Check(multiple.Choice?.Kind == "multiple" && multiple.Choice.Options.Count == 3,
+          "valid multi-choice suggestions are parsed");
+    var invalidChoice = LocalInterviewModel.ParseInterviewReply(
+        """{"message":"Which option suits you?","readyForSpecification":false,"choice":{"kind":"multiple","options":["Same","same"]}}""");
+    Check(invalidChoice.Choice is null &&
+          invalidChoice.Message == "Which option suits you?",
+          "invalid optional choices fall back to a useful text question");
     var ready = LocalInterviewModel.ParseInterviewReply(
         "```json\n" +
         """{"message":"I can draft your specification now.","readyForSpecification":true}""" +
@@ -1389,8 +1404,13 @@ try
                   json.RootElement.GetProperty("lastSequence").GetInt32() == 1 &&
                   json.RootElement.GetProperty("messages")[0]
                     .GetProperty("content").GetString()!
-                    .Contains("budgets", StringComparison.OrdinalIgnoreCase),
-                "first dynamic interview question is persisted");
+                    .Contains("budgets", StringComparison.OrdinalIgnoreCase) &&
+                  json.RootElement.GetProperty("messages")[0]
+                    .GetProperty("choice").GetProperty("kind").GetString() == "single" &&
+                  json.RootElement.GetProperty("messages")[0]
+                    .GetProperty("choice").GetProperty("options")
+                    .GetArrayLength() == 3,
+                "first dynamic interview choice is persisted with its question");
         }
         using (var noAnswersSpec = await Post(interviewClient,
             $"/api/tasks/{id}/interview/specification", new {
@@ -1405,8 +1425,10 @@ try
             }))
         using (var json = await ReadJson(answer))
             Check(answer.StatusCode == HttpStatusCode.OK &&
-                  json.RootElement.GetProperty("lastSequence").GetInt32() == 3,
-                "second context-aware question and answer persisted atomically");
+                  json.RootElement.GetProperty("lastSequence").GetInt32() == 3 &&
+                  json.RootElement.GetProperty("messages")[2]
+                    .GetProperty("choice").GetProperty("kind").GetString() == "multiple",
+                "second context-aware multi-select question and answer persist atomically");
         using (var stale = await Post(interviewClient,
             $"/api/tasks/{id}/interview/turn", new {
                 expectedSequence = 1,
@@ -2030,7 +2052,7 @@ try
             using var rows = integrity.ExecuteReader();
             Check(!rows.Read(), "deleting projects leaves all SQLite foreign keys valid");
             foreach (var table in new[] {
-                "interview_sessions", "interview_messages", "interview_specs",
+                "interview_sessions", "interview_messages", "interview_message_choices", "interview_specs",
                 "architecture_decisions", "project_drafts",
                 "task_builds",
             })
@@ -2212,7 +2234,15 @@ sealed class SmokeInterviewModel : IInterviewModel
                  "editing features are essential?",
             _ => "I have enough detail to draft your finance specification."
         };
-        return Task.FromResult(new InterviewReply(message, answerCount >= 2));
+        var choice = answerCount switch
+        {
+            0 => new InterviewChoice("single",
+                ["Personal use", "Small team", "Public product"]),
+            1 => new InterviewChoice("multiple",
+                ["Edit budgets", "Import transactions", "Export reports"]),
+            _ => null
+        };
+        return Task.FromResult(new InterviewReply(message, answerCount >= 2, choice));
     }
 
     public Task<string> DraftAsync(
