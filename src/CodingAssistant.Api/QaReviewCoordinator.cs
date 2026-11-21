@@ -4,7 +4,9 @@ namespace CodingAssistant.Api;
 
 /// <summary>
 /// Human-initiated QA starts only after the independent MAF Software Engineer
-/// has produced a completed, plan-bound source run. Reviews one saved file per
+/// has produced a terminal, plan-bound source run with at least one saved
+/// source file. Even failed or interrupted submissions can be assessed as
+/// incomplete source; running jobs are excluded. Reviews one saved file per
 /// real QA MAF agent call, writes evidence transactionally and never executes
 /// source code, builds, tests or external tools.
 /// </summary>
@@ -22,7 +24,8 @@ public sealed class QaReviewCoordinator(
             string.IsNullOrWhiteSpace(request.PlanSha256))
             throw new StoreFailure("INVALID_INPUT");
         var source = engineering.Get(taskId, request.EngineeringRunId);
-        if (source.Job.State != "Generated")
+        if (!QaReviewStore.IsReviewableSource(
+                source.Job.State, source.Files.Count))
             throw new StoreFailure("BUILD_NOT_COMPLETE");
         var plan = plans.Read(taskId).Plan;
         if (plan is null || !plan.Current || plan.Status != "Approved" ||

@@ -18,7 +18,7 @@ public sealed record QaReviewEvent(
     int Sequence, string Kind, string Detail, string CreatedUtc);
 public sealed record QaReviewSnapshot(
     QaReviewRun Job, IReadOnlyList<QaFileReport> Reports,
-    IReadOnlyList<QaReviewEvent> Events);
+    IReadOnlyList<QaReviewEvent> Events, string SourceState);
 
 /// <summary>
 /// Evidence ledger for *static* QA source inspection. Review admission,
@@ -30,6 +30,11 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
 {
     private static readonly Regex Id = new("^[0-9a-f]{32}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    // Failed and interrupted engineer jobs have immutable, inspectable
+    // saved files; running jobs do not. QA must never imply source completion.
+    public static bool IsReviewableSource(string state, int fileCount) =>
+        fileCount > 0 && (state is "Generated" or "Failed" or "Interrupted");
     private static void ValidateId(string? id)
     {
         if (id is null || !Id.IsMatch(id))
@@ -160,7 +165,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 reader.IsDBNull(10) ? null : reader.GetString(10),
                 reader.GetString(11), reader.GetString(12));
         }
-        if (source.State != "Generated")
+        if (source.State is not ("Generated" or "Failed" or "Interrupted"))
             throw new StoreFailure("BUILD_NOT_COMPLETE");
         var latestSource = TaskStore.Scalar(db, tx, """
             SELECT id FROM engineering_runs WHERE task_id=@task
@@ -199,7 +204,8 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         EngineeringRunSnapshot source, ImplementationPlan plan)
     {
         ValidateId(taskId);
-        if (source.Job.TaskId != taskId || source.Job.State != "Generated")
+        if (source.Job.TaskId != taskId ||
+            !IsReviewableSource(source.Job.State, source.Files.Count))
             throw new StoreFailure("BUILD_NOT_COMPLETE");
         if (plan.TaskId != taskId || plan.Status != "Approved" || !plan.Current ||
             source.Job.PlanSha256 != plan.PlanSha256 ||
@@ -239,7 +245,10 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             throw new StoreFailure("BUILD_BUSY");
         }
         Event(db, tx, review.Id, "QaReviewAdmitted",
-            "Independent QA static source review requested; no tests executed");
+            source.Job.State == "Generated"
+                ? "Independent static QA of generated source; no tests executed"
+                : "Independent static QA of PARTIAL " + source.Job.State +
+                  " source; incomplete project, no tests executed");
         tx.Commit();
         return review;
     }
@@ -286,8 +295,11 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             while (reader.Read())
                 events.Add(new QaReviewEvent(reader.GetInt32(0),
                     reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        var sourceState = TaskStore.Scalar(db, null, """
+            SELECT state FROM engineering_runs WHERE id=@id AND task_id=@task
+            """, ("@id", review.EngineeringRunId), ("@task", taskId));
         return new QaReviewSnapshot(review, reports.AsReadOnly(),
-            events.AsReadOnly());
+            events.AsReadOnly(), sourceState ?? "Unavailable");
     }
 
     public void SaveFileReport(string taskId, string reviewId,
@@ -366,10 +378,15 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             ("@state", success ? "Reviewed" : "Failed"),
             ("@phase", success ? "StaticReviewOnly" : "Failed"),
             ("@error", (object?)code ?? DBNull.Value), ("@now", now));
+        var sourceState = TaskStore.Scalar(db, tx, """
+            SELECT state FROM engineering_runs WHERE id=@id
+            """, ("@id", job.EngineeringRunId));
         Event(db, tx, reviewId,
             success ? "QaReviewCompleted" : "QaReviewFailed",
             success
-                ? "All files statically reviewed; no tests were executed"
+                ? sourceState == "Generated"
+                    ? "All generated files statically reviewed; no tests executed"
+                    : "Saved PARTIAL source statically reviewed; project incomplete, no tests executed"
                 : "Independent source review stopped safely: " +
                     (code ?? "REVIEW_FAILED"));
         tx.Commit();

@@ -470,7 +470,8 @@ public sealed class EngineeringRunStore(
     public byte[] Zip(string taskId, string runId)
     {
         var result = Get(taskId, runId);
-        if (result.Job.State != "Generated" || result.Files.Count == 0)
+        if (!QaReviewStore.IsReviewableSource(
+                result.Job.State, result.Files.Count))
             throw new StoreFailure("BUILD_NOT_COMPLETE");
         using var output = new MemoryStream();
         using (var archive = new ZipArchive(output, ZipArchiveMode.Create, true))

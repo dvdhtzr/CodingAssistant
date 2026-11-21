@@ -8,12 +8,16 @@ repair generated applications, and cannot certify PASS.
 
 1. The owner-approved Product Owner specification, both Solution Architect
    decisions, and Technical Lead implementation plan remain authoritative.
-2. The fourth MAF Software Engineer produces a **Generated** source-only run.
-   QA cannot start while the Software Engineer is `Running`, `Failed`,
-   `Interrupted` or has no completed files.
+2. The fourth MAF Software Engineer produces a terminal source-only run.
+   QA can start on **Generated** source, or explicitly review saved partial
+   files from a **Failed** or **Interrupted** run. A `Running` run is
+   forbidden even when it has already saved files; zero-file runs are also
+   forbidden. Failed/interrupted artifacts remain incomplete and unverified.
 3. The owner explicitly selects **Ask QA Engineer to inspect generated source**
-   in Artifacts & Delivery. Nothing starts automatically and the previous
-   source generator remains untouched.
+   (or **Ask QA to inspect partial source**) in Artifacts & Delivery.
+   Nothing starts automatically and the previous source generator remains
+   untouched. Failed/interrupted engineering source is also available in
+   a distinctly labeled **PARTIAL** ZIP.
 4. The fifth independent MAF `ChatClientAgent` (`QaEngineer`) gets
    the approved product requirements, architecture, acceptance criteria,
    names/hashes of all source files, and the **complete content of ONE
@@ -64,7 +68,8 @@ completion events. These records are read-only to other agents and are
 deleted transactionally with the project after active work stops.
 
 Every admission, per-file report and successful review completion rechecks
-within SQLite: source run is truly `Generated`, approved specification and
+within SQLite: source run is terminal (`Generated`, `Failed`, or
+`Interrupted`) with at least one immutable saved file, approved specification and
 architecture are current, latest Technical Lead plan is still approved,
 and the source file digest still matches the original submission.
 Changes do NOT silently inherit QA approval or mark old reports current.
@@ -86,9 +91,13 @@ typed `IQaSourceReviewer` to prove:
 - prior engineering/generator/UX regression suites remain green
   on Windows and Linux.
 
-**Owner acceptance after FlowBoard finishes:** restart the updated app,
-open FlowBoard under Artifacts & Delivery, inspect the Engineering ZIP,
-then ask QA to review. It will report static source concerns and manual
+**Owner acceptance after FlowBoard stops:** restart the updated app,
+open FlowBoard under Artifacts & Delivery. If the Software Engineer failed
+after saving source, inspect its failure category and the partial ZIP, then
+select **Ask QA to inspect partial source**. The resulting report explicitly
+states **Failed / partial source** and never implies the planned application
+was completed. Completed runs retain the regular QA workflow.
+QA will report static source concerns and manual
 checks; the number of issues depends on the model and source. The next
 qualified QA increment must execute generated applications in an isolated,
 no-network runtime and capture real build/test/browser results, followed
