@@ -281,7 +281,7 @@ export function InterviewStudio({ token, task }: {
               expectedSequence: snapshot.lastSequence,
               message,
               model: snapshot.model,
-            }))} />}}
+            }))} />}
       </>}
 
     </>}
