@@ -162,3 +162,25 @@ turns, or model connectivity. Product M1 still needs exact
 plan-version/hash approval, model network segregation, durable run
 state/crash recovery, and independent Windows acceptance. M1 stays
 **YELLOW** until those gates pass.
+
+
+## M4.2 — Windows Docker Desktop fixed-fixture security candidate
+
+The owner-selected Windows-first path uses a separate, explicit fixed-fixture
+Docker Desktop qualification. The implementation is described in
+[Windows Docker fixed-fixture qualification](WINDOWS_DOCKER_FIXED_FIXTURE_QUALIFICATION.md).
+It does NOT enable execution of model-generated source.
+
+The guest is a locally cached, immutable-image-ID, nonroot, no-network,
+no-host-mount, read-only-root Docker Desktop Linux container with bounded
+resources and no container-engine socket. It checks Chromium on trusted
+reference/negative fixtures, Node syntax, process/system boundaries, secrets,
+network and Git escapes. The host saves bounded Boolean observations and
+requires independently confirmed guest removal. Failure must block.
+
+Important: Chromium uses --no-sandbox **for fixed trusted smoke fixtures**.
+A passing result never qualifies untrusted websites, actual task-source
+execution, the Static Web registry, or a VERIFIED build. Integrated #76
+and task-contract #92 reviews remain mandatory, as does independent #111
+browser verification and repair admission. A green model-free Windows
+GitHub Actions job is NOT real Docker Desktop host evidence.
