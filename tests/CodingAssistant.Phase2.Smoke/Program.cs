@@ -1405,3 +1405,79 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
         public void Dispose() { }
     }
 }
+
+sealed class Phase5QaModel : IQaSourceReviewer
+{
+    public List<string> ReviewedFiles { get; } = [];
+
+    public Task<QaFileAssessment> ReviewAsync(
+        QaReviewInput input, CancellationToken cancellation)
+    {
+        if (input.SourceRun.State != "Generated" ||
+            input.Plan.Status != "Approved" || !input.Plan.Current ||
+            input.Plan.PlanSha256 != input.SourceRun.PlanSha256 ||
+            input.Plan.Model != "qwen3.5:4b" ||
+            !input.Architecture.ReadyForSourceGeneration ||
+            input.Architecture.ArchitectureSha256 != input.Plan.ArchitectureSha256 ||
+            input.AllFiles.Count != 2 ||
+            !input.AllFiles.Any(f => f.Path == input.File.Path &&
+                f.Sha256 == input.File.Sha256))
+            throw new Exception("Independent QA received wrong source or stale approval");
+        ReviewedFiles.Add(input.File.Path);
+        return Task.FromResult(input.File.Path == "app.js"
+            ? new QaFileAssessment(
+                "The timer code registers a button listener but lacks a persistent timer.",
+                [new QaFinding("Major", "Start advances timer state",
+                    "The handler logs start but does not update a visible timer.",
+                    "Implement timer state and check it with a real browser")],
+                ["Click Start and observe the timer after several seconds"])
+            : new QaFileAssessment(
+                "The HTML source references a script and a clickable button.",
+                [],
+                ["Load index.html offline and verify the script is linked"]));
+    }
+}
+
+sealed class Phase5FakeMafFactory : IMafChatClientFactory
+{
+    public List<MafAgentPurpose> Purposes { get; } = [];
+    public List<string> Models { get; } = [];
+    public bool QaRoleSeen { get; private set; }
+    public bool SourceSeen { get; private set; }
+    public bool NoTools { get; private set; }
+
+    public IChatClient Create(string model, MafAgentPurpose purpose)
+    {
+        Models.Add(model);
+        Purposes.Add(purpose);
+        return new Fake(this);
+    }
+
+    private sealed class Fake(Phase5FakeMafFactory parent) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var history = messages.ToArray();
+            parent.QaRoleSeen =
+                (options?.Instructions?.Contains("Professional backstory:",
+                    StringComparison.Ordinal) ?? false) &&
+                (options?.Instructions?.Contains("independent QA Engineer",
+                    StringComparison.Ordinal) ?? false);
+            parent.SourceSeen = history.Any(m => m.Role.Value == "user" &&
+                m.Text?.Contains("<html><body><button>Save",
+                    StringComparison.Ordinal) == true);
+            parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
+            return Task.FromResult(new ChatResponse(new ChatMessage(
+                ChatRole.Assistant,
+                """{"summary":"The static source exposes an interactive control but its behavior is unknown.","findings":[{"severity":"Minor","requirement":"The Save button must work","evidence":"A button is declared but no listener is present in this source","recommendation":"Inspect linked scripts and test saving notes in a browser"}],"manualChecks":["Click Save and reload the page in a real browser"]}""")));
+        }
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("QA only allows bounded nonstreaming turns.");
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+}
