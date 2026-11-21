@@ -77,7 +77,11 @@ public static class ApiHost
         interviews.Initialize();
         var architectureDecisions = new ArchitectureDecisionStore(store);
         architectureDecisions.Initialize();
-        var interviewModel = interviewModelOverride ?? new LocalInterviewModel();
+        // Phase 3: real Microsoft Agent Framework agents by default.
+        // Test overrides remain explicit; no cloud or executable tool fallback.
+        var mafTeam = new MafAgentTeam();
+        var interviewModel = interviewModelOverride ?? mafTeam;
+        var architectModel = architectureAdvisorOverride ?? mafTeam;
         var catalog = catalogOverride ?? new LocalOllamaModelCatalog();
         var projectDrafts = new ProjectDraftStore(store);
         projectDrafts.Initialize();
@@ -135,8 +139,7 @@ public static class ApiHost
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(architectureDecisions);
-        builder.Services.AddSingleton<IArchitectureAdvisor>(
-            architectureAdvisorOverride ?? new LocalArchitectureAdvisor());
+        builder.Services.AddSingleton<IArchitectureAdvisor>(architectModel);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton<IOllamaModelCatalog>(catalog);
         builder.Services.AddSingleton(projectDrafts);
