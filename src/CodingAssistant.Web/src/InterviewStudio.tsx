@@ -3,7 +3,7 @@ import { ProjectDraftPanel } from './ProjectDraftPanel';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { api, type TaskItem } from './api';
 import { JourneyStage, JourneyStatusStrip, journeySteps, restoreJourneyStage,
-  type JourneyId, type JourneyStep } from './ProjectJourney';
+  toggleJourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
 
 interface InterviewMessage {
   sequence: number;
@@ -53,7 +53,7 @@ export function InterviewStudio({ token, task }: {
 
   const openStage = useCallback((id: JourneyId) => {
     manuallySelected.current = true;
-    setExpanded(current => current === id ? null : id);
+    setExpanded(current => toggleJourneyStage(current, id));
   }, []);
   const reportArchitecture = useCallback((step: JourneyStep) => {
     setArchitectureStep(previous => previous.tone === step.tone &&
