@@ -1,4 +1,4 @@
-// M4.2: TRUSTRD, FIXED Windows Docker Desktop qualification guest.
+// M4.2: TRUSTED, FIXED Windows Docker Desktop qualification guest.
 // NOT a general evaluator, NOT a model-supplied script, NOT an execution API.
 // Uses only Node standard library plus Chromium already cached in an
 // independently reviewed Playwright container image. No external downloads.
@@ -131,7 +131,7 @@ export async function fixedFixtureChecks() {
   const executable = browserExecutable();
   checks.chromium_working_fixture_executed = runBrowserCase(executable, true);
   checks.chromium_broken_fixture_stayed_inert = runBrowserCase(executable, false);
-  checks.non_root_user = process.getuid?.() !== 0;
+  checks.non_root_user = typeof process.getuid === 'function' && process.getuid() !== 0;
   checks.system_write_denied =
     denied(() => fs.writeFileSync('/etc/ca-m4-write', 'BAD'));
   fs.symlinkSync('/etc/passwd', '/tmp/ca-m4-escape');
