@@ -60,3 +60,19 @@
 .wb-diagnostic-heading p{margin:0}
 @media(max-width:1100px){.wb-layout{grid-template-columns:205px minmax(0,1fr)}.wb-inspector{display:none}}
 @media(max-width:760px){.wb-layout{display:block}.wb-sidebar{border-right:0;border-bottom:1px solid #2c3c4d}.wb-navigation{margin:.7rem 0;display:flex;flex-wrap:wrap;gap:.25rem}.wb-nav-item{width:auto;flex:1 1 auto;font-size:.82rem}.wb-projects,.wb-team{display:none}.wb-main{padding:.85rem}.wb-status-grid{grid-template-columns:1fr}.wb-header{padding:.85rem 1rem}.wb-header .actions{gap:.3rem}.wb-header .pill{display:none}.wb-header h1{font-size:1.03rem}}
+
+/* Each saved project is independently selectable and destructively actionable. */
+.wb-project-entry{min-width:0}
+.wb-project-entry-row{display:flex;align-items:center;gap:.15rem}
+.wb-project-entry .wb-project-link{flex:1;min-width:0;margin:.15rem 0}
+.wb-project-delete{flex:none;display:grid;place-items:center;width:31px;height:31px;
+  border:1px solid transparent;background:transparent;color:#c3a2a8;
+  padding:0;border-radius:7px;font-size:1.35rem;line-height:1}
+.wb-project-delete:hover:not(:disabled),.wb-project-delete[aria-expanded="true"]{
+  background:#4a2d36;color:#ffcad1;border-color:#875661}
+.wb-delete-confirm{margin:.35rem .1rem .75rem;padding:.8rem;background:#281e2a;
+  border:1px solid #955d6a;border-radius:9px}
+.wb-delete-confirm strong{display:block;color:#ffe2e6;font-size:.79rem;overflow-wrap:anywhere}
+.wb-delete-confirm p{font-size:.73rem;line-height:1.5;color:#f0bac5}
+.wb-delete-actions{display:flex;gap:.35rem;flex-wrap:wrap}
+.wb-delete-actions button{font-size:.73rem;padding:.45rem .55rem}
