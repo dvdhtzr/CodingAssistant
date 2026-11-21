@@ -395,10 +395,15 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         ValidateId(taskId);
         var current = plans.Read(taskId).Plan;
         using var db = tasks.Open();
+        var latestSource = TaskStore.Scalar(db, null, """
+            SELECT id FROM engineering_runs WHERE task_id=@task
+            ORDER BY created_utc DESC,id DESC LIMIT 1
+            """, ("@task", taskId));
         var events = new List<MafHandoffEvent>();
         using var cmd = TaskStore.Command(db, null, """
             SELECT plan_revision,plan_sha256,spec_version,spec_sha256,
-                architecture_sha256,model,created_utc,updated_utc,state
+                architecture_sha256,model,created_utc,updated_utc,state,
+                engineering_run_id
             FROM qa_reviews WHERE task_id=@task ORDER BY created_utc
             """, ("@task", taskId));
         using var reader = cmd.ExecuteReader();
@@ -406,7 +411,8 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         {
             var sha = reader.GetString(1);
             var bound = current?.Current == true &&
-                current.Status == "Approved" && current.PlanSha256 == sha;
+                current.Status == "Approved" && current.PlanSha256 == sha &&
+                reader.GetString(9) == latestSource;
             var source = new MafHandoffEvent(taskId, "QaReviewRequested",
                 "HumanOwner", "QaEngineer", reader.GetInt32(2),
                 reader.GetString(3), reader.GetInt32(0),
