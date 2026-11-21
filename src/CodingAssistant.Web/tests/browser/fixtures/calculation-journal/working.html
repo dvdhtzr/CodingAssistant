@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Calculation Journal — trusted reference fixture</title>
+<style>
+  body { font-family:system-ui,sans-serif; max-width:440px; margin:2rem auto; padding:1rem; }
+  output { display:block; font-size:2.5rem; text-align:right; min-height:3rem;
+    border:1px solid #889; border-radius:8px; padding:.5rem; overflow-wrap:anywhere; }
+  #previous { min-height:1.5rem; text-align:right; color:#596477; }
+  .keys { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:.5rem; margin-top:.75rem; }
+  button { cursor:pointer; min-height:2.7rem; border-radius:6px; border:1px solid #657; }
+  #history { margin-top:1rem; } #history button { width:100%; text-align:left; }
+</style>
+</head>
+<body>
+<main>
+<h1>Calculation Journal (trusted reference)</h1>
+<p id="previous"></p>
+<output id="display" aria-label="Result">0</output>
+<div class="keys" aria-label="Calculator keys">
+<button type="button" data-number="7">7</button>
+<button type="button" data-number="8">8</button>
+<button type="button" data-number="9">9</button>
+<button type="button" data-operation="÷" aria-label="Divide">÷</button>
+<button type="button" data-number="4">4</button>
+<button type="button" data-number="5">5</button>
+<button type="button" data-number="6">6</button>
+<button type="button" data-operation="×" aria-label="Multiply">×</button>
+<button type="button" data-number="1">1</button>
+<button type="button" data-number="2">2</button>
+<button type="button" data-number="3">3</button>
+<button type="button" data-operation="−" aria-label="Subtract">−</button>
+<button type="button" data-number="0">0</button>
+<button type="button" data-action="decimal" aria-label="Decimal">.</button>
+<button type="button" data-action="equals" aria-label="Equals">=</button>
+<button type="button" data-operation="+" aria-label="Add">+</button>
+<button type="button" data-action="clear" aria-label="Clear">C</button>
+<button type="button" data-action="backspace" aria-label="Backspace">⌫</button>
+<button type="button" data-action="back" aria-label="Back recall">Back</button>
+<button type="button" data-action="history" aria-label="History">History</button>
+</div>
+<section id="history" aria-label="Calculation history" hidden>
+<h2>History</h2>
+<ol id="history-list"></ol>
+</section>
+</main>
+<script src="./working.js" defer></script>
+</body>
+</html>
