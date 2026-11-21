@@ -77,7 +77,7 @@ public static class WindowsDevelopmentFrontend
         foreach (var start in new[] { Directory.GetCurrentDirectory(),
                                       AppContext.BaseDirectory })
         {
-            var ancestor = new DirectoryInfo(Path.GetFullPath(start));
+            DirectoryInfo? ancestor = new DirectoryInfo(Path.GetFullPath(start));
             for (var i = 0; ancestor is not null && i < 9; i++,
                      ancestor = ancestor.Parent)
             {
