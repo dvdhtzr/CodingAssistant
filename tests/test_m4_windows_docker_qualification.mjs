@@ -161,7 +161,7 @@ test('passing simulated Windows guest remains explicitly NOT product-qualified',
   assert.equal(mock.calls.filter(a => a[0] === 'rm').length, 1);
   assert.equal(mock.calls.filter(a => a[0] === 'ps').length, 1);
   const run = mock.calls.find(a => a[0] === 'run');
-  assert.equal(run.at(-3), '--', 'Guest entrypoint must not have extra executable calls');
+  assert.equal(run.at(-2), '--', 'Guest entrypoint must not have extra executable calls');
   assert.ok(mock.calls.every(a => !a.includes('pull')));
   assert.ok(mock.calls.every(a => !a.includes('build')));
 });
