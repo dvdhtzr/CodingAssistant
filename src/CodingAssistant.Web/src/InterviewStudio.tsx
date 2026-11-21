@@ -347,6 +347,7 @@ export function InterviewStudio({ token, task }: {
       expanded={expanded === 'architecture'} onExpand={openStage}
       onReady={architectureReady} onStageChange={reportArchitecture} />
     <TechnicalLeadStudio token={token} taskId={task.id} spec={spec ?? null}
+      architectureSignal={architectureStep.status}
       expanded={expanded === 'plan'} onExpand={openStage}
       onReady={planReady} onStageChange={reportPlan} />
     <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null}
