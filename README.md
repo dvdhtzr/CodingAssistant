@@ -21,11 +21,13 @@ the execution pin** or authorize Qwen Coder inside the agent. See
 
 ## Windows one-click launcher (Visual Studio / local Ollama)
 
-After cloning or updating `main`, **double-click `Start-CodingAssistant.cmd`** in the repository root. This is the default Windows startup path; you do not need to enter token-generation commands. The launcher builds the React UI, generates a fresh **64-character owner token**, **displays it in green in the console and copies it to your clipboard**, and runs the .NET API with autonomous code execution disabled.
+After cloning or updating `main`, **double-click `Start-CodingAssistant.cmd`** in the repository root. The launcher builds the React UI, automatically creates or reuses an owner token **encrypted for your Windows account**, copies it to the clipboard **without printing the secret**, and starts the .NET API with autonomous code execution disabled.
 
-Open `http://127.0.0.1:5098`, paste the copied token into **Owner session**, and click **Connect locally**. Stop the API with **Ctrl+C**. If an old server is already listening on port 5098, stop it before starting a new instance. The fresh token is never stored in a repository file, URL or application log.
+**Visual Studio F5 also works without token setup.** The API automatically loads that same user-protected credential if no owner token environment variable is supplied. For a new browser session when using F5, double-click **`Copy-CodingAssistant-Token.cmd`** to copy the existing token, then paste in **Owner session** at `http://127.0.0.1:5098`. The bearer is not saved in browser storage or URLs.
 
-See [Windows/Visual Studio operations](docs/OPERATIONS_VISUAL_STUDIO.md) for dependencies and troubleshooting. The Visual Studio `CodingAssistant.sln` is still the single-click solution for editing/building; for authenticated everyday running, use the Windows launcher.
+The encrypted credential lives outside Git at `%LOCALAPPDATA%\CodingAssistant\owner-token.dpapi`. Restarts reuse it. Stop the server with **Ctrl+C**, and stop an earlier server before starting another on port 5098.
+
+See [Windows/Visual Studio operations](docs/OPERATIONS_VISUAL_STUDIO.md) for detailed F5/launcher instructions and how to intentionally rotate the credential without losing project history.
 
 ## Start / restart Mission Control — one simple entry point
 

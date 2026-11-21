@@ -1,5 +1,6 @@
 # One-click Windows development launcher.
-# Never store the owner token in a file, URL, argument or source-controlled config.
+# The owner credential is encrypted for the current Windows user (DPAPI)
+# and is never stored as plaintext or emitted into logs/URLs/arguments.
 $ErrorActionPreference = 'Stop'
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $webRoot = Join-Path $repoRoot 'src\CodingAssistant.Web'
@@ -20,8 +21,8 @@ try {
         throw 'Could not find CodingAssistant.Api.csproj in this checkout.'
     }
 
-    # Do not print a brand-new token for a *different* already-running API:
-    # the browser would reject it, and that is the problem this fixes.
+    # Do not start a second server over an existing listener. A matching
+    # persistent credential cannot authorize a different server instance.
     $listeners = @(Get-NetTCPConnection -LocalPort 5098 -State Listen -ErrorAction SilentlyContinue)
     if ($listeners.Count -gt 0) {
         throw 'Port 5098 is already occupied. Stop the earlier CodingAssistant server (Ctrl+C) and relaunch.'
@@ -53,21 +54,18 @@ try {
         }
     }
 
-    # The token is fresh for *this* process only and is not saved anywhere.
-    $env:CODINGASSISTANT_OWNER_TOKEN = New-CodingAssistantOwnerToken
+    # The launcher and Visual Studio F5 now use exactly the same reusable,
+    # DPAPI CurrentUser-protected credential. Never print this secret.
+    $env:CODINGASSISTANT_OWNER_TOKEN = Get-CodingAssistantOwnerToken
     $env:CODINGASSISTANT_ENABLE_LOCAL_EXECUTION = '0'
 
     Write-Host ''
-    Write-Host '=============================================================' -ForegroundColor Cyan
-    Write-Host 'COPY THIS 64-CHARACTER OWNER TOKEN:' -ForegroundColor Yellow
-    Write-Host $env:CODINGASSISTANT_OWNER_TOKEN -ForegroundColor Green
-    Write-Host '=============================================================' -ForegroundColor Cyan
     try {
         Set-Clipboard -Value $env:CODINGASSISTANT_OWNER_TOKEN
-        Write-Host 'The token was also copied to your clipboard.' -ForegroundColor Green
+        Write-Host 'Saved Windows owner credential copied to clipboard.' -ForegroundColor Green
     }
     catch {
-        Write-Host 'Clipboard unavailable: select and copy the green token above.' -ForegroundColor Yellow
+        Write-Host 'Clipboard unavailable; double-click Copy-CodingAssistant-Token.cmd to retry.' -ForegroundColor Yellow
     }
     Write-Host ''
     Write-Host "Open $healthUrl and paste the token into Owner session." -ForegroundColor Cyan
