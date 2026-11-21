@@ -415,11 +415,24 @@ export default function App() {
         onRefresh={() => void action('refresh', async () => {
           await fetchTasks(); refreshTask();
         })}
-        onDeleteTask={async id => action('delete-task', async () => {
-          await deleteTask(token, id);
-          setTasks(previous => previous.filter(task => task.id !== id));
-          if (taskId === id) chooseTask('');
-        })} />
+        onDeleteTask={async id => {
+          setBusy('delete-task');
+          setError('');
+          try {
+            await deleteTask(token, id);
+            setTasks(previous => previous.filter(task => task.id !== id));
+            if (taskId === id) chooseTask('');
+            return true;
+          } catch (cause) {
+            const code = cause instanceof Error ? cause.message : 'Unknown error';
+            setError(code.includes('BUILD_BUSY') || code.includes('EXECUTION_BUSY')
+              ? 'This project has an active job. Stop or complete it before deletion.'
+              : 'Could not delete project: ' + code);
+            return false;
+          } finally {
+            setBusy('');
+          }
+        }} />
       <main className="stack wb-main">
         {!taskId && <section className="panel new-project-panel">
           <span className="pill">Start a project</span>
