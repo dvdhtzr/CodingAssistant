@@ -293,9 +293,22 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
             <p className="hint">Elapsed: {Math.floor(seconds / 60)}m {seconds % 60}s.
               The animation is not a model heartbeat or an invented percentage.</p>
           </>}
-          {job.errorCode && <p className="activity-warning">
-            Safe failure category: {job.errorCode}. Partial files remain visible,
-            but no result is claimed complete.</p>}
+          {job.errorCode && <div className="activity-warning" role="alert">
+            {job.errorCode === 'ARCHITECTURE_PLAN_CONFLICT' ? <>
+              <strong>Source file plan did not match the approved architecture.</strong>
+              <p>The local model proposed incompatible filenames or omitted a
+                required entry file. A single bounded correction was attempted,
+                but the plan still failed independent validation.</p>
+              <p>{result?.files.length ? 'Any partially saved files are available under Artifacts & Delivery.' :
+                'No project files were saved.'}
+                {' '}You can select <strong>Generate approved project draft</strong> again
+                without repeating the Product Owner interview or architectural approvals.</p>
+            </> : <>
+              Safe failure category: {job.errorCode}. Any partial files remain
+              available under Artifacts & Delivery; no complete or verified
+              build is claimed.
+            </>}
+          </div>}
           <p className="hint">
             Specification v{job.specificationVersion} · model {job.model} ·
             {result?.files.length ?? 0} file(s) saved.
