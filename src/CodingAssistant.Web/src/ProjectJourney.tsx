@@ -39,6 +39,12 @@ export function restoreJourneyStage(specStatus: string | null,
   return 'discovery';
 }
 
+/** Selecting the open header collapses all panels; selecting another opens only it. */
+export function toggleJourneyStage(current: JourneyId | null,
+  clicked: JourneyId): JourneyId | null {
+  return current === clicked ? null : clicked;
+}
+
 export function JourneyStage({ step, index, open, onOpen, children }: {
   step: JourneyStep;
   index: number;
