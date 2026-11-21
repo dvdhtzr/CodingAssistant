@@ -185,3 +185,12 @@ test('UX-6 renders stored source and static QA activity without invented verific
   assert.equal(await ledger.getByRole('button', { name: /Run verification/i }).count(), 0);
   assert.match(await ledger.textContent(), /historical binding/);
 });
+
+test('UX-6B source preflight exposes concrete defects without executable controls', async () => {
+  const preflight = page.getByRole('region', { name: 'Static Web source preflight' });
+  assert.equal(await preflight.isVisible(), true);
+  assert.match(await preflight.textContent(), /NO_LINKED_JAVASCRIPT/);
+  assert.match(await preflight.textContent(), /GENERATED_NOT_TESTED|not execute JavaScript/);
+  assert.equal(await preflight.getByRole('button').count(), 0);
+  assert.match(await preflight.textContent(), /runtime evaluator remains unqualified/);
+});

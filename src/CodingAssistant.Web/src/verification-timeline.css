@@ -72,3 +72,21 @@
 @media(prefers-reduced-motion:reduce) {
   .verification-chevron { transition:none; }
 }
+
+/* UX-6B read-only source preflight: never styled as a passing test. */
+.verification-preflight { margin:.9rem 0; padding:.85rem; border:1px solid #65717d;
+  border-radius:9px; background:#1d2d38; color:#cfdee7; }
+.verification-preflight-heading { display:flex; flex-wrap:wrap; align-items:center;
+  justify-content:space-between; gap:.4rem; color:#f0f4fa; }
+.verification-preflight-heading span { color:#e4bb89; font-size:.75rem; }
+.verification-preflight p { font-size:.81rem; line-height:1.5; }
+.verification-preflight code { font-size:.75rem; overflow-wrap:anywhere; }
+.verification-preflight-findings { display:grid; gap:.55rem; margin:.8rem 0; padding:0;
+  list-style:none; }
+.verification-preflight-findings li { display:grid; gap:.22rem; padding:.62rem .72rem;
+  border:1px solid #80694d; border-radius:7px; background:#292a29; }
+.verification-preflight-findings li strong { color:#f1d2a0; font-size:.8rem; }
+.verification-preflight-findings li small { color:#c7d6df; }
+.verification-preflight-findings li p { margin:0; overflow-wrap:anywhere; }
+.verification-preflight-boundary { border-top:1px solid #475a65; padding-top:.6rem;
+  color:#becfdc; }

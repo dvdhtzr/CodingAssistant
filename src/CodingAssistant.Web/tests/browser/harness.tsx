@@ -144,6 +144,13 @@ function BrowserScenario() {
         qualificationStatus: 'UNQUALIFIED', executableViaRegistry: false,
         requiredIndependentTests: ['Linked asset integrity', 'Chromium interactions'] },
       registryExecutionAvailable: false,
+      preflight: { runId: 'c'.repeat(32), sourceState: 'Generated',
+        sourceSha256: 'f'.repeat(64), status: 'POTENTIAL_ISSUES',
+        verificationStatus: 'GENERATED_NOT_TESTED',
+        htmlFileCount: 1, referencedAssets: 0, findings: [
+          { code: 'NO_LINKED_JAVASCRIPT', severity: 'Warning',
+            path: 'index.html', detail: 'Saved JavaScript not linked from HTML' },
+        ] },
     }}/>
     <SourceArtifactExplorer
       source="MAF Software Engineer"

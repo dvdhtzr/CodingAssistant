@@ -302,3 +302,35 @@ after #76/#92/#111 acceptance. Existing browser and model-free React tests
 cover chronological ordering, historical bindings, empty/failed states,
 source escaping, honest qualification labels and UI interaction. Owner
 Windows browser review remains separate from CI.
+
+## UX-6B — Deterministic Static Web source preflight (model-free)
+
+The authenticated GET
+`/api/tasks/{id}/engineering-runs/{runId}/static-web-preflight`
+reads only the exact task/run's existing saved source snapshot, subject to
+existing owner authentication. It never calls Ollama, executes scripts,
+parses with Node, starts Chromium or a container, grants scope, or writes
+records. The bounded host C# scanner checks HTML script/style references,
+relative path containment, missing linked files, comments-only inline
+scripts, missing `.js` entry links and simple literal DOM IDs/classes
+referenced from saved JavaScript. It does not parse the full JS/HTML grammars
+or validate complex/dynamically created elements; these are potential
+findings, **not test failures**.
+
+The report includes source SHA-256 (using the same stored-file fingerprint
+as static QA), run ID/state, source-check status and explicit
+`verificationStatus=GENERATED_NOT_TESTED` for *every* outcome. A
+`NO_ISSUES_DETECTED` result means only the narrow heuristics found no
+issues, **not** that a browser application works. Running/empty/non-HTML
+source has its own non-verification status; stale artifacts retain their
+original provenance. Mission Control renders the report in the existing
+Execution & Verification Timeline, including failed/partial source, and
+does not pretend Static Web runtime admission is qualified.
+
+The model-free acceptance suite includes the documented Calculation
+Journal unlinked-script/selector failure from #107, healthy linked
+HTML/CSS/JS, remote/path traversal refs, non-HTML and in-progress source,
+and authenticated task/run-scoped real HTTP checks. #76, #92 and #111 remain
+required for *actual* independent Node/Chromium execution, bounded
+repair, signed test evidence and VERIFIED artifacts. This is the static
+source preflight foundation only, not qualification of the runtime profile.

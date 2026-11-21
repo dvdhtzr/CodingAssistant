@@ -23,7 +23,20 @@ export interface VerificationQaSnapshot {
   reports: { path: string; reviewedUtc: string }[];
   events: SavedEvent[];
 }
+export interface StaticWebPreflightReport {
+  runId: string;
+  sourceState: string;
+  sourceSha256: string | null;
+  status: 'PENDING_SOURCE' | 'NO_SAVED_SOURCE' | 'BOUNDS_EXCEEDED' |
+    'NOT_STATIC_WEB' | 'POTENTIAL_ISSUES' | 'NO_ISSUES_DETECTED';
+  verificationStatus: 'GENERATED_NOT_TESTED';
+  htmlFileCount: number;
+  referencedAssets: number;
+  findings: { code: string; severity: string; path: string; detail: string }[];
+}
 export interface VerificationEvidence {
+  preflight?: StaticWebPreflightReport | null;
+  preflightError?: string | null;
   engineering: EngineerSnapshot | null;
   qa: VerificationQaSnapshot | null;
   plan: {
@@ -116,6 +129,44 @@ export function VerificationTimelineView({ evidence }: {
         <small>Only a qualified host evaluator can record VERIFIED evidence.</small>
       </article>
     </div>
+    {run && <section className="verification-preflight"
+      aria-label="Static Web source preflight">
+      <div className="verification-preflight-heading">
+        <strong>Deterministic source preflight</strong>
+        <span>Source text only · no execution</span>
+      </div>
+      {evidence.preflight ? <>
+        <p><strong>{evidence.preflight.status.replaceAll('_', ' ')}</strong>
+          {' · '}{evidence.preflight.findings.length} potential finding(s)
+          {' · '}{evidence.preflight.htmlFileCount} HTML file(s)
+          {' · '}{evidence.preflight.referencedAssets} asset reference(s)</p>
+        <p>Report bound to run <code>{evidence.preflight.runId}</code>
+          {evidence.preflight.sourceSha256 ? <>
+            {' · '}source SHA-256 <code>{evidence.preflight.sourceSha256}</code>
+          </> : null}</p>
+        {evidence.preflight.findings.length > 0 && <ol
+          className="verification-preflight-findings"
+          aria-label="Static Web source preflight findings">
+          {evidence.preflight.findings.map((finding, i) =>
+            <li key={finding.code + ':' + finding.path + ':' + i}>
+              <strong>{finding.severity}: {finding.code}</strong>
+              <small>{finding.path}</small>
+              <p>{finding.detail}</p>
+            </li>)}
+        </ol>}
+        {evidence.preflight.findings.length === 0 &&
+          evidence.preflight.status === 'NO_ISSUES_DETECTED' &&
+          <p>Only the supported static link/selector heuristics found no issues.
+            JavaScript syntax, application behavior and browser tests are NOT TESTED.</p>}
+      </> : <p>{evidence.preflightError
+        ? 'Preflight record unavailable: ' + evidence.preflightError +
+          '. No checks are inferred.'
+        : 'No final source snapshot is available for this preflight.'}</p>}
+      <p className="verification-preflight-boundary">
+        This host-owned check does not execute JavaScript, compile source, validate
+        complex/dynamic selectors, test behavior, or grant VERIFIED status.
+        The independent runtime evaluator remains unqualified.</p>
+    </section>}
     <div className="verification-qualification">
       <div><strong>Static Web runtime profile</strong>
         <span>{profile ? profile.id + ' v' + profile.version + ' · ' +
@@ -194,11 +245,28 @@ export function VerificationTimeline({ token, taskId }: {
             profiles: VerificationEvidence['profile'][] }>(token,
             '/api/runtime-profiles'),
         ]);
+        let preflight: StaticWebPreflightReport | null = null;
+        let preflightError: string | null = null;
+        const job = engineer.snapshot?.job;
+        if (job && job.state !== 'Running' && engineer.snapshot?.files.length) {
+          try {
+            preflight = await api<StaticWebPreflightReport>(token,
+              '/api/tasks/' + taskId + '/engineering-runs/' +
+              job.id + '/static-web-preflight');
+            if (preflight.runId !== job.id) {
+              preflight = null;
+              preflightError = 'run ID does not match the saved engineering run';
+            }
+          } catch {
+            preflightError = 'the server did not return a preflight report';
+          }
+        }
         if (!closed) {
           setEvidence({
             engineering: engineer.snapshot, qa: qa.snapshot, plan: plan.plan,
             profile: registry.profiles.find(item => item?.id === 'static-web') ?? null,
             registryExecutionAvailable: registry.registryExecutionAvailable,
+            preflight, preflightError,
           });
           setError('');
         }

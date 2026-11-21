@@ -123,3 +123,40 @@ test('UX-6 styles and deterministic tests are registered in normal CI', () => {
   assert.match(css, /prefers-reduced-motion/);
   assert.match(css, /verification-events/);
 });
+
+test('static preflight findings show source hash and never certify code', () => {
+  const data = fixture();
+  data.preflight = {
+    runId: 'e'.repeat(32), sourceState: 'Generated', sourceSha256: 'b'.repeat(64),
+    status: 'POTENTIAL_ISSUES', verificationStatus: 'GENERATED_NOT_TESTED',
+    htmlFileCount: 1, referencedAssets: 0,
+    findings: [
+      { code: 'NO_LINKED_JAVASCRIPT', severity: 'Warning',
+        path: 'calculator.html', detail: 'JavaScript not linked' },
+      { code: 'SELECTOR_NOT_DECLARED', severity: 'Warning',
+        path: 'calculator.js', detail: '<script>Not an HTML element</script>' },
+    ],
+  };
+  const html = renderToStaticMarkup(React.createElement(
+    VerificationTimelineView, { evidence: data }));
+  assert.match(html, /Static Web source preflight/);
+  assert.match(html, /POTENTIAL ISSUES/);
+  assert.match(html, /NO_LINKED_JAVASCRIPT/);
+  assert.match(html, /calculator\.html/);
+  assert.match(html, /GENERATED · NOT TESTED/);
+  assert.match(html, /&lt;script&gt;Not an HTML element&lt;\/script&gt;/);
+  assert.doesNotMatch(html, /<script>Not an HTML element<\/script>/);
+  assert.doesNotMatch(html, /Source verified/);
+});
+test('no detected static findings do not imply browser checks ran', () => {
+  const data = fixture();
+  data.preflight = {
+    runId: 'e'.repeat(32), sourceState: 'Generated', sourceSha256: 'b'.repeat(64),
+    status: 'NO_ISSUES_DETECTED', verificationStatus: 'GENERATED_NOT_TESTED',
+    htmlFileCount: 1, referencedAssets: 2, findings: [],
+  };
+  const html = renderToStaticMarkup(React.createElement(
+    VerificationTimelineView, { evidence: data }));
+  assert.match(html, /JavaScript syntax, application behavior and browser tests are NOT TESTED/);
+  assert.match(html, /independent runtime evaluator remains unqualified/);
+});

@@ -535,6 +535,12 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(db.Get(id, runId))));
+        // Read-only deterministic source inspection: no Node, Chromium,
+        // model, sandbox admission, independent tests, or VERIFIED claim.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/static-web-preflight",
+            (string id, string runId, EngineeringRunStore db) =>
+                Safe(() => Results.Ok(
+                    StaticWebSourcePreflight.Inspect(db.Get(id, runId)))));
         app.MapPost("/api/tasks/{id}/engineering-runs/{runId}/cancel",
             (string id, string runId, EngineeringRunCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, runId))));
