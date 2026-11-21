@@ -57,6 +57,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         {
             MafAgentPurpose.Interview => interviewSchema,
             MafAgentPurpose.Architecture => "json",
+            MafAgentPurpose.TechnicalLead => "json",
             _ => null
         };
         var maxTokens = purpose switch
