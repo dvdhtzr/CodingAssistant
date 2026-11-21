@@ -21,9 +21,11 @@ public sealed class LocalProjectDraftModel : IStreamingProjectDraftModel
         Func<Task> onOutputChunkBatch, CancellationToken cancellation)
     {
         var prompt = """
-            You are a software engineer planning an implementation from an
-            explicitly approved specification. Choose up to FIVE essential
-            text source/project files for an initial working draft. Pick paths
+            You are a software engineer selecting a SOURCE FILE MANIFEST
+            from an explicitly approved specification. This is NOT the
+            Technical Lead's implementation task breakdown.
+            Choose between ONE and FIVE essential text source/project files
+            for an initial working draft. Pick paths
             and technologies appropriate to the actual specification, NEVER
             use a hard-coded C# repair fixture or welcome-page template.
             If the input includes an OWNER-APPROVED ARCHITECTURE BINDING,
@@ -32,7 +34,13 @@ public sealed class LocalProjectDraftModel : IStreamingProjectDraftModel
             elsewhere in the product specification. Do not substitute
             an unselected platform, framework, or architecture style.
             Return ONLY a JSON object with this exact shape:
-            {"files":[{"path":"relative/source.ext","purpose":"why this file is required"}]}
+            {"files":[{"path":"index.html","purpose":"Browser entry point"},{"path":"app.js","purpose":"Interactive application logic"}]}
+            This is an EXAMPLE of the shape only: choose file paths that
+            match the actual approved stack and architectural decisions.
+            Use the keys "files", "path", "purpose" EXACTLY. Never use
+            "tasks", "summary", "dependsOn" or a top-level JSON array.
+            File purposes must contain 5 to 240 characters. Every path
+            must be distinct case-insensitively.
             Paths must be relative, plain ASCII, no leading dot, no parent
             traversal; up to 4 directory components. Valid extensions:
             .cs .csproj .ts .tsx .js .jsx .css .html .json .md .txt
@@ -44,26 +52,41 @@ public sealed class LocalProjectDraftModel : IStreamingProjectDraftModel
         var result = await ChatAsync(model, prompt,
             "PROJECT OBJECTIVE:\n" + objective +
             "\n\nAPPROVED SPECIFICATION:\n" + approvedSpecification,
-            json: true, maxTokens: 650, onOutputChunkBatch, cancellation);
+            json: true, maxTokens: 1000, onOutputChunkBatch, cancellation);
+        return ParseFileManifest(result);
+    }
+
+    // Separate from local inference so malformed output shapes can be
+    // regression-tested without Ollama or accepting the Technical Lead's
+    // distinct tasks/summary JSON as a source file manifest.
+    public static IReadOnlyList<PlannedProjectFile> ParseFileManifest(string? result)
+    {
+        if (string.IsNullOrWhiteSpace(result) || result.Length > 16000)
+            throw new StoreFailure("INVALID_PROJECT_PLAN");
         try
         {
             using var parsed = JsonDocument.Parse(result);
-            var files = parsed.RootElement.GetProperty("files");
-            if (files.ValueKind != JsonValueKind.Array)
+            if (parsed.RootElement.ValueKind != JsonValueKind.Object ||
+                !parsed.RootElement.TryGetProperty("files", out var files) ||
+                files.ValueKind != JsonValueKind.Array)
                 throw new StoreFailure("INVALID_PROJECT_PLAN");
             var entries = new List<PlannedProjectFile>();
             foreach (var item in files.EnumerateArray())
             {
+                if (item.ValueKind != JsonValueKind.Object ||
+                    !item.TryGetProperty("path", out var path) ||
+                    !item.TryGetProperty("purpose", out var purpose) ||
+                    path.ValueKind != JsonValueKind.String ||
+                    purpose.ValueKind != JsonValueKind.String)
+                    throw new StoreFailure("INVALID_PROJECT_PLAN");
                 entries.Add(new PlannedProjectFile(
-                    item.GetProperty("path").GetString() ?? "",
-                    item.GetProperty("purpose").GetString() ?? ""));
+                    path.GetString() ?? "", purpose.GetString() ?? ""));
                 if (entries.Count > ProjectDraftStore.MaxFiles)
                     throw new StoreFailure("INVALID_PROJECT_PLAN");
             }
             return ProjectDraftStore.ValidatePlan(entries);
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException
-            or KeyNotFoundException)
+        catch (JsonException)
         {
             throw new StoreFailure("INVALID_PROJECT_PLAN");
         }
