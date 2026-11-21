@@ -85,4 +85,4 @@ Docker Desktop on GitHub runners.
 - [Docker container security/run options](https://docs.docker.com/reference/cli/docker/container/run)
 
 The dedicated static-web profile registry remains planning-only and is
-intentionally unchanged by this PR.
+intentionally unchanged. The next step is the separate [M4.2 Windows fixed-fixture Docker Desktop probe](WINDOWS_DOCKER_FIXED_FIXTURE_QUALIFICATION.md), which has not been run on the owner's host and cannot authorize executing generated projects.
