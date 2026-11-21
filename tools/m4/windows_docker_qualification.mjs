@@ -148,6 +148,92 @@ export function runFixture({
     const pin = validatePinnedImage(imageInfo);
     report.imageId = pin.imageId;
     report.registryDigest = pin.registryDigest;
+    // Refuse any existing container bearing our randomly generated name.
+    const collision = docker(['ps', '-a', '--filter', 'name=^/' + name + ' only the exact observed immutable local image ID runs.
+    attempted = true;
+    const guest = docker(dockerArgs(pin.imageId, name), 95000);
+    if (guest.timedOut) fail('Disposable guest timed out');
+    const observations = parseObservations(guest.stdout);
+    report.cases = observations;
+    report.passedCases = CASES.filter(key => observations[key]).length;
+    if (guest.status !== 0 || report.passedCases !== CASES.length)
+      fail('Guest failed one or more exact fixed-fixture/security observations');
+    report.status = 'FIXED_FIXTURE_GUEST_PASS';
+  } catch (error) {
+    report.reason = String(error.message || error).slice(0, 240);
+  } finally {
+    if (attempted) {
+      try {
+        // Never remove a container without verifying our exact owner label.
+        const ownership = docker(['container', 'inspect', name,
+          '--format', '{{json .Config.Labels}}'], 15000);
+        if (ownership.status === 0) {
+          const labels = JSON.parse(ownership.stdout.trim());
+          if (!labels || labels['codingassistant.m4'] !== name)
+            fail('Container ownership label mismatch; refusing to remove');
+          docker(['rm', '-f', name], 15000);
+        }
+        const remaining = docker(['ps', '-a',
+          '--filter', 'name=^/' + name + '$',
+          '--format', '{{.ID}}'], 15000);
+        report.guestRemoved = remaining.status === 0 &&
+          remaining.stdout.trim() === '';
+      } catch {
+        report.guestRemoved = false;
+      }
+      if (!report.guestRemoved) {
+        report.status = 'BLOCKED';
+        report.reason = 'Disposable container cleanup not independently confirmed';
+      }
+    }
+  }
+  return report;
+}
+
+export function writePrivateEvidence(report, folder) {
+  const root = folder ??
+    path.join(process.env.LOCALAPPDATA || os.homedir(),
+      'CodingAssistant', 'qualifications');
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  const dest = path.join(root,
+    'windows-static-web-' + randomBytes(6).toString('hex') + '.json');
+  fs.writeFileSync(dest, JSON.stringify(report, null, 2) + '\n',
+    { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  return dest;
+}
+
+export function main(argv = process.argv.slice(2), options = {}) {
+  if (argv.length === 0) {
+    process.stdout.write('WINDOWS_STATIC_WEB_DOCKER: NOT_RUN\n');
+    process.stdout.write('Use --run for the explicit, fixed-fixture local Docker qualification.\n');
+    process.stdout.write('No model-generated source or execution permission is enabled.\n');
+    return 0;
+  }
+  if (argv.length !== 1 || argv[0] !== '--run') {
+    process.stderr.write('Usage: node tools/m4/windows_docker_qualification.mjs [--run]\n');
+    return 2;
+  }
+  const report = runFixture(options);
+  const evidence = writePrivateEvidence(report, options.evidenceFolder);
+  process.stdout.write('M4.2 WINDOWS_DOCKER_' + report.status + '\n');
+  process.stdout.write('  fixed guest cases: ' +
+    report.passedCases + '/' + report.requiredCases + '\n');
+  process.stdout.write('  container absent after run: ' + report.guestRemoved + '\n');
+  process.stdout.write('  generated code and untrusted browser: NOT_AUTHORIZED\n');
+  process.stdout.write('  Static Web runtime profile: UNQUALIFIED\n');
+  if (report.reason) process.stdout.write('  blocker: ' + report.reason + '\n');
+  process.stdout.write('Evidence: ' + evidence + '\n');
+  return report.status === 'FIXED_FIXTURE_GUEST_PASS' &&
+    report.guestRemoved ? 0 : 2;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) ===
+    fileURLToPath(import.meta.url))
+  process.exitCode = main();
+,
+      '--format', '{{.ID}}']);
+    if (collision.status !== 0 || collision.stdout.trim() !== '')
+      fail('Disposable Docker name already exists or preflight failed');
 
     // No remote pull; only the exact observed immutable local image ID runs.
     attempted = true;
