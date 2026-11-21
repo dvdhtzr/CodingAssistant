@@ -143,17 +143,19 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     }
 }
 
-// Four true MAF roles have separate goals, fictional work histories and
+// Five true MAF roles have separate goals, fictional work histories and
 // no rights to use executable tools or load skills merely by naming them.
 {
     var roster = EngineeringAgentRoster.All;
-    Check(roster.Count == 4 &&
-          roster.Select(a => a.Id).Distinct().Count() == 4 &&
+    Check(roster.Count == 5 &&
+          roster.Select(a => a.Id).Distinct().Count() == 5 &&
           roster.All(a => a.Goal.Length > 25 &&
               a.Backstory.Length > 25 && !a.CanExecuteCode) &&
           EngineeringAgentRoster.Get("SoftwareEngineer")
-              .AllowedSkillScopes.Contains("source-implementation"),
-        "four distinct role/goals/backstories and non-executable skill scopes");
+              .AllowedSkillScopes.Contains("source-implementation") &&
+          EngineeringAgentRoster.Get("QaEngineer")
+              .AllowedSkillScopes.Contains("static-code-review"),
+        "five distinct role/goals/backstories and non-executable skill scopes");
 
     var manifest = MafSoftwareEngineer.Parse(
         """{"summary":"Implemented the task with a functional browser entry page.","files":[{"path":"index.html","purpose":"Complete browser interface","content":"<!doctype html><html><body><button id='save'>Save</button></body></html>"}],"verificationNotes":["Click the Save button in a browser"]}""");
@@ -203,6 +205,64 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "fourth real MAF agent gets independent identity, task, exact model and no tools");
 }
 
+// Phase 5 QA: strict review-only JSON, separate MAF identity and exact
+// approved source with NO ability to run tests or call external tools.
+{
+    var parsed = MafQaEngineer.Parse(
+        """{"summary":"The source has an event handler but does not yet demonstrate persistence.","findings":[{"severity":"Major","requirement":"Tasks survive reload","evidence":"The code only logs clicks and has no storage call","recommendation":"Add storage and verify reload in a browser"}],"manualChecks":["Reload browser after saving a task and inspect storage"]}""");
+    Check(parsed.Findings.Count == 1 &&
+          parsed.Findings[0].Severity == "Major",
+        "independent QA accepts only bounded potential findings, not test results");
+    foreach (var invalid in new[] {
+        """{"summary":"This does not count as a test pass.","findings":[],"manualChecks":[]}""",
+        """{"summary":"This does not count as a test pass.","findings":[{"severity":"Passed","requirement":"Store tasks","evidence":"Mock evidence should not be accepted","recommendation":"Check the actual browser later"}],"manualChecks":["Reload the browser and inspect storage"]}""",
+        """{"summary":"This does not count as a test pass.","findings":"looks fine","manualChecks":["Test it in a real browser later"]}""",
+        """{"status":"PASS","summary":"Runs fine!"}"""
+    })
+    {
+        try { _ = MafQaEngineer.Parse(invalid); Check(false, "invalid QA output accepted"); }
+        catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+        { Check(true, "QA cannot output invented PASS or malformed review"); }
+    }
+    var fakeFactory = new Phase5FakeMafFactory();
+    var fakePlan = new ImplementationPlan(
+        new string('a', 32), 1, 1, new string('b', 64),
+        new string('c', 64), "qwen3.5:4b",
+        new ImplementationOutline(
+            "Build a small offline notes tracker with clickable save controls.",
+            [new ImplementationWorkItem("create-ui", "Create working controls",
+                "Implement a complete page with functional buttons.", [],
+                ["Save button responds to mouse and keyboard"])],
+            ["Verify click and reload behaviors independently"], []),
+        new string('d', 64), "Approved", "2026-11-21T00:00:00Z",
+        "2026-11-21T00:01:00Z", true, "Approved");
+    var arch = new DraftArchitectureReadiness("READY", true,
+        new string('c', 64), [],
+        [new DraftArchitectureChoice("technology-stack", 1,
+            new string('e', 64), "static-web", "Static Web", "Offline",
+            "No server", "static-web"),
+         new DraftArchitectureChoice("architecture-style", 1,
+            new string('f', 64), "simple", "Simple modules",
+            "Fast", "Manual interfaces", null)]);
+    var run = new EngineeringRun(new string('9', 32), fakePlan.TaskId,
+        1, fakePlan.PlanSha256, 1, fakePlan.SpecificationSha256,
+        fakePlan.ArchitectureSha256, fakePlan.Model,
+        "Generated", "SourceOnlyGenerated", null,
+        "2026-11-21T00:02:00Z", "2026-11-21T00:03:00Z");
+    var file = new EngineeringSourceFile("index.html", "Offline app entry",
+        "<html><body><button>Save</button></body></html>",
+        new string('8', 64), "create-ui", "2026-11-21T00:03:00Z");
+    var assessment = await new MafQaEngineer(fakeFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(assessment.Findings.Count == 1 &&
+          fakeFactory.Purposes.SequenceEqual([MafAgentPurpose.QaEngineer]) &&
+          fakeFactory.Models.SequenceEqual(["qwen3.5:4b"]) &&
+          fakeFactory.QaRoleSeen && fakeFactory.NoTools &&
+          fakeFactory.SourceSeen,
+        "fifth real MAF agent independently inspects exact source without tools");
+}
+
 var root = Path.Combine(Path.GetTempPath(),
     "ca-phase2-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -214,6 +274,7 @@ HttpClient? client = null;
 var boundModel = new Phase2DraftModel();
 var leadModel = new Phase2TechnicalLeadPlanner();
 var softwareModel = new Phase4EngineeringModel();
+var qaModel = new Phase5QaModel();
 try
 {
     var tasks = new TaskStore(root);
@@ -243,7 +304,8 @@ try
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
-        engineeringModelOverride: softwareModel);
+        engineeringModelOverride: softwareModel,
+        qaReviewerOverride: qaModel);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -430,7 +492,8 @@ try
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
-        engineeringModelOverride: softwareModel);
+        engineeringModelOverride: softwareModel,
+        qaReviewerOverride: qaModel);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -731,7 +794,7 @@ try
     {
         var agents = body.RootElement.GetProperty("agents");
         Check(roster.StatusCode == HttpStatusCode.OK &&
-              agents.GetArrayLength() == 4 &&
+              agents.GetArrayLength() == 5 &&
               agents.EnumerateArray().Any(a =>
                   a.GetProperty("id").GetString() == "SoftwareEngineer" &&
                   !a.GetProperty("canExecuteCode").GetBoolean() &&
