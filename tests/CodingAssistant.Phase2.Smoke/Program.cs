@@ -802,6 +802,17 @@ try
     using (var body = await Body(unready))
         Check(body.RootElement.GetProperty("status").GetString() == "INCOMPLETE",
             "revised architecture requires a fresh explicit owner approval");
+    using (var invalidated = await client.GetAsync(leadPath))
+    using (var body = await Body(invalidated))
+        Check(!body.RootElement.GetProperty("plan").GetProperty("current").GetBoolean() &&
+              body.RootElement.GetProperty("plan")
+                .GetProperty("effectiveStatus").GetString() == "STALE_APPROVALS",
+            "architecture revision invalidates existing Technical Lead plan");
+    using (var blocked = await Post(client, leadPath + "/generate",
+        leadRequest with { ExpectedRevision = 2 }))
+        Check(blocked.StatusCode == HttpStatusCode.Conflict &&
+              leadModel.Attempts == 2,
+            "stale architecture never reaches the planning agent");
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
