@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.IO.Compression;
 using System.Text.Json;
 using CodingAssistant.Api;
 using Microsoft.Extensions.AI;
@@ -142,6 +143,66 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     }
 }
 
+// Four true MAF roles have separate goals, fictional work histories and
+// no rights to use executable tools or load skills merely by naming them.
+{
+    var roster = EngineeringAgentRoster.All;
+    Check(roster.Count == 4 &&
+          roster.Select(a => a.Id).Distinct().Count() == 4 &&
+          roster.All(a => a.Goal.Length > 25 &&
+              a.Backstory.Length > 25 && !a.CanExecuteCode) &&
+          EngineeringAgentRoster.Get("SoftwareEngineer")
+              .AllowedSkillScopes.Contains("source-implementation"),
+        "four distinct role/goals/backstories and non-executable skill scopes");
+
+    var manifest = MafSoftwareEngineer.Parse(
+        """{"summary":"Implemented the task with a functional browser entry page.","files":[{"path":"index.html","purpose":"Complete browser interface","content":"<!doctype html><html><body><button id='save'>Save</button></body></html>"}],"verificationNotes":["Click the Save button in a browser"]}""");
+    Check(manifest.Files.Count == 1 &&
+          manifest.Files[0].Path == "index.html",
+        "Software Engineer accepts safe bounded complete file replacements");
+    foreach (var invalid in new[] {
+        """{"summary":"Valid-looking but empty source list.","files":[],"verificationNotes":[]}""",
+        """{"summary":"Unsafe path in source file response.","files":[{"path":"../escape.js","purpose":"Unsafe path example","content":"console.log('bad')"}],"verificationNotes":[]}""",
+        """{"summary":"Duplicate paths in source file response.","files":[{"path":"app.js","purpose":"First JavaScript file","content":"console.log('one')"},{"path":"APP.js","purpose":"Duplicate same path","content":"console.log('two')"}],"verificationNotes":[]}""",
+        """{"tasks":[{"id":"implementation-task"}]}""",
+    })
+    {
+        try { _ = MafSoftwareEngineer.Parse(invalid); Check(false, "invalid engineer output accepted"); }
+        catch (StoreFailure e) when (e.Code == "MODEL_OUTPUT_REJECTED")
+        { Check(true, "unsafe/duplicate/task-plan engineer response rejected"); }
+    }
+    var agentFactory = new Phase4FakeMafFactory();
+    var fakePlan = new ImplementationPlan(
+        "a".PadRight(32, 'a'), 1, 1, new string('b', 64),
+        new string('c', 64), "qwen3.5:4b",
+        new ImplementationOutline("Build an offline notes app with working controls.",
+            [new ImplementationWorkItem("create-ui", "Create user interface",
+                "Implement the browser interface with real controls.", [],
+                ["A person can click Save in the browser"])],
+            ["Independently test browser interaction"], []),
+        new string('d', 64), "Approved", "2026-11-21T00:00:00Z",
+        "2026-11-21T00:01:00Z", true, "Approved");
+    var architecture = new DraftArchitectureReadiness(
+        "READY", true, new string('c', 64), [],
+        [new DraftArchitectureChoice("technology-stack", 1,
+            new string('e', 64), "static-web",
+            "Static HTML and JavaScript", "Offline", "DOM", "static-web"),
+         new DraftArchitectureChoice("architecture-style", 1,
+            new string('f', 64), "modular",
+            "Simple modules", "Explicit boundaries", "Extra wiring", null)]);
+    var assignment = new EngineeringTaskInput("Build offline notes",
+        "Offline notes; keyboard and mouse Save controls.", fakePlan,
+        architecture, fakePlan.Outline.Tasks[0], []);
+    var output = await new MafSoftwareEngineer(agentFactory).ImplementAsync(
+        assignment, CancellationToken.None);
+    Check(output.Files.Count == 1 &&
+          agentFactory.Purposes.SequenceEqual([MafAgentPurpose.SoftwareEngineer]) &&
+          agentFactory.Models.SequenceEqual(["qwen3.5:4b"]) &&
+          agentFactory.SystemPolicySeen && agentFactory.NoTools &&
+          agentFactory.TaskDescriptionSeen,
+        "fourth real MAF agent gets independent identity, task, exact model and no tools");
+}
+
 var root = Path.Combine(Path.GetTempPath(),
     "ca-phase2-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -152,6 +213,7 @@ WebApplication? app = null;
 HttpClient? client = null;
 var boundModel = new Phase2DraftModel();
 var leadModel = new Phase2TechnicalLeadPlanner();
+var softwareModel = new Phase4EngineeringModel();
 try
 {
     var tasks = new TaskStore(root);
@@ -180,7 +242,8 @@ try
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
-        implementationPlannerOverride: leadModel);
+        implementationPlannerOverride: leadModel,
+        engineeringModelOverride: softwareModel);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -366,7 +429,8 @@ try
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
-        implementationPlannerOverride: leadModel);
+        implementationPlannerOverride: leadModel,
+        engineeringModelOverride: softwareModel);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -1105,5 +1169,81 @@ sealed class Phase2TechnicalLeadPlanner : IImplementationPlanner
             ["Execute independent browser mouse and keyboard checks",
              "Validate static file dependencies without network"],
             ["Static Web execution is not qualified on this host"]));
+    }
+}
+
+sealed class Phase4EngineeringModel : IEngineeringTaskModel
+{
+    public List<string> AssignedIds { get; } = [];
+    public int PreviousFileCountOnSecondTask { get; private set; } = -1;
+
+    public Task<EngineeringChangeSet> ImplementAsync(EngineeringTaskInput input,
+        CancellationToken cancellation)
+    {
+        if (input.Plan.Status != "Approved" || !input.Plan.Current ||
+            input.Plan.PlanSha256.Length != 64 ||
+            input.Plan.Model != "qwen3.5:4b" ||
+            !input.Architecture.ReadyForSourceGeneration ||
+            input.Architecture.ArchitectureSha256 != input.Plan.ArchitectureSha256)
+            throw new Exception("SoftwareEngineer was not given the current approved plan");
+        AssignedIds.Add(input.WorkItem.Id);
+        if (input.WorkItem.Id == "timer-interface")
+            return Task.FromResult(new EngineeringChangeSet(
+                "Created a real browser interface with accessible timer controls.",
+                [new EngineeringFileChange("index.html", "Browser entry point",
+                    "<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
+                ["Open the browser and check keyboard and mouse behavior"]));
+        if (input.WorkItem.Id == "timer-state")
+        {
+            PreviousFileCountOnSecondTask = input.ExistingFiles.Count;
+            return Task.FromResult(new EngineeringChangeSet(
+                "Connected timer state to the Start button and reset behavior.",
+                [new EngineeringFileChange("app.js", "Complete timer interactions",
+                    "document.getElementById('start').addEventListener('click', () => { console.log('start'); });")],
+                ["Verify timer movement and reset without model claims"]));
+        }
+        throw new Exception("Unapproved task sent to engineer");
+    }
+}
+
+sealed class Phase4FakeMafFactory : IMafChatClientFactory
+{
+    public List<MafAgentPurpose> Purposes { get; } = [];
+    public List<string> Models { get; } = [];
+    public bool SystemPolicySeen { get; private set; }
+    public bool NoTools { get; private set; }
+    public bool TaskDescriptionSeen { get; private set; }
+
+    public IChatClient Create(string model, MafAgentPurpose purpose)
+    {
+        Models.Add(model);
+        Purposes.Add(purpose);
+        return new Fake(this);
+    }
+
+    private sealed class Fake(Phase4FakeMafFactory parent) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            var history = messages.ToArray();
+            parent.SystemPolicySeen = (options?.Instructions?.Contains(
+                "Professional backstory:", StringComparison.Ordinal) ?? false) ||
+                history.Any(m => m.Role.Value == "system" &&
+                    m.Text?.Contains("Professional backstory:", StringComparison.Ordinal) == true);
+            parent.TaskDescriptionSeen = history.Any(m => m.Role.Value == "user" &&
+                m.Text?.Contains("create-ui", StringComparison.Ordinal) == true);
+            parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
+            return Task.FromResult(new ChatResponse(
+                new ChatMessage(ChatRole.Assistant,
+                    """{"summary":"Implemented complete browser UI for approved notes task.","files":[{"path":"index.html","purpose":"Complete notes entry point","content":"<!doctype html><html><body><button>Save</button></body></html>"}],"verificationNotes":["Test saving notes in browser later"]}""")));
+        }
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Task protocol is nonstreaming.");
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
     }
 }
