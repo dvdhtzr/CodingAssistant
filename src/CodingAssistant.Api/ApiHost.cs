@@ -47,7 +47,8 @@ public static class ApiHost
         IInterviewModel? interviewModelOverride = null,
         IProjectDraftModel? projectModelOverride = null,
         IOllamaModelCatalog? catalogOverride = null,
-        IArchitectureAdvisor? architectureAdvisorOverride = null)
+        IArchitectureAdvisor? architectureAdvisorOverride = null,
+        IImplementationPlanner? implementationPlannerOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -84,6 +85,9 @@ public static class ApiHost
         var architectModel = architectureAdvisorOverride ?? mafTeam;
         var handoffs = new MafHandoffStore(store, interviews);
         handoffs.Initialize();
+        var implementationPlans = new ImplementationPlanStore(store, interviews);
+        implementationPlans.Initialize();
+        var technicalLead = implementationPlannerOverride ?? (IImplementationPlanner)mafTeam;
         var catalog = catalogOverride ?? new LocalOllamaModelCatalog();
         var projectDrafts = new ProjectDraftStore(store);
         projectDrafts.Initialize();
@@ -142,6 +146,8 @@ public static class ApiHost
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(architectureDecisions);
         builder.Services.AddSingleton(handoffs);
+        builder.Services.AddSingleton(implementationPlans);
+        builder.Services.AddSingleton<IImplementationPlanner>(technicalLead);
         builder.Services.AddSingleton<IArchitectureAdvisor>(architectModel);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
         builder.Services.AddSingleton<IOllamaModelCatalog>(catalog);
@@ -299,11 +305,12 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/interview", (string id, InterviewStore db) =>
             Safe(() => Results.Ok(db.Read(id))));
         app.MapGet("/api/tasks/{id}/agent-handoffs",
-            (string id, MafHandoffStore db) =>
+            (string id, MafHandoffStore db, ImplementationPlanStore plans) =>
                 Safe(() => Results.Ok(new {
                     engine = "Microsoft Agent Framework",
                     executionAvailable = false,
-                    events = db.List(id)
+                    events = db.List(id).Concat(plans.Handoffs(id))
+                        .OrderBy(e => e.CreatedUtc).ThenBy(e => e.Kind).ToArray()
                 })));
         app.MapPost("/api/tasks/{id}/interview/turn", (
                 string id, InterviewTurnRequest input,
@@ -447,6 +454,48 @@ public static class ApiHost
                 (string id, string topic, ReviewArchitectureDecisionRequest input,
                  ArchitectureDecisionStore decisions) =>
             Safe(() => Results.Ok(decisions.Review(id, topic, input))));
+        // Phase 3: real MAF Technical Lead planning with immutable owner
+        // approval. The plan is advisory and never runs generated code.
+        app.MapGet("/api/tasks/{id}/implementation-plan",
+            (string id, ImplementationPlanStore db) =>
+                Safe(() => Results.Ok(db.Read(id))));
+        app.MapPost("/api/tasks/{id}/implementation-plan/generate",
+            (string id, GenerateImplementationPlanRequest input,
+             TaskStore tasks, InterviewStore interviews,
+             ImplementationPlanStore db, IImplementationPlanner planner,
+             IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+            SafeAsync(async () =>
+            {
+                if (input.SchemaVersion != ImplementationPlanStore.SchemaVersion ||
+                    input.ExpectedRevision < 0)
+                    throw new StoreFailure("INVALID_INPUT");
+                var task = tasks.GetTask(id).Task;
+                var spec = interviews.Read(id).Specification;
+                if (spec is null || spec.Status != "Approved" ||
+                    spec.Version != input.SpecificationVersion ||
+                    spec.Sha256 != input.SpecificationSha256)
+                    throw new StoreFailure("SPECIFICATION_CONFLICT");
+                var architecture = DraftArchitecturePolicy.Readiness(tasks, interviews, id);
+                if (!architecture.ReadyForSourceGeneration ||
+                    architecture.ArchitectureSha256 != input.ArchitectureSha256)
+                    throw new StoreFailure("ARCHITECTURE_CONFLICT");
+                if ((db.Read(id).Plan?.Revision ?? 0) != input.ExpectedRevision)
+                    throw new StoreFailure("STALE_IMPLEMENTATION_PLAN");
+                var installed = await catalog.ListAsync(cancellation);
+                if (!installed.Contains(spec.Model, StringComparer.Ordinal))
+                    throw new StoreFailure("MODEL_NOT_INSTALLED");
+                var outline = await planner.PlanAsync(task.Objective, spec.Content,
+                    architecture, spec.Model, cancellation);
+                // Atomically recheck specification, architecture and revision
+                // *after* local inference to reject concurrent human edits.
+                var created = db.Propose(id, input, spec.Model, outline);
+                return Results.Created($"/api/tasks/{id}/implementation-plan",
+                    created);
+            }));
+        app.MapPost("/api/tasks/{id}/implementation-plan/approve",
+            (string id, ApproveImplementationPlanRequest input,
+             ImplementationPlanStore db) =>
+                Safe(() => Results.Ok(db.Approve(id, input))));
         // User-scoped draft source generation. This is not M1 agent
         // execution and runs NO model-generated code, shell or package tool.
         // Only an approved, current interview specification can start it.
@@ -711,7 +760,8 @@ public static class ApiHost
                 "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
                 "ARCHITECTURE_NOT_READY" or "ARCHITECTURE_CONFLICT" or
                 "ARCHITECTURE_PLAN_CONFLICT" or
-                "STALE_DECISION" or "SPECIFICATION_NOT_APPROVED" or
+                "STALE_DECISION" or "STALE_IMPLEMENTATION_PLAN" or
+                "SPECIFICATION_NOT_APPROVED" or
                 "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or

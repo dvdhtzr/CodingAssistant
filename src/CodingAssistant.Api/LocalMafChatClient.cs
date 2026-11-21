@@ -57,12 +57,14 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         {
             MafAgentPurpose.Interview => interviewSchema,
             MafAgentPurpose.Architecture => "json",
+            MafAgentPurpose.TechnicalLead => "json",
             _ => null
         };
         var maxTokens = purpose switch
         {
             MafAgentPurpose.Interview => 750,
             MafAgentPurpose.Specification => 3500,
+            MafAgentPurpose.TechnicalLead => 3500,
             _ => 1800
         };
         var chat = new
@@ -151,7 +153,8 @@ public enum MafAgentPurpose
 {
     Interview,
     Specification,
-    Architecture
+    Architecture,
+    TechnicalLead
 }
 
 public interface IMafChatClientFactory

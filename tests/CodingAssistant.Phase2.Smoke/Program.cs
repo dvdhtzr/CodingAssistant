@@ -79,13 +79,39 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         draft, "qwen3.5:4b", "technology-stack", CancellationToken.None);
     Check(advice.Options.Count == 2 && advice.RecommendedOptionId == "static-web",
         "distinct MAF Solution Architect agent returns proposal, not an approval");
+    var technicalPlan = await team.PlanAsync(
+        "Build an offline notes tracker", draft,
+        new DraftArchitectureReadiness("READY", true, new string('a', 64), [],
+            [
+                new DraftArchitectureChoice("technology-stack", 1,
+                    new string('b', 64), "static-web", "Static HTML and JavaScript",
+                    "Offline", "Manual DOM", "static-web"),
+                new DraftArchitectureChoice("architecture-style", 1,
+                    new string('c', 64), "small-modules", "Small modules",
+                    "Simple to test", "Manual boundaries", null)
+            ]),
+        "qwen3.5:4b", CancellationToken.None);
+    Check(technicalPlan.Tasks.Count == 2 &&
+          technicalPlan.Tasks[1].DependsOn.SequenceEqual(["create-ui"]) &&
+          technicalPlan.Tasks[1].AcceptanceCriteria.Count > 0,
+        "real MAF Technical Lead returns dependency-ordered, checkable work");
     Check(factory.Purposes.SequenceEqual(new[] {
             MafAgentPurpose.Interview, MafAgentPurpose.Specification,
-            MafAgentPurpose.Architecture
-        }) && factory.SystemPoliciesSeen == 3 &&
+            MafAgentPurpose.Architecture, MafAgentPurpose.TechnicalLead
+        }) && factory.SystemPoliciesSeen == 4 &&
         factory.AllowedToolsSeen == 0 &&
         factory.Models.All(m => m == "qwen3.5:4b"),
-        "MAF runs specialized local agents with exact model, instructions and no tools");
+        "three MAF specialists keep exact model, policies and no tools");
+    try
+    {
+        _ = ImplementationPlanContract.Parse(
+            """{"summary":"A valid plan summary for offline notes.","tasks":[{"id":"one-task","title":"Create working UI","description":"Implement user controls","dependsOn":["later-task"],"acceptanceCriteria":["Clicks visibly work"]},{"id":"later-task","title":"Persist local data","description":"Store offline notes","dependsOn":[],"acceptanceCriteria":["Reload retains notes"]}],"testStrategy":["Independently click buttons"],"risks":[]}""");
+        Check(false, "forward dependencies must be rejected");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(true, "Technical Lead model cannot create cyclic or forward dependencies");
+    }
 }
 
 var root = Path.Combine(Path.GetTempPath(),
@@ -97,6 +123,7 @@ if (!OperatingSystem.IsWindows())
 WebApplication? app = null;
 HttpClient? client = null;
 var boundModel = new Phase2DraftModel();
+var leadModel = new Phase2TechnicalLeadPlanner();
 try
 {
     var tasks = new TaskStore(root);
@@ -124,7 +151,8 @@ try
     var settings = new ApiSettings(root, Token, "http://127.0.0.1:0");
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
         catalogOverride: new Phase2Catalog(),
-        architectureAdvisorOverride: new Phase2Advisor());
+        architectureAdvisorOverride: new Phase2Advisor(),
+        implementationPlannerOverride: leadModel);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -309,7 +337,8 @@ try
 
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
         catalogOverride: new Phase2Catalog(),
-        architectureAdvisorOverride: new Phase2Advisor());
+        architectureAdvisorOverride: new Phase2Advisor(),
+        implementationPlannerOverride: leadModel);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -491,6 +520,118 @@ try
               value.GetProperty("approvedChoices").GetArrayLength() == 2,
             "two human-approved technical choices produce stable fingerprint");
     }
+    // Real HTTP/SQLite Technical Lead contracts: every proposal consumes
+    // *both* saved owner-approved architecture choices.
+    var leadPath = "/api/tasks/" + taskBound.Id + "/implementation-plan";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(leadPath))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "Technical Lead plans are owner-private");
+    using (var empty = await client.GetAsync(leadPath))
+    using (var body = await Body(empty))
+        Check(empty.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("plan").ValueKind == JsonValueKind.Null,
+            "Technical Lead does not auto-generate or auto-approve");
+
+    var leadRequest = new GenerateImplementationPlanRequest(
+        1, specBound.Version, specBound.Sha256, architectureSha, 0);
+    using (var wrong = await Post(client, leadPath + "/generate",
+        leadRequest with { ArchitectureSha256 = new string('0', 64) }))
+        Check(wrong.StatusCode == HttpStatusCode.Conflict &&
+              leadModel.Attempts == 0,
+            "wrong architecture hash rejected before agent invocation");
+
+    string firstPlanHash;
+    using (var generated = await Post(client, leadPath + "/generate", leadRequest))
+    using (var body = await Body(generated))
+    {
+        var value = body.RootElement;
+        firstPlanHash = value.GetProperty("planSha256").GetString()!;
+        Check(generated.StatusCode == HttpStatusCode.Created &&
+              value.GetProperty("status").GetString() == "Proposed" &&
+              value.GetProperty("revision").GetInt32() == 1 &&
+              value.GetProperty("current").GetBoolean() &&
+              value.GetProperty("outline").GetProperty("tasks").GetArrayLength() == 2 &&
+              firstPlanHash.Length == 64 && leadModel.Attempts == 1,
+            "Technical Lead saves only bounded, versioned proposal");
+    }
+    using (var replay = await Post(client, leadPath + "/generate", leadRequest))
+        Check(replay.StatusCode == HttpStatusCode.Conflict &&
+              leadModel.Attempts == 1,
+            "stale revision rejected before a second model request");
+
+    var approveLead = new ApproveImplementationPlanRequest(
+        1, 1, firstPlanHash, "APPROVE " + firstPlanHash);
+    using (var wrongHash = await Post(client, leadPath + "/approve",
+        approveLead with { PlanSha256 = new string('f', 64),
+            Confirmation = "APPROVE " + new string('f', 64) }))
+        Check(wrongHash.StatusCode == HttpStatusCode.Conflict,
+            "owner cannot approve a substituted plan digest");
+    using (var wrongConsent = await Post(client, leadPath + "/approve",
+        approveLead with { Confirmation = "APPROVE different" }))
+        Check(wrongConsent.StatusCode == HttpStatusCode.BadRequest,
+            "approval requires exact owner-confirmed plan hash");
+
+    using (var approvedPlan = await Post(client, leadPath + "/approve", approveLead))
+    using (var body = await Body(approvedPlan))
+        Check(approvedPlan.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("status").GetString() == "Approved" &&
+              body.RootElement.GetProperty("planSha256").GetString() == firstPlanHash,
+            "exact owner review saves plan approval");
+    using (var replay = await Post(client, leadPath + "/approve", approveLead))
+        Check(replay.StatusCode == HttpStatusCode.Conflict,
+            "plan approval cannot be replayed");
+
+    using (var eventResponse = await client.GetAsync(
+        "/api/tasks/" + taskBound.Id + "/agent-handoffs"))
+    using (var body = await Body(eventResponse))
+    {
+        var events = body.RootElement.GetProperty("events");
+        Check(eventResponse.StatusCode == HttpStatusCode.OK &&
+              events.EnumerateArray().Any(e =>
+                  e.GetProperty("kind").GetString() == "ArchitectureHandoff" &&
+                  e.GetProperty("toAgent").GetString() == "TechnicalLead") &&
+              events.EnumerateArray().Any(e =>
+                  e.GetProperty("kind").GetString() == "PlanApproved" &&
+                  e.GetProperty("planSha256").GetString() == firstPlanHash &&
+                  e.GetProperty("current").GetBoolean()) &&
+              !body.RootElement.GetProperty("executionAvailable").GetBoolean(),
+            "MAF Technical Lead handoffs and owner approval are durable and nonexecuting");
+    }
+
+    string secondPlanHash;
+    using (var updated = await Post(client, leadPath + "/generate",
+        leadRequest with { ExpectedRevision = 1 }))
+    using (var body = await Body(updated))
+    {
+        secondPlanHash = body.RootElement.GetProperty("planSha256").GetString()!;
+        Check(updated.StatusCode == HttpStatusCode.Created &&
+              secondPlanHash != firstPlanHash &&
+              body.RootElement.GetProperty("status").GetString() == "Proposed" &&
+              leadModel.Attempts == 2,
+            "replanning replaces previous approval with fresh unapproved version");
+    }
+    using (var historyResponse = await client.GetAsync(leadPath))
+    using (var body = await Body(historyResponse))
+    {
+        var history = body.RootElement.GetProperty("history");
+        Check(history.GetArrayLength() == 2 &&
+              history[0].GetProperty("status").GetString() == "Superseded" &&
+              history[1].GetProperty("status").GetString() == "Proposed",
+            "superseded Technical Lead plan is still visible in history");
+    }
+    using (var oldApproval = await Post(client, leadPath + "/approve", approveLead))
+        Check(oldApproval.StatusCode == HttpStatusCode.Conflict,
+            "old approved revision cannot silently regain authority");
+    using (var revisedApproval = await Post(client, leadPath + "/approve",
+        new ApproveImplementationPlanRequest(1, 2, secondPlanHash,
+            "APPROVE " + secondPlanHash)))
+        Check(revisedApproval.StatusCode == HttpStatusCode.OK,
+            "revised plan requires independent human approval");
+    Check(new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id)
+        .Plan?.PlanSha256 == secondPlanHash,
+        "restarted SQLite reader sees exact approved plan identity");
+
     using (var noHash = await Post(client, boundPath, approvedRequest))
         Check(noHash.StatusCode == HttpStatusCode.Conflict,
             "approved architecture cannot be silently ignored by old API callers");
@@ -661,6 +802,17 @@ try
     using (var body = await Body(unready))
         Check(body.RootElement.GetProperty("status").GetString() == "INCOMPLETE",
             "revised architecture requires a fresh explicit owner approval");
+    using (var invalidated = await client.GetAsync(leadPath))
+    using (var body = await Body(invalidated))
+        Check(!body.RootElement.GetProperty("plan").GetProperty("current").GetBoolean() &&
+              body.RootElement.GetProperty("plan")
+                .GetProperty("effectiveStatus").GetString() == "STALE_APPROVALS",
+            "architecture revision invalidates existing Technical Lead plan");
+    using (var blocked = await Post(client, leadPath + "/generate",
+        leadRequest with { ExpectedRevision = 2 }))
+        Check(blocked.StatusCode == HttpStatusCode.Conflict &&
+              leadModel.Attempts == 2,
+            "stale architecture never reaches the planning agent");
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
@@ -788,6 +940,8 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                     "## Constraints\nOnly local data, no remote dependencies."),
                 MafAgentPurpose.Architecture =>
                     """{"recommendedOptionId":"static-web","rationale":"Offline browser storage is proportionate.","options":[{"id":"static-web","label":"Static HTML and JavaScript","benefit":"Works offline","tradeoff":"Manual DOM","runtimeProfileId":"static-web"},{"id":"react","label":"React and TypeScript","benefit":"Components","tradeoff":"Build tools","runtimeProfileId":null}]}""",
+                MafAgentPurpose.TechnicalLead =>
+                    """{"summary":"Build a minimal offline notes application with working controls and persistence.","tasks":[{"id":"create-ui","title":"Create the browser interface","description":"Create accessible controls for notes and search","dependsOn":[],"acceptanceCriteria":["A user can type into the note editor and click Save"]},{"id":"persist-notes","title":"Save notes and wire search","description":"Connect controls to browser local storage and implement search behavior","dependsOn":["create-ui"],"acceptanceCriteria":["Saved notes survive a full page reload","A search returns matching notes"]}],"testStrategy":["Independently check button clicks using keyboard and mouse","Reload and verify persistence"],"risks":["Static Web runtime is not yet independently qualified"]}""",
                 _ => throw new Exception("Unknown MAF purpose")
             };
             return Task.FromResult(new ChatResponse(
@@ -801,5 +955,42 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
+    }
+}
+
+sealed class Phase2TechnicalLeadPlanner : IImplementationPlanner
+{
+    public int Attempts { get; private set; }
+
+    public Task<ImplementationOutline> PlanAsync(
+        string objective, string specification,
+        DraftArchitectureReadiness architecture, string model,
+        CancellationToken cancellation)
+    {
+        if (model != "qwen3.5:4b" ||
+            !objective.Contains("timer", StringComparison.OrdinalIgnoreCase) ||
+            !specification.Contains("offline browser timer", StringComparison.OrdinalIgnoreCase) ||
+            !architecture.ReadyForSourceGeneration ||
+            architecture.ApprovedChoices.Count != 2 ||
+            architecture.ApprovedChoices[0].RuntimeProfileId != "static-web")
+            throw new Exception("Technical Lead received wrong owner-approved handoff");
+        Attempts++;
+        return Task.FromResult(new ImplementationOutline(
+            "Implement an offline timer in two separately testable milestones.",
+            [
+                new ImplementationWorkItem("timer-interface",
+                    "Build accessible timer controls",
+                    "Implement HTML controls using the approved static web stack.",
+                    [],
+                    ["Buttons are operable using mouse and keyboard"]),
+                new ImplementationWorkItem("timer-state",
+                    "Connect timer state behavior",
+                    "Write plain JavaScript to manage start pause and reset.",
+                    ["timer-interface"],
+                    ["Start advances the displayed timer", "Reset returns to zero"])
+            ],
+            ["Execute independent browser mouse and keyboard checks",
+             "Validate static file dependencies without network"],
+            ["Static Web execution is not qualified on this host"]));
     }
 }

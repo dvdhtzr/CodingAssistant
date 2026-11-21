@@ -65,3 +65,21 @@
 .journey-stage-body .alert{margin:.6rem 0;max-width:none}
 @media(max-width:760px){.journey-status-strip{position:static;padding:.9rem}.journey-stage-body{max-height:78vh;padding:.85rem}.journey-trigger{padding:.75rem;gap:.6rem}.journey-heading-copy strong{font-size:.83rem}.journey-heading-copy small{font-size:.68rem}.journey-heading-state{font-size:.7rem;max-width:40%}.journey-stage-body .interview-transcript{max-height:37vh}}
 @media(prefers-reduced-motion:reduce){.journey-stage *{scroll-behavior:auto}}
+
+/* MAF Technical Lead: bounded, readable task review without fake progress. */
+.technical-lead-stage{min-width:0}
+.technical-lead-stage>h3{font-size:.93rem;margin:1rem 0 .5rem}
+.technical-lead-stage .hint{overflow-wrap:anywhere}
+.technical-plan-heading{display:flex;align-items:center;gap:.7rem;justify-content:space-between;flex-wrap:wrap;margin:1rem 0 .5rem}
+.technical-plan-heading strong{font-size:1rem}
+.technical-plan-tasks{display:grid;gap:.75rem;padding-left:1.4rem;margin:.65rem 0 1.1rem}
+.technical-plan-tasks>li{padding:.7rem .85rem;background:#1a2e3e;border:1px solid #3b586a;border-radius:9px}
+.technical-plan-tasks>li>strong{font-size:.89rem}
+.technical-plan-tasks>li>p{margin:.45rem 0;line-height:1.5}
+.technical-plan-tasks li li{font-size:.83rem;line-height:1.5;margin:.2rem 0}
+.technical-plan-tasks code{font-size:.7rem;overflow-wrap:anywhere;color:#9ecfda}
+.technical-plan-subtitle{display:block;margin-top:.6rem;color:#d4e2ec}
+.technical-lead-stage .spec-consent{margin:1rem 0 .55rem}
+.technical-lead-stage details{margin:1rem 0}
+.technical-lead-stage details li{font-size:.77rem;padding:.18rem 0}
+.technical-lead-stage .activity{padding:.7rem 1rem}

@@ -3,13 +3,16 @@ import { api } from './api';
 
 interface HandoffEvent {
   taskId: string;
-  kind: 'SpecificationHandoff' | 'ArchitectureProposalSaved';
+  kind: 'SpecificationHandoff' | 'ArchitectureProposalSaved' |
+    'ArchitectureHandoff' | 'PlanProposed' | 'PlanApproved';
   fromAgent: string;
   toAgent: string;
   specificationVersion: number;
   specificationSha256: string;
   revision: number;
   model: string;
+  planSha256?: string | null;
+  architectureSha256?: string | null;
   createdUtc: string;
   current: boolean;
 }
@@ -59,8 +62,15 @@ export function MafHandoffTimeline({ token, taskId }: {
           <strong>{item.fromAgent} → {item.toAgent}</strong>
           <small>{item.kind === 'SpecificationHandoff'
             ? 'Approved specification handed to Architect'
-            : 'Architecture proposal saved for human review'}</small>
+            : item.kind === 'ArchitectureProposalSaved'
+              ? 'Architecture proposal saved for human review'
+              : item.kind === 'ArchitectureHandoff'
+                ? 'Approved architecture given to Technical Lead'
+                : item.kind === 'PlanProposed'
+                  ? 'Implementation plan proposed for your review'
+                  : 'Owner approved plan for engineering backlog (not executed)'}</small>
           <small>Spec v{item.specificationVersion} · {item.model}
+            {item.planSha256 ? ' · Plan ' + item.planSha256.slice(0, 10) : ''}
             {item.current ? '' : ' · Historical'}</small>
         </li>)}
       </ol>

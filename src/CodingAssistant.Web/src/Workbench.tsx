@@ -4,12 +4,12 @@ import { MafHandoffTimeline } from './MafHandoffTimeline';
 
 export type WorkbenchView = 'overview' | 'studio' | 'diagnostics';
 
-// Presentation metadata only. The Product Owner and Architect now invoke MAF,
+// Presentation metadata only. Three planning specialists now invoke MAF,
 // but this static list is not live activity telemetry or a dynamic registry.
 const initialTeam = [
   { role: 'Product Owner', initials: 'PO', availability: 'MAF · local Ollama (on request)' },
   { role: 'Solution Architect', initials: 'SA', availability: 'MAF · local Ollama (on request)' },
-  { role: 'Technical Lead', initials: 'TL', availability: 'Planned — no live agent' },
+  { role: 'Technical Lead', initials: 'TL', availability: 'MAF · local Ollama (on request)' },
   { role: 'Software Engineer', initials: 'SE', availability: 'Planned — no live agent' },
   { role: 'QA Engineer', initials: 'QA', availability: 'Planned — no live agent' },
   { role: 'Security Reviewer', initials: 'SR', availability: 'Planned — no live agent' },

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
 export type JourneyId =
-  'discovery' | 'specification' | 'architecture' | 'generation' | 'delivery';
+  'discovery' | 'specification' | 'architecture' | 'plan' | 'generation' | 'delivery';
 export type JourneyTone = 'complete' | 'active' | 'attention' | 'pending' | 'blocked';
 
 export interface JourneyStep {
@@ -19,6 +19,8 @@ export const journeySteps: readonly JourneyStep[] = [
     status: 'Waiting for interview', tone: 'pending' },
   { id: 'architecture', title: 'Solution Architecture', detail: 'Choose stack and approach',
     status: 'Waiting for specification', tone: 'pending' },
+  { id: 'plan', title: 'Implementation Plan', detail: 'Technical Lead · plan and review',
+    status: 'Waiting for architecture', tone: 'pending' },
   { id: 'generation', title: 'Source Generation', detail: 'Create project files',
     status: 'Waiting for architecture', tone: 'pending' },
   { id: 'delivery', title: 'Artifacts & Delivery', detail: 'Inspect and download',
@@ -30,10 +32,12 @@ export const journeySteps: readonly JourneyStep[] = [
  * selected header or a currently focused form.
  */
 export function restoreJourneyStage(specStatus: string | null,
-  architecture: JourneyTone, generation: JourneyTone,
+  architecture: JourneyTone, plan: JourneyTone, generation: JourneyTone,
   delivery: JourneyTone): JourneyId {
   if (delivery === 'complete') return 'delivery';
-  if (generation === 'complete' || architecture === 'complete') return 'generation';
+  if (generation === 'complete') return 'generation';
+  if (architecture === 'complete')
+    return plan === 'complete' ? 'generation' : 'plan';
   if (specStatus === 'Approved') return 'architecture';
   if (specStatus === 'Draft') return 'specification';
   return 'discovery';

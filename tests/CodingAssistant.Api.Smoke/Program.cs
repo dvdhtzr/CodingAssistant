@@ -1484,6 +1484,11 @@ try
         using (var denied = await anonymous.GetAsync($"/api/tasks/{id}/agent-handoffs"))
             Check(denied.StatusCode == HttpStatusCode.Unauthorized,
                 "agent handoff history is owner-authenticated");
+        var directTaskStore = new TaskStore(interviewData);
+        var directPlanStore = new ImplementationPlanStore(directTaskStore,
+            new InterviewStore(directTaskStore));
+        Check(directPlanStore.Read(id).Plan is null,
+            "new planning table can be read even before Technical Lead starts");
         Check(fakeInterview.AskCount == 3 &&
               fakeInterview.SpecCount == 1 &&
               fakeInterview.LastObjective == ownerObjective,
