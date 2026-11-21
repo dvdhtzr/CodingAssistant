@@ -86,14 +86,14 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
 }
 if (OperatingSystem.IsWindows())
 {
-    var prepared = WindowsDevelopmentFrontend.EnsureCurrent();
+    var prepared = WindowsDevelopmentFrontend.EnsureCurrent(verifyOnReleaseForSmoke: true);
     Check(prepared is not null &&
           File.Exists(Path.Combine(prepared, "index.html")) &&
           WindowsDevelopmentFrontend.HasAutoSessionBundle(prepared),
         "Windows F5 builds and selects current React UI rather than stale bin assets");
     Check(File.Exists(Path.Combine(prepared!, ".codingassistant-dev-ui.sha256")),
         "Windows F5 persists a nonsecret source fingerprint after verified build");
-    Check(WindowsDevelopmentFrontend.EnsureCurrent() == prepared,
+    Check(WindowsDevelopmentFrontend.EnsureCurrent(verifyOnReleaseForSmoke: true) == prepared,
         "restarting Windows F5 reuses the current built UI without token entry");
 }
 
