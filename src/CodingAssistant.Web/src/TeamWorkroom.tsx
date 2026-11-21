@@ -188,7 +188,7 @@ export function TeamWorkroomView({ evidence, onNavigate }: {
                 ' · ' + review.reports.length + ' file report(s)' :
               'No saved QA review'}</p>
             {review && <p className="team-ledger-caption">
-              {qaCurrent ? 'Review bound to latest saved source and plan.' :
+              {qaCurrent ? 'Review references the latest saved engineering run and plan hash.' :
                 'Historical QA review — current source/plan binding is not established.'}
               {' '}Static inspection only. No build, test, or VERIFIED claim.</p>}
           </>}
@@ -231,7 +231,9 @@ export function TeamWorkroom({ token, taskId, onNavigate }: {
   const [evidence, setEvidence] = useState<TeamEvidence | null>(null);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
+  const [expanded, setExpanded] = useState(false);
   useEffect(() => {
+    if (!expanded) return;
     let closed = false;
     let loading = false;
     setEvidence(null);
@@ -267,9 +269,10 @@ export function TeamWorkroom({ token, taskId, onNavigate }: {
     // Authenticated persisted data polling, not an LLM heartbeat.
     const interval = window.setInterval(() => void load(), 8000);
     return () => { closed = true; window.clearInterval(interval); };
-  }, [token, taskId, refresh]);
+  }, [token, taskId, refresh, expanded]);
 
-  return <details className="team-workroom-disclosure">
+  return <details className="team-workroom-disclosure"
+    onToggle={event => setExpanded(event.currentTarget.open)}>
     <summary>
       <span className="team-disclosure-icon" aria-hidden="true">▸</span>
       <span><strong>Engineering Team & Handoffs</strong>
@@ -277,7 +280,7 @@ export function TeamWorkroom({ token, taskId, onNavigate }: {
       </span>
       <span className="team-disclosure-evidence">
         {evidence ? evidence.events.length + ' saved handoffs' :
-          error ? 'Unavailable' : 'Loading'}
+          error ? 'Unavailable' : expanded ? 'Loading' : 'View team evidence'}
       </span>
     </summary>
     <div className="team-workroom-disclosure-body">
