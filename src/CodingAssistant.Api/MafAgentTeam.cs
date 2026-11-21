@@ -71,9 +71,11 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
         {
             history.Add(new ChatMessage(ChatRole.User,
                 "The previous answer was unusable. Respond ONLY with a valid JSON " +
-                "object containing a nonempty 'message' with one or two relevant " +
-                "questions and a boolean 'readyForSpecification'. " +
-                "No reasoning, code fences or commentary."));
+                "object containing a nonempty 'message' with one relevant " +
+                "question and a boolean 'readyForSpecification'. " +
+                "For a guided answer include optional 'choice' with kind " +
+                "'single' or 'multiple' and 2-5 project-specific string options. " +
+                "For an open question omit choice. No reasoning or code fences."));
             var retry = await InvokeAsync("ProductOwner", MafAgentPurpose.Interview,
                 LocalInterviewModel.InterviewPolicy, model, history, cancellation);
             return LocalInterviewModel.ParseInterviewReply(retry);
