@@ -113,7 +113,13 @@ public static class ApiHost
         var packagedWeb = Path.Combine(AppContext.BaseDirectory, "wwwroot");
         var repositoryWeb = Path.Combine(Directory.GetCurrentDirectory(),
             "src", "CodingAssistant.Api", "wwwroot");
-        var webRoot = Directory.Exists(packagedWeb) ? packagedWeb :
+        // On Windows F5, source-built Vite output is authoritative. The
+        // copy next to bin/Debug/net10.0 may be left over from earlier runs.
+        // Published applications still use their packaged assets.
+        var preparedWeb = WindowsDevelopmentFrontend.PreparedWebRoot;
+        var webRoot = preparedWeb is not null &&
+            Directory.Exists(preparedWeb) ? preparedWeb :
+            Directory.Exists(packagedWeb) ? packagedWeb :
             Directory.Exists(repositoryWeb) ? repositoryWeb : null;
         var builder = webRoot is null
             ? WebApplication.CreateBuilder(args)
@@ -229,7 +235,9 @@ public static class ApiHost
         });
 
         app.MapGet("/healthz", () => Results.Ok(
-            new { status = "ok", executionEnabled = enabled }));
+            new { status = "ok", executionEnabled = enabled,
+                  uiVersion = WindowsDevelopmentFrontend.UiVersion,
+                  uiSource = preparedWeb is not null ? "source-current" : "packaged" }));
         app.MapGet("/api/status", () => Results.Ok(
             new {
                 phase = "M2-control-plane", model = TaskStore.Model,
