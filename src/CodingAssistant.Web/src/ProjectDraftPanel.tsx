@@ -210,14 +210,20 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   const engineerJob = engineer.snapshot?.job;
   const engineerGenerated = engineerJob?.state === 'Generated' &&
     !!engineer.snapshot?.files.length;
+  const currentEngineeringPlan = engineer.plan?.current === true &&
+    engineer.plan.status === 'Approved' &&
+    engineer.plan.planSha256 === engineerJob?.planSha256;
 
   const generationStep: JourneyStep = {
     id: 'generation', title: 'Source Generation', detail: 'Create project source files',
     ...(engineerJob?.state === 'Running'
       ? { tone: 'active' as const, status: 'MAF Engineer implementing tasks' }
-      : engineerGenerated
+      : engineerGenerated && currentEngineeringPlan
         ? { tone: 'complete' as const, status: 'Engineering source — not tested' }
-        : job?.state === 'Running'
+        : engineerGenerated
+          ? { tone: 'attention' as const,
+            status: 'Historical engineering source — plan changed' }
+          : job?.state === 'Running'
       ? { tone: 'active' as const, status: 'Generating files locally' }
       : job?.state === 'Failed' || job?.state === 'Interrupted'
         ? { tone: 'blocked' as const, status: 'Generation ' + job.state.toLowerCase() }
@@ -233,10 +239,13 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   };
   const deliveryStep: JourneyStep = {
     id: 'delivery', title: 'Artifacts & Delivery', detail: 'Inspect files and download ZIP',
-    ...(engineerGenerated
+    ...(engineerGenerated && currentEngineeringPlan
       ? { tone: 'complete' as const,
         status: engineer.snapshot?.files.length + ' engineering file(s) — unverified' }
-      : generated
+      : engineerGenerated
+        ? { tone: 'attention' as const,
+          status: 'Historical engineering ZIP — changed plan' }
+        : generated
       ? currentSpec && currentArchitecture
         ? { tone: 'complete' as const,
           status: result?.files.length + ' file(s) — unverified' }
