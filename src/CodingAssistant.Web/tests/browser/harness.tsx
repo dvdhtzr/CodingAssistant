@@ -71,7 +71,7 @@ function BrowserScenario() {
         { path: 'README.md', purpose: 'Setup instructions',
           sha256: 'a'.repeat(64), lastWorkItemId: 'T1',
           updatedUtc: '2026-11-21T15:00:00Z',
-          content: '# Oddville\\nLocal Ollama only' },
+          content: '# Oddville\nLocal Ollama only' },
         { path: 'src/Models/Resident.cs', purpose: 'Resident domain',
           sha256: 'b'.repeat(64), lastWorkItemId: 'T1',
           updatedUtc: '2026-11-21T15:01:00Z',
@@ -84,7 +84,7 @@ function BrowserScenario() {
           sha256: 'd'.repeat(64), lastWorkItemId: 'T2',
           updatedUtc: '2026-11-21T15:03:00Z',
           content: Array.from({ length: 810 }, (_, i) => 'const n' + i + ' = ' + i + ';')
-            .join('\\n') },
+            .join('\n') },
       ]}/>
     <output aria-label="Last submitted answer">{submitted}</output>
   </main>;
