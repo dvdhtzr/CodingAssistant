@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import './styles.css';
+import './workbench.css';
 
 const target = document.getElementById('root');
 if (!target) throw new Error('Missing Mission Control mount');

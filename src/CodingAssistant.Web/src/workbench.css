@@ -1,0 +1,62 @@
+/* UX-1 Engineering Workbench. Scoped styles keep existing workflow controls intact. */
+.wb-header{padding:1rem 1.5rem;background:#111925;min-height:75px;box-shadow:none}
+.wb-brand{display:flex;align-items:center;gap:11px}
+.wb-mark{display:grid;place-items:center;width:37px;height:37px;flex:none;border-radius:10px;color:#b9eadc;background:#214641;font-size:23px}
+.wb-header h1{font-size:1.22rem}
+.wb-header p{margin-top:.22rem;font-size:.78rem}
+.wb-header .actions{margin:0}
+.wb-layout{display:grid;grid-template-columns:235px minmax(0,1fr) 245px;gap:0;max-width:none;margin:0;padding:0;min-height:calc(100vh - 75px)}
+.wb-sidebar,.wb-inspector{background:#101925;min-width:0;color:#e6edf5}
+.wb-sidebar{padding:1.2rem .85rem;border-right:1px solid #263748}
+.wb-inspector{padding:1.5rem 1rem;border-left:1px solid #263748}
+.wb-main{padding:1.45rem;min-width:0;gap:1rem;align-content:start}
+.wb-kicker{font-size:.69rem;font-weight:800;letter-spacing:.09em;color:#91a8bb;margin:.55rem .6rem .7rem}
+.wb-new-project{width:100%;border-color:#427a72;background:#255249;color:#e0fff2;text-align:left}
+.wb-new-project:hover:not(:disabled){background:#30665b}
+.wb-navigation{margin:1.6rem 0 1rem}
+.wb-nav-item{display:block;width:100%;text-align:left;padding:.75rem .85rem;border:1px solid transparent;background:transparent;color:#b6c5d5;font-weight:600;margin:.15rem 0;border-radius:8px;font-size:.88rem}
+.wb-nav-item:hover:not(:disabled){background:#213447}
+.wb-nav-item.wb-selected{background:#234440;color:#c2f2e3;border-color:#346f65}
+.wb-section-title{display:flex;align-items:center;justify-content:space-between;gap:.5rem}
+.wb-refresh{padding:.17rem .5rem;border-color:transparent;background:transparent;color:#b7c8d7;line-height:1}
+.wb-projects{border-top:1px solid #2d3a4b;margin-top:1rem;padding-top:.8rem}
+.wb-project-link{display:block;width:100%;border:1px solid transparent;background:transparent;text-align:left;padding:.7rem .8rem;margin:.2rem 0;border-radius:8px;overflow-wrap:anywhere}
+.wb-project-link strong{font-size:.85rem;display:block;color:#e1eaf5}
+.wb-project-link small{display:block;font-size:.72rem;color:#93a7ba;margin-top:.3rem}
+.wb-project-link:hover:not(:disabled){background:#203144}
+.wb-project-link.wb-project-active{background:#1b303b;border-color:#3d5c68}
+.wb-muted{color:#98abbf;line-height:1.5;font-size:.78rem;margin:.45rem .65rem}
+.wb-team{border-top:1px solid #2d3a4b;margin-top:1.7rem;padding-top:.8rem}
+.wb-team-member{display:flex;gap:.55rem;align-items:center;padding:.48rem .4rem}
+.wb-avatar{width:28px;height:28px;display:grid;place-items:center;background:#2d4556;color:#d5e7f2;border-radius:8px;font-weight:800;font-size:.65rem;flex:none}
+.wb-member-copy{display:block;min-width:0}
+.wb-member-copy strong,.wb-member-copy small{display:block}
+.wb-member-copy strong{font-size:.77rem;color:#e7eef7}
+.wb-member-copy small{font-size:.66rem;line-height:1.35;color:#95a9ba;margin-top:.15rem}
+.wb-team-note{font-size:.7rem;margin-top:.65rem}
+.wb-inspector h2{font-size:1rem;margin:.45rem 0 1.2rem}
+.wb-inspector .wb-kicker{margin:.3rem 0 .6rem}
+.wb-inspector .wb-muted{margin:.9rem 0}
+.wb-inspector-row{padding:.75rem 0;border-bottom:1px solid #2a3b4b}
+.wb-inspector-row span{display:block;color:#92a7b9;font-size:.7rem;margin-bottom:.32rem}
+.wb-inspector-row strong{font-size:.78rem;overflow-wrap:anywhere;color:#e2ebf3;line-height:1.45;font-weight:650}
+.wb-inspector-divider{height:1px;background:#2a3b4b;margin:1.45rem 0}
+.wb-inspector-action{width:100%;margin-top:1rem;text-align:left;font-size:.77rem;background:#1b3840;border-color:#356670;color:#b9e8e6}
+.wb-overview{border:1px solid #2f4254;background:#131e2d;border-radius:13px;padding:clamp(1.2rem,2vw,1.8rem)}
+.wb-overview .wb-kicker{margin:0 0 1rem}
+.wb-overview h2{font-size:clamp(1.5rem,2.5vw,2rem);margin:.15rem 0 .5rem;letter-spacing:-.025em;overflow-wrap:anywhere}
+.wb-objective{font-size:.94rem;color:#b7c9d8;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.wb-overview-actions{display:flex;gap:.65rem;flex-wrap:wrap;margin:1.4rem 0 1.8rem}
+.wb-overview h3{font-size:1.02rem}
+.wb-status-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem;margin:1rem 0}
+.wb-status-card{background:#101a28;border:1px solid #304257;border-radius:10px;padding:1rem;min-width:0}
+.wb-status-card span{font-size:.71rem;color:#93b0c2;font-weight:750}
+.wb-status-card strong{display:block;font-size:.96rem;color:#e3eaf4;margin:.75rem 0 .4rem;overflow-wrap:anywhere}
+.wb-status-card small{color:#9aacc1;line-height:1.5;overflow-wrap:anywhere}
+.wb-guardrail{border-top:1px solid #314253;margin-top:1.5rem;padding-top:1rem;color:#b6c6d8;font-size:.84rem;line-height:1.55}
+.wb-guardrail strong{color:#e7ecf4}
+.wb-diagnostic-heading{padding:1rem 1.2rem;border:1px solid #3d5368;background:#172739;border-radius:10px}
+.wb-diagnostic-heading h2{margin:0 0 .45rem}
+.wb-diagnostic-heading p{margin:0}
+@media(max-width:1100px){.wb-layout{grid-template-columns:205px minmax(0,1fr)}.wb-inspector{display:none}}
+@media(max-width:760px){.wb-layout{display:block}.wb-sidebar{border-right:0;border-bottom:1px solid #2c3c4d}.wb-navigation{margin:.7rem 0;display:flex;flex-wrap:wrap;gap:.25rem}.wb-nav-item{width:auto;flex:1 1 auto;font-size:.82rem}.wb-projects,.wb-team{display:none}.wb-main{padding:.85rem}.wb-status-grid{grid-template-columns:1fr}.wb-header{padding:.85rem 1rem}.wb-header .actions{gap:.3rem}.wb-header .pill{display:none}.wb-header h1{font-size:1.03rem}}

@@ -1,0 +1,94 @@
+# Mission Control — Engineering Workbench UX contract
+
+**Direction:** Approved by the human owner, November 20, 2026.
+**First slice:** UX-1, project-centered application shell.
+**Audited baseline:** GitHub main f935c0652a72f45cc784fadaace7b040b6d3b9c7 (PR #118).
+**Status:** Approved target design; not every feature is implemented.
+
+## Goal and principles
+
+Mission Control is a local-first project environment where a human owner can define work, collaborate with specialized AI engineering participants, review decisions, inspect code, and trust independent evidence.
+
+Design for project continuity, human authority, distinct agent responsibility, inspectable work products, and truthful evidence. Do not mistake fluent model text or generated source for a successfully compiled and verified application.
+
+## Current capabilities versus future target
+
+| Area | Current product | Future workbench |
+| --- | --- | --- |
+| Product Owner | Local Ollama interview, saved transcript, versioned specification, explicit approval | Dedicated conversation, handoff context |
+| Solution Architect | Proposed alternatives and tradeoffs, versioned approval of stack/style | Decision inbox and review history |
+| Source | Architecture-bound generated source text and downloadable ZIP, not tested | Read-only file tree, diffs and provenance |
+| Execution | Historical isolated fixed C# repair pilot with separate approval | Qualified task-specific runtime profiles |
+| Team | Existing workflow roles, no general MAF-backed roster | Dynamic identities, assignments, skills and handoffs |
+| Activity | Some SQLite event replay and SignalR hints; other polling | Unified durable timeline |
+| Verification | Pilot evaluator evidence; ZIPs remain unverified | Independent build/test/browser/security evidence |
+
+## Information architecture
+
+**Global header:** product identity, local status, host execution capability and session action. No secrets shown.
+
+**Project sidebar:** create project, saved projects, Overview, Engineering Studio, Legacy diagnostics. UX-1 contains only working destinations: do not make dead navigational links for future views.
+
+**Overview:** arbitrary user objective, clear continuation, persisted specification status, architecture readiness and saved source draft state. Fetch authenticated existing APIs. Unavailable data differs from not-yet-completed data.
+
+**Engineering Studio:** keep the current Product Owner, Solution Architect, project-draft and task-scope flow operational. Existing server contracts remain intact; later slices split into Conversations, Decisions, Code & Artifacts, and Activity.
+
+**Legacy diagnostics:** present the single HTML generator and isolated C# qualification flow clearly as historical/advanced tests, not steps of the owner's current project.
+
+**Inspector:** project name/record, current screen, legacy run state where present, local inference and host execution capability. Never claim unsourced agent activity.
+
+**Team:** initial data-driven presentation of available workflows versus explicitly planned future roles. Do not derive false live-agent state from labels; future MAF integration supplies a variable-length server registry.
+
+### Desktop layout
+
+Three regions: 235px project/team sidebar, flexible central task canvas, 245px inspector. On medium screens collapse inspector. At narrow widths put the navigation above content and hide informational sidebar lists. Desktop engineering usage is primary; preserve accessible compact layouts.
+
+## End-to-end user journey
+
+1. Owner creates an arbitrary project objective and answers adaptive Product Owner questions.
+2. Owner reviews and explicitly approves versioned specification content.
+3. Solution Architect recommends stack and architecture alternatives; owner reviews and chooses, independent of model preference.
+4. A future Technical Lead produces an explicit bounded plan and hands work to the right agents.
+5. Software Engineer generates source. Executable work requires separately approved scope and host qualification.
+6. Independent evaluation records build/tests/browser/security results; QA and Security may discuss evidence but cannot confer VERIFIED merely by assertion.
+7. Owner inspects artifacts/evidence, downloads, or requests bounded repair.
+
+Navigating back should never silently invalidate or reapprove old work. Changes to spec or architecture must visibly mark descendants stale; current backend rejects invalid approval hashes.
+
+## Agent/work-product model (future, not an existing API)
+
+An agent participant has stable identity, role, exact local model, stated responsibilities, skills/capability descriptors, observed activity state, assignment and work products. The UI must support any number of participants.
+
+Distinguish messages, system events, agent proposals, owner approvals, handoffs, generated files, and independent verification reports. Trace provenance to exact task, source version, model, and event sequence. MAF may orchestrate reasoning; existing secure execution boundaries control tools and code. Skills are reviewed descriptors first, not privileges.
+
+Status vocabulary: not started, waiting for owner, working (confirmed activity only), cancelled/failed/interrupted, generated-not-tested, build-failed, tests-failed, verification-blocked, verified-with-independent-evidence. No invented progress percentages or model heartbeat.
+
+## Design system
+
+Restraint over decoration: ink canvas #0D121B, surface #172231, borders #35485A, green action #7DD3BE, amber attention #E7B777 and failure #DC7985. Semantic status text accompanies color. System/Inter UI font; monospace for source, logs and hashes. Spacing 4/8/12/16/24/32. Accessible focus, keyboard operation, contrast and reduced-motion support.
+
+## Delivery milestones
+
+- **UX-0 and UX-1:** Approved design contract, responsive project shell, persisted project overview, honest team labels, diagnostics separation; no API change.
+- **UX-2:** Conversation workroom and browser-level navigation/interview regression tests.
+- **UX-3:** Decisions and owner approval inbox, with original exact server-bound approvals preserved.
+- **UX-4:** Read-only source/artifact inspection and provenance.
+- **UX-5:** Real MAF roster, assignments, handoffs and skill descriptors.
+- **UX-6:** Qualified execution and verification timeline; security issues #76 and #92 remain release blockers.
+
+These UX slices augment, not reorder, Development Plan v2 phases 0–5. Each slice goes through branch, PR, cross-platform deterministic checks, owner live-model acceptance where relevant, merge and main verification.
+
+## UX-1 acceptance and regression
+
+- New project and saved-project selection use existing authenticated task endpoints.
+- Existing Product Owner model selection, interviews, spec approvals, architecture choices, generator, ZIP and task-scope review remain reachable in Studio.
+- Studio stays mounted when switching tabs so an unsent answer or in-flight view state survives navigation.
+- Switching projects resets task/run selection and opens that project's Studio.
+- Legacy HTML and fixed-C# pilot remain usable only through explicitly named Diagnostics.
+- Windows same-origin automatic session, Linux manual owner token, in-memory bearer, approval gates, and SQLite run replay remain unchanged.
+- Project Overview shows only persisted data; generated source is NEVER called verified without independent evidence.
+- Run TypeScript/Vite build and existing cross-platform .NET real-HTTP/SQLite smoke tests before merging.
+
+## Explicit limitations
+
+UX-1 does not add React Router, deep links, a unified event store, automated browser UI tests, agent execution or MAF integration. The overview is a saved snapshot fetched on opening, not a live heartbeat. UX-2 will add browser-level interaction tests; UX-5 and UX-6 require their corresponding real backend milestones.
