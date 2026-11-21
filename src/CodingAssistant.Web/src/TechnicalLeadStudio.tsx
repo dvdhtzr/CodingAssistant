@@ -132,7 +132,7 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
       if (!currentArchitecture.readyForSourceGeneration ||
           !currentArchitecture.architectureSha256)
         throw new Error('Approve both Solution Architect decisions first.');
-      const created = await api<Plan>(token,
+      await api<Plan>(token,
         '/api/tasks/' + taskId + '/implementation-plan/generate', {
           schemaVersion: 1,
           specificationVersion: spec.version,
@@ -140,8 +140,10 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
           architectureSha256: currentArchitecture.architectureSha256,
           expectedRevision: latest.plan?.revision ?? 0,
         });
-      setSaved({ schemaVersion: 1, plan: created,
-        history: [...latest.history, created] });
+      // Reload the authoritative ledger so superseded revisions are never
+      // misrepresented as still approved in this stage.
+      setSaved(await api<PlanSnapshot>(token,
+        '/api/tasks/' + taskId + '/implementation-plan'));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to generate plan');
     } finally { setBusy(''); }
