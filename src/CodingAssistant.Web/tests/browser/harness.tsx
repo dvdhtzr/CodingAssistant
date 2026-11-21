@@ -4,6 +4,7 @@ import { ConversationWorkroom, type WorkroomMessage } from '../../src/Conversati
 import { InterviewAnswerComposer } from '../../src/InterviewAnswerComposer';
 import { DecisionInboxView, buildDecisionInbox } from '../../src/OwnerDecisionInbox';
 import { SourceArtifactExplorer } from '../../src/SourceArtifactExplorer';
+import { TeamWorkroomView, type TeamEvidence } from '../../src/TeamWorkroom';
 import { JourneyStage, JourneyStatusStrip, journeySteps, type JourneyId }
   from '../../src/ProjectJourney';
 import '../../src/styles.css';
@@ -12,6 +13,7 @@ import '../../src/mission-control.css';
 import '../../src/conversation-workroom.css';
 import '../../src/owner-decision-inbox.css';
 import '../../src/source-explorer.css';
+import '../../src/team-workroom.css';
 
 const seed: WorkroomMessage[] = Array.from({ length: 12 }, (_, index) => ({
   sequence: index + 1,
@@ -29,6 +31,70 @@ const steps = journeySteps.map(step =>
   step.id === 'discovery' ? { ...step, tone: 'active' as const, status: '6 answers saved' } :
   step.id === 'specification' ? { ...step, tone: 'attention' as const,
     status: 'Review required' } : step);
+
+const teamFixture: TeamEvidence = {
+  agents: [
+    { id: 'ProductOwner', role: 'Product Owner',
+      goal: 'Protect accepted requirements', workingStyle: 'Focused questions',
+      backstory: 'Fictional product veteran', allowedSkillScopes: ['product-discovery'],
+      canExecuteCode: false },
+    { id: 'SolutionArchitect', role: 'Solution Architect',
+      goal: 'Choose reliable architecture', workingStyle: 'Compare tradeoffs',
+      backstory: 'Fictional solution designer',
+      allowedSkillScopes: ['architecture-review'], canExecuteCode: false },
+    { id: 'TechnicalLead', role: 'Technical Lead',
+      goal: 'Plan vertical slices', workingStyle: 'Pragmatic sequencing',
+      backstory: 'Fictional delivery lead',
+      allowedSkillScopes: ['task-decomposition'], canExecuteCode: false },
+    { id: 'SoftwareEngineer', role: 'Software Engineer',
+      goal: 'Implement approved tasks', workingStyle: 'Source-first engineering',
+      backstory: 'Fictional local developer',
+      allowedSkillScopes: ['source-implementation'], canExecuteCode: false },
+    { id: 'QaEngineer', role: 'QA Engineer',
+      goal: 'Inspect source independently', workingStyle: 'Skeptical review',
+      backstory: 'Fictional QA specialist',
+      allowedSkillScopes: ['static-code-review'], canExecuteCode: false },
+  ],
+  events: [
+    { kind: 'SpecificationHandoff',
+      fromAgent: 'ProductOwner', toAgent: 'SolutionArchitect',
+      specificationVersion: 1, revision: 0, model: 'qwen3.5:9b',
+      current: false, createdUtc: '2026-11-21T14:00:00Z' },
+    { kind: 'EngineeringTaskAssigned',
+      fromAgent: 'TechnicalLead', toAgent: 'SoftwareEngineer',
+      specificationVersion: 2, revision: 1, model: 'qwen3.5:9b',
+      workItemId: 'W1', current: true, createdUtc: '2026-11-21T15:00:00Z' },
+    { kind: 'QaReviewRequested',
+      fromAgent: 'SoftwareEngineer', toAgent: 'QaEngineer',
+      specificationVersion: 2, revision: 1, model: 'qwen3.5:9b',
+      current: true, createdUtc: '2026-11-21T15:02:00Z' },
+  ],
+  engineering: {
+    job: {
+      id: 'c'.repeat(32), taskId: 'a'.repeat(32), planRevision: 1,
+      planSha256: 'b'.repeat(64), specificationVersion: 2,
+      specificationSha256: 'a'.repeat(64), architectureSha256: 'd'.repeat(64),
+      model: 'qwen3.5:9b', state: 'Generated', phase: 'SourceOnlyGenerated',
+      errorCode: null, createdUtc: '2026-11-21T15:00:00Z',
+      updatedUtc: '2026-11-21T15:03:00Z',
+    },
+    tasks: [
+      { id: 'W1', ordinal: 0, title: 'Build residents',
+        state: 'Completed', startedUtc: '2026-11-21T15:00:00Z',
+        completedUtc: '2026-11-21T15:02:00Z', summary: 'Source saved' },
+      { id: 'W2', ordinal: 1, title: 'Build dashboard',
+        state: 'Pending', startedUtc: null, completedUtc: null, summary: null },
+    ],
+    events: [], files: [],
+  },
+  qa: {
+    job: { id: 'e'.repeat(32), state: 'Reviewed',
+      engineeringRunId: 'f'.repeat(32), planSha256: 'b'.repeat(64) },
+    sourceState: 'Generated', reports: [{
+      path: 'src/Models/Resident.cs', reviewedUtc: '2026-11-21T15:05:00Z',
+    }],
+  },
+};
 
 function BrowserScenario() {
   const [active, setActive] = useState<JourneyId>('discovery');
@@ -60,6 +126,7 @@ function BrowserScenario() {
         }} busy={false} onAnswer={setSubmitted}/>
       </section> : <p>Stage content: {step.title}. Existing controls stay mounted.</p>}
     </JourneyStage>)}
+    <TeamWorkroomView evidence={teamFixture} onNavigate={setActive}/>
     <SourceArtifactExplorer
       source="MAF Software Engineer"
       state="Generated" runId={'f'.repeat(32)} isCurrent
