@@ -819,6 +819,32 @@ try
               softwareModel.AssignedIds.Count == 0,
             "wrong Technical Lead revision digest cannot start engineering");
 
+    // Phase 5: independent QA must not run on unfinished or stale
+    // engineering source. Human initiation is explicit; no hidden auto-QA.
+    var qaPath = "/api/tasks/" + taskBound.Id + "/qa-reviews";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(qaPath + "/latest"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "independent QA reports remain owner-private");
+    using (var absent = await client.GetAsync(qaPath + "/latest"))
+    using (var body = await Body(absent))
+        Check(absent.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("snapshot").ValueKind == JsonValueKind.Null,
+            "QA has not fabricated any report before owner requests it");
+
+    var reviewStore = new QaReviewStore(tasks,
+        new ImplementationPlanStore(tasks, interviews));
+    var engineeringStore = new EngineeringRunStore(tasks,
+        new ImplementationPlanStore(tasks, interviews));
+    var unfinished = engineeringStore.Start(taskBound.Id,
+        new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!);
+    using (var forbidden = await Post(client, qaPath,
+        new StartQaReviewRequest(unfinished.Id, secondPlanHash)))
+        Check(forbidden.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 0,
+            "QA refuses unfinished engineering source before any model call");
+    engineeringStore.Interrupt(taskBound.Id, unfinished.Id);
+
     string engineeringRunId;
     using (var admitted = await Post(client, engineeringPath,
         new StartEngineeringRunRequest(2, secondPlanHash)))
@@ -881,32 +907,6 @@ try
                   e.GetProperty("fromAgent").GetString() == "SoftwareEngineer" &&
                   e.GetProperty("planSha256").GetString() == secondPlanHash),
             "authentic MAF Software Engineer handoffs reference exact approved plan");
-
-    // Phase 5: independent QA must not run on unfinished or stale
-    // engineering source. Human initiation is explicit; no hidden auto-QA.
-    var qaPath = "/api/tasks/" + taskBound.Id + "/qa-reviews";
-    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
-    using (var denied = await anonymous.GetAsync(qaPath + "/latest"))
-        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
-            "independent QA reports remain owner-private");
-    using (var absent = await client.GetAsync(qaPath + "/latest"))
-    using (var body = await Body(absent))
-        Check(absent.StatusCode == HttpStatusCode.OK &&
-              body.RootElement.GetProperty("snapshot").ValueKind == JsonValueKind.Null,
-            "QA has not fabricated any report before owner requests it");
-
-    var reviewStore = new QaReviewStore(tasks,
-        new ImplementationPlanStore(tasks, interviews));
-    var engineeringStore = new EngineeringRunStore(tasks,
-        new ImplementationPlanStore(tasks, interviews));
-    var unfinished = engineeringStore.Start(taskBound.Id,
-        new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!);
-    using (var forbidden = await Post(client, qaPath,
-        new StartQaReviewRequest(unfinished.Id, secondPlanHash)))
-        Check(forbidden.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 0,
-            "QA refuses unfinished engineering source before any model call");
-    engineeringStore.Interrupt(taskBound.Id, unfinished.Id);
 
     using (var wrong = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, firstPlanHash)))
