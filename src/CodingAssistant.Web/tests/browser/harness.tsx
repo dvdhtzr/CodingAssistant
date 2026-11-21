@@ -2,12 +2,14 @@ import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ConversationWorkroom, type WorkroomMessage } from '../../src/ConversationWorkroom';
 import { InterviewAnswerComposer } from '../../src/InterviewAnswerComposer';
+import { DecisionInboxView, buildDecisionInbox } from '../../src/OwnerDecisionInbox';
 import { JourneyStage, JourneyStatusStrip, journeySteps, type JourneyId }
   from '../../src/ProjectJourney';
 import '../../src/styles.css';
 import '../../src/journey.css';
 import '../../src/mission-control.css';
 import '../../src/conversation-workroom.css';
+import '../../src/owner-decision-inbox.css';
 
 const seed: WorkroomMessage[] = Array.from({ length: 12 }, (_, index) => ({
   sequence: index + 1,
@@ -32,6 +34,19 @@ function BrowserScenario() {
   return <main className="journey-shell" style={{ maxWidth: 1120, margin: '20px auto' }}>
     <JourneyStatusStrip title="Oddville browser fixture" activeId={active}
       steps={steps} onNavigate={setActive}/>
+    <DecisionInboxView
+      items={buildDecisionInbox({
+        specification: { version: 2, sha256: 'a'.repeat(64), status: 'Approved' },
+        ownerAnswers: 12, readyForSpecification: true,
+        decisions: [
+          { topic: 'technology-stack', revision: 1, specificationSha256: 'a'.repeat(64),
+            specificationCurrent: true, status: 'Proposed' },
+          { topic: 'architecture-style', revision: 1, specificationSha256: 'a'.repeat(64),
+            specificationCurrent: true, status: 'Approved' },
+        ],
+        plan: null,
+      })}
+      onNavigate={setActive}/>
     {steps.map((step, index) => <JourneyStage key={step.id} step={step}
       index={index} open={active === step.id}
       onOpen={id => setActive(previous => previous === id ? null : id)}>
