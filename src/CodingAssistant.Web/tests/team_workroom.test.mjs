@@ -113,7 +113,7 @@ test('agent profiles show allowed skill scopes as not installed or executable', 
   }));
   assert.match(html, /aria-label="Project agent team workroom"/);
   assert.match(html, /5 roles · 4 saved handoffs/);
-  assert.equal((html.match(/class="team-workroom-member /g) ?? []).length, 5);
+  assert.equal((html.match(/class="team-workroom-member(?: team-member-selected)?"/g) ?? []).length, 5);
   assert.match(html, /aria-pressed="true"/);
   assert.match(html, /Product Owner/);
   assert.match(html, /Professional backstory \(fictional\)/);
