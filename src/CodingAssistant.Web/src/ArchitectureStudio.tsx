@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
+import { JourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
 
 interface Spec {
   version: number;
@@ -37,8 +38,13 @@ const topics = [
   { id: 'architecture-style', label: 'Architecture approach' },
 ];
 
-export function ArchitectureStudio({ token, taskId, spec }: {
+export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, onReady,
+  onStageChange }: {
   token: string; taskId: string; spec: Spec | null;
+  expanded: boolean;
+  onExpand: (stage: JourneyId) => void;
+  onReady: () => void;
+  onStageChange: (stage: JourneyStep) => void;
 }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [decisions, setDecisions] = useState<Decision[]>([]);
@@ -106,14 +112,46 @@ export function ArchitectureStudio({ token, taskId, spec }: {
           selectedOptionId: choice,
           confirmation: exact,
         });
-      setDecisions(current => current.map(d => d.topic === updated.topic ? updated : d));
+      const revised = decisions.map(d => d.topic === updated.topic ? updated : d);
+      setDecisions(revised);
       setConfirmations(current => ({ ...current, [decision.topic]: '' }));
+      if (action === 'Approve' && topics.every(topic =>
+        revised.some(d => d.topic === topic.id && d.status === 'Approved' &&
+          d.specificationCurrent && d.specificationSha256 === spec.sha256))) {
+        onReady();
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Review could not be saved.');
     } finally { setBusy(''); }
   }
 
-  return <section className="architect-stage" aria-label="Solution Architect decisions">
+  const fresh = decisions.filter(d => d.specificationCurrent &&
+    d.specificationSha256 === spec?.sha256);
+  const approvedCount = topics.filter(topic => fresh.some(d =>
+    d.topic === topic.id && d.status === 'Approved')).length;
+  const awaiting = fresh.filter(d => d.status === 'Proposed').length;
+  const stale = decisions.some(d => !d.specificationCurrent ||
+    d.specificationSha256 !== spec?.sha256);
+  const step: JourneyStep = { id: 'architecture', title: 'Solution Architecture',
+    detail: 'Technology stack and design choices',
+    ...((spec?.status !== 'Approved')
+      ? { tone: 'pending' as const, status: 'Waiting for approved specification' }
+      : loading
+        ? { tone: 'pending' as const, status: 'Loading saved decisions' }
+        : stale
+          ? { tone: 'blocked' as const, status: 'Re-review changed requirements' }
+          : approvedCount === topics.length
+            ? { tone: 'complete' as const, status: 'Both decisions approved' }
+            : awaiting
+              ? { tone: 'attention' as const,
+                status: awaiting + ' decision(s) awaiting approval' }
+              : { tone: 'active' as const,
+                status: approvedCount + ' of ' + topics.length + ' approved' }),
+  };
+  useEffect(() => { onStageChange(step); },
+    [onStageChange, step.tone, step.status]);
+  return <JourneyStage step={step} index={2} open={expanded} onOpen={onExpand}>
+    <section className="architect-stage" aria-label="Solution Architect decisions">
     <h2>3. Review the Solution Architect's recommendations</h2>
     <p className="hint">The selected local Ollama model compares options for your approved
       specification. AI recommendations are not owner approval or executable permission.</p>
@@ -219,8 +257,9 @@ export function ArchitectureStudio({ token, taskId, spec }: {
         </>}
       </div>;
     })}
-    <p className="hint">The existing source-only generator does not yet consume these
-      decisions; they are saved for the next engineering handoff. Static Web remains
-      unqualified for executable testing.</p>
-  </section>;
+    <p className="hint">The source-only generator uses both owner-approved decisions.
+      Architecture approval is not execution authorization; generated files remain
+      unverified until an independent build and test.</p>
+    </section>
+  </JourneyStage>;
 }
