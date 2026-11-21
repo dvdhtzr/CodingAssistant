@@ -968,14 +968,128 @@ try
         Check(cross.StatusCode == HttpStatusCode.NotFound,
             "QA report cannot be read through another project's URL");
 
+    // Real FlowBoard failure: the first source file survives but a later
+    // engineering task fails. Static QA must accept only the immutable saved
+    // partial artifact, and the status must remain clearly incomplete.
+    Check(QaReviewStore.IsReviewableSource("Generated", 1) &&
+          QaReviewStore.IsReviewableSource("Failed", 1) &&
+          QaReviewStore.IsReviewableSource("Interrupted", 1) &&
+          !QaReviewStore.IsReviewableSource("Running", 1) &&
+          !QaReviewStore.IsReviewableSource("Failed", 0),
+        "only terminal source with saved files qualifies for static QA");
+
+    var approvedEngineerPlan =
+        new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!;
+    var partial = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, partial.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, partial.Id, "timer-interface",
+        new EngineeringChangeSet(
+            "Saved the browser entry before later implementation failed.",
+            [new EngineeringFileChange("index.html", "Offline browser entry point",
+                "<!doctype html><html><body><button id='start'>Start</button></body></html>")],
+            ["Click Start later to verify the behavior"]));
+    using (var deniedActive = await Post(client, qaPath,
+        new StartQaReviewRequest(partial.Id, secondPlanHash)))
+        Check(deniedActive.StatusCode == HttpStatusCode.Conflict &&
+              qaModel.ReviewedFiles.Count == 2,
+            "QA cannot read an active engineering job even when it saved source");
+    engineeringStore.StartTask(taskBound.Id, partial.Id, "timer-state");
+    engineeringStore.Finish(taskBound.Id, partial.Id, false, "MODEL_OUTPUT_REJECTED");
+    var partialSource = engineeringStore.Get(taskBound.Id, partial.Id);
+    Check(partialSource.Job.State == "Failed" &&
+          partialSource.Files.Count == 1 &&
+          partialSource.Tasks[0].State == "Completed" &&
+          partialSource.Tasks[1].State == "Failed",
+        "failed engineering job retains first file with correct task statuses");
+    using (var zipResponse = await client.GetAsync(
+        engineeringPath + "/" + partial.Id + "/zip"))
+    {
+        var data = await zipResponse.Content.ReadAsByteArrayAsync();
+        using var archive = new ZipArchive(new MemoryStream(data), ZipArchiveMode.Read);
+        Check(zipResponse.StatusCode == HttpStatusCode.OK &&
+              archive.Entries.Count == 1 &&
+              archive.Entries[0].FullName == "index.html" &&
+              (zipResponse.Content.Headers.ContentDisposition?.FileName ?? "")
+                  .Contains("PARTIAL", StringComparison.Ordinal),
+            "failed engineering job exports labeled partial ZIP, never complete ZIP");
+    }
+    string partialReviewId;
+    using (var admittedPartial = await Post(client, qaPath,
+        new StartQaReviewRequest(partial.Id, secondPlanHash)))
+    using (var body = await Body(admittedPartial))
+    {
+        Check(admittedPartial.StatusCode == HttpStatusCode.Accepted,
+            "owner can ask QA to inspect saved Failed source");
+        partialReviewId = body.RootElement.GetProperty("id").GetString()!;
+    }
+    QaReviewSnapshot? partialReport = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        using var response = await client.GetAsync(qaPath + "/" + partialReviewId);
+        using var body = await Body(response);
+        if (body.RootElement.GetProperty("job").GetProperty("state")
+                .GetString() == "Running")
+        {
+            await Task.Delay(25);
+            continue;
+        }
+        partialReport = reviewStore.Get(taskBound.Id, partialReviewId);
+        break;
+    }
+    Check(partialReport?.Job.State == "Reviewed" &&
+          partialReport.SourceState == "Failed" &&
+          partialReport.Reports.Count == 1 &&
+          partialReport.Reports[0].Path == "index.html" &&
+          partialReport.Events.Any(e => e.Detail.Contains("PARTIAL")) &&
+          qaModel.ReviewedSourceStates.Last() == "Failed",
+        "partial Failed source inspected without claiming a completed build");
+
+    var interrupted = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, interrupted.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, interrupted.Id, "timer-interface",
+        new EngineeringChangeSet(
+            "Saved a browser entry before the owner interrupted engineering.",
+            [new EngineeringFileChange("index.html", "Offline timer browser entry",
+                "<!doctype html><html><body><button id='start'>Start</button></body></html>")],
+            ["Review the incomplete timer in a browser later"]));
+    engineeringStore.Interrupt(taskBound.Id, interrupted.Id);
+    string interruptReviewId;
+    using (var accepted = await Post(client, qaPath,
+        new StartQaReviewRequest(interrupted.Id, secondPlanHash)))
+    using (var body = await Body(accepted))
+    {
+        Check(accepted.StatusCode == HttpStatusCode.Accepted,
+            "owner can ask QA to review Interrupted source with saved files");
+        interruptReviewId = body.RootElement.GetProperty("id").GetString()!;
+    }
+    QaReviewSnapshot? interruptedReport = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        using var response = await client.GetAsync(qaPath + "/" + interruptReviewId);
+        using var body = await Body(response);
+        if (body.RootElement.GetProperty("job").GetProperty("state")
+                .GetString() == "Running")
+        {
+            await Task.Delay(25);
+            continue;
+        }
+        interruptedReport = reviewStore.Get(taskBound.Id, interruptReviewId);
+        break;
+    }
+    Check(interruptedReport?.Job.State == "Reviewed" &&
+          interruptedReport.SourceState == "Interrupted" &&
+          interruptedReport.Reports.Count == 1 &&
+          qaModel.ReviewedSourceStates.Last() == "Interrupted",
+        "Interrupted saved source receives a clearly labeled partial review");
+
     // Even an approved plan does not make an older engineering submission
     // authoritative after a newer run exists; retain historical QA safely.
     var supersedingSource = engineeringStore.Start(taskBound.Id,
-        new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!);
+        approvedEngineerPlan);
     using (var historicalSource = await Post(client, qaPath,
-        new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
+        new StartQaReviewRequest(interrupted.Id, secondPlanHash)))
         Check(historicalSource.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 2,
+              qaModel.ReviewedFiles.Count == 4,
             "QA refuses superseded engineering source even under the same plan");
     engineeringStore.Interrupt(taskBound.Id, supersedingSource.Id);
 
@@ -1233,7 +1347,7 @@ try
     using (var blockedQa = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
         Check(blockedQa.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 2,
+              qaModel.ReviewedFiles.Count == 4,
             "stale architecture cannot initiate new QA review of old source");
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
