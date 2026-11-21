@@ -1,11 +1,11 @@
-# Phase 4 — Independent MAF agents and future portable skills
+# Phase 4–5 — Independent MAF agents and future portable skills
 
-**Status:** The four named MAF agents are distinct, host-owned identities. A
+**Status:** The five named MAF agents are distinct, host-owned identities. A
 fully pluggable skill loader is **not yet implemented**.
 
 ## Independent identities (first-class, immutable)
 
-`EngineeringAgentRoster` defines four separate agents with
+`EngineeringAgentRoster` defines five separate agents with
 role, goal, fictional professional backstory, working style, future
 allowlisted skill scopes and execution authorization:
 
@@ -15,6 +15,7 @@ allowlisted skill scopes and execution authorization:
 | Solution Architect | Compare architectures with explicit tradeoffs | Propose choices; never approve |
 | Technical Lead | Break owner-approved work into dependent tasks | Propose revisioned engineering plan; never approve |
 | Software Engineer | Implement ONE assigned, approved task at a time | Source-only file changes; no executing or testing |
+| QA Engineer | Independently inspect submitted source and possible defects | Bounded static review only; no build or test PASS |
 
 Every agent creates its own MAF `ChatClientAgent` with a host-owned
 instruction policy and exact selected local Ollama model. The host controls
@@ -69,7 +70,7 @@ Anthropic and other runtimes. The host should support:
 The current `allowedSkillScopes` field is **metadata only** and grants
 no privilege. There is currently **no** skill import, network download,
 script execution, filesystem access or arbitrary tool/command handler
-in any of these four agents. That is intentional until security
+in any of these five agents. That is intentional until security
 qualification is completed.
 
 References:
@@ -84,6 +85,10 @@ with the latest approved Technical Lead plan; in Source Generation choose
 **Ask Software Engineer to implement approved tasks**. Observe durable
 per-task statuses, file replacements and the Inspector's saved handoffs.
 Inspect/download the separate engineering ZIP in Artifacts & Delivery.
-The legacy source generator remains fully available. The produced files
-are NOT automatically executed or independently validated; verify them
-later under the upcoming QA/security milestone.
+Once it is fully generated, the independent QA Engineer can be explicitly
+asked to inspect each saved source file. QA produces potential findings,
+source evidence and manual test suggestions, NOT a passed runtime test.
+The legacy source generator remains fully available. Source is NOT
+automatically executed or independently verified; actual sandboxed build,
+browser checks and repair loops remain future qualified milestones.
+See [INDEPENDENT_QA_PHASE5.md](INDEPENDENT_QA_PHASE5.md).
