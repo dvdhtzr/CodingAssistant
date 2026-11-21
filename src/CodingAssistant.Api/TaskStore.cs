@@ -232,6 +232,59 @@ public sealed class TaskStore
         return new TaskItem(id, title, objective, "Draft", 0, timestamp);
     }
 
+    /// <summary>
+    /// Permanently removes a project and its persisted control-plane history.
+    /// No disk workspace or other project is touched. All child removals and
+    /// the task row removal are atomic with foreign-key enforcement enabled.
+    /// Running draft/runner operations must first be cancelled or completed.
+    /// </summary>
+    public void DeleteTask(string id)
+    {
+        CheckId(id);
+        using var db = Open();
+        using var tx = db.BeginTransaction();
+        _ = FindTask(db, tx, id) ?? throw new StoreFailure("NOT_FOUND");
+
+        var runningDraft = Scalar(db, tx, """
+            SELECT 1 FROM project_drafts
+            WHERE task_id=@id AND state='Running' LIMIT 1
+            """, ("@id", id));
+        if (runningDraft is not null)
+            throw new StoreFailure("BUILD_BUSY");
+        var runningExecution = Scalar(db, tx, """
+            SELECT 1 FROM run_executions AS e
+            JOIN run_intents AS r ON r.id=e.run_id
+            WHERE r.task_id=@id AND e.state IN ('Starting','Running','Cancelling')
+            LIMIT 1
+            """, ("@id", id));
+        if (runningExecution is not null)
+            throw new StoreFailure("EXECUTION_BUSY");
+
+        // These tables have real foreign keys without ON DELETE CASCADE.
+        // Delete leaf records before parents rather than disabling FK checks.
+        foreach (var sql in new[] {
+            "DELETE FROM project_draft_files WHERE draft_id IN (SELECT id FROM project_drafts WHERE task_id=@id)",
+            "DELETE FROM project_draft_events WHERE draft_id IN (SELECT id FROM project_drafts WHERE task_id=@id)",
+            "DELETE FROM project_draft_architecture WHERE draft_id IN (SELECT id FROM project_drafts WHERE task_id=@id)",
+            "DELETE FROM task_build_events WHERE build_id IN (SELECT id FROM task_builds WHERE task_id=@id)",
+            "DELETE FROM execution_events WHERE run_id IN (SELECT id FROM run_intents WHERE task_id=@id)",
+            "DELETE FROM run_executions WHERE run_id IN (SELECT id FROM run_intents WHERE task_id=@id)",
+            "DELETE FROM run_events WHERE run_id IN (SELECT id FROM run_intents WHERE task_id=@id)",
+            "DELETE FROM project_drafts WHERE task_id=@id",
+            "DELETE FROM task_builds WHERE task_id=@id",
+            "DELETE FROM run_intents WHERE task_id=@id",
+            "DELETE FROM plans WHERE task_id=@id",
+            "DELETE FROM html_artifacts WHERE task_id=@id",
+            "DELETE FROM architecture_decisions WHERE task_id=@id",
+            "DELETE FROM interview_specs WHERE task_id=@id",
+            "DELETE FROM interview_messages WHERE task_id=@id",
+            "DELETE FROM interview_sessions WHERE task_id=@id",
+            "DELETE FROM tasks WHERE id=@id",
+        })
+            Execute(db, tx, sql, ("@id", id));
+        tx.Commit();
+    }
+
     public IReadOnlyList<TaskItem> ListTasks(int limit = 50)
     {
         if (limit is < 1 or > 100)
