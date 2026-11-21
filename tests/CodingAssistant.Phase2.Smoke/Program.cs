@@ -520,6 +520,118 @@ try
               value.GetProperty("approvedChoices").GetArrayLength() == 2,
             "two human-approved technical choices produce stable fingerprint");
     }
+    // Real HTTP/SQLite Technical Lead contracts: every proposal consumes
+    // *both* saved owner-approved architecture choices.
+    var leadPath = "/api/tasks/" + taskBound.Id + "/implementation-plan";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(leadPath))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "Technical Lead plans are owner-private");
+    using (var empty = await client.GetAsync(leadPath))
+    using (var body = await Body(empty))
+        Check(empty.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("plan").ValueKind == JsonValueKind.Null,
+            "Technical Lead does not auto-generate or auto-approve");
+
+    var leadRequest = new GenerateImplementationPlanRequest(
+        1, specBound.Version, specBound.Sha256, architectureSha, 0);
+    using (var wrong = await Post(client, leadPath + "/generate",
+        leadRequest with { ArchitectureSha256 = new string('0', 64) }))
+        Check(wrong.StatusCode == HttpStatusCode.Conflict &&
+              leadModel.Attempts == 0,
+            "wrong architecture hash rejected before agent invocation");
+
+    string firstPlanHash;
+    using (var generated = await Post(client, leadPath + "/generate", leadRequest))
+    using (var body = await Body(generated))
+    {
+        var value = body.RootElement;
+        firstPlanHash = value.GetProperty("planSha256").GetString()!;
+        Check(generated.StatusCode == HttpStatusCode.Created &&
+              value.GetProperty("status").GetString() == "Proposed" &&
+              value.GetProperty("revision").GetInt32() == 1 &&
+              value.GetProperty("current").GetBoolean() &&
+              value.GetProperty("outline").GetProperty("tasks").GetArrayLength() == 2 &&
+              firstPlanHash.Length == 64 && leadModel.Attempts == 1,
+            "Technical Lead saves only bounded, versioned proposal");
+    }
+    using (var replay = await Post(client, leadPath + "/generate", leadRequest))
+        Check(replay.StatusCode == HttpStatusCode.Conflict &&
+              leadModel.Attempts == 1,
+            "stale revision rejected before a second model request");
+
+    var approveLead = new ApproveImplementationPlanRequest(
+        1, 1, firstPlanHash, "APPROVE " + firstPlanHash);
+    using (var wrongHash = await Post(client, leadPath + "/approve",
+        approveLead with { PlanSha256 = new string('f', 64),
+            Confirmation = "APPROVE " + new string('f', 64) }))
+        Check(wrongHash.StatusCode == HttpStatusCode.Conflict,
+            "owner cannot approve a substituted plan digest");
+    using (var wrongConsent = await Post(client, leadPath + "/approve",
+        approveLead with { Confirmation = "APPROVE different" }))
+        Check(wrongConsent.StatusCode == HttpStatusCode.BadRequest,
+            "approval requires exact owner-confirmed plan hash");
+
+    using (var approvedPlan = await Post(client, leadPath + "/approve", approveLead))
+    using (var body = await Body(approvedPlan))
+        Check(approvedPlan.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("status").GetString() == "Approved" &&
+              body.RootElement.GetProperty("planSha256").GetString() == firstPlanHash,
+            "exact owner review saves plan approval");
+    using (var replay = await Post(client, leadPath + "/approve", approveLead))
+        Check(replay.StatusCode == HttpStatusCode.Conflict,
+            "plan approval cannot be replayed");
+
+    using (var eventResponse = await client.GetAsync(
+        "/api/tasks/" + taskBound.Id + "/agent-handoffs"))
+    using (var body = await Body(eventResponse))
+    {
+        var events = body.RootElement.GetProperty("events");
+        Check(eventResponse.StatusCode == HttpStatusCode.OK &&
+              events.EnumerateArray().Any(e =>
+                  e.GetProperty("kind").GetString() == "ArchitectureHandoff" &&
+                  e.GetProperty("toAgent").GetString() == "TechnicalLead") &&
+              events.EnumerateArray().Any(e =>
+                  e.GetProperty("kind").GetString() == "PlanApproved" &&
+                  e.GetProperty("planSha256").GetString() == firstPlanHash &&
+                  e.GetProperty("current").GetBoolean()) &&
+              !body.RootElement.GetProperty("executionAvailable").GetBoolean(),
+            "MAF Technical Lead handoffs and owner approval are durable and nonexecuting");
+    }
+
+    string secondPlanHash;
+    using (var updated = await Post(client, leadPath + "/generate",
+        leadRequest with { ExpectedRevision = 1 }))
+    using (var body = await Body(updated))
+    {
+        secondPlanHash = body.RootElement.GetProperty("planSha256").GetString()!;
+        Check(updated.StatusCode == HttpStatusCode.Created &&
+              secondPlanHash != firstPlanHash &&
+              body.RootElement.GetProperty("status").GetString() == "Proposed" &&
+              leadModel.Attempts == 2,
+            "replanning replaces previous approval with fresh unapproved version");
+    }
+    using (var historyResponse = await client.GetAsync(leadPath))
+    using (var body = await Body(historyResponse))
+    {
+        var history = body.RootElement.GetProperty("history");
+        Check(history.GetArrayLength() == 2 &&
+              history[0].GetProperty("status").GetString() == "Superseded" &&
+              history[1].GetProperty("status").GetString() == "Proposed",
+            "superseded Technical Lead plan is still visible in history");
+    }
+    using (var oldApproval = await Post(client, leadPath + "/approve", approveLead))
+        Check(oldApproval.StatusCode == HttpStatusCode.Conflict,
+            "old approved revision cannot silently regain authority");
+    using (var revisedApproval = await Post(client, leadPath + "/approve",
+        new ApproveImplementationPlanRequest(1, 2, secondPlanHash,
+            "APPROVE " + secondPlanHash)))
+        Check(revisedApproval.StatusCode == HttpStatusCode.OK,
+            "revised plan requires independent human approval");
+    Check(new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id)
+        .Plan?.PlanSha256 == secondPlanHash,
+        "restarted SQLite reader sees exact approved plan identity");
+
     using (var noHash = await Post(client, boundPath, approvedRequest))
         Check(noHash.StatusCode == HttpStatusCode.Conflict,
             "approved architecture cannot be silently ignored by old API callers");
