@@ -980,29 +980,29 @@ try
 
     var approvedEngineerPlan =
         new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!;
-    var partial = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
-    engineeringStore.StartTask(taskBound.Id, partial.Id, "timer-interface");
-    engineeringStore.CompleteTask(taskBound.Id, partial.Id, "timer-interface",
+    var failedEngineerRun = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, failedEngineerRun.Id, "timer-interface",
         new EngineeringChangeSet(
             "Saved the browser entry before later implementation failed.",
             [new EngineeringFileChange("index.html", "Offline browser entry point",
                 "<!doctype html><html><body><button id='start'>Start</button></body></html>")],
             ["Click Start later to verify the behavior"]));
     using (var deniedActive = await Post(client, qaPath,
-        new StartQaReviewRequest(partial.Id, secondPlanHash)))
+        new StartQaReviewRequest(failedEngineerRun.Id, secondPlanHash)))
         Check(deniedActive.StatusCode == HttpStatusCode.Conflict &&
               qaModel.ReviewedFiles.Count == 2,
             "QA cannot read an active engineering job even when it saved source");
-    engineeringStore.StartTask(taskBound.Id, partial.Id, "timer-state");
-    engineeringStore.Finish(taskBound.Id, partial.Id, false, "MODEL_OUTPUT_REJECTED");
-    var partialSource = engineeringStore.Get(taskBound.Id, partial.Id);
+    engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-state");
+    engineeringStore.Finish(taskBound.Id, failedEngineerRun.Id, false, "MODEL_OUTPUT_REJECTED");
+    var partialSource = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
     Check(partialSource.Job.State == "Failed" &&
           partialSource.Files.Count == 1 &&
           partialSource.Tasks[0].State == "Completed" &&
           partialSource.Tasks[1].State == "Failed",
         "failed engineering job retains first file with correct task statuses");
     using (var zipResponse = await client.GetAsync(
-        engineeringPath + "/" + partial.Id + "/zip"))
+        engineeringPath + "/" + failedEngineerRun.Id + "/zip"))
     {
         var data = await zipResponse.Content.ReadAsByteArrayAsync();
         using var archive = new ZipArchive(new MemoryStream(data), ZipArchiveMode.Read);
@@ -1015,7 +1015,7 @@ try
     }
     string partialReviewId;
     using (var admittedPartial = await Post(client, qaPath,
-        new StartQaReviewRequest(partial.Id, secondPlanHash)))
+        new StartQaReviewRequest(failedEngineerRun.Id, secondPlanHash)))
     using (var body = await Body(admittedPartial))
     {
         Check(admittedPartial.StatusCode == HttpStatusCode.Accepted,
