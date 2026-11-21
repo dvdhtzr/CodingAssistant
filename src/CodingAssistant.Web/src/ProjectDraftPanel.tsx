@@ -246,7 +246,7 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   }, [job?.state, onGenerated]);
 
   return <>
-    <JourneyStage step={generationStep} index={3}
+    <JourneyStage step={generationStep} index={4}
       open={expanded === 'generation'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Task-specific project draft generation">
         <p className="hint">With an approved Product Owner specification and both
@@ -338,7 +338,7 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
       </section>
     </JourneyStage>
 
-    <JourneyStage step={deliveryStep} index={4}
+    <JourneyStage step={deliveryStep} index={5}
       open={expanded === 'delivery'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Project files and delivery">
         <p className="hint">Inspect saved source files and export them. Generated source
