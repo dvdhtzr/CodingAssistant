@@ -58,6 +58,34 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     }
 }
 
+// The source-file manifest is NOT the Technical Lead's engineering task
+// plan. Small local models may return unrelated JSON shapes or invalid fields.
+{
+    var sourceFiles = LocalProjectDraftModel.ParseFileManifest(
+        """{"files":[{"path":"index.html","purpose":"Browser entry point"},{"path":"app.js","purpose":"Wire user controls"}]}""");
+    Check(sourceFiles.Count == 2 && sourceFiles[0].Path == "index.html",
+        "strict local file-manifest JSON accepts the documented shape");
+    foreach (var invalid in new[] {
+        """{"tasks":[{"id":"create-ui","title":"Plan tasks"}]}""",
+        """{"files":[{"path":"index.html"}]}""",
+        """{"files":[{"path":"index.html","purpose":"bad"},{"path":"index.html","purpose":"duplicate path"}]}""",
+        """{"files":[]}""",
+        """{"files":"index.html"}""",
+        """{"files":[{"path":"app.js","purpose":"Valid JavaScript file"}]""",
+    })
+    {
+        try
+        {
+            _ = LocalProjectDraftModel.ParseFileManifest(invalid);
+            Check(false, "invalid local JSON cannot pass source plan parser");
+        }
+        catch (StoreFailure error) when (error.Code == "INVALID_PROJECT_PLAN")
+        {
+            Check(true, "malformed/missing/duplicate file-manifest data rejected");
+        }
+    }
+}
+
 // Actual MAF invocation path using an injected no-network IChatClient.
 // No direct LocalInterviewModel/LocalArchitectureAdvisor legacy path is used.
 {
@@ -769,6 +797,76 @@ try
           rejected.Events.Count(e => e.Kind == "PlanCorrectionRequested") == 1,
         "two invalid plans fail closed with no files and no further retries");
 
+    // Regression for INVALID_PROJECT_PLAN after an approved Technical Lead
+    // succeeds: malformed source-manifest JSON is NOT an engineering task plan.
+    // A single local re-plan must recover, without weakening validation.
+    async Task<ProjectDraftSnapshot> RunFileManifestCaseAsync()
+    {
+        using var admitted = await Post(client!, boundPath, new {
+            specificationVersion = specBound.Version,
+            specificationSha256 = specBound.Sha256,
+            architectureSha256 = architectureSha
+        });
+        using var response = await Body(admitted);
+        Check(admitted.StatusCode == HttpStatusCode.Accepted,
+            "owner explicitly initiates a source-file manifest job");
+        var id = response.RootElement.GetProperty("id").GetString()!;
+        for (var attempt = 0; attempt < 160; attempt++)
+        {
+            var snapshot = new ProjectDraftStore(tasks).Get(taskBound.Id, id);
+            if (snapshot.Job.State != "Running") return snapshot;
+            await Task.Delay(25);
+        }
+        throw new Exception("Source-manifest case did not reach a terminal state");
+    }
+
+    boundModel.ReturnWrongStack = false;
+    boundModel.RecoverOnCorrection = false;
+    boundModel.InvalidMetadata = true;
+    boundModel.RecoverInvalidManifest = true;
+    previousPlans = boundModel.PlanAttempts;
+    var repairedMetadata = await RunFileManifestCaseAsync();
+    Check(repairedMetadata.Job.State == "Generated" &&
+          repairedMetadata.Files.Any(file => file.Path == "index.html") &&
+          repairedMetadata.Events.Count(e => e.Kind == "PlanCorrectionRequested") == 1 &&
+          repairedMetadata.Events.Any(e => e.Kind == "PlanCorrectionRequested" &&
+              e.Detail.Contains("INVALID_PROJECT_PLAN")) &&
+          boundModel.PlanAttempts == previousPlans + 2,
+        "invalid file purpose recovers with exactly one safe re-plan");
+
+    boundModel.InvalidMetadata = false;
+    boundModel.MalformedManifest = true;
+    previousPlans = boundModel.PlanAttempts;
+    var repairedJson = await RunFileManifestCaseAsync();
+    Check(repairedJson.Job.State == "Generated" &&
+          repairedJson.Files.Count == 2 &&
+          boundModel.PlanAttempts == previousPlans + 2 &&
+          repairedJson.Events.Count(e => e.Kind == "PlanCorrectionRequested") == 1,
+        "unusable model JSON file manifest receives one corrective retry");
+
+    boundModel.MalformedManifest = false;
+    boundModel.InvalidMetadata = true;
+    boundModel.RecoverInvalidManifest = false;
+    previousPlans = boundModel.PlanAttempts;
+    var rejectedMetadata = await RunFileManifestCaseAsync();
+    Check(rejectedMetadata.Job.State == "Failed" &&
+          rejectedMetadata.Job.ErrorCode == "INVALID_PROJECT_PLAN" &&
+          rejectedMetadata.Files.Count == 0 &&
+          boundModel.PlanAttempts == previousPlans + 2 &&
+          rejectedMetadata.Events.Count(e => e.Kind == "PlanCorrectionRequested") == 1,
+        "two malformed manifests fail closed without any source file saved");
+
+    boundModel.InvalidMetadata = false;
+    boundModel.InvalidPath = true;
+    previousPlans = boundModel.PlanAttempts;
+    var rejectedPath = await RunFileManifestCaseAsync();
+    Check(rejectedPath.Job.State == "Failed" &&
+          rejectedPath.Job.ErrorCode == "INVALID_PROJECT_PATH" &&
+          rejectedPath.Files.Count == 0 &&
+          boundModel.PlanAttempts == previousPlans + 2,
+        "unsafe paths remain forbidden after the single correction attempt");
+    boundModel.InvalidPath = false;
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var boundStore = new ProjectDraftStore(tasks);
@@ -861,6 +959,10 @@ sealed class Phase2DraftModel : IProjectDraftModel
     public bool ReturnWrongStack { get; set; }
     public bool OmitIndex { get; set; }
     public bool RecoverOnCorrection { get; set; }
+    public bool InvalidMetadata { get; set; }
+    public bool InvalidPath { get; set; }
+    public bool MalformedManifest { get; set; }
+    public bool RecoverInvalidManifest { get; set; }
     public int PlanAttempts { get; private set; }
     public string PlanInput { get; private set; } = "";
     public string WriteInput { get; private set; } = "";
@@ -873,6 +975,17 @@ sealed class Phase2DraftModel : IProjectDraftModel
         PlanAttempts++;
         var corrective = approvedSpecification.Contains(
             "FILE PLAN CORRECTION REQUIRED:", StringComparison.Ordinal);
+        if (!corrective || !RecoverInvalidManifest)
+        {
+            if (MalformedManifest)
+                throw new StoreFailure("INVALID_PROJECT_PLAN");
+            if (InvalidMetadata)
+                return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
+                    [new PlannedProjectFile("index.html", "x")]);
+            if (InvalidPath)
+                return Task.FromResult<IReadOnlyList<PlannedProjectFile>>(
+                    [new PlannedProjectFile("../outside.js", "Unsafe source path")]);
+        }
         if (!corrective || !RecoverOnCorrection)
         {
             if (ReturnWrongStack)
