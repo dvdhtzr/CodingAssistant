@@ -58,6 +58,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             MafAgentPurpose.Interview => interviewSchema,
             MafAgentPurpose.Architecture => "json",
             MafAgentPurpose.TechnicalLead => "json",
+            MafAgentPurpose.SoftwareEngineer => "json",
             _ => null
         };
         var maxTokens = purpose switch
@@ -65,6 +66,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             MafAgentPurpose.Interview => 750,
             MafAgentPurpose.Specification => 3500,
             MafAgentPurpose.TechnicalLead => 3500,
+            MafAgentPurpose.SoftwareEngineer => 6000,
             _ => 1800
         };
         var chat = new
@@ -96,7 +98,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         {
             BaseAddress = Ollama,
             Timeout = TimeSpan.FromMinutes(8),
-            MaxResponseContentBufferSize = 100_000
+            MaxResponseContentBufferSize = 130_000
         };
         using var request = new HttpRequestMessage(HttpMethod.Post, "api/chat")
         {
@@ -112,7 +114,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             if (!response.IsSuccessStatusCode)
                 throw new StoreFailure("LOCAL_MODEL_UNAVAILABLE");
             var payload = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (payload.Length > 100_000)
+            if (payload.Length > 130_000)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             using var decoded = JsonDocument.Parse(payload);
             if (decoded.RootElement.ValueKind != JsonValueKind.Object ||
@@ -154,7 +156,8 @@ public enum MafAgentPurpose
     Interview,
     Specification,
     Architecture,
-    TechnicalLead
+    TechnicalLead,
+    SoftwareEngineer
 }
 
 public interface IMafChatClientFactory

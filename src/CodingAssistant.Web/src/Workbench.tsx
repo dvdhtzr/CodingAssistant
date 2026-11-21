@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type ApiStatus, type RunItem, type TaskItem, type TaskView } from './api';
 import { MafHandoffTimeline } from './MafHandoffTimeline';
+import { AgentIdentityPanel } from './AgentIdentityPanel';
 
 export type WorkbenchView = 'overview' | 'studio' | 'diagnostics';
 
@@ -10,7 +11,7 @@ const initialTeam = [
   { role: 'Product Owner', initials: 'PO', availability: 'MAF · local Ollama (on request)' },
   { role: 'Solution Architect', initials: 'SA', availability: 'MAF · local Ollama (on request)' },
   { role: 'Technical Lead', initials: 'TL', availability: 'MAF · local Ollama (on request)' },
-  { role: 'Software Engineer', initials: 'SE', availability: 'Planned — no live agent' },
+  { role: 'Software Engineer', initials: 'SE', availability: 'MAF · task-by-task source (on request)' },
   { role: 'QA Engineer', initials: 'QA', availability: 'Planned — no live agent' },
   { role: 'Security Reviewer', initials: 'SR', availability: 'Planned — no live agent' },
 ];
@@ -120,6 +121,7 @@ export function WorkbenchInspector({ token, view, taskView, run, status, onConti
         onClick={onContinue}>Open Engineering Studio</button>}
     </> : <p className="wb-muted">Create or open a project to inspect its work.</p>}
     {taskView && <MafHandoffTimeline token={token} taskId={taskView.task.id} />}
+    <AgentIdentityPanel token={token} />
     <div className="wb-inspector-divider" />
     <p className="wb-kicker">CONTROL PLANE</p>
     <div className="wb-inspector-row"><span>Inference</span><strong>Local Ollama</strong></div>

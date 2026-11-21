@@ -6,7 +6,8 @@ public sealed record MafHandoffEvent(
     string TaskId, string Kind, string FromAgent, string ToAgent,
     int SpecificationVersion, string SpecificationSha256,
     int Revision, string Model, string CreatedUtc, bool Current,
-    string? PlanSha256 = null, string? ArchitectureSha256 = null);
+    string? PlanSha256 = null, string? ArchitectureSha256 = null,
+    string? WorkItemId = null);
 
 /// <summary>
 /// Owner-private, append-only evidence of host-authorized agent handoffs.

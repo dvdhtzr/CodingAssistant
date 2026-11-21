@@ -1,0 +1,262 @@
+import { useCallback, useEffect, useState } from 'react';
+import { api } from './api';
+
+export interface EngineerRun {
+  id: string;
+  taskId: string;
+  planRevision: number;
+  planSha256: string;
+  specificationVersion: number;
+  specificationSha256: string;
+  architectureSha256: string;
+  model: string;
+  state: 'Running' | 'Generated' | 'Failed' | 'Interrupted';
+  phase: string;
+  errorCode: string | null;
+  createdUtc: string;
+  updatedUtc: string;
+}
+export interface EngineerAssignment {
+  id: string;
+  ordinal: number;
+  title: string;
+  state: 'Pending' | 'Running' | 'Completed' | 'Failed' | 'Interrupted';
+  summary: string | null;
+  startedUtc: string | null;
+  completedUtc: string | null;
+}
+export interface EngineerFile {
+  path: string;
+  purpose: string;
+  content: string;
+  sha256: string;
+  lastWorkItemId: string;
+  updatedUtc: string;
+}
+export interface EngineerEvent {
+  sequence: number;
+  kind: string;
+  detail: string;
+  createdUtc: string;
+}
+export interface EngineerSnapshot {
+  job: EngineerRun;
+  tasks: EngineerAssignment[];
+  events: EngineerEvent[];
+  files: EngineerFile[];
+}
+interface PlanResponse {
+  plan: {
+    revision: number;
+    planSha256: string;
+    status: string;
+    current: boolean;
+  } | null;
+}
+
+export function useEngineeringRun(token: string, taskId: string) {
+  const [snapshot, setSnapshot] = useState<EngineerSnapshot | null>(null);
+  const [plan, setPlan] = useState<PlanResponse['plan']>(null);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const refresh = useCallback(() => setRefreshKey(value => value + 1), []);
+  useEffect(() => {
+    let closed = false;
+    setSnapshot(null);
+    setPlan(null);
+    setError('');
+    async function load() {
+      try {
+        const [result, currentPlan] = await Promise.all([
+          api<{ snapshot: EngineerSnapshot | null }>(
+            token, '/api/tasks/' + taskId + '/engineering-runs/latest'),
+          api<PlanResponse>(token,
+            '/api/tasks/' + taskId + '/implementation-plan'),
+        ]);
+        if (!closed) {
+          setSnapshot(result.snapshot);
+          setPlan(currentPlan.plan);
+        }
+      } catch (cause) {
+        if (!closed) setError(cause instanceof Error ? cause.message :
+          'Cannot load Software Engineer history');
+      }
+    }
+    void load();
+    // Poll authentic persisted state; the renderer never invents a percentage.
+    const interval = window.setInterval(() => void load(), 3000);
+    return () => { closed = true; window.clearInterval(interval); };
+  }, [token, taskId, refreshKey]);
+
+  async function start() {
+    if (busy || snapshot?.job.state === 'Running') return;
+    setBusy('start');
+    setError('');
+    try {
+      // Always get an authoritative current approval before starting.
+      const approval = await api<PlanResponse>(token,
+        '/api/tasks/' + taskId + '/implementation-plan');
+      setPlan(approval.plan);
+      if (!approval.plan || !approval.plan.current ||
+          approval.plan.status !== 'Approved')
+        throw new Error('Approve the current Technical Lead plan first.');
+      const job = await api<EngineerRun>(token,
+        '/api/tasks/' + taskId + '/engineering-runs', {
+          planRevision: approval.plan.revision,
+          planSha256: approval.plan.planSha256,
+        });
+      setSnapshot({
+        job, tasks: [], files: [],
+        events: [{ sequence: 1, kind: 'EngineeringRunAdmitted',
+          detail: 'Approved plan accepted for source-only tasks',
+          createdUtc: job.createdUtc }],
+      });
+      refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not start engineering');
+    } finally { setBusy(''); }
+  }
+
+  async function cancel() {
+    if (!snapshot || snapshot.job.state !== 'Running' || busy) return;
+    setBusy('cancel');
+    setError('');
+    try {
+      const updated = await api<EngineerSnapshot>(token,
+        '/api/tasks/' + taskId + '/engineering-runs/' +
+          snapshot.job.id + '/cancel', {});
+      setSnapshot(updated);
+      refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not stop engineering');
+    } finally { setBusy(''); }
+  }
+
+  async function download() {
+    if (!snapshot || snapshot.job.state !== 'Generated' || busy) return;
+    setBusy('download');
+    setError('');
+    try {
+      const response = await fetch(
+        '/api/tasks/' + taskId + '/engineering-runs/' +
+        snapshot.job.id + '/zip', {
+          cache: 'no-store',
+          credentials: 'omit',
+          referrerPolicy: 'no-referrer',
+          headers: { Authorization: 'Bearer ' + token },
+        });
+      if (!response.ok)
+        throw new Error('Source ZIP unavailable (' + response.status + ').');
+      const href = URL.createObjectURL(await response.blob());
+      const element = document.createElement('a');
+      element.href = href;
+      element.download = 'codingassistant-engineering-source.zip';
+      element.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 3000);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not download source');
+    } finally { setBusy(''); }
+  }
+
+  return { snapshot, plan, busy, error, refresh, start, cancel, download };
+}
+
+export type EngineeringState = ReturnType<typeof useEngineeringRun>;
+
+export function EngineeringGenerationPanel({ engine, legacyRunning }: {
+  engine: EngineeringState;
+  legacyRunning: boolean;
+}) {
+  const job = engine.snapshot?.job;
+  const running = job?.state === 'Running';
+  const approved = engine.plan?.status === 'Approved' &&
+    engine.plan.current === true;
+  return <section className="engineering-workspace"
+    aria-label="MAF Software Engineer tasks">
+    <div className="technical-plan-heading">
+      <strong>Software Engineer · MAF task-by-task</strong>
+      <span className="pill">Local Ollama · source only</span>
+    </div>
+    <p className="hint">A separate agent implements each dependency-ordered
+      assignment from your <strong>approved Technical Lead plan</strong>.
+      Its independent role, goals and professional backstory are host-owned.
+      The source is not built, executed or independently tested.</p>
+    {!approved && <p className="hint">
+      Approve the current Technical Lead plan to enable this workflow.
+      Existing source generation remains available below.</p>}
+    <div className="actions">
+      <button type="button" className="primary"
+        disabled={!approved || !!engine.busy || legacyRunning || running}
+        onClick={() => void engine.start()}>
+        {engine.busy === 'start' ? 'Admitting tasks…' :
+          'Ask Software Engineer to implement approved tasks'}
+      </button>
+      {running && <button type="button" className="danger"
+        disabled={!!engine.busy} onClick={() => void engine.cancel()}>
+        Stop engineering run
+      </button>}
+      <button type="button" className="outline" onClick={engine.refresh}
+        disabled={!!engine.busy}>Refresh saved task progress</button>
+    </div>
+    {engine.error && <div className="alert" role="alert">{engine.error}</div>}
+    {job && <>
+      <p className="hint" role="status"><strong>{job.state}</strong>
+        {' · '}plan v{job.planRevision}{' · '}{job.phase}
+        {' · '}model {job.model}
+        {job.errorCode ? ' · ' + job.errorCode : ''}
+      </p>
+      {running && <p className="hint">Your selected model is working on the
+        recorded tasks. This is not a fabricated progress percentage.</p>}
+      {job.state === 'Failed' && <p className="activity-warning" role="alert">
+        Source generation stopped safely. Completed task files remain inspectable.
+        No verification or successful full build is claimed.</p>}
+      <ol className="engineering-tasks">
+        {(engine.snapshot?.tasks ?? []).map(item => <li key={item.id}>
+          <strong>{item.title}</strong>
+          <small>Task {item.ordinal + 1} · {item.state} · {item.id}</small>
+          {item.summary && <p className="hint">{item.summary}</p>}
+        </li>)}
+      </ol>
+      <details>
+        <summary>Saved engineering activity ({engine.snapshot?.events.length ?? 0})</summary>
+        <ol className="events" aria-label="Software Engineer saved activity">
+          {engine.snapshot?.events.map(event => <li key={event.sequence}>
+            <span className="number">#{event.sequence}</span>
+            <span><strong>{event.kind}</strong> · {event.detail}</span>
+          </li>)}
+        </ol>
+      </details>
+    </>}
+  </section>;
+}
+
+export function EngineeringDeliveryPanel({ engine }: {
+  engine: EngineeringState;
+}) {
+  if (!engine.snapshot) return null;
+  const { job, files } = engine.snapshot;
+  return <section className="engineering-workspace"
+    aria-label="Software Engineer source artifacts">
+    <h3>Software Engineer source artifacts (unverified)</h3>
+    <p className="hint">Plan v{job.planRevision} ·
+      {files.length} saved file(s) · state {job.state}.
+      These files are distinct from the legacy source generator's ZIP.</p>
+    {job.state === 'Generated' && <div className="actions">
+      <button type="button" disabled={!!engine.busy}
+        onClick={() => void engine.download()}>
+        {engine.busy === 'download' ? 'Preparing ZIP…' :
+          'Download Software Engineer ZIP'}
+      </button>
+    </div>}
+    {files.length > 0 && <div className="draft-files">
+      {files.map(file => <details key={file.path}>
+        <summary><strong>{file.path}</strong> · {file.content.length} characters</summary>
+        <p className="hint">Last changed by task {file.lastWorkItemId} ·
+          SHA-256 {file.sha256}</p>
+        <pre className="specification-text">{file.content}</pre>
+      </details>)}
+    </div>}
+  </section>;
+}

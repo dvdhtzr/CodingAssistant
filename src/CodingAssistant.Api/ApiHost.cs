@@ -48,7 +48,8 @@ public static class ApiHost
         IProjectDraftModel? projectModelOverride = null,
         IOllamaModelCatalog? catalogOverride = null,
         IArchitectureAdvisor? architectureAdvisorOverride = null,
-        IImplementationPlanner? implementationPlannerOverride = null)
+        IImplementationPlanner? implementationPlannerOverride = null,
+        IEngineeringTaskModel? engineeringModelOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -87,6 +88,11 @@ public static class ApiHost
         handoffs.Initialize();
         var implementationPlans = new ImplementationPlanStore(store, interviews);
         implementationPlans.Initialize();
+        var engineeringRuns = new EngineeringRunStore(
+            store, implementationPlans);
+        engineeringRuns.Initialize();
+        engineeringRuns.MarkInterruptedOnStartup();
+        var softwareEngineer = engineeringModelOverride ?? new MafSoftwareEngineer();
         var technicalLead = implementationPlannerOverride ?? (IImplementationPlanner)mafTeam;
         var catalog = catalogOverride ?? new LocalOllamaModelCatalog();
         var projectDrafts = new ProjectDraftStore(store);
@@ -147,6 +153,9 @@ public static class ApiHost
         builder.Services.AddSingleton(architectureDecisions);
         builder.Services.AddSingleton(handoffs);
         builder.Services.AddSingleton(implementationPlans);
+        builder.Services.AddSingleton(engineeringRuns);
+        builder.Services.AddSingleton<IEngineeringTaskModel>(softwareEngineer);
+        builder.Services.AddSingleton<EngineeringRunCoordinator>();
         builder.Services.AddSingleton<IImplementationPlanner>(technicalLead);
         builder.Services.AddSingleton<IArchitectureAdvisor>(architectModel);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
@@ -305,11 +314,13 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/interview", (string id, InterviewStore db) =>
             Safe(() => Results.Ok(db.Read(id))));
         app.MapGet("/api/tasks/{id}/agent-handoffs",
-            (string id, MafHandoffStore db, ImplementationPlanStore plans) =>
+            (string id, MafHandoffStore db, ImplementationPlanStore plans,
+             EngineeringRunStore engineers) =>
                 Safe(() => Results.Ok(new {
                     engine = "Microsoft Agent Framework",
                     executionAvailable = false,
                     events = db.List(id).Concat(plans.Handoffs(id))
+                        .Concat(engineers.Handoffs(id))
                         .OrderBy(e => e.CreatedUtc).ThenBy(e => e.Kind).ToArray()
                 })));
         app.MapPost("/api/tasks/{id}/interview/turn", (
@@ -496,6 +507,33 @@ public static class ApiHost
             (string id, ApproveImplementationPlanRequest input,
              ImplementationPlanStore db) =>
                 Safe(() => Results.Ok(db.Approve(id, input))));
+        // Exact identity, goals, fictional work histories and future skill scopes
+        // are host-owned; none of these fields grant executable permissions.
+        app.MapGet("/api/agents/roster", () =>
+            Results.Ok(new { engine = "Microsoft Agent Framework",
+                agents = EngineeringAgentRoster.All }));
+
+        // Fourth real MAF agent: one task at a time from the exact current
+        // owner-approved Technical Lead plan, source-only and never executed.
+        app.MapGet("/api/tasks/{id}/engineering-runs/latest",
+            (string id, EngineeringRunStore db) =>
+                Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
+        app.MapPost("/api/tasks/{id}/engineering-runs",
+            (string id, StartEngineeringRunRequest request,
+             EngineeringRunCoordinator coordinator) =>
+                Safe(() => Results.Accepted(
+                    $"/api/tasks/{id}/engineering-runs",
+                    coordinator.Start(id, request))));
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}",
+            (string id, string runId, EngineeringRunStore db) =>
+                Safe(() => Results.Ok(db.Get(id, runId))));
+        app.MapPost("/api/tasks/{id}/engineering-runs/{runId}/cancel",
+            (string id, string runId, EngineeringRunCoordinator coordinator) =>
+                Safe(() => Results.Ok(coordinator.Cancel(id, runId))));
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/zip",
+            (string id, string runId, EngineeringRunStore db) =>
+                Safe(() => Results.File(db.Zip(id, runId), "application/zip",
+                    "codingassistant-engineering-source.zip")));
         // User-scoped draft source generation. This is not M1 agent
         // execution and runs NO model-generated code, shell or package tool.
         // Only an approved, current interview specification can start it.

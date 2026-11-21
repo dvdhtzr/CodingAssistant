@@ -4,7 +4,8 @@ import { api } from './api';
 interface HandoffEvent {
   taskId: string;
   kind: 'SpecificationHandoff' | 'ArchitectureProposalSaved' |
-    'ArchitectureHandoff' | 'PlanProposed' | 'PlanApproved';
+    'ArchitectureHandoff' | 'PlanProposed' | 'PlanApproved' |
+    'EngineeringTaskAssigned' | 'EngineeringTaskCompleted';
   fromAgent: string;
   toAgent: string;
   specificationVersion: number;
@@ -13,6 +14,7 @@ interface HandoffEvent {
   model: string;
   planSha256?: string | null;
   architectureSha256?: string | null;
+  workItemId?: string | null;
   createdUtc: string;
   current: boolean;
 }
@@ -53,7 +55,7 @@ export function MafHandoffTimeline({ token, taskId }: {
     {error && <p className="wb-muted">Could not load agent history.
       Your saved work is unchanged.</p>}
     {data && <>
-      <p className="wb-muted">MAF · Local Ollama · Planning only</p>
+      <p className="wb-muted">MAF · Local Ollama · Planning and unverified source</p>
       {data.events.length === 0 && <p className="wb-muted">
         No approved agent handoffs recorded for this project yet.</p>}
       <ol className="wb-maf-events">
@@ -68,14 +70,19 @@ export function MafHandoffTimeline({ token, taskId }: {
                 ? 'Approved architecture given to Technical Lead'
                 : item.kind === 'PlanProposed'
                   ? 'Implementation plan proposed for your review'
-                  : 'Owner approved plan for engineering backlog (not executed)'}</small>
+                  : item.kind === 'PlanApproved'
+                    ? 'Owner approved plan for engineering backlog (not executed)'
+                    : item.kind === 'EngineeringTaskAssigned'
+                      ? 'Engineering task assigned to Software Engineer'
+                      : 'Source changes saved for engineering task (not tested)'}</small>
           <small>Spec v{item.specificationVersion} · {item.model}
             {item.planSha256 ? ' · Plan ' + item.planSha256.slice(0, 10) : ''}
+            {item.workItemId ? ' · ' + item.workItemId : ''}
             {item.current ? '' : ' · Historical'}</small>
         </li>)}
       </ol>
       <p className="wb-muted">These are saved events, not live model telemetry.
-        No coding or execution is authorized.</p>
+        Source generation does not authorize code execution.</p>
     </>}
   </section>;
 }
