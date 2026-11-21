@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { EngineeringGenerationPanel, EngineeringDeliveryPanel, useEngineeringRun }
+  from './EngineeringWorkspace';
 import { api } from './api';
 import { TaskBuildPanel } from './TaskBuildPanel';
 import { JourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
@@ -67,6 +69,7 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [clock, setClock] = useState(Date.now());
+  const engineer = useEngineeringRun(token, taskId);
 
   useEffect(() => {
     let closed = false;
@@ -204,10 +207,17 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   const currentArchitecture = !result?.architecture ||
     result.architecture.sha256 === architecture?.architectureSha256;
   const generated = job?.state === 'Generated' && !!result?.files.length;
+  const engineerJob = engineer.snapshot?.job;
+  const engineerGenerated = engineerJob?.state === 'Generated' &&
+    !!engineer.snapshot?.files.length;
 
   const generationStep: JourneyStep = {
     id: 'generation', title: 'Source Generation', detail: 'Create project source files',
-    ...(job?.state === 'Running'
+    ...(engineerJob?.state === 'Running'
+      ? { tone: 'active' as const, status: 'MAF Engineer implementing tasks' }
+      : engineerGenerated
+        ? { tone: 'complete' as const, status: 'Engineering source — not tested' }
+        : job?.state === 'Running'
       ? { tone: 'active' as const, status: 'Generating files locally' }
       : job?.state === 'Failed' || job?.state === 'Interrupted'
         ? { tone: 'blocked' as const, status: 'Generation ' + job.state.toLowerCase() }
@@ -223,7 +233,10 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   };
   const deliveryStep: JourneyStep = {
     id: 'delivery', title: 'Artifacts & Delivery', detail: 'Inspect files and download ZIP',
-    ...(generated
+    ...(engineerGenerated
+      ? { tone: 'complete' as const,
+        status: engineer.snapshot?.files.length + ' engineering file(s) — unverified' }
+      : generated
       ? currentSpec && currentArchitecture
         ? { tone: 'complete' as const,
           status: result?.files.length + ' file(s) — unverified' }
@@ -239,23 +252,35 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   // Navigate forward only when an observed running job completes. Merely opening
   // a saved completed project must not silently interrupt the owner's navigation.
   const previousJobState = useRef<string | null>(null);
+  const previousEngineerState = useRef<string | null>(null);
   useEffect(() => {
     if (previousJobState.current === 'Running' && job?.state === 'Generated')
       onGenerated();
     previousJobState.current = job?.state ?? null;
   }, [job?.state, onGenerated]);
+  useEffect(() => {
+    if (previousEngineerState.current === 'Running' &&
+        engineerJob?.state === 'Generated')
+      onGenerated();
+    previousEngineerState.current = engineerJob?.state ?? null;
+  }, [engineerJob?.state, onGenerated]);
 
   return <>
     <JourneyStage step={generationStep} index={4}
       open={expanded === 'generation'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Task-specific project draft generation">
+        <EngineeringGenerationPanel engine={engineer}
+          legacyRunning={running} />
+        <div className="wb-inspector-divider" />
+        <h3>Classic source generator (fallback)</h3>
         <p className="hint">With an approved Product Owner specification and both
           Solution Architect decisions, your local model writes source files one by one.
           This does not execute, compile, test, or install anything. Files are unverified drafts.</p>
         <div className="actions">
           <button className="primary" type="button"
             disabled={!!busy || spec?.status !== 'Approved' ||
-              !architecture?.readyForSourceGeneration || running}
+              !architecture?.readyForSourceGeneration || running ||
+              engineerJob?.state === 'Running'}
             onClick={() => void start()}>
             {busy === 'start' ? 'Starting…' : 'Generate approved project draft'}
           </button>
@@ -348,6 +373,7 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
     <JourneyStage step={deliveryStep} index={5}
       open={expanded === 'delivery'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Project files and delivery">
+        <EngineeringDeliveryPanel engine={engineer} />
         <p className="hint">Inspect saved source files and export them. Generated source
           is not an independently tested or verified build.</p>
         {error && <div className="alert" role="alert">{error}</div>}
