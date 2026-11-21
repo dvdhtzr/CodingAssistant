@@ -64,6 +64,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         {
             MafAgentPurpose.Interview => 750,
             MafAgentPurpose.Specification => 3500,
+            MafAgentPurpose.TechnicalLead => 3500,
             _ => 1800
         };
         var chat = new
