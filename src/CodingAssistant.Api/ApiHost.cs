@@ -261,6 +261,12 @@ public static class ApiHost
                 var created = db.CreateTask(input);
                 return Results.Created($"/api/tasks/{created.Id}", created);
             }));
+        app.MapDelete("/api/tasks/{id}", (string id, TaskStore db) =>
+            Safe(() =>
+            {
+                db.DeleteTask(id);
+                return Results.NoContent();
+            }));
         // Static HTML generation returns text only: no agent, tools or project writes.
         app.MapGet("/api/tasks/{id}/html", (string id, HtmlArtifactStore artifacts) =>
             Safe(() => {

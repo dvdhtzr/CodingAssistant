@@ -57,7 +57,7 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   token: string;
   taskId: string;
   spec: SpecContract | null;
-  expanded: JourneyId;
+  expanded: JourneyId | null;
   onExpand: (stage: JourneyId) => void;
   onGenerated: () => void;
   onStageChange: (generation: JourneyStep, delivery: JourneyStep) => void;

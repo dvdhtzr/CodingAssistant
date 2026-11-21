@@ -8,6 +8,7 @@ let vite;
 let JourneyStage;
 let JourneyStatusStrip;
 let restoreJourneyStage;
+let toggleJourneyStage;
 let steps;
 let InterviewStudio;
 
@@ -28,7 +29,7 @@ before(async () => {
     appType: 'custom',
   });
   const journey = await vite.ssrLoadModule('/src/ProjectJourney.tsx');
-  ({ JourneyStage, JourneyStatusStrip, restoreJourneyStage } = journey);
+  ({ JourneyStage, JourneyStatusStrip, restoreJourneyStage, toggleJourneyStage } = journey);
   steps = journey.journeySteps;
   ({ InterviewStudio } = await vite.ssrLoadModule('/src/InterviewStudio.tsx'));
 });
@@ -107,4 +108,21 @@ test('saved work restores to its next useful stage without treating source as te
   assert.equal(restoreJourneyStage('Approved', 'complete', 'active', 'pending'), 'generation');
   assert.equal(restoreJourneyStage('Approved', 'complete', 'complete', 'complete'), 'delivery');
   assert.equal(restoreJourneyStage('Approved', 'blocked', 'pending', 'attention'), 'architecture');
+});
+
+test('repeated header press collapses all panels, while the next opens one', () => {
+  assert.equal(toggleJourneyStage('discovery', 'discovery'), null);
+  assert.equal(toggleJourneyStage(null, 'specification'), 'specification');
+  assert.equal(toggleJourneyStage('specification', 'architecture'), 'architecture');
+  assert.equal(toggleJourneyStage('architecture', 'architecture'), null);
+  assert.equal(toggleJourneyStage(null, 'architecture'), 'architecture');
+});
+
+test('progress strip remains understandable with no expanded stage', () => {
+  const html = renderToStaticMarkup(React.createElement(JourneyStatusStrip, {
+    title: task.title, steps, activeId: null,
+  }));
+  assert.match(html, /All stages collapsed/);
+  assert.match(html, /No stage open/);
+  assert.doesNotMatch(html, /Stage 0/);
 });

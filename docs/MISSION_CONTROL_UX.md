@@ -129,3 +129,19 @@ The existing legacy diagnostics and workspace navigation remain outside the
 accordion. This stage UI is not a new task engine or live MAF agent registry.
 The five current stages are declared as data, allowing later server-driven
 stages and work products without tying the layout to fixed numbers.
+
+## Follow-up: optional zero-open state and owner project deletion
+
+A second press on the current accordion header closes its stage. The initial
+saved-project view still restores one actionable stage, and no other stage is
+opened automatically after deliberate manual collapse. The progress strip
+shows "All stages collapsed", not a nonexistent Stage 0.
+
+Each saved-project row includes a visible Delete action, followed by a separate
+confirmation explaining that this is permanent. The authenticated owner DELETE
+endpoint removes the selected task, interview/specification history, architecture
+decisions, generated draft files and events, HTML artifacts, pilot scope reviews,
+plans, run intents and execution event history, atomically with SQLite FK checks
+enabled. Other projects are untouched. Active generation or execution blocks
+deletion with a conflict until cancelled/completed. The UI clears a deleted
+project selection but does not delete any workspace directory or Git repository.

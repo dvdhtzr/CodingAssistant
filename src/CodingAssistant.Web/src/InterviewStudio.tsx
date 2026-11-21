@@ -3,7 +3,7 @@ import { ProjectDraftPanel } from './ProjectDraftPanel';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { api, type TaskItem } from './api';
 import { JourneyStage, JourneyStatusStrip, journeySteps, restoreJourneyStage,
-  type JourneyId, type JourneyStep } from './ProjectJourney';
+  toggleJourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
 
 interface InterviewMessage {
   sequence: number;
@@ -45,7 +45,7 @@ export function InterviewStudio({ token, task }: {
   const [error, setError] = useState('');
   const [approveChecked, setApproveChecked] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [expanded, setExpanded] = useState<JourneyId>('discovery');
+  const [expanded, setExpanded] = useState<JourneyId | null>('discovery');
   const manuallySelected = useRef(false);
   const [architectureStep, setArchitectureStep] = useState<JourneyStep>(journeySteps[2]);
   const [generationStep, setGenerationStep] = useState<JourneyStep>(journeySteps[3]);
@@ -53,7 +53,7 @@ export function InterviewStudio({ token, task }: {
 
   const openStage = useCallback((id: JourneyId) => {
     manuallySelected.current = true;
-    setExpanded(id);
+    setExpanded(current => toggleJourneyStage(current, id));
   }, []);
   const reportArchitecture = useCallback((step: JourneyStep) => {
     setArchitectureStep(previous => previous.tone === step.tone &&
@@ -65,7 +65,9 @@ export function InterviewStudio({ token, task }: {
     setDeliveryStep(previous => previous.tone === delivery.tone &&
       previous.status === delivery.status ? previous : delivery);
   }, []);
-  const architectureReady = useCallback(() => { setExpanded('generation'); }, []);
+  const architectureReady = useCallback(() => {
+    setExpanded(current => current === 'architecture' ? 'generation' : current);
+  }, []);
   const generationComplete = useCallback(() => {
     setExpanded(current => current === 'generation' ? 'delivery' : current);
   }, []);
@@ -132,13 +134,10 @@ export function InterviewStudio({ token, task }: {
       setSnapshot(updated);
       setApproveChecked(false);
       if (operation === 'answer') setAnswer('');
-      if (operation === 'draft') {
-        manuallySelected.current = true;
-        setExpanded('specification');
-      }
       if (operation === 'approve') {
         manuallySelected.current = true;
-        setExpanded('architecture');
+        // Honor a deliberate collapse while the approval request was in flight.
+        setExpanded(current => current === 'specification' ? 'architecture' : current);
       }
     } catch (cause) {
       const code = cause instanceof Error ? cause.message : 'Unknown error';

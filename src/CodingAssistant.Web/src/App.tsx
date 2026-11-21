@@ -4,7 +4,7 @@ import { ProjectOverview, WorkbenchInspector, WorkbenchSidebar,
   type WorkbenchView } from './Workbench';
 import * as signalR from '@microsoft/signalr';
 import {
-  api, bootstrapLocalSession, newRequestId, isHexId,
+  api, deleteTask, bootstrapLocalSession, newRequestId, isHexId,
   type ApiStatus, type TaskItem, type TaskView, type RunItem,
   type RunEvent, type EventPage, type ExecutionView, type PlanItem,
   type HtmlArtifact, type HtmlArtifactResponse,
@@ -414,7 +414,25 @@ export default function App() {
         onNewProject={() => chooseTask('')} onChangeView={setView}
         onRefresh={() => void action('refresh', async () => {
           await fetchTasks(); refreshTask();
-        })} />
+        })}
+        onDeleteTask={async id => {
+          setBusy('delete-task');
+          setError('');
+          try {
+            await deleteTask(token, id);
+            setTasks(previous => previous.filter(task => task.id !== id));
+            if (taskId === id) chooseTask('');
+            return true;
+          } catch (cause) {
+            const code = cause instanceof Error ? cause.message : 'Unknown error';
+            setError(code.includes('BUILD_BUSY') || code.includes('EXECUTION_BUSY')
+              ? 'This project has an active job. Stop or complete it before deletion.'
+              : 'Could not delete project: ' + code);
+            return false;
+          } finally {
+            setBusy('');
+          }
+        }} />
       <main className="stack wb-main">
         {!taskId && <section className="panel new-project-panel">
           <span className="pill">Start a project</span>

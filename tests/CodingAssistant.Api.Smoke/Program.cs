@@ -1925,6 +1925,9 @@ try
         var rawDraftStore = new ProjectDraftStore(new TaskStore(interviewData));
         var pendingContract = rawDraftStore.Start(
             id, specVersion, specHash, "qwen3.5:4b");
+        using (var blockedDelete = await interviewClient.DeleteAsync("/api/tasks/" + id))
+            Check(blockedDelete.StatusCode == HttpStatusCode.Conflict,
+                "project cannot be deleted while a draft job is running");
 
         // More owner input deliberately supersedes an approved contract.
         using (var more = await Post(interviewClient,
@@ -1972,6 +1975,60 @@ try
                   json.RootElement.GetProperty("specification")
                     .GetProperty("sha256").GetString() != specHash,
                 "revised specification gets a new immutable version/hash");
+
+        // Delete the project only after the draft has finished. Interview,
+        // spec history, approved architecture, generated files and events must
+        // all be removed together without touching a different saved project.
+        using (var anonymous = new HttpClient { BaseAddress = interviewClient.BaseAddress })
+        using (var denied = await anonymous.DeleteAsync("/api/tasks/" + id))
+            Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+                "project deletion requires the owner session");
+        using (var invalid = await interviewClient.DeleteAsync("/api/tasks/bad-id"))
+            Check(invalid.StatusCode == HttpStatusCode.BadRequest,
+                "project deletion rejects malformed IDs");
+        using (var deleted = await interviewClient.DeleteAsync("/api/tasks/" + id))
+            Check(deleted.StatusCode == HttpStatusCode.NoContent,
+                "owner can permanently delete the saved interview project");
+        using (var missing = await interviewClient.GetAsync("/api/tasks/" + id))
+            Check(missing.StatusCode == HttpStatusCode.NotFound,
+                "deleted project is no longer accessible");
+        using (var stillThere = await interviewClient.GetAsync(
+            "/api/tasks/" + dotnetTaskId))
+            Check(stillThere.StatusCode == HttpStatusCode.OK,
+                "deleting one project leaves other saved projects intact");
+
+        using (var db = new SqliteConnection(
+            "Data Source=" + Path.Combine(interviewData, "codingassistant.db")))
+        {
+            db.Open();
+            using var integrity = db.CreateCommand();
+            integrity.CommandText = "PRAGMA foreign_key_check;";
+            using var rows = integrity.ExecuteReader();
+            Check(!rows.Read(), "deleting projects leaves all SQLite foreign keys valid");
+            foreach (var table in new[] {
+                "interview_sessions", "interview_messages", "interview_specs",
+                "architecture_decisions", "project_drafts",
+                "task_builds",
+            })
+            {
+                using var count = db.CreateCommand();
+                count.CommandText = "SELECT COUNT(*) FROM " + table + " WHERE task_id=@id";
+                count.Parameters.AddWithValue("@id", id);
+                Check(Convert.ToInt64(count.ExecuteScalar()) == 0,
+                    "deleted project has no saved " + table + " records");
+            }
+            using var files = db.CreateCommand();
+            files.CommandText = """
+                SELECT COUNT(*) FROM project_draft_files f
+                JOIN project_drafts d ON d.id=f.draft_id WHERE d.task_id=@id
+                """;
+            files.Parameters.AddWithValue("@id", id);
+            Check(Convert.ToInt64(files.ExecuteScalar()) == 0,
+                "deleted project has no generated source files");
+        }
+        using (var duplicateDelete = await interviewClient.DeleteAsync("/api/tasks/" + id))
+            Check(duplicateDelete.StatusCode == HttpStatusCode.NotFound,
+                "repeated deletion reports project missing");
     }
     finally
     {
@@ -1981,6 +2038,35 @@ try
             await interviewApp.StopAsync();
             await interviewApp.DisposeAsync();
         }
+    }
+
+    // The original planning project contains saved HTML, plans and run events.
+    // Its independent deletion must remove those records transactionally too.
+    using (var deleted = await client.DeleteAsync("/api/tasks/" + taskId))
+        Check(deleted.StatusCode == HttpStatusCode.NoContent,
+            "owner can delete a planning project with HTML and run history");
+    using (var missing = await client.GetAsync("/api/tasks/" + taskId))
+        Check(missing.StatusCode == HttpStatusCode.NotFound,
+            "deleted planning project cannot be fetched");
+    using (var removedRun = await client.GetAsync("/api/runs/" + runId))
+        Check(removedRun.StatusCode == HttpStatusCode.NotFound,
+            "deleted project run intent is removed");
+    using (var db = new SqliteConnection(
+        "Data Source=" + Path.Combine(data, "codingassistant.db")))
+    {
+        db.Open();
+        foreach (var table in new[] { "html_artifacts", "plans", "run_intents" })
+        {
+            using var count = db.CreateCommand();
+            count.CommandText = "SELECT COUNT(*) FROM " + table + " WHERE task_id=@id";
+            count.Parameters.AddWithValue("@id", taskId);
+            Check(Convert.ToInt64(count.ExecuteScalar()) == 0,
+                "project deletion removes " + table);
+        }
+        using var integrity = db.CreateCommand();
+        integrity.CommandText = "PRAGMA foreign_key_check;";
+        using var rows = integrity.ExecuteReader();
+        Check(!rows.Read(), "planning-project removal preserves database integrity");
     }
 
     if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())

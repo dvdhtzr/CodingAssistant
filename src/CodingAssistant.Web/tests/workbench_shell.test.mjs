@@ -36,6 +36,7 @@ test('Workbench sidebar exposes only functional navigation and honest agent desc
   const html = renderToStaticMarkup(React.createElement(WorkbenchSidebar, {
     tasks: [task], selectedId: task.id, view: 'studio', disabled: false,
     onSelectTask: noop, onNewProject: noop, onChangeView: noop, onRefresh: noop,
+    onDeleteTask: async () => true,
   }));
   assert.match(html, /aria-label="Workspace navigation"/);
   assert.match(html, /Overview/);
@@ -43,6 +44,9 @@ test('Workbench sidebar exposes only functional navigation and honest agent desc
   assert.match(html, /Legacy diagnostics/);
   assert.match(html, /aria-current="page"/);
   assert.match(html, /Offline Notes/);
+  assert.match(html, /aria-label="Delete project Offline Notes"/);
+  assert.match(html, /aria-expanded="false"/);
+  assert.doesNotMatch(html, /Delete permanently/);
   assert.match(html, /Requirements workflow available/);
   assert.match(html, /Planned — no live agent/);
   assert.doesNotMatch(html, /Verified engineer run/);

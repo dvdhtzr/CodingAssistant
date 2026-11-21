@@ -39,6 +39,12 @@ export function restoreJourneyStage(specStatus: string | null,
   return 'discovery';
 }
 
+/** Selecting the open header collapses all panels; selecting another opens only it. */
+export function toggleJourneyStage(current: JourneyId | null,
+  clicked: JourneyId): JourneyId | null {
+  return current === clicked ? null : clicked;
+}
+
 export function JourneyStage({ step, index, open, onOpen, children }: {
   step: JourneyStep;
   index: number;
@@ -77,7 +83,7 @@ export function JourneyStage({ step, index, open, onOpen, children }: {
 export function JourneyStatusStrip({ title, steps, activeId }: {
   title: string;
   steps: readonly JourneyStep[];
-  activeId: JourneyId;
+  activeId: JourneyId | null;
 }) {
   const active = steps.find(step => step.id === activeId);
   const done = steps.filter(step => step.tone === 'complete').length;
@@ -88,10 +94,11 @@ export function JourneyStatusStrip({ title, steps, activeId }: {
       <div>
         <span className="wb-kicker">PROJECT JOURNEY</span>
         <h2>{title}</h2>
-        <p>Stage {steps.findIndex(step => step.id === activeId) + 1} · {active?.title}</p>
+        <p>{active ? 'Stage ' + (steps.findIndex(step => step.id === activeId) + 1) +
+          ' · ' + active.title : 'All stages collapsed · Select a stage to continue'}</p>
       </div>
       <span className={'journey-strip-current journey-' + (active?.tone ?? 'pending')}>
-        {active?.status ?? 'Loading'}
+        {active?.status ?? 'No stage open'}
       </span>
     </div>
     <div className="journey-progress-track" aria-label={done + ' of ' + steps.length +
