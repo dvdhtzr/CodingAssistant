@@ -106,7 +106,7 @@ public static class ApiHost
         }
         var expected = Convert.FromHexString(settings.OwnerToken);
         // Browser login never discloses this persistent owner token.
-        var browserSessions = new LocalBrowserSessions();
+        var browserSessions = new LocalBrowserSessions(expected);
         // Web root must be selected BEFORE WebApplicationBuilder is created.
         // The deployed API uses assets next to the binary; repository smoke
         // tests may use Vite's generated source-tree output instead.
@@ -171,8 +171,7 @@ public static class ApiHost
 
             // Only the tightly-validated bootstrap may enter without a bearer.
             // Every other API and SignalR request still requires a bearer.
-            if (OperatingSystem.IsWindows() &&
-                context.Request.Path == "/api/local-session" &&
+            if (context.Request.Path == "/api/local-session" &&
                 HttpMethods.IsPost(context.Request.Method))
             {
                 await next(context);
@@ -218,6 +217,8 @@ public static class ApiHost
         app.MapPost("/api/local-session", (HttpContext context,
                 LocalBrowserSessions sessions) =>
         {
+            if (!OperatingSystem.IsWindows())
+                return Results.NotFound();
             if (!LocalBrowserSessions.MayBootstrap(context))
                 return Results.StatusCode(StatusCodes.Status403Forbidden);
             return Results.Ok(new
