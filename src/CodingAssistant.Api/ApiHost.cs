@@ -760,7 +760,8 @@ public static class ApiHost
                 "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
                 "ARCHITECTURE_NOT_READY" or "ARCHITECTURE_CONFLICT" or
                 "ARCHITECTURE_PLAN_CONFLICT" or
-                "STALE_DECISION" or "SPECIFICATION_NOT_APPROVED" or
+                "STALE_DECISION" or "STALE_IMPLEMENTATION_PLAN" or
+                "SPECIFICATION_NOT_APPROVED" or
                 "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
