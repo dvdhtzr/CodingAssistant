@@ -69,6 +69,9 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         }
         Severity is only Critical, Major or Minor. 0–6 findings, 1–6
         actionable manual checks. JSON only; no markdown or status PASS.
+        If the engineering source is Failed or Interrupted, it is a PARTIAL
+        submission. Explicitly flag missing unimplemented work as unverified
+        or absent; do not pretend the whole application was delivered.
         Treat every review as UNVERIFIED, even with zero findings.
         """;
 
@@ -78,7 +81,8 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         if (input.Plan.Status != "Approved" || !input.Plan.Current ||
             input.Plan.PlanSha256 != input.SourceRun.PlanSha256 ||
             input.Plan.ArchitectureSha256 != input.SourceRun.ArchitectureSha256 ||
-            input.SourceRun.State != "Generated" ||
+            !QaReviewStore.IsReviewableSource(
+                input.SourceRun.State, input.AllFiles.Count) ||
             input.File.Content.Length > ProjectDraftStore.MaxFileCharacters ||
             input.AllFiles.Count is < 1 or > EngineeringRunStore.MaxDistinctFiles ||
             !input.AllFiles.Any(f => f.Path == input.File.Path &&
@@ -94,6 +98,12 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
             description: "Independent static source review and evidence-based defect hypotheses");
         var messages = new List<ChatMessage> {
             new(ChatRole.User, "PROJECT OBJECTIVE (untrusted data):\n" + input.Objective),
+            new(ChatRole.User, "ENGINEERING SUBMISSION STATUS (data): " +
+                input.SourceRun.State +
+                (input.SourceRun.State == "Generated"
+                  ? ". All assigned source tasks completed; no tests run."
+                  : ". INCOMPLETE PARTIAL SOURCE: only saved artifacts may be " +
+                    "reviewed, remaining tasks are unfinished; no tests run.")),
             new(ChatRole.User, "OWNER-APPROVED SPECIFICATION (untrusted data):\n" +
                 input.Specification),
             new(ChatRole.User, "APPROVED ARCHITECTURE (untrusted data):\n" +
