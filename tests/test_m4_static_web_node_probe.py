@@ -166,7 +166,8 @@ class Phase4NodeSyntaxBoundary(unittest.TestCase):
                 if cmd[1:3] == ["container", "exists"]:
                     return completed(cmd, code=0 if scenario == "cleanup" else 1)
                 raise AssertionError(cmd)
-            with self.subTest(scenario=scenario), (
+            with (
+                self.subTest(scenario=scenario),
                 mock.patch.object(m, "verify_inputs", return_value=M0),
                 mock.patch.object(m, "inspect_composed",
                                   return_value="f" * 64 if scenario == "image"
