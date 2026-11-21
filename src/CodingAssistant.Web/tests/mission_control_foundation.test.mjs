@@ -9,6 +9,8 @@ let vite;
 let WorkbenchSidebar;
 let WorkbenchInspector;
 let ProjectOverview;
+let AgentRosterCards;
+let EngineeringGenerationPanel;
 
 const task = {
   id: 'a'.repeat(32),
@@ -29,6 +31,9 @@ before(async () => {
   });
   ({ WorkbenchSidebar, WorkbenchInspector, ProjectOverview } =
     await vite.ssrLoadModule('/src/Workbench.tsx'));
+  ({ AgentRosterCards } = await vite.ssrLoadModule('/src/AgentIdentityPanel.tsx'));
+  ({ EngineeringGenerationPanel } =
+    await vite.ssrLoadModule('/src/EngineeringWorkspace.tsx'));
 });
 after(async () => { if (vite) await vite.close(); });
 
@@ -84,4 +89,72 @@ test('design CSS is imported after legacy styles without changing API contracts'
   assert.match(stylesheet, /\.wb-layout--inspector-closed/);
   assert.match(stylesheet, /\.wb-project-search-label/);
   assert.match(stylesheet, /prefers-reduced-motion/);
+});
+
+
+test('actual MAF roster cards show independently defined goals and fictional identities', () => {
+  const html = renderToStaticMarkup(React.createElement(AgentRosterCards, {
+    agents: [{
+      id: 'ProductOwner', role: 'Product Owner',
+      goal: 'Protect the owner acceptance criteria',
+      workingStyle: 'Asks focused questions', backstory: 'Fictional product veteran',
+      allowedSkillScopes: ['acceptance-criteria'], canExecuteCode: false,
+    }, {
+      id: 'QaEngineer', role: 'QA Engineer',
+      goal: 'Record defects without claiming tests ran',
+      workingStyle: 'Evidence first', backstory: 'Fictional skeptical tester',
+      allowedSkillScopes: ['static-review'], canExecuteCode: false,
+    }],
+  }));
+  assert.match(html, /Product Owner/);
+  assert.match(html, /QA Engineer/);
+  assert.match(html, /Fictional product veteran/);
+  assert.match(html, /FUTURE SKILL SCOPES \(NOT ENABLED\)/);
+  assert.match(html, /Executable tools/);
+  assert.match(html, /Not authorized/);
+  assert.equal((html.match(/<summary/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /Verified build/);
+});
+
+test('engineering task board communicates saved task and file evidence without fabricated progress', () => {
+  const html = renderToStaticMarkup(React.createElement(EngineeringGenerationPanel, {
+    legacyRunning: false,
+    engine: {
+      snapshot: {
+        job: { state: 'Running', phase: 'EngineeringTask', planRevision: 2,
+          model: 'qwen3.5:9b', errorCode: null },
+        tasks: [
+          { id: 'task-a', ordinal: 0, title: 'Build data model',
+            state: 'Completed', summary: 'Source saved', startedUtc: null,
+            completedUtc: '2026-11-21T14:00:00Z' },
+          { id: 'task-b', ordinal: 1, title: 'Build dashboard',
+            state: 'Running', summary: null, startedUtc: '2026-11-21T14:01:00Z',
+            completedUtc: null },
+        ],
+        files: [{ path: 'Model.cs', lastWorkItemId: 'task-a' }],
+        events: [],
+      },
+      plan: { status: 'Approved', current: true },
+      error: '', busy: '', start: noop, cancel: noop, refresh: noop, download: noop,
+    },
+  }));
+  assert.match(html, /Implementation workstream/);
+  assert.match(html, /1 of 2 completed/);
+  assert.match(html, /Recorded active assignment: Build dashboard/);
+  assert.match(html, /data-task-state="Completed"/);
+  assert.match(html, /data-task-state="Running"/);
+  assert.match(html, /1 saved file\(s\) last changed by this task/);
+  assert.match(html, /Source saved/);
+  assert.doesNotMatch(html, /% complete/);
+  assert.match(html, /not built, executed or independently tested/);
+});
+
+test('agent presence stylesheet is loaded after the base Mission Control design', () => {
+  const bootstrap = readFileSync('src/main.tsx', 'utf8');
+  const css = readFileSync('src/agent-presence.css', 'utf8');
+  assert.ok(bootstrap.indexOf("import './agent-presence.css'") >
+    bootstrap.indexOf("import './mission-control.css'"));
+  assert.match(css, /prefers-reduced-motion/);
+  assert.match(css, /data-task-state="Failed"/);
+  assert.match(css, /data-agent="QaEngineer"/);
 });
