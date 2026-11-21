@@ -132,3 +132,41 @@ test('source preview escapes untrusted source and supports full large-file inspe
   await explorer.getByRole('button', { name: 'Return to numbered preview' }).click();
   assert.equal(await explorer.getByText('const n809 = 809;').count(), 0);
 });
+
+test('MAF team workroom changes specialist without changing owner approval state', async () => {
+  const team = page.getByRole('region', { name: 'Project agent team workroom' });
+  const roster = team.getByRole('group', { name: 'Select an engineering specialist' });
+  assert.equal(await roster.getByRole('button').count(), 5);
+  assert.equal(await roster.getByRole('button', { name: /Product Owner/ })
+    .getAttribute('aria-pressed'), 'true');
+  assert.match(await team.textContent(), /SpecificationHandoff/);
+  assert.match(await team.textContent(), /Historical binding/);
+  assert.match(await team.textContent(), /product-discovery/);
+  assert.match(await team.textContent(), /not enabled/);
+
+  await roster.getByRole('button', { name: /Software Engineer/ }).click();
+  assert.equal(await roster.getByRole('button', { name: /Software Engineer/ })
+    .getAttribute('aria-pressed'), 'true');
+  assert.match(await team.textContent(), /1 of 2 saved tasks completed/);
+  assert.match(await team.textContent(), /Build residents/);
+  assert.match(await team.textContent(), /Source saved/);
+  assert.match(await team.textContent(), /Engineering run: Generated/);
+  assert.match(await team.textContent(), /source-implementation/);
+  assert.match(await team.textContent(), /not enabled/);
+
+  await team.getByRole('button', { name: 'Open Software Engineer stage' }).click();
+  assert.equal(await page.locator('#journey-panel-generation').isVisible(), true);
+  assert.equal(await page.getByRole('button', { name: /^Open Source Generation:/ })
+    .getAttribute('aria-current'), 'step');
+  assert.equal(await team.getByRole('button', { name: /Approve/i }).count(), 0);
+});
+
+test('QA role shows independent static report as historical, not verified runtime', async () => {
+  const team = page.getByRole('region', { name: 'Project agent team workroom' });
+  await team.getByRole('button', { name: /QA Engineer/ }).click();
+  assert.match(await team.textContent(), /Static review Reviewed/);
+  assert.match(await team.textContent(), /Historical QA review/);
+  assert.match(await team.textContent(), /No build, test, or VERIFIED claim/);
+  assert.match(await team.textContent(), /static-code-review/);
+  assert.equal(await team.getByRole('button', { name: 'Open Artifacts & Delivery' }).count(), 1);
+});
