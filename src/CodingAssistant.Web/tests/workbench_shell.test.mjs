@@ -47,7 +47,7 @@ test('Workbench sidebar exposes only functional navigation and honest agent desc
   assert.match(html, /aria-label="Delete project Offline Notes"/);
   assert.match(html, /aria-expanded="false"/);
   assert.doesNotMatch(html, /Delete permanently/);
-  assert.match(html, /Requirements workflow available/);
+  assert.match(html, /MAF · local Ollama \(on request\)/);
   assert.match(html, /Planned — no live agent/);
   assert.doesNotMatch(html, /Verified engineer run/);
 });
