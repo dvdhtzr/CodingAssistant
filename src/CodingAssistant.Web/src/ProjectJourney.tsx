@@ -84,10 +84,11 @@ export function JourneyStage({ step, index, open, onOpen, children }: {
   </section>;
 }
 
-export function JourneyStatusStrip({ title, steps, activeId }: {
+export function JourneyStatusStrip({ title, steps, activeId, onNavigate }: {
   title: string;
   steps: readonly JourneyStep[];
   activeId: JourneyId | null;
+  onNavigate?: (id: JourneyId) => void;
 }) {
   const active = steps.find(step => step.id === activeId);
   const done = steps.filter(step => step.tone === 'complete').length;
@@ -110,6 +111,20 @@ export function JourneyStatusStrip({ title, steps, activeId }: {
       {steps.map(step => <span key={step.id} className={'journey-progress-segment journey-' +
         step.tone} title={step.title + ': ' + step.status} />)}
     </div>
+    {onNavigate && <nav className="journey-quick-nav"
+      aria-label="Jump to a project stage">
+      {steps.map((step, index) => <button type="button" key={step.id}
+        className={'journey-quick-step journey-' + step.tone +
+          (activeId === step.id ? ' journey-quick-current' : '')}
+        aria-label={'Open ' + step.title + ': ' + step.status}
+        aria-current={activeId === step.id ? 'step' : undefined}
+        aria-controls={'journey-panel-' + step.id}
+        onClick={() => onNavigate(step.id)}>
+        <span className="journey-quick-index">{String(index + 1).padStart(2, '0')}</span>
+        <span className="journey-quick-name">{step.title}</span>
+        <span className="journey-quick-tone" aria-hidden="true" />
+      </button>)}
+    </nav>}
     <p className="journey-strip-summary">
       {done} of {steps.length} stages completed
       {attention ? ' · ' + attention + ' requiring review' : ''}
