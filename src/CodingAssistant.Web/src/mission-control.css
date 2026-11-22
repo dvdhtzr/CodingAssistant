@@ -988,3 +988,27 @@ a { color: #91e2d8; }
     border-left:1px solid #5c7d88;box-shadow:-24px 0 55px #000a;
   }
 }
+
+
+/* Command work order and focused QA action. An agent roster is not a live
+ * activity signal, and neither source nor static QA implies build success. */
+.ca-command-work-order{
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;
+  gap:.8rem 1.2rem;border:1px solid #6b5a45;border-left:3px solid #d6ad79;
+  background:#222a30;border-radius:9px;padding:.85rem 1rem;margin:.85rem 0;
+}
+.ca-command-work-order>div{flex:1 1 16rem}
+.ca-command-work-order h3{margin:.25rem 0;font-size:1rem}
+.ca-command-work-order p{margin:.3rem 0 0;color:#cbd7de;font-size:.84rem;line-height:1.45}
+.ca-command-work-order button{flex-shrink:0}
+.ca-work-order-action{display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:.75rem 1rem;padding:.85rem 1rem;border-radius:9px;
+  background:#18302f;border:1px solid #3d6d68}
+.ca-work-order-action>div{flex:1 1 18rem}
+.ca-work-order-action strong{font-size:.9rem;color:#e5f5f2}
+.ca-work-order-action p{font-size:.82rem;line-height:1.45;
+  color:#c5d7d8;margin:.25rem 0 0}
+.ca-work-order-action button{flex-shrink:0}
+@media(max-width:640px){
+  .ca-command-work-order button,.ca-work-order-action button{width:100%}
+}

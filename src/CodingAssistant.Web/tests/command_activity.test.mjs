@@ -7,6 +7,7 @@ import { createServer } from 'vite';
 let vite;
 let commandActivity;
 let commandAgents;
+let commandJourney;
 let CommandActivityView;
 let CommandDrawer;
 let buildCommandDecisionQueue;
@@ -56,7 +57,7 @@ before(async () => {
   vite = await createServer({ configFile: false,
     optimizeDeps: { noDiscovery: true, include: [] }, root: process.cwd(),
     server: { middlewareMode: true, hmr: false }, appType: 'custom' });
-  ({ commandActivity, commandAgents, CommandActivityView } =
+  ({ commandActivity, commandAgents, commandJourney, CommandActivityView } =
     await vite.ssrLoadModule('/src/CommandActivity.tsx'));
   ({ CommandDrawer } = await vite.ssrLoadModule('/src/CommandDrawer.tsx'));
   ({ buildCommandDecisionQueue, DecisionQueueView } =
@@ -223,4 +224,48 @@ test('failed source run is surfaced as an inspection blocker, not approval', () 
   const blocked = buildCommandDecisionQueue(data).find(item => item.category === 'blocked');
   assert.ok(blocked);
   assert.equal(blocked.requiresApproval, false);
+});
+
+
+test('incomplete server source appears as Software Engineer work, not a completed build', () => {
+  const data = evidence();
+  data.engineering.job.state = 'Generated';
+  data.engineering.tasks[0].state = 'Completed';
+  data.sourceReadiness = {
+    runId: data.engineering.job.id, sourceState: 'Generated',
+    sourceSha256: 'f'.repeat(64), projectKind: 'NODE_SERVER',
+    runtimeProfileId: 'node-server', status: 'INCOMPLETE',
+    verificationStatus: 'GENERATED_NOT_TESTED', executionAvailable: false,
+    findings: [{ code: 'MISSING_PACKAGE_MANIFEST', severity: 'Error',
+      path: 'package.json', detail: 'No package manifest' }],
+  };
+  const stages = commandJourney(data);
+  assert.equal(stages.find(item => item.id === 'build').state, 'attention');
+  assert.equal(stages.find(item => item.id === 'verify').state, 'todo');
+  const html = renderToStaticMarkup(React.createElement(CommandActivityView, {
+    task, evidence: data, onNavigate: () => {},
+  }));
+  assert.match(html, /Engineering needs attention/);
+  assert.match(html, /Open engineering work order/);
+  assert.match(html, /NEXT HANDOFF · SOFTWARE ENGINEER/);
+  assert.match(html, /Project source is incomplete/);
+  assert.match(html, /Inspect source issues/);
+  assert.match(html, /Agent Activity Board/);
+  assert.doesNotMatch(html, /Verified application|build passed|Tests passed/);
+});
+
+test('completed static QA is never a verified build stage', () => {
+  const data = evidence();
+  data.engineering.job.state = 'Generated';
+  data.engineering.tasks[0].state = 'Completed';
+  data.qa = {
+    job: { id: 'f'.repeat(32), state: 'Reviewed',
+      engineeringRunId: data.engineering.job.id,
+      planSha256: data.engineering.job.planSha256 },
+    reports: [],
+  };
+  const stages = commandJourney(data);
+  assert.equal(stages.find(item => item.id === 'build').state, 'attention');
+  assert.equal(stages.find(item => item.id === 'verify').state, 'attention');
+  assert.equal(stages.find(item => item.id === 'verify').hint, 'Static review only');
 });

@@ -59,48 +59,62 @@ export function ProjectReadinessView({ report, error }: {
   report: ProjectSourceReadinessReport | null;
   error?: string;
 }) {
-  if (!report) return <section className="verification-smoke"
+  if (!report) return <section className="ca-source-brief"
     aria-label="Project source assessment">
-    <strong>Project source assessment</strong>
-    <p>{error || 'Inspecting the saved project files…'}</p>
+    <strong>Engineering assessment</strong>
+    <p role="status">{error || 'Inspecting saved source…'}</p>
   </section>;
   const kind = {
-    NODE_SERVER: 'Node.js server application',
+    NODE_SERVER: 'Node.js server',
     STATIC_WEB: 'Static website',
     DOTNET_PROJECT: '.NET application',
     UNKNOWN: 'Unclassified project',
   }[report.projectKind];
   const incomplete = report.status === 'INCOMPLETE';
-  return <section className="verification-smoke"
+  const pending = report.status === 'PENDING_SOURCE';
+  const errors = report.findings.filter(finding => finding.severity === 'Error');
+  const count = report.findings.length;
+  return <section className="ca-source-brief"
+    data-state={incomplete ? 'needs-work' : report.status.toLowerCase()}
     aria-label="Project source assessment">
-    <div>
-      <span className="wb-kicker">PROJECT SOURCE ASSESSMENT</span>
-      <h4>{kind} · {incomplete ? 'Incomplete source'
-        : report.status === 'SOURCE_READY_FOR_REVIEW'
-          ? 'Source structure ready for review'
-          : report.status === 'PENDING_SOURCE' ? 'Generation underway'
-          : 'Review needed'}</h4>
-      <p>{incomplete
-        ? 'Essential project files are missing or invalid. Ask the Software Engineer to correct these before attempting a build.'
-        : report.status === 'SOURCE_READY_FOR_REVIEW'
-          ? 'No structural problems detected. This does not establish that the project builds or works.'
-          : 'Review the saved files and outstanding issues before proceeding.'}</p>
+    <div className="ca-source-brief-header">
+      <div>
+        <span className="wb-kicker">ENGINEERING WORK ORDER</span>
+        <h4>{incomplete ? 'Software Engineer · completion required'
+          : pending ? 'Software Engineer · generating source'
+          : 'Software Engineer · source review'}</h4>
+      </div>
+      <span className="ca-source-brief-status">
+        {incomplete ? errors.length + ' blocking issue(s)'
+          : pending ? 'In progress' : 'Source only'}
+      </span>
     </div>
-    {report.findings.length > 0 && <ul aria-label="Source completeness findings">
-      {report.findings.slice(0, 5).map((finding, i) => <li key={finding.code + i}>
-        <strong>{finding.severity}: {finding.path || 'Project'}</strong>
-        {' — '}{finding.detail}
-      </li>)}
-      {report.findings.length > 5 && <li>
-        {report.findings.length - 5} additional findings in the source assessment.
-      </li>}
-    </ul>}
-    {report.projectKind === 'NODE_SERVER' && <p>
-      This project needs a qualified server-backed Node.js environment.
-      The Static Web browser profile cannot test its Express server or API integrations.
+    <p>{incomplete
+      ? kind + ' identified. The Software Engineer needs to complete the missing project files before build verification can begin.'
+      : report.status === 'SOURCE_READY_FOR_REVIEW'
+        ? kind + ' structure has no detected blockers; independent testing is still required.'
+        : 'The saved source is not ready for build or delivery verification.'}</p>
+    {incomplete && <p className="ca-source-brief-next">
+      <strong>Next:</strong> Review the QA and repair options below.
+      Missing new files currently require a broader engineering completion workflow;
+      the existing narrow repair lane can only change saved files.
     </p>}
-    <p><strong>Build and tests: not run.</strong> No executable runtime is
-      authorized by this source assessment.</p>
+    {count > 0 && <details className="ca-source-findings">
+      <summary>Inspect {count} source issue{count === 1 ? '' : 's'}</summary>
+      <ul aria-label="Source completeness findings">
+        {report.findings.map((finding, i) => <li key={finding.code + i}>
+          <strong>{finding.severity} · {finding.path || 'Project'}</strong>
+          <span>{finding.detail}</span>
+        </li>)}
+      </ul>
+    </details>}
+    {report.projectKind === 'NODE_SERVER' && <p className="ca-source-runtime">
+      Runtime requirement: server-backed Node.js. Static Web testing does not apply.
+    </p>}
+    <small className="ca-source-brief-foot">
+      Generated source · build not run · tests not run. No executable authority
+      is granted by this assessment.
+    </small>
   </section>;
 }
 

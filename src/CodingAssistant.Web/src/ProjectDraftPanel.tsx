@@ -72,6 +72,15 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
   const [error, setError] = useState('');
   const [clock, setClock] = useState(Date.now());
   const engineer = useEngineeringRun(token, taskId);
+  const [qaOpen, setQaOpen] = useState(false);
+  const qaRef = useRef<HTMLDetailsElement>(null);
+  function showQaOptions() {
+    setQaOpen(true);
+    // A real button reveals the QA actions; it never starts QA or repair.
+    window.requestAnimationFrame(() => {
+      qaRef.current?.querySelector('summary')?.focus();
+    });
+  }
 
   useEffect(() => {
     let closed = false;
@@ -391,9 +400,18 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
       open={expanded === 'delivery'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Project files and delivery">
         <EngineeringDeliveryPanel engine={engineer} />
-        <details className="mc-work-qa-details">
-          <summary><strong>QA review, findings & repair history</strong>
-            <span>Inspect independent static QA and request authorized repairs</span>
+        {!!engineer.snapshot?.files.length && <div className="ca-work-order-action">
+          <div><strong>Next responsible role: QA Engineer</strong>
+            <p>Review the saved code, then decide whether an authorized repair is
+              possible. No code will run when you open this review.</p></div>
+          <button type="button" className="primary" onClick={showQaOptions}>
+            Open QA review & repair options
+          </button>
+        </div>}
+        <details ref={qaRef} className="mc-work-qa-details"
+          open={qaOpen} onToggle={event => setQaOpen(event.currentTarget.open)}>
+          <summary tabIndex={0}><strong>QA review, findings & repair history</strong>
+            <span>Static inspection, triage and explicitly authorized repairs</span>
           </summary>
           <QaReviewPanel token={token} taskId={taskId} engineering={engineer} />
         </details>

@@ -352,12 +352,12 @@ test('Node.js podcast source reports missing manifests without claiming a build'
       ],
     },
   }));
-  assert.match(html, /Node.js server application/);
-  assert.match(html, /Incomplete source/);
-  assert.match(html, /package.json/);
-  assert.match(html, /No tests are saved/);
-  assert.match(html, /Static Web browser profile cannot test its Express server/);
-  assert.match(html, /Build and tests: not run/);
+  assert.match(html, /Software Engineer · completion required/);
+  assert.match(html, /blocking issue\(s\)/);
+  assert.match(html, /Inspect 2 source issues/);
+  assert.match(html, /Missing new files currently require a broader engineering completion workflow/);
+  assert.match(html, /Static Web testing does not apply/);
+  assert.match(html, /build not run · tests not run/);
   assert.doesNotMatch(html, /Verified application|Tests passed/);
 });
 
@@ -371,7 +371,7 @@ test('ready-to-review source never claims execution or passing tests', () => {
       findings: [],
     },
   }));
-  assert.match(html, /Source structure ready for review/);
-  assert.match(html, /does not establish that the project builds or works/);
-  assert.match(html, /Build and tests: not run/);
+  assert.match(html, /source review/);
+  assert.match(html, /independent testing is still required/);
+  assert.match(html, /build not run · tests not run/);
 });
