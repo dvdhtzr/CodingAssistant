@@ -229,17 +229,29 @@ public static class CodeAtlasIndexer
                 .ThenBy(e => e.SourceId, StringComparer.Ordinal)
                 .ThenBy(e => e.TargetId, StringComparer.Ordinal).ToArray(),
             diagnostics.AsReadOnly());
+        var projectGraph = syntaxGraph;
         try
         {
-            return CodeAtlasSemanticIndexer.Enrich(syntaxGraph, valid);
+            projectGraph = CodeAtlasProjectReferences.Enrich(syntaxGraph, valid);
         }
         catch (Exception)
         {
-            // Semantic enrichment may be unavailable on the current host.
-            // The original source-derived syntax graph remains trustworthy.
-            return syntaxGraph with
+            projectGraph = syntaxGraph with
             {
                 Diagnostics = syntaxGraph.Diagnostics.Concat(
+                    new[] { "PROJECT_REFERENCE_ANALYSIS_UNAVAILABLE" }).ToArray()
+            };
+        }
+        try
+        {
+            return CodeAtlasSemanticIndexer.Enrich(projectGraph, valid);
+        }
+        catch (Exception)
+        {
+            // A failure to resolve static symbols must never hide saved source.
+            return projectGraph with
+            {
+                Diagnostics = projectGraph.Diagnostics.Concat(
                     new[] { "SEMANTIC_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
