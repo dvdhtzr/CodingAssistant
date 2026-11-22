@@ -87,6 +87,42 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     }
 }
 
+// Live-model-free MAF regression: a repeated answered question must cause
+// exactly one corrective call, then a new question or reviewable exit.
+{
+    var prior = new InterviewMessage[] {
+        new(1, "assistant",
+            "Should we only use publicly available demographic data from podcast platforms?",
+            "2026-11-22T12:00:00Z"),
+        new(2, "owner", "Yes", "2026-11-22T12:00:01Z")
+    };
+    var repeated =
+        """{"message":"Should we only use publicly available demographic data from podcast platforms?","readyForSpecification":false}""";
+    var corrected =
+        """{"message":"Which geographic markets should podcast analytics cover?","readyForSpecification":false}""";
+    var factory = new Phase3FakeMafFactory();
+    factory.InterviewReplies.Enqueue(repeated);
+    factory.InterviewReplies.Enqueue(corrected);
+    var team = new MafAgentTeam(factory);
+    var reply = await team.AskAsync("Build a podcast analytics dashboard",
+        prior, "qwen3.5:4b", CancellationToken.None);
+    Check(reply.Message.Contains("geographic markets") &&
+          !reply.ReadyForSpecification &&
+          factory.Purposes.Count == 2 &&
+          factory.InterviewCorrectionPrompts.Count == 1,
+        "MAF avoids repeating answered question and asks new decision");
+
+    var stuck = new Phase3FakeMafFactory();
+    stuck.InterviewReplies.Enqueue(repeated);
+    stuck.InterviewReplies.Enqueue(repeated);
+    var review = await new MafAgentTeam(stuck).AskAsync(
+        "Build a podcast analytics dashboard", prior,
+        "qwen3.5:4b", CancellationToken.None);
+    Check(review.ReadyForSpecification && review.Choice is null &&
+          stuck.Purposes.Count == 2,
+        "MAF repetition loop ends with owner-controlled specification review");
+}
+
 // Actual MAF invocation path using an injected no-network IChatClient.
 // No direct LocalInterviewModel/LocalArchitectureAdvisor legacy path is used.
 {
@@ -1913,6 +1949,8 @@ sealed class Phase2DraftModel : IProjectDraftModel
 sealed class Phase3FakeMafFactory : IMafChatClientFactory
 {
     public Queue<string> TechnicalLeadReplies { get; } = new();
+    public Queue<string> InterviewReplies { get; } = new();
+    public List<string> InterviewCorrectionPrompts { get; } = [];
     public List<string> TechnicalLeadCorrectionPrompts { get; } = [];
     public List<MafAgentPurpose> Purposes { get; } = [];
     public List<string> Models { get; } = [];
@@ -1940,11 +1978,21 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                     StringComparison.Ordinal) == true)
                 parent.SystemPoliciesSeen++;
             parent.AllowedToolsSeen += options?.Tools?.Count ?? 0;
+            if (purpose == MafAgentPurpose.Interview)
+                parent.InterviewCorrectionPrompts.AddRange(history
+                    .Where(m => m.Role == ChatRole.User &&
+                        m.Text?.Contains("previous response either repeated",
+                            StringComparison.OrdinalIgnoreCase) == true)
+                    .Select(m => m.Text!));
             if (purpose == MafAgentPurpose.TechnicalLead)
                 parent.TechnicalLeadCorrectionPrompts.AddRange(history
                     .Where(m => m.Role == ChatRole.User &&
                         m.Text?.Contains("Reason:", StringComparison.Ordinal) == true)
                     .Select(m => m.Text!));
+            if (purpose == MafAgentPurpose.Interview &&
+                parent.InterviewReplies.Count > 0)
+                return Task.FromResult(new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant, parent.InterviewReplies.Dequeue())));
             if (purpose == MafAgentPurpose.TechnicalLead &&
                 parent.TechnicalLeadReplies.Count > 0)
                 return Task.FromResult(new ChatResponse(new ChatMessage(
