@@ -235,7 +235,7 @@ var pythonModuleSources = new[]
         """
         def dynamic():
             import src.pkg.api.decoy
-        """),
+        """"),
     File("src/pkg/api/service.py", "class Service: pass"),
     File("src/pkg/api/helpers.py", "def assist(): pass"),
     File("src/pkg/common/formatter.py", "class Format: pass"),
