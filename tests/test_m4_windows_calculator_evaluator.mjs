@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {
-  readPinnedSources,gitBlobHash,prepareSnapshot,verifySnapshot,
+  readPinnedSources,gitBlobHash,canonicalGitText,prepareSnapshot,verifySnapshot,
   dockerArgs,parseEvaluation,auditSnapshot,runQualification,main,
 } from '../tools/m4/windows_calculator_evaluator_qualification.mjs';
 import {FILES,CASES} from '../tools/m4/windows_calculator_evaluator_guest.mjs';
@@ -73,6 +73,16 @@ test('trusted calculator fixtures are exact pinned blobs, never model text',()=>
   assert.ok(source['broken.html'].toString().includes('TODO connect calculator'));
   assert.ok(source['working.html'].toString().includes('working.js'));
   assert.ok(source['working.js'].toString().includes('localStorage'));
+});
+
+test('CRLF checkout normalizes to the same immutable Git blob, but edits fail',()=>{
+  const trusted=readPinnedSources()['broken.html'];
+  const crlf=Buffer.from(trusted.toString('utf8').replace(/\n/g,'\r\n'),'utf8');
+  assert.notEqual(gitBlobHash(crlf),gitBlobHash(trusted));
+  assert.equal(gitBlobHash(canonicalGitText(crlf)),gitBlobHash(trusted));
+  const changed=Buffer.from(trusted.toString('utf8').replace(
+    'Calculation Journal','Incorrect Application'),'utf8');
+  assert.notEqual(gitBlobHash(canonicalGitText(changed)),gitBlobHash(trusted));
 });
 
 test('fixed Chrome guest and independent browser harness are syntax checked',()=>{
