@@ -101,6 +101,9 @@ public static class ApiHost
         repairProposals.Initialize();
         var repairTriage = new RepairTriageStore(store);
         repairTriage.Initialize();
+        var repairCycles = new RepairCycleStore(store, engineeringRuns,
+            qaReviews, repairProposals);
+        repairCycles.Initialize();
         var qaEngineer = qaReviewerOverride ?? new MafQaEngineer();
         var sourceSmokeRunner = sourceSmokeOverride ??
             new WindowsDockerSourceSmokeRunner(settings.RepositoryRoot);
@@ -171,6 +174,8 @@ public static class ApiHost
         builder.Services.AddSingleton(qaReviews);
         builder.Services.AddSingleton(repairProposals);
         builder.Services.AddSingleton(repairTriage);
+        builder.Services.AddSingleton(repairCycles);
+        builder.Services.AddSingleton<RepairCycleCoordinator>();
         builder.Services.AddSingleton<IQaSourceReviewer>(qaEngineer);
         builder.Services.AddSingleton<QaReviewCoordinator>();
         builder.Services.AddSingleton<ILocalSourceSmokeRunner>(sourceSmokeRunner);
@@ -610,6 +615,23 @@ public static class ApiHost
             (string id, string proposalId, ClassifyRepairFindingRequest request,
              RepairTriageStore db) =>
                 Safe(() => Results.Ok(db.Classify(id, proposalId, request))));
+        // R2-R5: owner-authorized repairs remain source-only. Persisted
+        // progress is derived from actual engineering and QA records.
+        app.MapGet("/api/tasks/{id}/repair-cycles/latest",
+            (string id, RepairCycleStore db) =>
+                Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
+        app.MapGet("/api/tasks/{id}/repair-cycles/{cycleId}",
+            (string id, string cycleId, RepairCycleStore db) =>
+                Safe(() => Results.Ok(db.Get(id, cycleId))));
+        app.MapPost("/api/tasks/{id}/repair-cycles",
+            (string id, StartRepairCycleRequest request,
+             RepairCycleCoordinator coordinator) =>
+                Safe(() => Results.Accepted(
+                    $"/api/tasks/{id}/repair-cycles",
+                    coordinator.Start(id, request))));
+        app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/cancel",
+            (string id, string cycleId, RepairCycleCoordinator coordinator) =>
+                Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
         app.MapGet("/api/tasks/{id}/qa-reviews/latest",
             (string id, QaReviewStore db) =>
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
@@ -885,6 +907,9 @@ public static class ApiHost
             "NOT_FOUND" => StatusCodes.Status404NotFound,
             "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" =>
                 StatusCodes.Status503ServiceUnavailable,
+            "REPAIR_NOT_AUTHORIZED" or "REPAIR_LIMIT_REACHED" or
+                "REPAIR_SCOPE_TOO_LARGE" or "REPAIR_SCOPE_VIOLATION" or
+                "REPAIR_NO_CHANGE" or
             "BUILD_BUSY" or "BUILD_NOT_COMPLETE" or
                 "STALE_INTERVIEW" or "SPECIFICATION_CONFLICT" or
                 "ARCHITECTURE_NOT_READY" or "ARCHITECTURE_CONFLICT" or
