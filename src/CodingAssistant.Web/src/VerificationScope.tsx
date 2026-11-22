@@ -157,6 +157,8 @@ export function EngineeringVerificationScope({ token, run, files }: {
 }) {
   const [scope, setScope] = useState<VerificationScope | null>(null);
   const [error, setError] = useState('');
+  const sourceSignature = files.map(file => file.path + ':' + file.sha256)
+    .sort().join('|');
   useEffect(() => {
     let closed = false;
     let pending = false;
@@ -185,6 +187,6 @@ export function EngineeringVerificationScope({ token, run, files }: {
     void load();
     const interval = window.setInterval(() => void load(), 8000);
     return () => { closed = true; window.clearInterval(interval); };
-  }, [token, run.id, run.taskId, run.planSha256, run.state, files]);
+  }, [token, run.id, run.taskId, run.planSha256, run.state, sourceSignature]);
   return <VerificationScopeView scope={scope} error={error}/>;
 }
