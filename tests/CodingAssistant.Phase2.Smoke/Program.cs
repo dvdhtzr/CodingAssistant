@@ -237,6 +237,30 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               !reason.Contains("SECRET_MODEL_CONTENT", StringComparison.Ordinal)),
         "Software Engineer uses safe targeted correction and recovers");
 
+    var firstTaskFactory = new Phase4FakeMafFactory();
+    firstTaskFactory.Responses.Enqueue(goodSource.Replace(
+        "index.html", "app.js", StringComparison.Ordinal));
+    firstTaskFactory.Responses.Enqueue(goodSource);
+    var correctedEntry = await new MafSoftwareEngineer(firstTaskFactory)
+        .ImplementAsync(assignment, CancellationToken.None);
+    Check(firstTaskFactory.Attempts == 2 &&
+          correctedEntry.Files.Single().Path == "index.html" &&
+          firstTaskFactory.CorrectionReasons.Any(reason =>
+              reason.Contains("STATIC_WEB_ENTRY:", StringComparison.Ordinal)),
+        "first static web task must establish index.html before persistence");
+
+    var wrongStackFactory = new Phase4FakeMafFactory();
+    wrongStackFactory.Responses.Enqueue(goodSource.Replace(
+        "index.html", "Program.cs", StringComparison.Ordinal));
+    wrongStackFactory.Responses.Enqueue(goodSource);
+    var correctedStack = await new MafSoftwareEngineer(wrongStackFactory)
+        .ImplementAsync(assignment, CancellationToken.None);
+    Check(wrongStackFactory.Attempts == 2 &&
+          correctedStack.Files.Single().Path == "index.html" &&
+          wrongStackFactory.CorrectionReasons.Any(reason =>
+              reason.Contains("STATIC_WEB_PATH:", StringComparison.Ordinal)),
+        "static web task rejects incompatible language before persistence");
+
     var rejectedFactory = new Phase4FakeMafFactory();
     for (var n = 0; n < 3; n++)
         rejectedFactory.Responses.Enqueue(
