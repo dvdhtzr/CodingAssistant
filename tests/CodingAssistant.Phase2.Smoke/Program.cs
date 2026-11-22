@@ -706,6 +706,83 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "in-progress mutable source is not reported as a final preflight");
 }
 
+// M1 project-readiness: the real podcast-shaped server snapshot is NOT a
+// static page, and missing npm manifests/dependencies/tests cannot be passed
+// off as a build-ready application. No generated code executes.
+{
+    EngineeringSourceFile File(string path, string content) =>
+        new(path, "Readiness test", content,
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(content))).ToLowerInvariant(),
+            "fixture", "2026-11-22T18:00:00Z");
+    ProjectSourceReadinessReport Inspect(string state,
+        params EngineeringSourceFile[] files)
+    {
+        var run = new EngineeringRun(new string('9', 32), new string('a', 32),
+            1, new string('b', 64), 1, new string('c', 64),
+            new string('d', 64), "qwen3.5:4b", state,
+            "SourceOnlyGenerated", null, "2026-11-22T18:00:00Z",
+            "2026-11-22T18:01:00Z");
+        return ProjectSourceReadiness.Inspect(
+            new EngineeringRunSnapshot(run, [], [], files));
+    }
+    const string server = """
+        import express from 'express';
+        import axios from 'axios';
+        const app = express();
+        app.get('/podcasts', async (_, response) => response.json({}));
+        app.listen(3000);
+        """;
+    var brokenPodcast = Inspect("Generated",
+        File("index.html", "<html><body>Podcasts</body></html>"),
+        File("server.js", server));
+    Check(brokenPodcast.ProjectKind == "NODE_SERVER" &&
+          brokenPodcast.RuntimeProfileId == "node-server" &&
+          brokenPodcast.Status == "INCOMPLETE" &&
+          !brokenPodcast.ExecutionAvailable &&
+          brokenPodcast.VerificationStatus == "GENERATED_NOT_TESTED" &&
+          brokenPodcast.Findings.Any(f => f.Code == "MISSING_PACKAGE_MANIFEST") &&
+          brokenPodcast.Findings.Any(f => f.Code == "MISSING_TEST_FILES") &&
+          brokenPodcast.SourceSha256?.Length == 64,
+        "podcast server cannot masquerade as complete Static Web source");
+    var missingDeps = Inspect("Generated",
+        File("server.js", server),
+        File("package.json", """{"scripts":{"start":"node server.js","test":"node --test"},"dependencies":{"express":"^4.0.0"}}"""),
+        File("tests/server.test.js", "import test from 'node:test'; test('smoke', () => {});"),
+        File("README.md", "Document installation and local launch."));
+    Check(missingDeps.Status == "INCOMPLETE" &&
+          missingDeps.Findings.Any(f => f.Code == "UNDECLARED_DEPENDENCY" &&
+              f.Detail.Contains("axios", StringComparison.Ordinal)) &&
+          !missingDeps.Findings.Any(f => f.Code == "UNDECLARED_DEPENDENCY" &&
+              f.Detail.Contains("node:test", StringComparison.Ordinal)),
+        "missing Express/Axios imports are detected without treating Node builtins as packages");
+    var prepared = Inspect("Generated",
+        File("index.html", "<html><body>Podcasts</body></html>"),
+        File("server.js", server),
+        File("package.json", """{"scripts":{"start":"node server.js","test":"node --test"},"dependencies":{"express":"^4.0.0","axios":"^1.0.0"}}"""),
+        File("tests/server.test.js", "import test from 'node:test'; test('smoke', () => {});"),
+        File("README.md", "Document installation and local launch."));
+    Check(prepared.Status == "SOURCE_READY_FOR_REVIEW" &&
+          prepared.Findings.Count == 0 &&
+          !prepared.ExecutionAvailable &&
+          prepared.VerificationStatus == "GENERATED_NOT_TESTED",
+        "coherent Node server source is ready for review, never auto-verified");
+    var malformed = Inspect("Generated",
+        File("server.js", server), File("package.json", "{not json"));
+    Check(malformed.Findings.Any(f => f.Code == "INVALID_PACKAGE_MANIFEST") &&
+          malformed.Status == "INCOMPLETE",
+        "malformed dependency manifest cannot silently pass readiness");
+    var html = Inspect("Generated",
+        File("index.html", "<html><body>Offline</body></html>"));
+    Check(html.ProjectKind == "STATIC_WEB" &&
+          html.RuntimeProfileId == "static-web" &&
+          !html.ExecutionAvailable,
+        "standalone HTML stays Static Web and remains not verified");
+    var waiting = Inspect("Running", File("server.js", server));
+    Check(waiting.Status == "PENDING_SOURCE" && waiting.SourceSha256 is null,
+        "mutable in-progress engineering source has no readiness fingerprint");
+}
+
 var root = Path.Combine(Path.GetTempPath(),
     "ca-phase2-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -804,12 +881,17 @@ try
         Check(!json.GetProperty("registryExecutionAvailable").GetBoolean(),
             "registry never grants executable capability");
         var descriptors = json.GetProperty("profiles").EnumerateArray().ToArray();
-        Check(descriptors.Length == 2, "two scoped descriptors");
+        Check(descriptors.Length == 3, "three non-executing runtime descriptors");
         var web = descriptors.Single(p => p.GetProperty("id").GetString() == "static-web");
         Check(web.GetProperty("qualificationStatus").GetString() == "UNQUALIFIED" &&
               !web.GetProperty("executableViaRegistry").GetBoolean() &&
               web.GetProperty("toolchainImageDigest").ValueKind == JsonValueKind.Null,
             "Static Web cannot claim an image or executable admission");
+        var node = descriptors.Single(p => p.GetProperty("id").GetString() == "node-server");
+        Check(node.GetProperty("qualificationStatus").GetString() == "UNQUALIFIED" &&
+              !node.GetProperty("executableViaRegistry").GetBoolean() &&
+              node.GetProperty("toolchainImageDigest").ValueKind == JsonValueKind.Null,
+            "Node server profile is descriptive only, not permission to execute");
         var legacy = descriptors.Single(p =>
             p.GetProperty("id").GetString() == "legacy-dotnet-pilot");
         Check(legacy.GetProperty("qualificationStatus").GetString() ==
@@ -1330,6 +1412,31 @@ try
           engineeringResult!.Files.Single(f => f.Path == "app.js")
               .LastWorkItemId == "timer-state",
         "Software Engineer gets prior source and records last task ownership");
+
+    // Read-only stack-aware source readiness follows the same owner/run ACL.
+    var readinessPath = engineeringPath + "/" + engineeringRunId + "/source-readiness";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var forbidden = await anonymous.GetAsync(readinessPath))
+        Check(forbidden.StatusCode == HttpStatusCode.Unauthorized,
+            "project source readiness requires owner authentication");
+    using (var response = await client.GetAsync(readinessPath))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("runId").GetString() == engineeringRunId &&
+              body.RootElement.GetProperty("executionAvailable").GetBoolean() == false &&
+              body.RootElement.GetProperty("verificationStatus").GetString() ==
+                  "GENERATED_NOT_TESTED" &&
+              body.RootElement.GetProperty("projectKind").GetString() == "STATIC_WEB",
+            "source-readiness reports saved run without invoking a test runner");
+    using (var wrongRun = await client.GetAsync(
+        engineeringPath + "/" + new string('0', 32) + "/source-readiness"))
+        Check(wrongRun.StatusCode == HttpStatusCode.NotFound,
+            "source-readiness cannot read a different run");
+    using (var wrongTask = await client.GetAsync(
+        "/api/tasks/" + new string('0', 32) + "/engineering-runs/" +
+        engineeringRunId + "/source-readiness"))
+        Check(wrongTask.StatusCode == HttpStatusCode.NotFound,
+            "source-readiness cannot cross task boundary");
 
     // UX-6B HTTP: preflight is bounded to the requested task/run, requires
     // authentication and does not mutate source or perform execution.
