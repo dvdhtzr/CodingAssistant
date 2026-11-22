@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
 import { createServer as createHttpServer } from 'node:http';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 let vite;
+let cacheDir;
 let server;
 let browser;
 let page;
@@ -12,8 +16,13 @@ let href;
 before(async () => {
   // Node's listen(0) owns a real ephemeral loopback port. Vite's port: 0
   // can fall back to 5173 and collide with parallel Chromium fixtures.
+  cacheDir = await mkdtemp(join(tmpdir(), 'code-atlas-import-vite-'));
   vite = await createServer({
-    configFile: false, optimizeDeps: { noDiscovery: true, include: [] },
+    configFile: false,
+    cacheDir,
+    optimizeDeps: {
+      include: ['react', 'react-dom/client', 'react/jsx-dev-runtime'],
+    },
     root: process.cwd(),
     server: { middlewareMode: true, hmr: false },
     appType: 'spa',
@@ -53,6 +62,7 @@ after(async () => {
   if (server) await new Promise((resolve, reject) =>
     server.close(error => error ? reject(error) : resolve()));
   await vite?.close();
+  if (cacheDir) await rm(cacheDir, { recursive: true, force: true });
 });
 
 test('only a commit-pinned public GitHub source is accepted by import UI', async () => {
