@@ -260,7 +260,14 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
     <div className="atlas-controls">
       <label className="atlas-search">Find a symbol
         <input type="search" value={query}
-          onChange={event => { setQuery(event.target.value); setFocus(null); setFollowBuild(false); }}
+          onChange={event => {
+            const search = event.target.value;
+            setQuery(search); setFocus(null); setFollowBuild(false);
+            const found = search.trim() ? snapshot?.nodes.find(item =>
+              (item.qualifiedName + ' ' + item.name).toLowerCase()
+                .includes(search.trim().toLowerCase())) : null;
+            setSelected(found?.id ?? null);
+          }}
           placeholder="Class, method, namespace…" />
       </label>
       <label className="atlas-toggle"><input type="checkbox"
@@ -283,9 +290,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
               The graph will grow after each completed engineering assignment.</p>
           : <>
             <svg className="atlas-canvas" viewBox="-480 -300 960 600"
-              role="img" aria-label="Interactive Code Atlas graph of saved source"
+              role="group" aria-label="Interactive Code Atlas graph of saved source"
               onPointerDown={e => {
                 if (e.target !== e.currentTarget) return;
+                setFollowBuild(false);
                 pointer.current = { x: e.clientX, y: e.clientY };
                 e.currentTarget.setPointerCapture(e.pointerId);
               }}
@@ -300,6 +308,13 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
                 pointer.current = { x: e.clientX, y: e.clientY };
               }}
               onPointerUp={() => { pointer.current = null; }}
+              onWheel={e => {
+                if (e.ctrlKey || e.altKey) return;
+                e.preventDefault();
+                setFollowBuild(false);
+                setZoom(current => Math.max(.45, Math.min(2.4,
+                  current * (e.deltaY > 0 ? .91 : 1.09))));
+              }}
               onPointerCancel={() => { pointer.current = null; }}>
               <defs>
                 <radialGradient id="atlas-halo">
