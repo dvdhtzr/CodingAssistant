@@ -3,7 +3,7 @@ import { api, type ApiStatus, type RunItem, type TaskItem, type TaskView } from 
 import { MafHandoffTimeline } from './MafHandoffTimeline';
 import { AgentIdentityPanel } from './AgentIdentityPanel';
 
-export type WorkbenchView = 'overview' | 'studio' | 'diagnostics';
+export type WorkbenchView = 'command' | 'team' | 'work' | 'quality' | 'skills' | 'history' | 'diagnostics';
 
 interface RosterAgent {
   id: string;
@@ -73,16 +73,18 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
     {selectedId && <nav aria-label="Project views" className="wb-navigation">
       <p className="wb-kicker">WORKSPACE</p>
       {([
-        ['overview', 'Overview'],
-        ['studio', 'Engineering Studio'],
-        ['diagnostics', 'Legacy diagnostics'],
-      ] as const).map(([id, label]) =>
+        ['command', 'Command', '◫'],
+        ['team', 'Team', '◉'],
+        ['work', 'Work', '⌘'],
+        ['quality', 'Quality', '◇'],
+        ['skills', 'Skills', '✦'],
+        ['history', 'History', '◷'],
+      ] as const).map(([id, label, icon]) =>
         <button type="button" key={id}
           aria-current={view === id ? 'page' : undefined}
           className={'wb-nav-item' + (view === id ? ' wb-selected' : '')}
           onClick={() => onChangeView(id)}>
-          <span className="wb-nav-icon" aria-hidden="true">{id === 'overview' ? '◫' :
-            id === 'studio' ? '⌘' : '⌁'}</span>{label}
+          <span className="wb-nav-icon" aria-hidden="true">{icon}</span>{label}
         </button>)}
     </nav>}
     <details className="wb-projects wb-project-switcher">
@@ -182,12 +184,12 @@ export function WorkbenchInspector({ token, view, taskView, run, status, onConti
       <div className="wb-inspector-row"><span>Project</span><strong>{taskView.task.title}</strong></div>
       <div className="wb-inspector-row"><span>Project record</span><strong>{taskView.task.status}</strong></div>
       <div className="wb-inspector-row"><span>Current view</span><strong>{
-        view === 'studio' ? 'Engineering Studio' :
-          view === 'overview' ? 'Overview' : 'Legacy diagnostics'
+        view === 'diagnostics' ? 'Legacy diagnostics' :
+          view[0].toUpperCase() + view.slice(1)
       }</strong></div>
       {run && <div className="wb-inspector-row"><span>Legacy run state</span>
         <strong>{run.state}</strong></div>}
-      {view !== 'studio' && <button type="button" className="wb-inspector-action"
+      {view !== 'work' && <button type="button" className="wb-inspector-action"
         onClick={onContinue}>Open Engineering Studio</button>}
     </> : <p className="wb-muted">Create or open a project to inspect its work.</p>}
     <details className="wb-inspector-disclosure" open>

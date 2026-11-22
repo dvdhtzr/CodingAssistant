@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
+import { TeamDestination, QualityDestination, SkillsDestination, HistoryDestination } from './MissionDestinations';
 import { ProjectOverview, WorkbenchInspector, WorkbenchSidebar,
   type WorkbenchView } from './Workbench';
 import * as signalR from '@microsoft/signalr';
@@ -61,9 +62,9 @@ export default function App() {
   const [status, setStatus] = useState<ApiStatus | null>(null);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [taskId, setTaskId] = useState('');
-  const [view, setView] = useState<WorkbenchView>('overview');
-  const [inspectorOpen, setInspectorOpen] = useState(() =>
-    typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches);
+  const [view, setView] = useState<WorkbenchView>('command');
+  // Inspection is contextual and opt-in, not a permanent third column.
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [taskView, setTaskView] = useState<TaskView | null>(null);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [runId, setRunId] = useState('');
@@ -136,7 +137,7 @@ export default function App() {
   }
   function refreshTask() { setTaskRevision(v => v + 1); }
   function refreshRun() { setRunRevision(v => v + 1); }
-  function chooseTask(id: string, initialView: WorkbenchView = 'overview') {
+  function chooseTask(id: string, initialView: WorkbenchView = 'command') {
     if (id !== '' && !isHexId(id)) return;
     setView(initialView);
     setTaskId(id);
@@ -424,7 +425,7 @@ export default function App() {
     {token && <div className={'layout wb-layout' +
       (!inspectorOpen ? ' wb-layout--inspector-closed' : '')}>
       <WorkbenchSidebar token={token} tasks={tasks} selectedId={taskId} view={view}
-        onOpenRoster={() => setInspectorOpen(true)}
+        onOpenRoster={() => setView('team')}
         disabled={isBusy} onSelectTask={chooseTask}
         onNewProject={() => chooseTask('')} onChangeView={setView}
         onRefresh={() => void action('refresh', async () => {
@@ -464,7 +465,7 @@ export default function App() {
             });
             setNewTitle(''); setNewObjective('');
             await fetchTasks();
-            chooseTask(created.id, 'studio');
+            chooseTask(created.id, 'work');
           }); }}>
             <label htmlFor="project-objective">What do you want to build?
               <textarea id="project-objective" value={newObjective} maxLength={4000}
@@ -490,14 +491,20 @@ export default function App() {
           <h2>Opening your project…</h2>
           <p className="hint">Loading the selected project's saved Product Owner conversation and history.</p>
         </section>}
-        {view === 'overview' && taskView && <ProjectOverview
+        {view === 'command' && taskView && <ProjectOverview
           token={token} task={taskView.task}
-          onContinue={() => setView('studio')}
+          onContinue={() => setView('work')}
           onDiagnostics={() => setView('diagnostics')} />}
-        {taskView && <div hidden={view !== 'studio'}>
+        {taskView && <div hidden={view !== 'work'}>
           <InterviewStudio key={taskView.task.id}
             token={token} task={taskView.task} />
         </div>}
+        {taskView && view === 'team' && <TeamDestination token={token} taskId={taskId}
+          onWork={() => setView('work')} />}
+        {taskView && view === 'quality' && <QualityDestination token={token}
+          taskId={taskId} onWork={() => setView('work')} />}
+        {taskView && view === 'skills' && <SkillsDestination token={token} />}
+        {taskView && view === 'history' && <HistoryDestination token={token} taskId={taskId} />}
         {view === 'diagnostics' && taskView && <div className="wb-diagnostic-heading">
           <h2>Legacy diagnostics</h2>
           <p className="hint">Historical HTML and fixed C# qualification workflows.

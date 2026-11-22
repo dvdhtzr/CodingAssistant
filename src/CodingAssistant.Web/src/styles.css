@@ -116,3 +116,19 @@
 .wb-project-switcher[open] { padding-bottom:.5rem; }
 .wb-project-switcher[open] > :not(summary) { margin-left:.35rem;margin-right:.35rem; }
 .wb-team:not([open]) { padding-bottom:.4rem; }
+
+/* Mission Control 2.0: focused primary destinations, one workspace scroll. */
+.mc-destination { display:grid;gap:1rem;align-content:start;min-width:0; }
+.mc-destination > h2 { margin:.25rem 0 0;font-size:1.45rem; }
+.mc-destination > .hint { margin:0; }
+.mc-destination .wb-agent-identities { min-width:0; }
+.mc-history { list-style:none;margin:0;padding:0;display:grid;gap:.7rem; }
+.mc-history li { border:1px solid #354963;background:#132034;
+  padding:1rem;border-radius:10px;overflow-wrap:anywhere; }
+.mc-history p { margin:.4rem 0;line-height:1.45; }
+.mc-history small { color:#a9bdd5; }
+.mc-destination .panel ul { overflow-wrap:anywhere; }
+@media(max-width:720px) {
+  .mc-destination { gap:.7rem; }
+  .mc-history li { padding:.75rem; }
+}
