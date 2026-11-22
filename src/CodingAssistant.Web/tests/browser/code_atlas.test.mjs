@@ -93,3 +93,28 @@ test('manual graph exploration disables follow-build focus stealing', async () =
   assert.equal(await atlas.getByRole('checkbox', { name: 'Follow build' })
     .isChecked(), false);
 });
+
+
+test('manual exploration retains the chosen node while later source appears', async () => {
+  const manual = await browser.newPage({ viewport: { width: 1340, height: 900 } });
+  try {
+    await manual.goto(page.url());
+    const atlas = manual.getByRole('region', { name: 'Code Atlas' });
+    const graph = atlas.getByRole('group', {
+      name: 'Interactive Code Atlas graph of saved source',
+    });
+    await graph.getByRole('button', { name: 'Class: Demo.TaskService' }).click();
+    assert.equal(await atlas.getByRole('checkbox', { name: 'Follow build' })
+      .isChecked(), false);
+    await manual.getByRole('button', { name: 'Persist next source revision' }).click();
+    await atlas.getByText('Recorded source changes (1)').waitFor();
+    assert.equal(await atlas.getByRole('complementary',
+      { name: 'Selected source entity' }).getByRole('heading',
+      { name: 'TaskService' }).isVisible(), true);
+    assert.equal(await atlas.getByRole('checkbox', { name: 'Follow build' })
+      .isChecked(), false);
+    assert.equal(await graph.locator('.atlas-node.atlas-modified').count() > 0, true);
+  } finally {
+    await manual.close();
+  }
+});
