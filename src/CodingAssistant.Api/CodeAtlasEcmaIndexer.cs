@@ -290,7 +290,7 @@ public static class CodeAtlasEcmaIndexer
 
 
     private sealed record NamedImport(string Module, string Name,
-        string LocalName, int Line);
+        string LocalName, int Line, bool TypeOnly);
 
     /// <summary>
     /// Only simple, top-level ES named imports with an ordinary literal
@@ -306,19 +306,23 @@ public static class CodeAtlasEcmaIndexer
             if (tokens[i].Depth != 0 || tokens[i].Text != "import" ||
                 (i > 0 && tokens[i - 1].Text == ".")) continue;
             var start = i + 1;
-            if (tokens[start].Text == "type") start++;
+            var wholeTypeOnly = tokens[start].Text == "type";
+            if (wholeTypeOnly) start++;
             if (start >= tokens.Count || tokens[start].Text != "{") continue;
             var end = Closing(tokens, start, "{", "}", tokens.Count);
             if (end < 0 || end + 2 >= tokens.Count ||
                 tokens[end + 1].Text != "from" ||
                 tokens[end + 2].Text != LiteralToken ||
                 tokens[end + 2].Literal is not { } module) continue;
-            var names = new List<(string Imported, string Local)>();
+            var names = new List<(string Imported, string Local,
+                bool TypeOnly)>();
             var valid = true;
             var j = start + 1;
             while (j < end)
             {
                 if (names.Count == 32) { valid = false; break; }
+                var oneTypeOnly = wholeTypeOnly ||
+                    tokens[j].Text == "type";
                 if (tokens[j].Text == "type") j++;
                 if (j >= end || !Word(tokens[j].Text) ||
                     tokens[j].Text is "as" or "default")
@@ -332,7 +336,7 @@ public static class CodeAtlasEcmaIndexer
                     { valid = false; break; }
                     localName = tokens[j++].Text;
                 }
-                names.Add((importedName, localName));
+                names.Add((importedName, localName, oneTypeOnly));
                 if (j == end) break;
                 if (tokens[j].Text != ",") { valid = false; break; }
                 j++;
@@ -340,7 +344,7 @@ public static class CodeAtlasEcmaIndexer
             if (valid)
                 found.AddRange(names.Select(name =>
                     new NamedImport(module, name.Imported, name.Local,
-                        tokens[i].Line)));
+                        tokens[i].Line, name.TypeOnly)));
             i = end + 2;
         }
         return found;
@@ -450,6 +454,69 @@ public static class CodeAtlasEcmaIndexer
                 found.AddRange(pending);
         }
         return found;
+    }
+
+
+    private sealed record DirectFunction(string Name, int BodyOpen,
+        int BodyClose, bool HasParameters);
+
+    // M8.13: Only named file-scoped declarations with ordinary brace bodies.
+    // No arrow/callback, function expression, overload or inferred scope.
+    private static IReadOnlyList<DirectFunction> DirectFunctions(
+        IReadOnlyList<Token> t)
+    {
+        var found = new List<DirectFunction>();
+        for (var i = 0; i + 3 < t.Count; i++)
+        {
+            if (t[i].Depth != 0 || t[i].Text != "function" ||
+                !Word(t[i + 1].Text)) continue;
+            if (i > 0 && t[i - 1].Text is not
+                (";" or "}" or "export" or "default" or "async"))
+                continue;
+            if (i >= 2 && t[i - 1].Text == "async" &&
+                t[i - 2].Text is not
+                    (";" or "}" or "export" or "default"))
+                continue;
+            var open = ParametersAt(t, i + 2, t.Count);
+            if (open < 0) continue;
+            var close = Closing(t, open, "(", ")", t.Count);
+            if (close < 0 || close + 1 >= t.Count ||
+                t[close + 1].Text != "{") continue;
+            var bodyOpen = close + 1;
+            var end = Closing(t, bodyOpen, "{", "}", t.Count);
+            if (end < 0) continue;
+            found.Add(new DirectFunction(t[i + 1].Text, bodyOpen,
+                end, close != open + 1));
+        }
+        return found;
+    }
+
+    // The caller's lexical region may shadow or rebind any callee. Reject
+    // those names for the whole caller, irrespective of declaration order.
+    // Unresolved destructuring, eval, or with rejects the whole caller.
+    private static (bool Unsafe, HashSet<string> Blocked) CallShadows(
+        IReadOnlyList<Token> t, DirectFunction caller)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        var unsafeScope = false;
+        for (var i = caller.BodyOpen + 1; i < caller.BodyClose; i++)
+        {
+            var word = t[i].Text;
+            var next = i + 1 < caller.BodyClose ? t[i + 1].Text : "";
+            if (word is "eval" && next == "(" || word == "with")
+                unsafeScope = true;
+            if (word is "const" or "let" or "var" &&
+                next is "{" or "[")
+                unsafeScope = true;
+            if (word is "const" or "let" or "var" or "function" or
+                "class" or "interface" or "catch" &&
+                Word(next)) names.Add(next);
+            // Any assignment or update to an otherwise-resolved name may
+            // change call behavior. Conservative false negatives are safer.
+            if (Word(word) && next is "=" or "+" or "-")
+                names.Add(word);
+        }
+        return (unsafeScope, names);
     }
 
     public static AtlasSnapshot Enrich(AtlasSnapshot graph,
@@ -754,6 +821,114 @@ public static class CodeAtlasEcmaIndexer
                 if (target is null || owner.Id == target.Id) continue;
                 Link(owner.Id, target.Id, clause.Relation,
                     file.Path, clause.Line, "ExplicitEcmaTypeClause");
+            }
+        }
+
+        // M8.13: direct, unqualified call expressions at statement
+        // boundaries in zero-argument, top-level named function bodies.
+        // Targets must be uniquely declared same-file functions or named,
+        // value-imported, directly exported functions from a saved file.
+        // Evidence is lexical source syntax, never runtime call proof.
+        var direct = candidates.ToDictionary(f => f.Path,
+            f => DirectFunctions(tokenCache[f.Path]), StringComparer.Ordinal);
+        var localNames = candidates.ToDictionary(f => f.Path, f =>
+        {
+            var t = tokenCache[f.Path];
+            var names = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var i = 0; i + 1 < t.Count; i++)
+            {
+                if (t[i].Depth != 0 ||
+                    t[i].Text is not ("function" or "class" or
+                        "interface" or "const" or "let" or "var") ||
+                    !Word(t[i + 1].Text)) continue;
+                names[t[i + 1].Text] =
+                    names.GetValueOrDefault(t[i + 1].Text) + 1;
+            }
+            return names;
+        }, StringComparer.Ordinal);
+
+        AtlasNode? FunctionNode(string path, string name)
+        {
+            var matches = nodes.Values.Where(n =>
+                n.Kind == "Function" && n.Path == path &&
+                n.ParentId == files[path].Id &&
+                n.Name.StartsWith(name + "(", StringComparison.Ordinal))
+                .Take(2).ToArray();
+            return matches.Length == 1 ? matches[0] : null;
+        }
+
+        foreach (var file in candidates)
+        {
+            var t = tokenCache[file.Path];
+            var imported = NamedImports(t);
+            var importsByName = imported
+                .GroupBy(x => x.LocalName, StringComparer.Ordinal)
+                .Where(g => g.Count() == 1 &&
+                    !localNames[file.Path].ContainsKey(g.Key))
+                .ToDictionary(g => g.Key, g => g.Single(),
+                    StringComparer.Ordinal);
+            var localDirect = direct[file.Path]
+                .GroupBy(f => f.Name, StringComparer.Ordinal)
+                .Where(g => g.Count() == 1 &&
+                    localNames[file.Path].GetValueOrDefault(g.Key) == 1 &&
+                    !imported.Any(x => x.LocalName == g.Key))
+                .ToDictionary(g => g.Key, g => g.Single(),
+                    StringComparer.Ordinal);
+            foreach (var caller in direct[file.Path].Where(f =>
+                !f.HasParameters && localDirect.ContainsKey(f.Name)))
+            {
+                var callerNode = FunctionNode(file.Path, caller.Name);
+                if (callerNode is null) continue;
+                var (unsafeScope, blocked) = CallShadows(t, caller);
+                if (unsafeScope) continue;
+
+                for (var i = caller.BodyOpen + 1;
+                    i + 1 < caller.BodyClose; i++)
+                {
+                    if (t[i].Depth != 1 || !Word(t[i].Text) ||
+                        t[i + 1].Text != "(" ||
+                        blocked.Contains(t[i].Text))
+                        continue;
+                    var before = t[i - 1].Text;
+                    if (before is not ("{" or ";" or "return" or "await"))
+                        continue;
+                    if (before == "{" && i - 1 != caller.BodyOpen)
+                        continue;
+                    var end = Closing(t, i + 1, "(", ")",
+                        caller.BodyClose);
+                    if (end < 0 || end + 1 >= caller.BodyClose ||
+                        t[end + 1].Text != ";") continue;
+
+                    AtlasNode? target = null;
+                    if (localDirect.ContainsKey(t[i].Text))
+                        target = FunctionNode(file.Path, t[i].Text);
+                    else if (importsByName.TryGetValue(t[i].Text,
+                        out var binding) && !binding.TypeOnly)
+                    {
+                        var (targetPath, _) = Resolve(file.Path,
+                            binding.Module, files);
+                        if (targetPath is not null &&
+                            direct.TryGetValue(targetPath,
+                                out var candidatesInModule) &&
+                            candidatesInModule.Count(f =>
+                                f.Name == binding.Name) == 1 &&
+                            exported.TryGetValue(targetPath,
+                                out var directExports) &&
+                            directExports.TryGetValue(binding.Name,
+                                out var exportNode) &&
+                            exportNode.Kind == "Function")
+                        {
+                            var named = FunctionNode(targetPath,
+                                binding.Name);
+                            if (named?.Id == exportNode.Id)
+                                target = named;
+                        }
+                    }
+                    if (target is not null)
+                        Link(callerNode.Id, target.Id, "Calls",
+                            file.Path, t[i].Line,
+                            "ExplicitEcmaDirectCallSyntax");
+                }
             }
         }
         var hasCSharp = source.Any(f => files.ContainsKey(f.Path) &&

@@ -929,6 +929,115 @@ var m812Private = CodeAtlasIndexer.Index("private-types", new[]
 Check(!m812Private.Edges.Any(e => e.Kind == "Inherits"),
     "private imported types and class expressions cannot resolve as inheritance");
 
+// M8.13: direct, source-backed named function invocation relationships.
+var directCallSources = new[]
+{
+    File("src/main.ts", """
+        import { work as remote, type IWorker } from './service';
+        import type { typeCall } from './service';
+        function local() {}
+        export function orchestrate() {
+            local();
+            remote();
+            local();
+            typeCall();
+            obj.local();
+            new local();
+            const fake = "local(); remote();";
+            // remote();
+        }
+        export function facade() {
+            return local();
+        }
+        export async function asyncStart() {
+            await remote();
+        }
+        export function shadowed() {
+            const local = () => 5;
+            local();
+        }
+        export function nested() {
+            const callback = () => remote();
+        }
+        export function withParameter(local) {
+            local();
+        }
+        """),
+    File("src/service.ts", """
+        export function work() { return true; }
+        export function typeCall() { return false; }
+        export const arrow = () => true;
+        """)
+};
+var directCallGraph = CodeAtlasIndexer.Index("direct-call-run", directCallSources);
+var directCalls = directCallGraph.Edges.Where(e => e.Kind == "Calls").ToArray();
+Check(directCallGraph.Coverage == "ECMA_STRUCTURE_ONLY" &&
+    directCalls.Length == 4,
+    "four uniquely proven direct JS/TS function call relationships");
+var directCallNodes = directCallGraph.Nodes;
+var orchestrateNode = directCallNodes.Single(n =>
+    n.Kind == "Function" && n.Path == "src/main.ts" &&
+    n.Name.StartsWith("orchestrate(", StringComparison.Ordinal));
+var localFunction = directCallNodes.Single(n =>
+    n.Kind == "Function" && n.Path == "src/main.ts" &&
+    n.Name.StartsWith("local(", StringComparison.Ordinal));
+var workFunction = directCallNodes.Single(n =>
+    n.Kind == "Function" && n.Path == "src/service.ts" &&
+    n.Name.StartsWith("work(", StringComparison.Ordinal));
+Check(directCalls.Any(e => e.SourceId == orchestrateNode.Id &&
+    e.TargetId == localFunction.Id) &&
+    directCalls.Any(e => e.SourceId == orchestrateNode.Id &&
+    e.TargetId == workFunction.Id),
+    "local function calls and named imported aliases resolve to actual functions");
+Check(directCalls.All(e => e.EvidencePath == "src/main.ts" &&
+    e.EvidenceLine > 0 &&
+    e.Resolution == "ExplicitEcmaDirectCallSyntax"),
+    "every call edge carries exact source syntax provenance");
+Check(!directCalls.Any(e => directCallNodes.Any(n =>
+    n.Id == e.SourceId && n.Name.StartsWith("shadowed(",
+        StringComparison.Ordinal))) &&
+    !directCalls.Any(e => directCallNodes.Any(n =>
+    n.Id == e.SourceId && n.Name.StartsWith("nested(",
+        StringComparison.Ordinal))) &&
+    !directCalls.Any(e => directCallNodes.Any(n =>
+    n.Id == e.SourceId && n.Name.StartsWith("withParameter(",
+        StringComparison.Ordinal))),
+    "shadowed names, nested arrows and parameterized callers yield no guesses");
+Check(!directCalls.Any(e => directCallNodes.Any(n =>
+    n.Id == e.TargetId && n.Name.StartsWith("typeCall(",
+        StringComparison.Ordinal))),
+    "type-only imports cannot be mistaken for executable call targets");
+var directCallTrace = CodeAtlasPathFinder.Trace(directCallGraph,
+    orchestrateNode.Id, workFunction.Id);
+Check(directCallTrace.Found && directCallTrace.Edges.Count == 1 &&
+    directCallTrace.Edges[0].Kind == "Calls",
+    "verified syntax-level caller/callee edges are navigable");
+var directCallReordered = CodeAtlasIndexer.Index("direct-call-run",
+    directCallSources.Reverse().ToArray());
+Check(directCallGraph.SourceRevision == directCallReordered.SourceRevision &&
+    directCallGraph.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(directCallReordered.Edges.Select(e =>
+            (e.Kind, e.SourceId, e.TargetId))),
+    "call evidence stays deterministic after source file reordering");
+var directCallAmbiguous = CodeAtlasIndexer.Index("ambiguous-calls", new[]
+{
+    File("main.js", """
+        function duplicate() {}
+        function duplicate(value) {}
+        function start() { duplicate(); }
+        function mutable() {}
+        mutable = other;
+        function dangerous() { mutable(); }
+        function unsafe() { eval("function helper() {}"); helper(); }
+        function destructured() {
+            const { helper } = object;
+            helper();
+        }
+        """)
+});
+Check(!directCallAmbiguous.Edges.Any(e => e.Kind == "Calls"),
+    "ambiguous, reassigned, eval and destructured callable names fail closed");
+
 // M4: only Roslyn-resolved, source-backed relationships may become graph edges.
 var semanticFiles = new[]
 {

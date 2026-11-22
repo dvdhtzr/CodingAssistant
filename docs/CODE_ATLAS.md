@@ -192,3 +192,11 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Edges carry exact source path/line and `ExplicitEcmaTypeClause` provenance. Existing read-only path tracing and imported-commit drift comparisons can use them.
 - Ambiguous or repeated imports, duplicated declarations, wrong symbol kinds, private imported types, class expressions, computed bases, generics, unknown external symbols and dynamic factories remain unlinked. Arbitrary method/call binding is **not** claimed.
 - These are conservative source facts, **not TypeScript language-service semantic results or proof of valid build/runtime inheritance**. Full compiler-backed resolution and caller/callee analysis remain future work. Existing graph limits, task isolation, owner approval, QA boundaries and no-execution policy are unchanged.
+
+## M8.13 — Bounded explicit JavaScript/TypeScript caller-to-callee evidence
+
+- Recognizes unqualified, direct statement-form `helper();`, `return helper();`, and `await helper();` invocations inside **zero-argument, top-level named function bodies**. Links to one uniquely declared same-file function or an explicitly named value-import of a directly exported function from the same saved graph.
+- Each `Calls` edge records its actual call-site path/line and `ExplicitEcmaDirectCallSyntax` provenance. Existing read-only dependency tracing and architecture drift can reuse these edges. The edge means the source contains a directly identifiable call expression, **not** that the call was executed or compiler/type-checker verified.
+- No attempt to resolve receiver/property calls, methods, dynamic imports, generic invocations, nested callbacks, arrow-function caller bodies, function parameters, overloaded/duplicate names, type-only imports, arbitrary expression calls, optional chaining, or module aliases.
+- Local shadowing/rebinding, unsafe eval/with/destructuring scopes and ambiguous local or imported declarations fail closed. Source files remain data: there is no JS evaluation, filesystem fetch, package installation, script execution or new sandbox permission.
+- Limits, deterministic revision identity, independent QA and owner approval/security boundaries are unchanged. Compiler-backed TypeScript/JavaScript calls and richer semantic coverage remain future milestones.
