@@ -14,6 +14,7 @@ public sealed class RepairCycleCoordinator(
     ImplementationPlanStore plans, EngineeringRunStore engineering,
     RepairCycleStore cycles, IEngineeringTaskModel engineer,
     QaReviewCoordinator qa, QaReviewStore reviews,
+    EngineeringAtlasNotifier atlasNotifier,
     IHostApplicationLifetime lifetime)
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
@@ -77,7 +78,11 @@ public sealed class RepairCycleCoordinator(
                     SHA256.HashData(Encoding.UTF8.GetBytes(f.Content)))
                     .ToLowerInvariant())))
                 throw new StoreFailure("REPAIR_NO_CHANGE");
-            engineering.CompleteTask(taskId, runId, workItemId, safe);
+            var atlasChange = engineering.CompleteTask(
+                taskId, runId, workItemId, safe);
+            // Repair changes are source-committed just like ordinary Software
+            // Engineer tasks. Publish only the durable post-commit hint.
+            await atlasNotifier.PublishAsync(atlasChange);
             token.ThrowIfCancellationRequested();
             engineering.Finish(taskId, runId, true, null);
             cycles.SetState(taskId, cycle.Id, "Generated");
