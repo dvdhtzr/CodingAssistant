@@ -90,6 +90,16 @@ export default function App() {
   const [runRevision, setRunRevision] = useState(0);
   const [clock, setClock] = useState(Date.now());
 
+  // Inspector is an optional contextual surface; Escape dismisses it.
+  useEffect(() => {
+    if (!inspectorOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setInspectorOpen(false);
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [inspectorOpen]);
+
   // Windows opens Mission Control immediately: browser JS requests a new
   // short-lived same-origin bearer, never the owner's persisted DPAPI token.
   // Linux keeps the existing manual bearer login.
@@ -141,6 +151,7 @@ export default function App() {
   function chooseTask(id: string, initialView: WorkbenchView = 'command') {
     if (id !== '' && !isHexId(id)) return;
     setView(initialView);
+    setInspectorOpen(false);
     setTaskId(id);
     setHtmlArtifact(null);
     setTaskView(null);
