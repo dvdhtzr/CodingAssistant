@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {
   sandboxDockerArgs,parseSandboxReport,runSandboxCompatibility,main,
+  OFFICIAL_SECCOMP_GIT_BLOB,checkedChromiumSeccomp,validateChromiumSeccompBytes,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
   CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,
@@ -95,6 +96,10 @@ test('Docker contract has immutable offline image and bounded no-mount isolation
     '--input-type=module','-','--run-fixed-sandbox-probe'])
     assert.ok(argv.includes(required),required);
   assert.ok(argv.includes(ID));
+  const seccomp=checkedChromiumSeccomp();
+  const opts=argv.filter(a=>a.startsWith('--security-opt=seccomp='));
+  assert.deepEqual(opts,['--security-opt=seccomp='+seccomp.path]);
+  assert.ok(!opts.some(x=>x.includes('unconfined')));
   assert.equal(argv.filter(a=>a==='--mount').length,0);
   for(const bad of ['--privileged','--pid=host','--ipc=host',
     '--network=host','--cap-add','--env-file','--mount','-v',
@@ -104,6 +109,36 @@ test('Docker contract has immutable offline image and bounded no-mount isolation
   assert.ok(!argv.some(a=>a.startsWith('--pid=')));
   assert.throws(()=>sandboxDockerArgs('mcr:latest',NAME));
   assert.throws(()=>sandboxDockerArgs(ID,'unapproved-name'));
+});
+test('exact upstream Playwright seccomp profile is pinned and fails on tampering',()=>{
+  const attested=checkedChromiumSeccomp();
+  assert.equal(attested.upstreamGitBlob,
+    'fddc05fb520affb145404e6f6f647ca96af8087d');
+  assert.equal(attested.upstreamGitBlob,OFFICIAL_SECCOMP_GIT_BLOB);
+  assert.match(attested.sha256,/^[0-9a-f]{64}$/);
+  assert.match(attested.path,/playwright-chromium-seccomp\.json$/);
+  const original=fs.readFileSync(attested.path);
+  const normalized=Buffer.from(original.toString('utf8').replace(/\r\n/g,'\n'));
+  assert.deepEqual(validateChromiumSeccompBytes(original),
+    validateChromiumSeccompBytes(normalized));
+  assert.deepEqual(validateChromiumSeccompBytes(
+    Buffer.from(normalized.toString('utf8').replace(/\n/g,'\r\n'))),
+    validateChromiumSeccompBytes(normalized));
+  const p=JSON.parse(normalized.toString('utf8'));
+  assert.equal(p.defaultAction,'SCMP_ACT_ERRNO');
+  assert.deepEqual(p.syscalls[0].names,['clone','setns','unshare']);
+  assert.equal(p.syscalls[0].action,'SCMP_ACT_ALLOW');
+  assert.ok(p.syscalls.every(rule=>rule.action==='SCMP_ACT_ALLOW'));
+  for(const bad of [
+    Buffer.alloc(0),
+    Buffer.from('{"defaultAction":"SCMP_ACT_ALLOW"}'),
+    Buffer.from(normalized.toString('utf8').replace(
+      '"defaultAction": "SCMP_ACT_ERRNO"',
+      '"defaultAction": "SCMP_ACT_ALLOW"')),
+    Buffer.from(normalized.toString('utf8').replace(
+      '"setns",','"mount",')),
+    Buffer.from(normalized.toString('utf8')+' '),
+  ])assert.throws(()=>validateChromiumSeccompBytes(bad));
 });
 test('strict report rejects malformed, oversized, unknown, and forged categories',()=>{
   assert.deepEqual(parseSandboxReport(JSON.stringify(envelope())),
