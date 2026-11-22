@@ -87,6 +87,8 @@ jobs:
           dotnet-version: "10.0.x"
       - name: Build and exercise actual M2 HTTP/SQLite API (no model)
         run: dotnet run --configuration Release --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.csproj
+      - name: Verify read-only Code Atlas graph indexing (no model or executor)
+        run: dotnet run --configuration Release --project tests/CodingAssistant.CodeAtlas.Smoke/CodingAssistant.CodeAtlas.Smoke.csproj
       - name: Verify Phase 2 runtime profiles and decision persistence (no model or executor)
         run: dotnet run --configuration Release --project tests/CodingAssistant.Phase2.Smoke/CodingAssistant.Phase2.Smoke.csproj
       - name: Publish self-contained Dell-ready Linux-x64 API
