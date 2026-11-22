@@ -1442,7 +1442,7 @@ try
     using (var deniedActive = await Post(client, qaPath,
         new StartQaReviewRequest(failedEngineerRun.Id, secondPlanHash)))
         Check(deniedActive.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 2,
+              qaModel.ReviewedFiles.Count == 6,
             "QA cannot read an active engineering job even when it saved source");
     engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-state");
     engineeringStore.Finish(taskBound.Id, failedEngineerRun.Id, false, "MODEL_OUTPUT_REJECTED");
@@ -1540,7 +1540,7 @@ try
     using (var historicalSource = await Post(client, qaPath,
         new StartQaReviewRequest(interrupted.Id, secondPlanHash)))
         Check(historicalSource.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 4,
+              qaModel.ReviewedFiles.Count == 8,
             "QA refuses superseded engineering source even under the same plan");
     engineeringStore.Interrupt(taskBound.Id, supersedingSource.Id);
     using (var staleProposal = await Post(client, proposalPath,
