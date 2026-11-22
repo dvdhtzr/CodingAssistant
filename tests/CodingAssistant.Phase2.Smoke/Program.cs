@@ -1228,6 +1228,54 @@ try
         Check(cross.StatusCode == HttpStatusCode.NotFound,
             "QA report cannot be read through another project's URL");
 
+    // R1 proposals are host-admitted evidence, never executable repair grants.
+    var proposalPath = "/api/tasks/" + taskBound.Id + "/repair-proposals";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(proposalPath + "/latest"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "repair proposals remain private to the authenticated owner");
+    using (var invalid = await Post(client, proposalPath,
+        new CreateRepairProposalRequest("not-an-id")))
+        Check(invalid.StatusCode == HttpStatusCode.BadRequest,
+            "malformed QA reference cannot be admitted");
+    using (var wrongTask = await Post(client,
+        "/api/tasks/" + task.Id + "/repair-proposals",
+        new CreateRepairProposalRequest(qaReviewId)))
+        Check(wrongTask.StatusCode == HttpStatusCode.NotFound,
+            "QA evidence cannot be referenced from another task");
+    string repairProposalId;
+    using (var created = await Post(client, proposalPath,
+        new CreateRepairProposalRequest(qaReviewId)))
+    using (var body = await Body(created))
+    {
+        var proposal = body.RootElement;
+        repairProposalId = proposal.GetProperty("id").GetString()!;
+        var findings = proposal.GetProperty("findings");
+        Check(created.StatusCode == HttpStatusCode.Created &&
+              proposal.GetProperty("state").GetString() == "NeedsTriage" &&
+              proposal.GetProperty("qaReviewId").GetString() == qaReviewId &&
+              proposal.GetProperty("engineeringRunId").GetString() == engineeringRunId &&
+              proposal.GetProperty("sourceSha256").GetString() ==
+                  qaResult!.Job.SourceSha256 &&
+              findings.GetArrayLength() == 1 &&
+              findings[0].GetProperty("classification").GetString() ==
+                  "NeedsVerification" &&
+              findings[0].GetProperty("path").GetString() == "app.js",
+            "R1 captures exact approved source-bound QA finding as unverified");
+    }
+    using (var duplicate = await Post(client, proposalPath,
+        new CreateRepairProposalRequest(qaReviewId)))
+    using (var body = await Body(duplicate))
+        Check(duplicate.StatusCode == HttpStatusCode.Created &&
+              body.RootElement.GetProperty("id").GetString() == repairProposalId,
+            "repeated proposal requests are idempotent");
+    using (var latestProposal = await client.GetAsync(proposalPath + "/latest"))
+    using (var body = await Body(latestProposal))
+        Check(latestProposal.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("proposal")
+                  .GetProperty("id").GetString() == repairProposalId,
+            "R1 proposal survives a new SQLite read");
+
     // Real FlowBoard failure: the first source file survives but a later
     // engineering task fails. Static QA must accept only the immutable saved
     // partial artifact, and the status must remain clearly incomplete.
