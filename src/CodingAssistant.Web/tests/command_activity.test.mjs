@@ -8,6 +8,7 @@ let vite;
 let commandActivity;
 let commandAgents;
 let CommandActivityView;
+let CommandDrawer;
 const time1 = '2026-11-22T12:01:00Z';
 const time2 = '2026-11-22T12:02:00Z';
 const agent = (id, role) => ({
@@ -54,6 +55,7 @@ before(async () => {
     server: { middlewareMode: true }, appType: 'custom' });
   ({ commandActivity, commandAgents, CommandActivityView } =
     await vite.ssrLoadModule('/src/CommandActivity.tsx'));
+  ({ CommandDrawer } = await vite.ssrLoadModule('/src/CommandDrawer.tsx'));
 });
 after(async () => { if (vite) await vite.close(); });
 
@@ -97,4 +99,56 @@ test('draft specification takes precedence over generating-source suggestion', (
     task, evidence: data, onNavigate: () => {},
   }));
   assert.match(html, /Review specification v2/);
+});
+
+test('agent and event controls offer contextual inspection instead of navigating immediately', () => {
+  const html = renderToStaticMarkup(React.createElement(CommandActivityView, {
+    task, evidence: evidence(), onNavigate: () => {},
+  }));
+  assert.match(html, /aria-haspopup="dialog"/);
+  assert.match(html, /Inspect Software Engineer: Source run: Running/);
+  assert.doesNotMatch(html, /role="dialog"/); // Closed until explicitly requested.
+});
+test('agent drawer shows real identity, permissions and relevant persisted handoffs', () => {
+  const data = evidence();
+  const html = renderToStaticMarkup(React.createElement(CommandDrawer, {
+    projectTitle: task.title,
+    selection: { kind: 'agent', id: 'SoftwareEngineer' },
+    agents: commandAgents(data), events: commandActivity(data), evidence: data,
+    onClose: () => {}, onNavigate: () => {},
+  }));
+  assert.match(html, /role="dialog"/);
+  assert.match(html, /aria-modal="true"/);
+  assert.match(html, /Close contextual drawer/);
+  assert.match(html, /Example build/);
+  assert.match(html, /EngineeringTaskAssigned/);
+  assert.match(html, /No executable capability declared/);
+  assert.match(html, /Open in Team/);
+  assert.doesNotMatch(html, /Approve plan|Authorize repair|Run source/);
+});
+test('event drawer preserves exact persisted evidence and navigates to owner workspace', () => {
+  const data = evidence();
+  const event = commandActivity(data)[0];
+  const html = renderToStaticMarkup(React.createElement(CommandDrawer, {
+    projectTitle: task.title,
+    selection: { kind: 'event', id: event.id },
+    agents: commandAgents(data), events: commandActivity(data), evidence: data,
+    onClose: () => {}, onNavigate: () => {},
+  }));
+  assert.match(html, /EngineeringTaskStarted/);
+  assert.match(html, /2026-11-22T12:02:00Z/);
+  assert.match(html, /Work item W1/);
+  assert.match(html, /Open in Work/);
+  assert.match(html, /Opening a workspace never authorizes work|Inspection only/);
+});
+test('a missing record is not replaced by a plausible record from another project', () => {
+  const data = evidence();
+  const html = renderToStaticMarkup(React.createElement(CommandDrawer, {
+    projectTitle: task.title,
+    selection: { kind: 'event', id: 'not-from-this-project' },
+    agents: commandAgents(data), events: commandActivity(data), evidence: data,
+    onClose: () => {}, onNavigate: () => {},
+  }));
+  assert.match(html, /This selection is no longer in the current project evidence/);
+  assert.doesNotMatch(html, /Work item W1/);
 });
