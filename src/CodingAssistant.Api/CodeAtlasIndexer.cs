@@ -26,7 +26,7 @@ public static class CodeAtlasIndexer
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
             .ToLowerInvariant();
 
-    private static string Id(string kind, string key) =>
+    internal static string Id(string kind, string key) =>
         kind.ToLowerInvariant() + ":" + Hash(kind + "|" + key)[..24];
 
     private static bool ValidPath(string path) =>
@@ -243,17 +243,31 @@ public static class CodeAtlasIndexer
                     new[] { "PROJECT_REFERENCE_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
+        AtlasSnapshot semanticGraph;
         try
         {
-            return CodeAtlasSemanticIndexer.Enrich(projectGraph, valid);
+            semanticGraph = CodeAtlasSemanticIndexer.Enrich(projectGraph, valid);
         }
         catch (Exception)
         {
             // A failure to resolve static symbols must never hide saved source.
-            return projectGraph with
+            semanticGraph = projectGraph with
             {
                 Diagnostics = projectGraph.Diagnostics.Concat(
                     new[] { "SEMANTIC_ANALYSIS_UNAVAILABLE" }).ToArray()
+            };
+        }
+        try
+        {
+            return CodeAtlasEcmaIndexer.Enrich(semanticGraph, valid);
+        }
+        catch (Exception)
+        {
+            // A failed JS/TS projection must not roll back accepted source.
+            return semanticGraph with
+            {
+                Diagnostics = semanticGraph.Diagnostics.Concat(
+                    new[] { "ECMA_STRUCTURE_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
     }

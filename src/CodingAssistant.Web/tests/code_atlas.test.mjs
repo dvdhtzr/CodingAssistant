@@ -55,6 +55,40 @@ test('Atlas overview comes exclusively from provided source graph', () => {
     Number.isFinite(p.x) && Number.isFinite(p.y)));
 });
 
+test('JS/TS structural nodes remain source-backed and method toggle is real', () => {
+  const js = {
+    ...snapshot, coverage: 'ECMA_STRUCTURE_ONLY',
+    nodes: [
+      { ...nodes[0] },
+      { id: 'ts-file', kind: 'File', name: 'Screen.tsx',
+        qualifiedName: 'Screen.tsx', parentId: 'root', path: 'Screen.tsx', line: 1 },
+      { id: 'ts-class', kind: 'Class', name: 'Screen',
+        qualifiedName: 'Screen.tsx|Screen', parentId: 'ts-file',
+        path: 'Screen.tsx', line: 2 },
+      { id: 'ts-method', kind: 'Method', name: 'run()',
+        qualifiedName: 'Screen.tsx|Screen.run()', parentId: 'ts-class',
+        path: 'Screen.tsx', line: 3 },
+      { id: 'ts-function', kind: 'Function', name: 'App()',
+        qualifiedName: 'Screen.tsx|App()', parentId: 'ts-file',
+        path: 'Screen.tsx', line: 5 },
+    ],
+    edges: [
+      { sourceId: 'root', targetId: 'ts-file', kind: 'Contains' },
+      { sourceId: 'ts-file', targetId: 'ts-class', kind: 'Contains' },
+      { sourceId: 'ts-class', targetId: 'ts-method', kind: 'Contains' },
+      { sourceId: 'ts-file', targetId: 'ts-function', kind: 'Contains' },
+    ],
+  };
+  const overview = projectAtlas(js, null, false);
+  const expanded = projectAtlas(js, null, true);
+  assert.ok(overview.nodes.some(node => node.id === 'ts-class'));
+  assert.ok(!overview.nodes.some(node => node.id === 'ts-method'));
+  assert.ok(!overview.nodes.some(node => node.id === 'ts-function'));
+  assert.ok(expanded.nodes.some(node => node.id === 'ts-method'));
+  assert.ok(expanded.nodes.some(node => node.id === 'ts-function'));
+  assert.ok(expanded.edges.every(edge => js.edges.includes(edge)));
+});
+
 test('Atlas method view remains deterministic and source based', () => {
   const first = projectAtlas(snapshot, null, true);
   const second = projectAtlas(snapshot, null, true);

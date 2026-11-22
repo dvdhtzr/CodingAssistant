@@ -143,12 +143,12 @@ export interface AtlasView {
 }
 
 const MAX_VISIBLE = 50;
-const SKIP_METHODS = new Set(['Method', 'Constructor']);
+const SKIP_METHODS = new Set(['Method', 'Constructor', 'Function']);
 const GRAPH_RADIUS = [0, 120, 230, 325, 390];
 const KIND_WEIGHT: Record<string, number> = {
   Repository: 0, Project: 1, Namespace: 2, Folder: 3,
   Class: 4, Interface: 5, Struct: 6, Enum: 7,
-  File: 8, Constructor: 9, Method: 10,
+  File: 8, Constructor: 9, Method: 10, Function: 11,
 };
 
 function graphSort(a: AtlasNode, b: AtlasNode): number {
@@ -832,7 +832,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
             displayGraph.coverage === 'PARTIAL_SEMANTIC' ? 'Partial static relationships' :
             displayGraph.coverage === 'SYNTAX_ONLY' ? 'Syntax indexed' :
             displayGraph.coverage === 'PARTIAL_SYNTAX' ? 'Partial C# syntax' :
-              displayGraph.coverage}</span>
+            displayGraph.coverage === 'ECMA_STRUCTURE_ONLY' ? 'JS/TS source structure only' :
+            displayGraph.coverage === 'PARTIAL_ECMA_STRUCTURE' ? 'Partial JS/TS structure' :
+            displayGraph.coverage === 'MIXED_CSHARP_STATIC_ECMA_STRUCTURE' ?
+              'C# static relationships · JS/TS structure only' :
+            displayGraph.coverage === 'MIXED_PARTIAL_CSHARP_ECMA_STRUCTURE' ?
+              'Partial C#/JS/TS structure' : displayGraph.coverage}</span>
         </div>
       </div>
       <aside className="atlas-details" aria-label="Selected source entity">

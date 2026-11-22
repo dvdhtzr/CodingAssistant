@@ -114,3 +114,11 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Show the comparison on a selected historical checkpoint against its preceding saved checkpoint; do not substitute current source text or current QA evidence.
 - Output is deterministic, bounded to 100 detailed changes with full aggregate counts, and rejects cross-run, invalid-order, and revision-mismatched comparisons.
 - This is the first bounded M8 slice. TypeScript/JavaScript/Python/Java semantic indexing, cross-language edges, further large-graph optimization, and qualified runtime traces remain future work.
+
+## M8.2 — TypeScript/JavaScript structural visibility
+
+- Read-only, bounded managed-code tokenizer adds source-backed TypeScript/TSX/JavaScript/JSX/MJS/CJS top-level named classes, interfaces, functions, top-level arrow bindings, and class methods/constructors to the existing Code Atlas graph.
+- Works for accepted generated source and imported commit-pinned files using existing authentication/project identity and saved-source revisions. No Node, package installation, MSBuild, shell, network fetches, or untrusted-source execution during indexing.
+- Pure declaration structure only: no TypeScript type checking, call resolution, inferred inheritance, imported-package semantics, JSX component verification, or runtime/test claims. Coverage is explicitly `ECMA_STRUCTURE_ONLY`, `PARTIAL_ECMA_STRUCTURE`, or mixed C#/JS/TS coverage.
+- Comments, quoted strings, templates and regex literals are not treated as declarations. Template expressions and malformed/unbalanced source are diagnosed as partial coverage. Node/edge and per-file token caps stay enforced.
+- This is an incremental M8 capability, not a full ECMAScript parser. Full compiler-backed semantic resolution and more language support remain open.

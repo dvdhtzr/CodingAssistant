@@ -53,13 +53,16 @@ var input = new[]
     File("Demo/Web/app.ts", "export const add = (n: number) => n + 1;")
 };
 var graph = CodeAtlasIndexer.Index("run-one", input);
-Check(graph.Coverage == "STATIC_SEMANTIC",
-    "trusted Roslyn resolves local C# relationships without executing source");
+Check(graph.Coverage == "MIXED_CSHARP_STATIC_ECMA_STRUCTURE",
+    "C# static semantics and JS/TS structure are reported distinctly");
 Check(graph.Diagnostics.Count == 0, "clean diagnostics");
 Check(graph.Nodes.Count(n => n.Kind == "Project") == 1, "one project");
 Check(graph.Nodes.Count(n => n.Kind == "File") == 6, "all file types shown");
 Check(graph.Nodes.Any(n => n.Kind == "File" && n.Path == "Demo/Web/app.ts"),
-    "TypeScript file included without pretending to analyze its methods");
+    "TypeScript file remains source-backed");
+Check(graph.Nodes.Any(n => n.Kind == "Function" &&
+    n.Path == "Demo/Web/app.ts" && n.Name == "add(arrow)"),
+    "saved TypeScript arrow function is visible without claiming call resolution");
 Check(graph.Nodes.Count(n => n.Kind == "Class" &&
     n.QualifiedName.EndsWith("Demo.Domain.Item", StringComparison.Ordinal)) == 1,
     "partial C# type declarations are one logical class");
@@ -98,10 +101,79 @@ Check(bad.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED"),
     "unsafe source path rejected");
 Check(bad.Diagnostics.Any(d => d.StartsWith("INCOMPLETE_CSHARP:",
     StringComparison.Ordinal)), "incomplete C# source diagnosed");
-Check(bad.Coverage == "PARTIAL_SYNTAX",
-    "invalid syntax never reported fully analyzed");
+Check(bad.Coverage == "MIXED_PARTIAL_CSHARP_ECMA_STRUCTURE",
+    "invalid C# plus TypeScript must never be reported fully analyzed");
 Check(!bad.Nodes.Any(n => n.Path == "../private.cs"),
     "unsafe source not represented");
+
+// M8.2: source-only JS/TS declarations are never runtime/semantic facts.
+var ecmaFiles = new[]
+{
+    File("ui/Screen.tsx", """
+        // class NotReal { ghost() {} }
+        const trap = "function Fabricated() { }";
+        export interface IHandler { process(value: string): void; }
+        export class Screen {
+          constructor(handler: IHandler) {}
+          public render(value: string): void {}
+        }
+        export function Start() { return null; }
+        export const Panel = (props: Props) => <div />;
+        """),
+    File("ui/Helper.js", """
+        export class Helper { run(value) {} }
+        export const twice = n => n * 2;
+        const pattern = /class Phantom/;
+        """)
+};
+var ecmaGraph = CodeAtlasIndexer.Index("ecma-run", ecmaFiles);
+Check(ecmaGraph.Coverage == "ECMA_STRUCTURE_ONLY" &&
+    ecmaGraph.Diagnostics.Count == 0,
+    "JS/TS coverage says structural only, without false semantic claims");
+Check(ecmaGraph.Nodes.Any(n => n.Kind == "Interface" &&
+    n.Name == "IHandler" && n.Path == "ui/Screen.tsx" && n.Line == 3),
+    "TypeScript interface has precise saved source location");
+Check(ecmaGraph.Nodes.Any(n => n.Kind == "Class" &&
+    n.Name == "Screen" && n.Path == "ui/Screen.tsx"),
+    "TSX class is indexed from source");
+Check(ecmaGraph.Nodes.Any(n => n.Kind == "Constructor" &&
+    n.Name.StartsWith("constructor(", StringComparison.Ordinal)),
+    "TypeScript constructor is indexed as source structure");
+Check(ecmaGraph.Nodes.Any(n => n.Kind == "Method" &&
+    n.Name.StartsWith("render(", StringComparison.Ordinal)),
+    "TypeScript class method is indexed without resolving calls");
+Check(ecmaGraph.Nodes.Count(n => n.Kind == "Function") == 3,
+    "named function plus two arrow functions recorded across TSX and JS");
+Check(!ecmaGraph.Nodes.Any(n =>
+    n.Name.Contains("NotReal", StringComparison.Ordinal) ||
+    n.Name.Contains("Fabricated", StringComparison.Ordinal) ||
+    n.Name.Contains("Phantom", StringComparison.Ordinal)),
+    "comments, quoted strings and regexp literals never create fake nodes");
+Check(!ecmaGraph.Edges.Any(e => e.Kind is "Calls" or "Inherits" or
+    "Implements" or "ConstructorDependsOn"),
+    "ECMAScript declarations never invent static semantic relationships");
+Check(ecmaGraph.Edges.All(e =>
+    ecmaGraph.Nodes.Any(n => n.Id == e.SourceId) &&
+    ecmaGraph.Nodes.Any(n => n.Id == e.TargetId)),
+    "ECMAScript graph has no dangling references");
+var ecmaReordered = CodeAtlasIndexer.Index("ecma-run",
+    ecmaFiles.Reverse().ToArray());
+Check(ecmaGraph.SourceRevision == ecmaReordered.SourceRevision &&
+    ecmaGraph.Nodes.Select(n => n.Id).SequenceEqual(
+        ecmaReordered.Nodes.Select(n => n.Id)),
+    "ECMAScript graph identities stable across source order");
+var brokenEcma = CodeAtlasIndexer.Index("ecma-run", new[]
+{
+    File("ui/Broken.ts", "export class Broken { doWork() {"),
+    File("../escape.ts", "export class Escape {}")
+});
+Check(brokenEcma.Coverage == "PARTIAL_ECMA_STRUCTURE" &&
+    brokenEcma.Diagnostics.Any(d =>
+        d.StartsWith("ECMA_UNBALANCED_BRACES:", StringComparison.Ordinal)),
+    "unterminated JS/TS scopes report incomplete coverage");
+Check(brokenEcma.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
+    !brokenEcma.Nodes.Any(n => n.Name == "Escape"),
+    "untrusted JS/TS paths are rejected before parsing");
 
 // M4: only Roslyn-resolved, source-backed relationships may become graph edges.
 var semanticFiles = new[]
