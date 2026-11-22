@@ -1,5 +1,10 @@
 using CodingAssistant.Api;
 using System.IO.Compression;
+using System.Net;
+using System.Net.Http.Json;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Data.Sqlite;
 using System.Security.Cryptography;
 using System.Text;
@@ -802,6 +807,98 @@ finally
     if (Directory.Exists(importDirectory))
         Directory.Delete(importDirectory, true);
 }
+
+// M7 authenticated HTTP acceptance with a fake, non-network archive backend.
+// This proves the real owner-token API wiring, scoped import and file access.
+var importHttpDirectory = Path.Combine(Path.GetTempPath(),
+    "ca-atlas-import-http-" + Guid.NewGuid().ToString("N"));
+var ownerTokenForHttp = new string('f', 64);
+var apiFetcher = new AtlasFixtureDownloader(archiveBytes);
+var httpApp = ApiHost.Build(Array.Empty<string>(),
+    new ApiSettings(importHttpDirectory, ownerTokenForHttp,
+        "http://127.0.0.1:0"),
+    atlasArchiveOverride: apiFetcher);
+try
+{
+    await httpApp.StartAsync();
+    var bound = httpApp.Services.GetRequiredService<IServer>()
+        .Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault() ??
+        throw new InvalidOperationException("Atlas HTTP fixture missing loopback listener");
+    Check(bound.StartsWith("http://127.0.0.1:", StringComparison.Ordinal),
+        "import server remains on IPv4 loopback");
+    using var client = new HttpClient { BaseAddress = new Uri(bound) };
+    client.DefaultRequestHeaders.Authorization =
+        new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Bearer", ownerTokenForHttp);
+    var storeForHttp = new TaskStore(importHttpDirectory);
+    var taskA = storeForHttp.CreateTask(new("Import A",
+        "Inspect public commit source", new string('3',32)));
+    var taskB = storeForHttp.CreateTask(new("Import B",
+        "Other user's source scope", new string('4',32)));
+    using var upload = await client.PostAsJsonAsync(
+        "/api/tasks/" + taskA.Id + "/atlas-imports",
+        new AtlasImportGitHubRequest(
+            "https://github.com/example/Project", commitHash));
+    Check(upload.StatusCode == HttpStatusCode.OK,
+        "authenticated read-only GitHub import HTTP route works");
+    var received = await upload.Content.ReadFromJsonAsync<AtlasImportedRepository>();
+    Check(received is not null &&
+        received.TaskId == taskA.Id && received.CommitSha == commitHash,
+        "import response includes task, commit and durable imported graph identity");
+    var importedId = received!.Id;
+    using var graphResponse = await client.GetAsync(
+        "/api/tasks/" + taskA.Id + "/atlas-imports/" + importedId);
+    Check(graphResponse.StatusCode == HttpStatusCode.OK,
+        "authorized task can load the saved graph over HTTP");
+    var graphPayload = await graphResponse.Content
+        .ReadFromJsonAsync<AtlasImportedRepositoryGraph>();
+    Check(graphPayload?.Graph.Nodes.Any(n =>
+        n.Kind == "Class" && n.Name == "Order") == true,
+        "HTTP graph endpoint returns actual imported C# symbols");
+    using var sourceResponse = await client.GetAsync(
+        "/api/tasks/" + taskA.Id + "/atlas-imports/" +
+        importedId + "/file?path=Sample%2FOrder.cs");
+    Check(sourceResponse.StatusCode == HttpStatusCode.OK,
+        "committed source file is available from its owner-scoped endpoint");
+    var fileResponse = await sourceResponse.Content
+        .ReadFromJsonAsync<AtlasImportedFile>();
+    Check(fileResponse?.Content.Contains("void Place()",
+        StringComparison.Ordinal) == true,
+        "HTTP source retrieval is bound to the imported file content");
+    using var crossScope = await client.GetAsync(
+        "/api/tasks/" + taskB.Id + "/atlas-imports/" + importedId);
+    Check(crossScope.StatusCode == HttpStatusCode.NotFound,
+        "cross-project imported graph ID never reveals private source");
+    using var crossFile = await client.GetAsync(
+        "/api/tasks/" + taskB.Id + "/atlas-imports/" +
+        importedId + "/file?path=Sample%2FOrder.cs");
+    Check(crossFile.StatusCode == HttpStatusCode.NotFound,
+        "cross-project imported file access is rejected");
+    using var unknown = await client.PostAsJsonAsync(
+        "/api/tasks/" + taskA.Id + "/atlas-imports",
+        new AtlasImportGitHubRequest(
+            "https://example.com/owner/Project", commitHash));
+    Check(unknown.StatusCode == HttpStatusCode.BadRequest,
+        "off-domain repository URL rejected before network calls");
+    using var unauthenticated = new HttpClient {
+        BaseAddress = new Uri(bound)
+    };
+    using var forbidden = await unauthenticated.GetAsync(
+        "/api/tasks/" + taskA.Id + "/atlas-imports/" + importedId);
+    Check(forbidden.StatusCode == HttpStatusCode.Unauthorized,
+        "imported graph requires a real owner bearer token");
+    Check(apiFetcher.DownloadCount == 1,
+        "one exact GitHub commit archive was requested for the entire HTTP fixture");
+}
+finally
+{
+    await httpApp.StopAsync();
+    await httpApp.DisposeAsync();
+    SqliteConnection.ClearAllPools();
+    if (Directory.Exists(importHttpDirectory))
+        Directory.Delete(importHttpDirectory, true);
+}
+
 Console.WriteLine("CODE_ATLAS_SOURCE_GRAPH_PASS: " + checks + " assertions");
 sealed class AtlasFixtureDownloader(byte[] archive)
     : IAtlasCommitArchiveDownloader
