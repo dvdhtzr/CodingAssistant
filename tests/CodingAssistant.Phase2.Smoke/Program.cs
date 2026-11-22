@@ -172,15 +172,15 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     // The reported live failure was at the thinking-tag check, not the
     // empty-content check. Closed reasoning prefixes may have a complete,
     // reviewable specification afterward. Never leak the reasoning prefix.
-    var finalSpec = "# Podcast Audience Dashboard\\n\\n" +
-        "## Goal\\nLet a user select one or more podcasts and view aggregated " +
+    var finalSpec = "# Podcast Audience Dashboard\n\n" +
+        "## Goal\nLet a user select one or more podcasts and view aggregated " +
         "audience demographics from authorized podcast-platform sources. " +
-        "## Acceptance criteria\\nWhen the selection changes, recompute the " +
+        "## Acceptance criteria\nWhen the selection changes, recompute the " +
         "aggregation while clearly displaying missing or unavailable data. " +
         "Do not infer private demographics or fabricate third-party sources.";
     foreach (var modelContent in new[] {
-        "<think>Private draft planning, not part of the answer.</think>\\n" + finalSpec,
-        "</think>\\n" + finalSpec,
+        "<think>Private draft planning, not part of the answer.</think>\n" + finalSpec,
+        "</think>\n" + finalSpec,
         finalSpec
     })
     {
