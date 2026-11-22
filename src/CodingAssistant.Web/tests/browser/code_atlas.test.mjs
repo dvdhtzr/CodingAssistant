@@ -118,3 +118,37 @@ test('manual exploration retains the chosen node while later source appears', as
     await manual.close();
   }
 });
+
+
+test('real browser traces a bounded path between two indexed symbols', async () => {
+  const tracePage = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await tracePage.goto(page.url());
+    const atlas = tracePage.getByRole('region', { name: 'Code Atlas' });
+    const graph = atlas.getByRole('group', {
+      name: 'Interactive Code Atlas graph of saved source',
+    });
+    await graph.getByRole('button', { name: 'Class: Demo.TaskService' }).click();
+    const inspector = atlas.getByRole('complementary', {
+      name: 'Selected source entity',
+    });
+    await inspector.getByRole('button', { name: 'Set path start' }).click();
+    await atlas.getByRole('checkbox', { name: 'Methods' }).check();
+    await tracePage.getByRole('button', {
+      name: 'Persist next source revision',
+    }).click();
+    await graph.getByRole('button', {
+      name: 'Method: Demo.TaskService.CreateTask()',
+    }).click();
+    await inspector.getByRole('button', { name: 'Trace path to this node' }).click();
+    const pathResult = inspector.getByRole('region', {
+      name: 'Dependency path result',
+    });
+    await pathResult.getByText('Directed path found').waitFor();
+    assert.match(await pathResult.textContent(),
+      /TaskService.*Contains.*CreateTask/);
+    assert.ok(await graph.locator('line.atlas-traced').count() > 0);
+  } finally {
+    await tracePage.close();
+  }
+});
