@@ -10,7 +10,9 @@ namespace CodingAssistant.Api;
 // untrusted code, invokes MSBuild, restores dependencies, or reads disk files.
 public sealed record AtlasNode(string Id, string Kind, string Name,
     string QualifiedName, string? ParentId, string? Path, int? Line);
-public sealed record AtlasEdge(string SourceId, string TargetId, string Kind);
+public sealed record AtlasEdge(string SourceId, string TargetId, string Kind,
+    string? EvidencePath = null, int? EvidenceLine = null,
+    string Resolution = "Syntax");
 public sealed record AtlasSnapshot(string RunId, string SourceRevision,
     string Coverage, IReadOnlyList<AtlasNode> Nodes,
     IReadOnlyList<AtlasEdge> Edges, IReadOnlyList<string> Diagnostics);
@@ -220,12 +222,26 @@ public static class CodeAtlasIndexer
         var coverage = diagnostics.Any(d =>
             d.StartsWith("INCOMPLETE_CSHARP:", StringComparison.Ordinal))
             ? "PARTIAL_SYNTAX" : "SYNTAX_ONLY";
-        return new(runId, revision, coverage,
+        var syntaxGraph = new AtlasSnapshot(runId, revision, coverage,
             nodes.Values.OrderBy(n => n.Kind, StringComparer.Ordinal)
                 .ThenBy(n => n.QualifiedName, StringComparer.Ordinal).ToArray(),
             edges.Values.OrderBy(e => e.Kind, StringComparer.Ordinal)
                 .ThenBy(e => e.SourceId, StringComparer.Ordinal)
                 .ThenBy(e => e.TargetId, StringComparer.Ordinal).ToArray(),
             diagnostics.AsReadOnly());
+        try
+        {
+            return CodeAtlasSemanticIndexer.Enrich(syntaxGraph, valid);
+        }
+        catch (Exception)
+        {
+            // Semantic enrichment may be unavailable on the current host.
+            // The original source-derived syntax graph remains trustworthy.
+            return syntaxGraph with
+            {
+                Diagnostics = syntaxGraph.Diagnostics.Concat(
+                    new[] { "SEMANTIC_ANALYSIS_UNAVAILABLE" }).ToArray()
+            };
+        }
     }
 }
