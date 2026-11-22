@@ -170,7 +170,8 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "only final assistant content is used for Product Owner drafting");
 
     foreach (var pair in new[] {
-        ("""{"done_reason":"stop","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_OUTPUT_REJECTED"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_THINKING_ONLY"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"<think>private model thoughts</think> # Spec"}}""", "MODEL_THINKING_ONLY"),
         ("""{"done_reason":"length","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_OUTPUT_TRUNCATED"),
         ("""{"done_reason":"length","message":{"role":"assistant","content":"# Partial draft"}}""", "MODEL_OUTPUT_TRUNCATED")
     })
@@ -207,6 +208,21 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               model.Models.All(x => x == "qwen3:30b") &&
               model.AllowedToolsSeen == 0,
             "MAF retries one blank or truncated specification with same local model");
+    }
+
+    var thinkingOnly = new Phase3FakeMafFactory();
+    thinkingOnly.SpecificationFailures.Enqueue("MODEL_THINKING_ONLY");
+    try
+    {
+        _ = await new MafAgentTeam(thinkingOnly).DraftAsync(
+            "Build podcast analytics", [], "qwen3:30b", CancellationToken.None);
+        Check(false, "thinking-only output cannot become a specification");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_THINKING_ONLY")
+    {
+        Check(thinkingOnly.Purposes.SequenceEqual([
+            MafAgentPurpose.Specification]),
+            "thinking-only model fails with actionable code without futile retry");
     }
 
     var failsTwice = new Phase3FakeMafFactory();

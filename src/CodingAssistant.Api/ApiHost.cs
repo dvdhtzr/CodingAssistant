@@ -405,14 +405,19 @@ public static class ApiHost
                     !snapshot.Messages.Any(x => x.Role == "owner") ||
                     snapshot.Model is null)
                     throw new StoreFailure("STALE_INTERVIEW");
+                // The interview's pinned model remains unchanged. A separate,
+                // explicitly selected installed local model may draft the spec.
+                var selectedModel = input.Model ?? snapshot.Model;
+                if (!LocalInterviewModel.AllowedModel(selectedModel))
+                    throw new StoreFailure("INVALID_MODEL");
                 var localNames = await catalog.ListAsync(cancellation);
-                if (!localNames.Contains(snapshot.Model, StringComparer.Ordinal))
+                if (!localNames.Contains(selectedModel, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
                 var content = await model.DraftAsync(
-                    task.Objective, snapshot.Messages, snapshot.Model,
+                    task.Objective, snapshot.Messages, selectedModel,
                     cancellation);
                 return Results.Ok(db.CommitSpecification(
-                    id, input.ExpectedSequence, content));
+                    id, input.ExpectedSequence, content, selectedModel));
             }));
         app.MapPost("/api/tasks/{id}/interview/approve", (
                 string id, ApproveSpecificationRequest input,

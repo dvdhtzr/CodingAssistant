@@ -141,11 +141,28 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         if (!response.TryGetProperty("message", out var message) ||
             message.ValueKind != JsonValueKind.Object ||
             !message.TryGetProperty("content", out var content) ||
-            content.ValueKind != JsonValueKind.String ||
-            string.IsNullOrWhiteSpace(content.GetString()))
+            content.ValueKind != JsonValueKind.String)
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
 
-        return content.GetString()!;
+        // Ollama may send thinking without a final content field for an
+        // always-thinking model. Diagnose it without logging or exposing
+        // any sensitive model-generated text.
+        var finalText = content.GetString() ?? "";
+        var hasThinking = message.TryGetProperty("thinking", out var thinking) &&
+            thinking.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(thinking.GetString());
+        if (string.IsNullOrWhiteSpace(finalText))
+            throw new StoreFailure(hasThinking
+                ? "MODEL_THINKING_ONLY" : "MODEL_OUTPUT_REJECTED");
+
+        // Some Qwen templates place their thinking markers in content even
+        // with think:false. Never persist their reasoning as a specification.
+        if (purpose == MafAgentPurpose.Specification &&
+            (finalText.Contains("<think>", StringComparison.OrdinalIgnoreCase) ||
+             finalText.Contains("</think>", StringComparison.OrdinalIgnoreCase)))
+            throw new StoreFailure("MODEL_THINKING_ONLY");
+
+        return finalText;
     }
 
     // Public for model-free contract regression checks; no credentials/tools

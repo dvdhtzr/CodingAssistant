@@ -38,6 +38,7 @@ for (const outcome of ['success', 'failure']) {
       viewport: { width: 1440, height: 900 },
     });
     let draftRequests = 0;
+    let requestedDraftModel = '';
     const now = '2026-11-22T17:00:00Z';
     const messages = Array.from({ length: 27 }, (_, i) => ({
       sequence: i + 1,
@@ -61,14 +62,15 @@ for (const outcome of ['success', 'failure']) {
         if (method === 'GET' && url.endsWith('/interview'))
           return respond(route, 200, snapshot);
         if (method === 'GET' && url === '/api/models')
-          return respond(route, 200, { models: ['qwen3:30b'] });
+          return respond(route, 200, { models: ['qwen3:30b', 'qwen3-coder:30b'] });
         if (method === 'POST' && url.endsWith('/interview/specification')) {
           draftRequests++;
+          requestedDraftModel = route.request().postDataJSON().model;
           if (outcome === 'failure')
             return respond(route, 400, { error: 'INVALID_INPUT' });
           return respond(route, 200, {
             ...snapshot, specification: {
-              version: 1, model: 'qwen3:30b',
+              version: 1, model: 'qwen3-coder:30b',
               content: '# Podcast analytics specification\\n' +
                 'The owner requests aggregated demographic data from podcast ' +
                 'platforms for selected shows. Accept a set of shows, display ' +
@@ -89,6 +91,12 @@ for (const outcome of ['success', 'failure']) {
       await completion.waitFor();
       await completion.click();
       const active = acceptancePage.locator('#journey-panel-specification');
+      const modelSelect = active.getByLabel('Local model for this specification');
+      await modelSelect.waitFor();
+      assert.equal(await modelSelect.inputValue(), 'qwen3:30b');
+      await active.getByText('This Qwen 3 model can continue reasoning').waitFor();
+      await modelSelect.selectOption('qwen3-coder:30b');
+      assert.equal(await active.getByText('This Qwen 3 model can continue reasoning').count(), 0);
       await active.getByRole('button', { name: 'Draft detailed specification' })
         .click();
       if (outcome === 'failure') {
@@ -97,6 +105,7 @@ for (const outcome of ['success', 'failure']) {
         assert.match(await alert.textContent(), /saved interview could not be processed/);
       } else {
         await active.getByText('Specification v1').waitFor();
+        await active.getByText('Drafted with qwen3-coder:30b').waitFor();
         assert.equal(await active.getByRole('checkbox', {
           name: /reviewed this specification/,
         }).isChecked(), false);
@@ -106,6 +115,8 @@ for (const outcome of ['success', 'failure']) {
       }
       assert.equal(draftRequests, 1,
         'visible action must send exactly one specification request');
+      assert.equal(requestedDraftModel, 'qwen3-coder:30b',
+        'the API receives only the explicitly selected installed drafting model');
     } finally {
       await acceptancePage.close();
     }

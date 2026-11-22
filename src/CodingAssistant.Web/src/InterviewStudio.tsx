@@ -78,6 +78,8 @@ export function InterviewStudio({ token, task }: {
 }) {
   const [snapshot, setSnapshot] = useState<InterviewSnapshot | null>(null);
   const [chosenModel, setChosenModel] = useState('');
+  // Explicit drafting choice; never silently switch the saved interview model.
+  const [draftModel, setDraftModel] = useState('');
   const [installedModels, setInstalledModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState('');
@@ -140,11 +142,15 @@ export function InterviewStudio({ token, task }: {
     setError('');
     setApproveChecked(false);
     setChosenModel('');
+    setDraftModel('');
     void api<InterviewSnapshot>(token, `/api/tasks/${task.id}/interview`)
       .then(data => {
         if (!cancelled) {
           setSnapshot(data);
-          if (data.model) setChosenModel(data.model);
+          if (data.model) {
+            setChosenModel(data.model);
+            setDraftModel(data.model);
+          }
         }
       })
       .catch(() => { if (!cancelled) setError('Unable to load the saved Product Owner conversation.'); });
@@ -162,11 +168,13 @@ export function InterviewStudio({ token, task }: {
         if (cancelled) return;
         setInstalledModels(data.models);
         setChosenModel(previous => data.models.includes(previous) ? previous : '');
+        setDraftModel(previous => data.models.includes(previous) ? previous : '');
       })
       .catch(() => {
         if (cancelled) return;
         setInstalledModels([]);
         setChosenModel('');
+        setDraftModel('');
         setModelsError('Could not query local Ollama. Confirm it is running, then refresh.');
       })
       .finally(() => { if (!cancelled) setModelsLoading(false); });
@@ -211,6 +219,8 @@ export function InterviewStudio({ token, task }: {
           ? 'That local model is not installed. Select an installed Ollama model.'
           : code.includes('LOCAL_MODEL_UNAVAILABLE')
             ? 'The local model is unavailable or timed out. Your saved answers are unchanged; retry.'
+            : code.includes('MODEL_THINKING_ONLY')
+              ? 'The selected Ollama model returned internal reasoning but no finished specification. Nothing was saved. Choose a different installed instruct or coding model from the selector below.'
             : code.includes('MODEL_OUTPUT_TRUNCATED')
               ? 'Ollama stopped before completing the specification. Nothing was saved. Try again, or use a model with more available context.'
               : code.includes('MODEL_OUTPUT_REJECTED')
@@ -424,10 +434,34 @@ export function InterviewStudio({ token, task }: {
         <p className="hint">The Product Owner's specification will reflect this conversation, not a hard-coded
           application template. You control when to draft and approve it.</p>
         <SpecificationDraftFeedback error={error} drafting={busy === 'draft'} />
-        <button type="button" disabled={!!busy || ownerAnswers < 1}
+        <div className="spec-draft-model-controls">
+          <label htmlFor="spec-draft-model">Local model for this specification
+            <select id="spec-draft-model" value={draftModel}
+              disabled={!!busy || modelsLoading}
+              onChange={event => setDraftModel(event.target.value)}>
+              <option value="">Select an installed model</option>
+              {installedModels.map(name => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </label>
+          <button type="button" className="outline" disabled={!!busy || modelsLoading}
+            onClick={() => setModelRefresh(value => value + 1)}>
+            {modelsLoading ? 'Checking Ollama…' : 'Refresh models'}
+          </button>
+        </div>
+        {modelsError && <p role="alert" className="hint">{modelsError}</p>}
+        {draftModel === 'qwen3:30b' && <p className="hint" role="status">
+          This Qwen 3 model can continue reasoning without producing a finished
+          answer, even with thinking disabled. For more reliable specification
+          drafting, choose an installed instruct or coding model above.
+          Your recorded Product Owner interview will not change.
+        </p>}
+        <button type="button"
+          disabled={!!busy || ownerAnswers < 1 || modelsLoading ||
+            !installedModels.includes(draftModel)}
           onClick={() => void submit('draft', () => api<InterviewSnapshot>(
             token, `/api/tasks/${task.id}/interview/specification`, {
               expectedSequence: snapshot.lastSequence,
+              model: draftModel,
             }))}>
           {busy === 'draft' ? 'Drafting specification…' :
             spec ? 'Revise specification from discussion' : 'Draft detailed specification'}
@@ -436,6 +470,7 @@ export function InterviewStudio({ token, task }: {
           <div className="actions">
             <strong>Specification v{spec.version}</strong>
             <span className="pill">{spec.status}</span>
+            <span className="hint">Drafted with {spec.model}</span>
           </div>
           <p className="hint">Immutable SHA-256: <code>{spec.sha256}</code></p>
           <pre className="specification-text">{spec.content}</pre>
