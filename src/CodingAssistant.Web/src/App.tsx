@@ -790,7 +790,7 @@ export default function App() {
       <div id="mission-inspector" className="wb-inspector-host" hidden={!inspectorOpen}>
         <WorkbenchInspector token={token} view={view} taskView={taskView} run={run}
           status={status} collapsed={!inspectorOpen}
-          onContinue={() => setView('studio')} />
+          onContinue={() => setView('work')} />
       </div>
     </div>}
   </>;
