@@ -211,8 +211,10 @@ export function InterviewStudio({ token, task }: {
           ? 'That local model is not installed. Select an installed Ollama model.'
           : code.includes('LOCAL_MODEL_UNAVAILABLE')
             ? 'The local model is unavailable or timed out. Your saved answers are unchanged; retry.'
-            : code.includes('MODEL_OUTPUT_REJECTED')
-              ? 'The local model returned an incomplete or invalid response. No specification was saved; you can retry.'
+            : code.includes('MODEL_OUTPUT_TRUNCATED')
+              ? 'Ollama stopped before completing the specification. Nothing was saved. Try again, or use a model with more available context.'
+              : code.includes('MODEL_OUTPUT_REJECTED')
+                ? 'Ollama returned no usable specification text, even after a recovery attempt. Nothing was saved. Retry or try another installed model.'
               : code.includes('INVALID_INPUT') && operation === 'draft'
                 ? 'The saved interview could not be processed. Your answers remain saved. Please report this error.'
                 : 'Could not complete this step: ' + code);

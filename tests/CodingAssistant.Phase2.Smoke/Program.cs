@@ -161,6 +161,71 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     }
 }
 
+// A local Ollama response may finish with no final content, or with a
+// truncated answer. Never leak thinking or admit an incomplete specification.
+{
+    var normal = """{"done_reason":"stop","message":{"role":"assistant","content":"# Final specification","thinking":"private model thoughts"}}""";
+    Check(LocalMafChatClient.ReadAssistantContent(normal,
+        MafAgentPurpose.Specification) == "# Final specification",
+        "only final assistant content is used for Product Owner drafting");
+
+    foreach (var pair in new[] {
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_OUTPUT_REJECTED"),
+        ("""{"done_reason":"length","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_OUTPUT_TRUNCATED"),
+        ("""{"done_reason":"length","message":{"role":"assistant","content":"# Partial draft"}}""", "MODEL_OUTPUT_TRUNCATED")
+    })
+    {
+        try
+        {
+            _ = LocalMafChatClient.ReadAssistantContent(pair.Item1,
+                MafAgentPurpose.Specification);
+            Check(false, "empty or truncated output must not be accepted");
+        }
+        catch (StoreFailure error) when (error.Code == pair.Item2)
+        {
+            Check(true, "Ollama output rejected with precise bounded cause");
+        }
+    }
+
+    foreach (var firstFailure in new[] {
+        "MODEL_OUTPUT_REJECTED", "MODEL_OUTPUT_TRUNCATED"
+    })
+    {
+        var model = new Phase3FakeMafFactory();
+        model.SpecificationFailures.Enqueue(firstFailure);
+        var draft = await new MafAgentTeam(model).DraftAsync(
+            "Build a podcast demographics dashboard", [
+                new InterviewMessage(1, "assistant",
+                    "Which podcasts should be included?", "2026-11-22T18:00:00Z"),
+                new InterviewMessage(2, "owner", "Multiple selected podcasts",
+                    "2026-11-22T18:00:01Z")
+            ], "qwen3:30b", CancellationToken.None);
+        Check(draft.Length >= 180 &&
+              model.Purposes.SequenceEqual([
+                  MafAgentPurpose.Specification, MafAgentPurpose.Specification]) &&
+              model.SpecificationCorrectionPrompts.Count == 1 &&
+              model.Models.All(x => x == "qwen3:30b") &&
+              model.AllowedToolsSeen == 0,
+            "MAF retries one blank or truncated specification with same local model");
+    }
+
+    var failsTwice = new Phase3FakeMafFactory();
+    failsTwice.SpecificationFailures.Enqueue("MODEL_OUTPUT_REJECTED");
+    failsTwice.SpecificationFailures.Enqueue("MODEL_OUTPUT_TRUNCATED");
+    try
+    {
+        _ = await new MafAgentTeam(failsTwice).DraftAsync(
+            "Build podcast analytics", [], "qwen3:30b", CancellationToken.None);
+        Check(false, "persistent blank responses must not save a fake draft");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_TRUNCATED")
+    {
+        Check(failsTwice.Purposes.Count == 2 &&
+              failsTwice.SpecificationCorrectionPrompts.Count == 1,
+            "persistent output failure is bounded at two attempts");
+    }
+}
+
 // Actual MAF invocation path using an injected no-network IChatClient.
 // No direct LocalInterviewModel/LocalArchitectureAdvisor legacy path is used.
 {
@@ -1988,6 +2053,8 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
 {
     public Queue<string> TechnicalLeadReplies { get; } = new();
     public Queue<string> InterviewReplies { get; } = new();
+    public Queue<string> SpecificationFailures { get; } = new();
+    public List<string> SpecificationCorrectionPrompts { get; } = [];
     public List<string> InterviewCorrectionPrompts { get; } = [];
     public List<string> TechnicalLeadCorrectionPrompts { get; } = [];
     public List<MafAgentPurpose> Purposes { get; } = [];
@@ -2022,6 +2089,16 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                         m.Text?.Contains("previous response either repeated",
                             StringComparison.OrdinalIgnoreCase) == true)
                     .Select(m => m.Text!));
+            if (purpose == MafAgentPurpose.Specification)
+            {
+                parent.SpecificationCorrectionPrompts.AddRange(history
+                    .Where(m => m.Role == ChatRole.User &&
+                        m.Text?.Contains("previous response was empty",
+                            StringComparison.OrdinalIgnoreCase) == true)
+                    .Select(m => m.Text!));
+                if (parent.SpecificationFailures.Count > 0)
+                    throw new StoreFailure(parent.SpecificationFailures.Dequeue());
+            }
             if (purpose == MafAgentPurpose.TechnicalLead)
                 parent.TechnicalLeadCorrectionPrompts.AddRange(history
                     .Where(m => m.Role == ChatRole.User &&

@@ -92,22 +92,33 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
         string model, CancellationToken cancellation)
     {
         var history = InterviewHistory(objective, messages);
-        var content = await InvokeAsync("ProductOwner", MafAgentPurpose.Specification,
-            LocalInterviewModel.SpecPolicy, model, history, cancellation);
-        try
+        // Ollama can return an empty final message (including after a token
+        // limit), before ValidSpecification gets a string to validate. The
+        // adapter's StoreFailure must be included in the bounded recovery.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            return InterviewStore.ValidSpecification(content);
+            try
+            {
+                var content = await InvokeAsync("ProductOwner",
+                    MafAgentPurpose.Specification, LocalInterviewModel.SpecPolicy,
+                    model, history, cancellation);
+                return InterviewStore.ValidSpecification(content);
+            }
+            catch (StoreFailure error) when (attempt == 0 &&
+                error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED")
+            {
+                // This is a fresh attempt, not permission to use the model's
+                // private thinking as an answer or to save a partial draft.
+                history.Add(new ChatMessage(ChatRole.User,
+                    "The previous response was empty, incomplete or invalid. " +
+                    "Produce your final answer in the assistant message content " +
+                    "now: a complete Markdown product specification, 180-16000 " +
+                    "characters, grounded in every recorded owner answer. " +
+                    "Keep the draft concise and concrete. Do not include " +
+                    "reasoning, tool calls or commentary."));
+            }
         }
-        catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
-        {
-            history.Add(new ChatMessage(ChatRole.User,
-                "The previous draft did not meet the requirements. Provide only " +
-                "a complete Markdown product specification grounded in the " +
-                "recorded interview, 180 to 16000 characters. No commentary."));
-            var retry = await InvokeAsync("ProductOwner", MafAgentPurpose.Specification,
-                LocalInterviewModel.SpecPolicy, model, history, cancellation);
-            return InterviewStore.ValidSpecification(retry);
-        }
+        throw new StoreFailure("MODEL_OUTPUT_REJECTED");
     }
 
     public async Task<ArchitectureRecommendation> RecommendAsync(
