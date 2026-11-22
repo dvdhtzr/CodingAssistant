@@ -175,6 +175,68 @@ Check(brokenEcma.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
     !brokenEcma.Nodes.Any(n => n.Name == "Escape"),
     "untrusted JS/TS paths are rejected before parsing");
 
+// M8.4: literal local imports resolve only to indexed files, not runtime calls.
+var moduleSources = new[]
+{
+    File("src/main.tsx", """
+        import { View } from './components/View';
+        import './init';
+        export { Helper } from '../shared/Helper';
+        import config from './config.json';
+        import pkg from 'react';
+        import { Maybe } from './ambiguous';
+        import { Missing } from './missing';
+        import { Escaped } from '../../outside';
+        const decoy = "import './spoof'";
+        // import './spoof';
+        const dynamic = import('./spoof');
+        const pattern = /import '.\/spoof'/;
+        """),
+    File("src/components/View.tsx", "export class View { render() {} }"),
+    File("src/init.js", "export function initialize() {}"),
+    File("shared/Helper/index.js", "export function Helper() {}"),
+    File("src/config.json", "{\"name\":\"fixture\"}"),
+    File("src/ambiguous.ts", "export const alpha = 1;"),
+    File("src/ambiguous.js", "export const beta = 1;"),
+    File("src/spoof.ts", "export function Spoof() {}")
+};
+var moduleGraph = CodeAtlasIndexer.Index("module-run", moduleSources);
+var moduleNodes = moduleGraph.Nodes.Where(n => n.Kind == "File" &&
+    n.Path is not null).ToDictionary(n => n.Path!, n => n.Id);
+var imports = moduleGraph.Edges.Where(e => e.Kind == "ModuleImports").ToArray();
+Check(imports.Length == 4 &&
+    imports.All(e => e.SourceId == moduleNodes["src/main.tsx"] &&
+        e.Resolution == "LiteralLocalModule" &&
+        e.EvidencePath == "src/main.tsx" && e.EvidenceLine > 0),
+    "only four literal local ESM dependencies become source-backed edges");
+Check(new[] { "src/components/View.tsx", "src/init.js",
+    "shared/Helper/index.js", "src/config.json" }.All(path =>
+    imports.Any(e => e.TargetId == moduleNodes[path])),
+    "relative imports resolve existing files and unambiguous index modules");
+Check(!imports.Any(e => e.TargetId == moduleNodes["src/spoof.ts"] ||
+    e.TargetId == moduleNodes["src/ambiguous.ts"] ||
+    e.TargetId == moduleNodes["src/ambiguous.js"]),
+    "string/comment/regex/dynamic decoys and ambiguous paths invent no links");
+Check(moduleGraph.Diagnostics.Any(d => d.StartsWith(
+    "ECMA_LOCAL_IMPORT_UNRESOLVED:", StringComparison.Ordinal)) &&
+    moduleGraph.Diagnostics.Any(d => d.StartsWith(
+    "ECMA_LOCAL_IMPORT_AMBIGUOUS:", StringComparison.Ordinal)) &&
+    moduleGraph.Diagnostics.Any(d => d.StartsWith(
+    "ECMA_LOCAL_IMPORT_OUTSIDE_ROOT:", StringComparison.Ordinal)),
+    "unresolved, ambiguous and escaping module references are diagnosed");
+var tracedImport = CodeAtlasPathFinder.Trace(moduleGraph,
+    moduleNodes["src/main.tsx"], moduleNodes["src/components/View.tsx"]);
+Check(tracedImport.Found && tracedImport.Edges.Count == 1 &&
+    tracedImport.Edges[0].Kind == "ModuleImports",
+    "bounded read-only path tracing follows an actual local import edge");
+var moduleReordered = CodeAtlasIndexer.Index("module-run",
+    moduleSources.Reverse().ToArray());
+Check(moduleGraph.SourceRevision == moduleReordered.SourceRevision &&
+    moduleGraph.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(moduleReordered.Edges.Select(e =>
+            (e.Kind, e.SourceId, e.TargetId))),
+    "module edges and revisions are stable across source-file order");
+
 // M4: only Roslyn-resolved, source-backed relationships may become graph edges.
 var semanticFiles = new[]
 {

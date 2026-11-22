@@ -832,10 +832,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
             displayGraph.coverage === 'PARTIAL_SEMANTIC' ? 'Partial static relationships' :
             displayGraph.coverage === 'SYNTAX_ONLY' ? 'Syntax indexed' :
             displayGraph.coverage === 'PARTIAL_SYNTAX' ? 'Partial C# syntax' :
-            displayGraph.coverage === 'ECMA_STRUCTURE_ONLY' ? 'JS/TS source structure only' :
+            displayGraph.coverage === 'ECMA_STRUCTURE_ONLY' ? 'JS/TS structure · literal local imports' :
             displayGraph.coverage === 'PARTIAL_ECMA_STRUCTURE' ? 'Partial JS/TS structure' :
             displayGraph.coverage === 'MIXED_CSHARP_STATIC_ECMA_STRUCTURE' ?
-              'C# static relationships · JS/TS structure only' :
+              'C# static relationships · JS/TS structure and local imports' :
             displayGraph.coverage === 'MIXED_PARTIAL_CSHARP_ECMA_STRUCTURE' ?
               'Partial C#/JS/TS structure' : displayGraph.coverage}</span>
         </div>

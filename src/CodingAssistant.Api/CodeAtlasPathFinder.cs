@@ -13,7 +13,7 @@ public static class CodeAtlasPathFinder
 {
     private static readonly HashSet<string> NavigableKinds = new(
         ["Calls", "Inherits", "Implements", "ConstructorDependsOn",
-         "ProjectReferences", "Contains", "Declares"],
+         "ProjectReferences", "ModuleImports", "Contains", "Declares"],
         StringComparer.Ordinal);
 
     public static AtlasPathResult Trace(AtlasSnapshot graph, string fromId,

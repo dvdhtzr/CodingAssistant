@@ -128,3 +128,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Compare two already-imported, immutable GitHub commit snapshots from the same repository and task. No new network fetches, package restores, untrusted source execution, or implied commit ancestry.
 - Normalize imported graph root IDs to stable source-backed identities so random import IDs do not create false changes. Includes C# semantic edges, JS/TS structural functions, and source file additions/removals, with explicit coverage.
 - The import panel offers a compact starting-commit selector and a bounded comparison view. The independent agent approval, owner authentication, revision binding, and project isolation contracts remain unchanged.
+
+## M8.4 — Literal local JavaScript/TypeScript module links
+
+- In addition to source-backed JS/TS declarations, Code Atlas now records `ModuleImports` **file-to-file** links for top-level static ESM `import`, side-effect `import`, and `export ... from` when the literal relative specifier resolves **uniquely to a saved file**.
+- Resolution is purely lexical and in-memory: no filesystem access, bundler, TypeScript compiler, package installation, network call, build, or untrusted code execution. Supported exact paths, unambiguous extensionless `.ts/.tsx/.js/.jsx/.mjs/.cjs`, and `index.*` are source-backed. Package names, alias resolution, runtime `import()`, `require()`, and inferred symbol calls are omitted.
+- The relationship carries `LiteralLocalModule` resolution plus import source path and line. Ambiguous, missing, and escaping local specifiers produce bounded diagnostics without guessed edges. Imports from comments, templates, strings, regex, and dynamic expressions do not create edges.
+- Existing task/import isolation, owner authentication, Node/edge caps, diff/replay snapshots, and independent test/approval boundaries remain intact.

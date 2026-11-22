@@ -89,6 +89,34 @@ test('JS/TS structural nodes remain source-backed and method toggle is real', ()
   assert.ok(expanded.edges.every(edge => js.edges.includes(edge)));
 });
 
+test('focused file reveals only recorded local module import links', () => {
+  const importing = { id: 'entry', kind: 'File', name: 'main.tsx',
+    qualifiedName: 'src/main.tsx', parentId: 'root',
+    path: 'src/main.tsx', line: 1 };
+  const target = { id: 'module', kind: 'File', name: 'View.tsx',
+    qualifiedName: 'src/View.tsx', parentId: 'root',
+    path: 'src/View.tsx', line: 1 };
+  const link = { sourceId: 'entry', targetId: 'module',
+    kind: 'ModuleImports', evidencePath: 'src/main.tsx',
+    evidenceLine: 1, resolution: 'LiteralLocalModule' };
+  const structure = { ...snapshot,
+    coverage: 'ECMA_STRUCTURE_ONLY',
+    nodes: [nodes[0], importing, target],
+    edges: [
+      { sourceId: 'root', targetId: 'entry', kind: 'Contains' },
+      { sourceId: 'root', targetId: 'module', kind: 'Contains' },
+      link,
+    ],
+  };
+  const focused = projectAtlas(structure, 'entry', true);
+  assert.ok(focused.nodes.some(n => n.id === 'module'));
+  assert.deepEqual(focused.edges.filter(e => e.kind === 'ModuleImports'), [link]);
+  const withoutEvidence = projectAtlas({
+    ...structure, edges: structure.edges.filter(e => e !== link),
+  }, 'entry', true);
+  assert.ok(!withoutEvidence.edges.some(e => e.kind === 'ModuleImports'));
+});
+
 test('Atlas method view remains deterministic and source based', () => {
   const first = projectAtlas(snapshot, null, true);
   const second = projectAtlas(snapshot, null, true);
