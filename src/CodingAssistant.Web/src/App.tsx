@@ -89,6 +89,18 @@ export default function App() {
   const [taskRevision, setTaskRevision] = useState(0);
   const [runRevision, setRunRevision] = useState(0);
   const [clock, setClock] = useState(Date.now());
+  const [theme, setTheme] = useState<'dark' | 'light'>(() =>
+    (typeof document !== 'undefined' &&
+      document.documentElement.dataset.theme === 'light') ? 'light' : 'dark');
+
+  function toggleTheme() {
+    setTheme(previous => {
+      const next = previous === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('ca-theme', next); } catch { /* storage may be blocked */ }
+      return next;
+    });
+  }
 
   // Inspector is an optional contextual surface; Escape dismisses it.
   useEffect(() => {
@@ -448,6 +460,9 @@ export default function App() {
           <span className="pill wb-local-pill"><span className="wb-local-dot" aria-hidden="true" />Local session</span>
           <span className="pill wb-execution-pill">{status?.executionEnabled ?
             'Execution requires approval' : 'Execution unavailable'}</span>
+          <button type="button" className="outline ca-theme-toggle" onClick={toggleTheme}
+            aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            title="Toggle light or dark theme">{theme === 'dark' ? '☀' : '☾'}</button>
           <button type="button" className="outline wb-inspector-toggle"
             aria-expanded={inspectorOpen} aria-controls="mission-inspector"
             onClick={() => setInspectorOpen(value => !value)}>

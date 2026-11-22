@@ -726,3 +726,70 @@ input::placeholder, textarea::placeholder { color:var(--ca-faint); }
 .ca-skill-col h3 { font-size:.9rem; }
 .ca-skill-cap { display:block; font-family:var(--ca-mono); font-size:.58rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ca-muted); margin-top:.15rem; margin-bottom:.6rem; }
 .ca-skill-empty { border:1px dashed var(--ca-line); border-radius:var(--ca-r-sm); padding:.9rem; color:var(--ca-muted); font-size:.82rem; text-align:center; }
+
+/* ========================================================================
+   M-UX6 — polish: theme toggle, loading states, shared chrome, light mode
+   ======================================================================== */
+.ca-theme-toggle { font-size:.95rem; line-height:1; padding:.45rem .6rem; }
+
+/* loading state: a quiet pulsing marker instead of bare text */
+.wb-main p[role="status"], .mc-destination > p[role="status"] {
+  display:flex; align-items:center; gap:.6rem; color:var(--ca-muted);
+}
+.wb-main p[role="status"]::before, .mc-destination > p[role="status"]::before {
+  content:""; width:9px; height:9px; border-radius:50%; flex:none;
+  background:var(--ca-teal); animation:ca-pulse 1.4s ease-in-out infinite;
+}
+
+/* History timeline */
+.mc-history li { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.mc-history p { color:var(--ca-fg); }
+.mc-history small { color:var(--ca-muted); }
+
+/* contextual drawer + inspector (shared, both themes) */
+.mc-context-drawer { background:var(--ca-panel); border-left:1px solid var(--ca-line); color:var(--ca-fg); }
+.mc-drawer-header, .mc-drawer-footer { border-color:var(--ca-line); }
+.mc-drawer-header small, .mc-drawer-fields dt { color:var(--ca-muted); }
+.mc-drawer-ledger li { border-color:var(--ca-line); }
+.mc-drawer-backdrop { background:color-mix(in srgb,var(--ca-bg) 72%,transparent); }
+.wb-inspector-row { border-color:var(--ca-line); }
+.wb-inspector-row span { color:var(--ca-muted); }
+.wb-inspector-disclosure { border-color:var(--ca-line); }
+.wb-inspector-disclosure > summary { color:var(--ca-fg); }
+
+/* ---- light mode: flatten dense legacy panels onto the light surface ----
+   Flat dark backgrounds collapse to the panel colour and their text darkens;
+   gradient-based agent avatars keep their identity (background-image survives).
+   Dark mode is untouched. */
+:root[data-theme="light"] .wb-agent-identities,
+:root[data-theme="light"] .owner-decision-inbox,
+:root[data-theme="light"] .team-workroom,
+:root[data-theme="light"] .verification-disclosure,
+:root[data-theme="light"] .source-explorer {
+  background:var(--ca-panel); color:var(--ca-fg); border-color:var(--ca-line);
+}
+:root[data-theme="light"] .wb-agent-identities *,
+:root[data-theme="light"] .owner-decision-inbox *,
+:root[data-theme="light"] .team-workroom *,
+:root[data-theme="light"] .verification-disclosure *,
+:root[data-theme="light"] .source-explorer * {
+  background-color:transparent;
+  border-color:var(--ca-line);
+  color:var(--ca-fg);
+}
+/* keep readable text on the coloured agent avatars/orbs */
+:root[data-theme="light"] .wb-avatar,
+:root[data-theme="light"] .wb-agent-emblem,
+:root[data-theme="light"] [class*="avatar"],
+:root[data-theme="light"] [class*="orb"] { color:#fff; }
+/* muted sub-text stays muted in these panels */
+:root[data-theme="light"] .wb-agent-identities small,
+:root[data-theme="light"] .owner-decision-inbox small,
+:root[data-theme="light"] .team-workroom small,
+:root[data-theme="light"] .verification-disclosure small,
+:root[data-theme="light"] .source-explorer small,
+:root[data-theme="light"] .wb-muted,
+:root[data-theme="light"] .hint { color:var(--ca-muted); }
+/* a light inset for code/pre blocks in those panels */
+:root[data-theme="light"] .source-explorer pre,
+:root[data-theme="light"] .verification-disclosure pre { background:var(--ca-inset); }
