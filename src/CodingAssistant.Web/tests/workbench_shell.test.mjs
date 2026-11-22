@@ -34,14 +34,15 @@ after(async () => { if (vite) await vite.close(); });
 
 test('Workbench sidebar exposes only functional navigation and honest agent descriptions', () => {
   const html = renderToStaticMarkup(React.createElement(WorkbenchSidebar, {
-    tasks: [task], selectedId: task.id, view: 'studio', disabled: false,
+    tasks: [task], selectedId: task.id, view: 'work', disabled: false,
     onSelectTask: noop, onNewProject: noop, onChangeView: noop, onRefresh: noop,
     onDeleteTask: async () => true,
   }));
   assert.match(html, /aria-label="Workspace navigation"/);
-  assert.match(html, /Overview/);
-  assert.match(html, /Engineering Studio/);
-  assert.match(html, /Legacy diagnostics/);
+  for (const destination of ['Command', 'Team', 'Work', 'Quality', 'Skills', 'History']) {
+    assert.match(html, new RegExp('>' + destination + '</button>'));
+  }
+  assert.doesNotMatch(html, />Legacy diagnostics<\/button>/);
   assert.match(html, /aria-current="page"/);
   assert.match(html, /PROJECT SWITCHER/);
   assert.match(html, /<details class="wb-projects wb-project-switcher">/);
@@ -58,7 +59,7 @@ test('Workbench sidebar exposes only functional navigation and honest agent desc
 
 test('Inspector distinguishes local capability from authorization', () => {
   const html = renderToStaticMarkup(React.createElement(WorkbenchInspector, {
-    token: 'f'.repeat(64), view: 'overview', taskView: { task, plan: null }, run: null,
+    token: 'f'.repeat(64), view: 'command', taskView: { task, plan: null }, run: null,
     status: { phase: 'M2-control-plane', model: 'local', executionEnabled: false, localOnly: true },
     onContinue: noop,
   }));
