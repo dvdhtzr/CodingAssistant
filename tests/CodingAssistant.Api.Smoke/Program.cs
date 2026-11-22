@@ -2234,7 +2234,8 @@ try
                 candidate.ScopeSha256, false), candidate),
                 "One-click source smoke cannot silently bypass isolation disclosure");
             Check(ConsentDenied(new StartSourceSmokeRequest(
-                "0" + candidate.ScopeSha256![1..], true), candidate),
+                (candidate.ScopeSha256![0] == '0' ? "1" : "0") +
+                    candidate.ScopeSha256[1..], true), candidate),
                 "One-click source smoke denies mismatched source binding");
             Check(ConsentDenied(new StartSourceSmokeRequest(
                 candidate.ScopeSha256, true),
