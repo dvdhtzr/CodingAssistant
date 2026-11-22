@@ -138,8 +138,9 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                         + "needed to connect this assigned task.")
                 : "Follow the exact selected technology runtime profile. "
                   + "Do not silently substitute another language or framework."),
-            new(ChatRole.User, "PREVIOUS COMPLETE SOURCE FILES (data, excerpted; "
-                + "all replacements must be complete):\n" +
+            new(ChatRole.User, "PREVIOUS SOURCE FILES (data; complete indicates whether "
+                + "full content is present; do not rewrite a truncated file "
+                + "from its excerpt alone):\n" +
                 JsonSerializer.Serialize(priorFiles))
         };
         // Limit corrective inference without weakening any path or source rules.
@@ -160,9 +161,10 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                     ? "OUTPUT_TRUNCATED: Reduce response size; implement a focused, complete file."
                     : "EMPTY_OR_INVALID_RESPONSE: Return one complete JSON object.";
             }
-            System.Diagnostics.Trace.TraceWarning(
-                "Software Engineer output rejected (attempt {0}/3): {1}",
-                attempt + 1, reason);
+            // Safe bounded diagnostics remain visible in the Windows console.
+            Console.Error.WriteLine(
+                $"[{DateTimeOffset.UtcNow:O}] Software Engineer output rejected " +
+                $"(attempt {attempt + 1}/3): {reason}");
             if (attempt == 2)
                 break;
             messages.Add(new ChatMessage(ChatRole.User,
