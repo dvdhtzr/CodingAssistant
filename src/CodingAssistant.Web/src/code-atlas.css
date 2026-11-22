@@ -32,6 +32,8 @@
 .atlas-node.atlas-selected .atlas-node-core,.atlas-node:focus-visible .atlas-node-core{fill:#30aa9b;stroke:#cefff2;stroke-width:3}
 .atlas-node.atlas-selected .atlas-node-halo{fill:#50ecd0;fill-opacity:.3}
 .atlas-node.atlas-connected .atlas-node-core{stroke:#62e4c5;stroke-width:2}
+@keyframes atlas-arrival{0%{fill-opacity:.65;stroke-opacity:1;stroke-width:7}100%{fill-opacity:.12;stroke-opacity:0;stroke-width:1}}
+.atlas-node.atlas-new .atlas-node-halo{fill:#48efc5;stroke:#48efc5;animation:atlas-arrival 1.5s ease-out both}
 .atlas-node-label{font-size:12px;font-family:system-ui,-apple-system,sans-serif;fill:#cee1ed;font-weight:600;paint-order:stroke;stroke:#101d2d;stroke-width:3px;stroke-linejoin:round;pointer-events:none}
 .atlas-zoom{position:absolute;right:.7rem;top:.65rem;display:flex;flex-direction:column;gap:.28rem}
 .atlas-zoom button{padding:0;width:29px;height:29px;color:#d7edfc;background:#1c3345;border:1px solid #547083;border-radius:7px;display:grid;place-items:center}
@@ -54,4 +56,4 @@
 .atlas-error{color:#f2baba}
 .atlas-coverage-note{padding:.7rem;margin:0}
 @media(max-width:730px){.atlas-workspace{grid-template-columns:1fr}.atlas-details{border-left:0;border-top:1px solid #2d4354;max-height:240px}.atlas-canvas-wrap{min-height:280px}.atlas-canvas{min-height:250px}.atlas-heading{flex-direction:column;gap:.3rem}}
-@media(prefers-reduced-motion:reduce){.atlas-node-core{transition:none}}
+@media(prefers-reduced-motion:reduce){.atlas-node-core{transition:none}.atlas-node.atlas-new .atlas-node-halo{animation:none}}
