@@ -972,3 +972,15 @@ a { color: #91e2d8; }
 .mc-work-secondary > summary:focus-visible,.mc-work-qa-details > summary:focus-visible {
   outline:3px solid var(--mc-accent);outline-offset:2px;
 }
+
+/* Legacy inspector is opt-in context, never a permanent third work column. */
+@media(min-width:1280px) {
+  .wb-layout,.wb-layout--inspector-closed {
+    grid-template-columns:258px minmax(0,1fr);
+  }
+  .wb-inspector-host:not([hidden]) {
+    position:fixed;z-index:30;right:0;top:76px;bottom:0;
+    width:min(400px,100vw);background:var(--mc-base);
+    border-left:1px solid #5c7d88;box-shadow:-24px 0 55px #000a;
+  }
+}
