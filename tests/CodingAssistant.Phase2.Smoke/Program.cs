@@ -1332,18 +1332,20 @@ try
 
     // This separate QA fixture needs a fresh review/triage decision because
     // the first recorded decision was deliberately NeedsVerification.
+    string freshQaId;
     using (var refreshedQa = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
     using (var body = await Body(refreshedQa))
     {
         Check(refreshedQa.StatusCode == HttpStatusCode.Accepted,
             "owner can request a fresh independent QA review");
+        freshQaId = body.RootElement.GetProperty("id").GetString()!;
     }
     QaReviewSnapshot? currentQa = null;
     for (var attempt = 0; attempt < 160; attempt++)
     {
-        currentQa = reviewStore.Latest(taskBound.Id);
-        if (currentQa?.Job.State != "Running") break;
+        currentQa = reviewStore.Get(taskBound.Id, freshQaId);
+        if (currentQa.Job.State != "Running") break;
         await Task.Delay(25);
     }
     Check(currentQa?.Job.State == "Reviewed",
