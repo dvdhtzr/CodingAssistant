@@ -198,7 +198,7 @@ public static class ImplementationPlanContract
             return false;
         var text = value.GetString()?.Trim();
         return text is not null && text.Length >= min && text.Length <= max &&
-            !text.Any(ch => char.IsControl(ch) && ch is not ('\\n' or '\\t'));
+            !text.Any(ch => char.IsControl(ch) && ch is not ('\n' or '\t'));
     }
 
     private static bool TextArrayInRange(JsonElement value, int minItems,
