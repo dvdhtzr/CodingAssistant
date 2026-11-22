@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
@@ -87,19 +85,6 @@ public sealed class RepairProposalStore(TaskStore tasks)
         using var tx = db.BeginTransaction();
         _ = TaskStore.FindTask(db, tx, taskId) ??
             throw new StoreFailure("NOT_FOUND");
-
-        using (var previous = TaskStore.Command(db, tx, Columns +
-            " WHERE task_id=@task AND qa_review_id=@qa",
-            ("@task", taskId), ("@qa", request.QaReviewId!)))
-        using (var reader = previous.ExecuteReader())
-        {
-            if (reader.Read())
-            {
-                var existing = Read(reader);
-                tx.Commit();
-                return existing;
-            }
-        }
 
         QaReviewRun review;
         using (var command = TaskStore.Command(db, tx, """
@@ -201,6 +186,19 @@ public sealed class RepairProposalStore(TaskStore tasks)
             }
         if (reviewed != files.Count || findings.Count == 0)
             throw new StoreFailure("INVALID_STATE");
+
+        using (var previous = TaskStore.Command(db, tx, Columns +
+            " WHERE task_id=@task AND qa_review_id=@qa",
+            ("@task", taskId), ("@qa", request.QaReviewId!)))
+        using (var reader = previous.ExecuteReader())
+        {
+            if (reader.Read())
+            {
+                var existing = Read(reader);
+                return existing;
+            }
+        }
+
 
         // Check for another writer's previous proposal under SQLite's write lock.
         var now = DateTimeOffset.UtcNow.ToString("O");
