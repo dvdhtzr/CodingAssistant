@@ -1,4 +1,7 @@
 using CodingAssistant.Api;
+using Microsoft.Data.Sqlite;
+using System.Security.Cryptography;
+using System.Text;
 
 var checks = 0;
 void Check(bool ok, string message)
@@ -92,4 +95,133 @@ Check(bad.Coverage == "PARTIAL_SYNTAX",
     "invalid syntax never reported fully analyzed");
 Check(!bad.Nodes.Any(n => n.Path == "../private.cs"),
     "unsafe source not represented");
+
+// M3: exercise a real SQLite commit/rollback and immutable source-change
+// cursor without launching any untrusted project code or model.
+var database = Path.Combine(Path.GetTempPath(),
+    "ca-atlas-ledger-" + Guid.NewGuid().ToString("N") + ".db");
+try
+{
+    void Sql(SqliteConnection db, SqliteTransaction? tx, string statement)
+    {
+        using var command = db.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = statement;
+        command.ExecuteNonQuery();
+    }
+    string Hash(string value) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
+    var run = "b".PadLeft(32, 'b');
+    var original = "namespace Demo; public class Example { }";
+    var updated = "namespace Demo; public class Example { public void Go() {} }";
+    using (var db = new SqliteConnection("Data Source=" + database))
+    {
+        db.Open();
+        Sql(db, null, """
+            CREATE TABLE engineering_runs (id TEXT PRIMARY KEY);
+            CREATE TABLE engineering_run_files (
+                run_id TEXT NOT NULL, path TEXT NOT NULL,
+                sha256 TEXT NOT NULL, PRIMARY KEY(run_id,path));
+            CREATE TABLE engineering_atlas_events (
+                run_id TEXT NOT NULL REFERENCES engineering_runs(id),
+                sequence INTEGER NOT NULL, work_item_id TEXT NOT NULL,
+                source_revision TEXT NOT NULL, changes_json TEXT NOT NULL,
+                created_utc TEXT NOT NULL, PRIMARY KEY(run_id,sequence));
+            INSERT INTO engineering_runs(id)
+            VALUES('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+            """);
+        using (var tx = db.BeginTransaction())
+        {
+            var before = EngineeringAtlasLedger.CaptureHashes(db, tx, run);
+            Check(before.Count == 0, "first revision has no previous sources");
+            using (var cmd = db.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = """
+                    INSERT INTO engineering_run_files(run_id,path,sha256)
+                    VALUES($run,$path,$hash)
+                    """;
+                cmd.Parameters.AddWithValue("$run", run);
+                cmd.Parameters.AddWithValue("$path", "Example.cs");
+                cmd.Parameters.AddWithValue("$hash", Hash(original));
+                cmd.ExecuteNonQuery();
+            }
+            var evt = EngineeringAtlasLedger.Append(db, tx, run, "W1", before);
+            Check(evt?.Sequence == 1 && evt.Changes.Count == 1 &&
+                evt.Changes[0].Kind == "Added",
+                "new persisted source creates source-change event");
+            Check(evt!.SourceRevision == CodeAtlasIndexer.Index(run,
+                new[] { File("Example.cs", original) }).SourceRevision,
+                "event revision agrees exactly with source graph");
+            tx.Commit();
+        }
+        using (var tx = db.BeginTransaction())
+        {
+            var before = EngineeringAtlasLedger.CaptureHashes(db, tx, run);
+            Check(EngineeringAtlasLedger.Append(db, tx, run, "W2", before) is null,
+                "same source hash produces no phantom change");
+            tx.Commit();
+        }
+        using (var tx = db.BeginTransaction())
+        {
+            var before = EngineeringAtlasLedger.CaptureHashes(db, tx, run);
+            using (var cmd = db.CreateCommand())
+            {
+                cmd.Transaction = tx;
+                cmd.CommandText = """
+                    UPDATE engineering_run_files SET sha256=$hash
+                    WHERE run_id=$run AND path='Example.cs'
+                    """;
+                cmd.Parameters.AddWithValue("$hash", Hash(updated));
+                cmd.Parameters.AddWithValue("$run", run);
+                cmd.ExecuteNonQuery();
+            }
+            var evt = EngineeringAtlasLedger.Append(db, tx, run, "W3", before);
+            Check(evt?.Sequence == 2 && evt.Changes.Single().Kind == "Modified",
+                "changed source is versioned once and marked Modified");
+            Check(evt!.SourceRevision == CodeAtlasIndexer.Index(run,
+                new[] { File("Example.cs", updated) }).SourceRevision,
+                "replacement revision matches independently indexed source");
+            tx.Commit();
+        }
+        using (var tx = db.BeginTransaction())
+        {
+            var before = EngineeringAtlasLedger.CaptureHashes(db, tx, run);
+            Sql(db, tx, """
+                DELETE FROM engineering_run_files
+                WHERE run_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+                """);
+            var evt = EngineeringAtlasLedger.Append(db, tx, run, "W4", before);
+            Check(evt?.Changes.Single().Kind == "Removed",
+                "deleted source can be represented as a real removal");
+            tx.Rollback();
+        }
+    }
+    using (var db = new SqliteConnection("Data Source=" + database))
+    {
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            SELECT COUNT(*) FROM engineering_atlas_events
+            WHERE run_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+            """;
+        Check(Convert.ToInt32(cmd.ExecuteScalar()) == 2,
+            "SQLite restart retains two committed revisions, not rollback");
+        cmd.CommandText = """
+            SELECT changes_json FROM engineering_atlas_events
+            WHERE run_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+            ORDER BY sequence DESC LIMIT 1
+            """;
+        var payload = (string?)cmd.ExecuteScalar() ?? "";
+        Check(payload.Contains("Modified", StringComparison.Ordinal) &&
+            !payload.Contains("namespace Demo", StringComparison.Ordinal),
+            "recorded source changes contain hashes, not source contents");
+    }
+}
+finally
+{
+    if (System.IO.File.Exists(database)) System.IO.File.Delete(database);
+}
+
 Console.WriteLine("CODE_ATLAS_SOURCE_GRAPH_PASS: " + checks + " assertions");
