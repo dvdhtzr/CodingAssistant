@@ -136,3 +136,45 @@
   border:1px solid #3c5662;border-radius:9px;padding:.55rem .7rem;margin:.65rem 0}
 .atlas-qa-summary strong{color:#e4bf87}
 .atlas-qa-summary span+span{border-left:1px solid #42606a;padding-left:.55rem}
+
+
+/* M7: low-clutter, read-only imported repository exploration. */
+.atlas-repository-entry{margin:1rem 0;border:1px solid #3a5769;
+  border-radius:12px;background:#132230;overflow:hidden}
+.atlas-repository-entry>summary{cursor:pointer;padding:.8rem 1rem;
+  color:#d9edf8;font-size:.81rem;font-weight:700;
+  background:#1b3140}
+.atlas-repository-entry[open]>summary{border-bottom:1px solid #36546a}
+.atlas-repository-import{padding:1rem;min-width:0}
+.atlas-import-heading{display:flex;justify-content:space-between;
+  align-items:center;flex-wrap:wrap;gap:.5rem}
+.atlas-import-heading strong{color:#edf8fe;font-size:.9rem}
+.atlas-import-heading span{color:#8fd9c6;font-size:.68rem}
+.atlas-repository-import>p{color:#b3c9d5;line-height:1.5;font-size:.75rem}
+.atlas-import-fields{display:grid;grid-template-columns:minmax(160px,1fr)
+  minmax(160px,1fr) auto;gap:.65rem;align-items:end}
+.atlas-import-fields label{display:grid;gap:.35rem;color:#b5cfdd;font-size:.69rem}
+.atlas-import-fields input{min-width:0;background:#0e1d2c;color:#e5f7ff;
+  border:1px solid #416073;border-radius:8px;padding:.58rem .7rem;
+  font-size:.72rem}
+.atlas-import-fields input:focus-visible,.atlas-imported-rows button:focus-visible{
+  outline:2px solid #71dfc9;outline-offset:2px}
+.atlas-import-fields button{padding:.56rem .9rem;border-radius:8px;
+  border:1px solid #60c6b3;background:#236456;color:#f2fffb;
+  font-size:.74rem;font-weight:650;cursor:pointer}
+.atlas-import-fields button:disabled{opacity:.55;cursor:default}
+.atlas-import-error{color:#f3b5a4!important}
+.atlas-imported-list{margin:.8rem 0 .25rem;display:grid;gap:.35rem}
+.atlas-imported-list>strong{color:#d2e9ed;font-size:.74rem}
+.atlas-imported-rows{display:flex;flex-wrap:wrap;gap:.5rem}
+.atlas-imported-rows button{text-align:left;display:grid;gap:.25rem;
+  background:#1c3646;border:1px solid #3d5d71;border-radius:9px;
+  color:#d3edf5;padding:.56rem .75rem;max-width:100%;cursor:pointer}
+.atlas-imported-rows button.atlas-import-selected{border-color:#68e3c3;
+  background:#215449}
+.atlas-imported-rows button span{font-size:.73rem;overflow-wrap:anywhere}
+.atlas-imported-rows button small{font-size:.65rem;color:#a5c4cf}
+.atlas-repository-import .atlas-panel{margin:1rem 0 0}
+@media(max-width:850px){
+  .atlas-import-fields{grid-template-columns:1fr}
+}
