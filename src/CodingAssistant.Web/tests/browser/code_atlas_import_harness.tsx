@@ -43,7 +43,7 @@ const repository = {
   coverage: graph.coverage, indexedFiles: 1,
   excludedFiles: 0, createdUtc: '2026-11-22T00:00:00Z',
 };
-let saved = false;
+let saved = window.sessionStorage.getItem('atlasImportedFixture') === 'yes';
 const original = window.fetch.bind(window);
 window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input instanceof Request ? input.url : input);
@@ -53,6 +53,7 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     }));
   if (url.endsWith('/atlas-imports') && init?.method === 'POST') {
     saved = true;
+    window.sessionStorage.setItem('atlasImportedFixture', 'yes');
     return Promise.resolve(new Response(JSON.stringify(repository), {
       status: 200, headers: { 'content-type': 'application/json' },
     }));
