@@ -340,7 +340,7 @@ public sealed class LocalInterviewModel : IInterviewModel
         CancellationToken cancellation, string? correction = null)
     {
         if (!AllowedModel(model) || string.IsNullOrWhiteSpace(objective) ||
-            objective.Length > 4000 || messages.Count > 25)
+            objective.Length > 4000 || messages.Count > InterviewStore.MaxTranscriptMessages)
             throw new StoreFailure("INVALID_INPUT");
 
         // Local-only, never use HTTP_PROXY and never follow redirect to LAN,
