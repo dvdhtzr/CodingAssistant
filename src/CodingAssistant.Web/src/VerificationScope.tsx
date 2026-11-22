@@ -140,7 +140,7 @@ export function VerificationScopeView({ scope, error, empty = false }: {
       </details>}
     </> : <p>{error
       ? 'Readiness report unavailable. No eligibility can be inferred.'
-      : empty ? 'No saved Engineering run is available.'
+      : empty ? 'Source generation has not finished; no scope assessment exists yet.'
         : 'Reading saved source and current approvals…'}</p>}
     <p className="verification-scope-boundary">
       <strong>Generated · not tested.</strong> A scope candidate is not an execution
