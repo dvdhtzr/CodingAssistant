@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import { SourceArtifactExplorer } from './SourceArtifactExplorer';
+import { CodeAtlasPanel } from './CodeAtlasPanel';
 import { EngineeringVerificationScope } from './VerificationScope';
 
 export interface EngineerRun {
