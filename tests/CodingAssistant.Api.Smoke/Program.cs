@@ -1504,14 +1504,31 @@ try
             // Crucial: the real HTTP specification endpoint must accept all
             // 27 persisted messages, not just the shorter interview fixtures.
             endingCatalog.Models.Add("qwen3.5:4b");
+            endingCatalog.Models.Add("gemma4:latest");
+            using (var invalid = await Post(endingClient,
+                $"/api/tasks/{endingId}/interview/specification",
+                new { expectedSequence = 27, model = "remote/model" }))
+                Check(invalid.StatusCode == HttpStatusCode.BadRequest &&
+                    endingModel.SpecCount == 0,
+                    "specification cannot use unauthorized remote model");
+            using (var missing = await Post(endingClient,
+                $"/api/tasks/{endingId}/interview/specification",
+                new { expectedSequence = 27, model = "notinstalled:9b" }))
+                Check(missing.StatusCode == HttpStatusCode.ServiceUnavailable &&
+                    endingModel.SpecCount == 0,
+                    "specification model must be installed locally");
             using (var specResponse = await Post(endingClient,
                 $"/api/tasks/{endingId}/interview/specification",
-                new { expectedSequence = 27 }))
+                new { expectedSequence = 27, model = "gemma4:latest" }))
             using (var json = await ReadJson(specResponse))
             {
                 var draft = json.RootElement.GetProperty("specification");
                 Check(specResponse.StatusCode == HttpStatusCode.OK &&
                     draft.GetProperty("status").GetString() == "Draft" &&
+                    draft.GetProperty("model").GetString() == "gemma4:latest" &&
+                    json.RootElement.GetProperty("model").GetString() ==
+                        "qwen3.5:4b" &&
+                    endingModel.LastDraftModel == "gemma4:latest" &&
                     draft.GetProperty("content").GetString()!.Contains(
                         "Aggregate the platform-reported audience segments only.",
                         StringComparison.Ordinal) &&
@@ -2593,6 +2610,7 @@ sealed class SmokeInterviewModel : IInterviewModel
     public int AskCount;
     public int SpecCount;
     public string LastObjective = "";
+    public string LastDraftModel = "";
 
     public Task<InterviewReply> AskAsync(
         string objective, IReadOnlyList<InterviewMessage> messages,
@@ -2628,6 +2646,7 @@ sealed class SmokeInterviewModel : IInterviewModel
         string model, CancellationToken cancellation)
     {
         LastObjective = objective;
+        LastDraftModel = model;
         SpecCount++;
         var text = "# Specification: " + objective + "\n\n" +
             "## Functional requirements\n" +
