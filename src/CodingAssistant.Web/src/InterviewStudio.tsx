@@ -378,7 +378,7 @@ export function InterviewStudio({ token, task }: {
             </p>
             <button type="button" className="outline"
               disabled={!!busy} onClick={continueToSpecification}>
-              Review a first specification →
+              Draft first specification →
             </button>
           </div>}
         {ownerAnswers < MAX_OWNER_ANSWERS && <InterviewAnswerComposer
