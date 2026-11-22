@@ -28,13 +28,13 @@ public static class CodeAtlasEcmaIndexer
         List<string> diagnostics, out bool incomplete)
     {
         var tokens = new List<Token>();
-        incomplete = false;
+        var partial = false;
         var line = 1;
         var depth = 0;
         var i = 0;
         void Partial(string reason)
         {
-            incomplete = true;
+            partial = true;
             var code = "ECMA_" + reason + ":" + path;
             if (!diagnostics.Contains(code)) diagnostics.Add(code);
         }
@@ -133,6 +133,7 @@ public static class CodeAtlasEcmaIndexer
             }
         }
         if (depth != 0) Partial("UNBALANCED_BRACES");
+        incomplete = partial;
         return tokens;
     }
 
