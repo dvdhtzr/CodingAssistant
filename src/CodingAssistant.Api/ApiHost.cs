@@ -93,6 +93,8 @@ public static class ApiHost
         var engineeringRuns = new EngineeringRunStore(
             store, implementationPlans);
         engineeringRuns.Initialize();
+        var atlasLedger = new EngineeringAtlasLedger(store, engineeringRuns);
+        atlasLedger.Initialize();
         engineeringRuns.MarkInterruptedOnStartup();
         var qaReviews = new QaReviewStore(store, implementationPlans);
         qaReviews.Initialize();
@@ -169,6 +171,7 @@ public static class ApiHost
         builder.Services.AddSingleton(handoffs);
         builder.Services.AddSingleton(implementationPlans);
         builder.Services.AddSingleton(engineeringRuns);
+        builder.Services.AddSingleton(atlasLedger);
         builder.Services.AddSingleton<IEngineeringTaskModel>(softwareEngineer);
         builder.Services.AddSingleton<EngineeringRunCoordinator>();
         builder.Services.AddSingleton(qaReviews);
@@ -202,6 +205,7 @@ public static class ApiHost
             options.MaximumParallelInvocationsPerClient = 2;
         });
         builder.Services.AddSingleton<RunNotifier>();
+        builder.Services.AddSingleton<EngineeringAtlasNotifier>();
 
         var app = builder.Build();
         app.Use(async (context, next) =>
@@ -573,6 +577,10 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(CodeAtlasIndexer.Index(db.Get(id, runId)))));
+        // Durable source-change cursor; no source contents cross the event wire.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas-events",
+            (string id, string runId, int? after, EngineeringAtlasLedger ledger) =>
+                Safe(() => Results.Ok(ledger.Read(id, runId, after ?? 0))));
         // Read-only deterministic source inspection: no Node, Chromium,
         // model, sandbox admission, independent tests, or VERIFIED claim.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/static-web-preflight",
