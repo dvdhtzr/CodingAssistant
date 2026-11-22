@@ -385,7 +385,12 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
       open={expanded === 'delivery'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Project files and delivery">
         <EngineeringDeliveryPanel engine={engineer} />
-        <QaReviewPanel token={token} taskId={taskId} engineering={engineer} />
+        <details className="mc-work-qa-details">
+          <summary><strong>QA review, findings & repair history</strong>
+            <span>Inspect independent static QA and request authorized repairs</span>
+          </summary>
+          <QaReviewPanel token={token} taskId={taskId} engineering={engineer} />
+        </details>
         <p className="hint">Inspect saved source files and export them. Generated source
           is not an independently tested or verified build.</p>
         {error && <div className="alert" role="alert">{error}</div>}
@@ -406,10 +411,12 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
             </button>}
         </div>
         {!job && <p className="hint">No generated files yet. Start with Source Generation.</p>}
-        {!!result?.files.length && job &&
+        {!!result?.files.length && job && <details className="mc-work-secondary">
+          <summary>Inspect classic-generator source files ({result.files.length})</summary>
           <SourceArtifactExplorer key={job.id}
             source="Classic generator" files={result.files} state={job.state}
-            runId={job.id} isCurrent={currentSpec && currentArchitecture}/>}
+            runId={job.id} isCurrent={currentSpec && currentArchitecture}/>
+        </details>}
         {job?.state === 'Generated' && spec?.status === 'Approved' &&
           currentSpec &&
           <TaskBuildPanel token={token} taskId={taskId}
