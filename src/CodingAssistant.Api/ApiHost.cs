@@ -568,6 +568,11 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(db.Get(id, runId))));
+        // Atlas is a read-only projection of persisted source. It performs
+        // syntax parsing only; it does not compile or execute user code.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas",
+            (string id, string runId, EngineeringRunStore db) =>
+                Safe(() => Results.Ok(CodeAtlasIndexer.Index(db.Get(id, runId)))));
         // Read-only deterministic source inspection: no Node, Chromium,
         // model, sandbox admission, independent tests, or VERIFIED claim.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/static-web-preflight",
