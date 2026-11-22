@@ -173,6 +173,26 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         catch (StoreFailure e) when (e.Code == "MODEL_OUTPUT_REJECTED")
         { Check(true, "unsafe/duplicate/task-plan engineer response rejected"); }
     }
+    // Repair broken JSON, unsafe source paths and model refusals without
+    // accepting any invalid files or attempting code execution.
+    const string goodSource = """{"summary":"Implemented complete recipe ingredient input interactions.","files":[{"path":"index.html","purpose":"Complete ingredient input screen","content":"<!doctype html><html><body><input id='ingredients'><button>Compare</button></body></html>"}],"verificationNotes":["Verify ingredient entry in a browser"]}""";
+    Check(MafSoftwareEngineer.TryParse(goodSource, out var parsedSource,
+        out var acceptedReason) && parsedSource!.Files.Count == 1 &&
+        acceptedReason == "", "valid engineer output remains accepted");
+    Check(MafSoftwareEngineer.TryParse("```json\\n" + goodSource + "\\n```",
+        out var wrappedSource, out _) && wrappedSource!.Files.Count == 1,
+        "complete JSON fenced output is recoverable without loosening validation");
+    Check(!MafSoftwareEngineer.TryParse("SECRET_MODEL_CONTENT invalid",
+        out _, out var syntaxReason) &&
+        syntaxReason.StartsWith("JSON_SYNTAX:", StringComparison.Ordinal) &&
+        !syntaxReason.Contains("SECRET_MODEL_CONTENT", StringComparison.Ordinal),
+        "engineer source diagnostics never include model-generated content");
+    Check(!MafSoftwareEngineer.TryParse(
+        goodSource.Replace("index.html", "../escape.js", StringComparison.Ordinal),
+        out _, out var pathReason) &&
+        pathReason.StartsWith("FILE_PATH:", StringComparison.Ordinal),
+        "unsafe source path rejected with targeted validation feedback");
+
     var agentFactory = new Phase4FakeMafFactory();
     var fakePlan = new ImplementationPlan(
         "a".PadRight(32, 'a'), 1, 1, new string('b', 64),
@@ -203,6 +223,65 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           agentFactory.SystemPolicySeen && agentFactory.NoTools &&
           agentFactory.TaskDescriptionSeen,
         "fourth real MAF agent gets independent identity, task, exact model and no tools");
+
+    var correctedFactory = new Phase4FakeMafFactory();
+    correctedFactory.Responses.Enqueue("truncated SECRET_MODEL_CONTENT");
+    correctedFactory.Responses.Enqueue(goodSource);
+    var correctedSource = await new MafSoftwareEngineer(correctedFactory)
+        .ImplementAsync(assignment, CancellationToken.None);
+    Check(correctedSource.Files.Count == 1 &&
+          correctedFactory.Attempts == 2 &&
+          correctedFactory.CorrectionReasons.Any(reason =>
+              reason.Contains("JSON_SYNTAX:", StringComparison.Ordinal)) &&
+          correctedFactory.CorrectionReasons.All(reason =>
+              !reason.Contains("SECRET_MODEL_CONTENT", StringComparison.Ordinal)),
+        "Software Engineer uses safe targeted correction and recovers");
+
+    var rejectedFactory = new Phase4FakeMafFactory();
+    for (var n = 0; n < 3; n++)
+        rejectedFactory.Responses.Enqueue(
+            goodSource.Replace("index.html", "../escape.js", StringComparison.Ordinal));
+    try
+    {
+        _ = await new MafSoftwareEngineer(rejectedFactory)
+            .ImplementAsync(assignment, CancellationToken.None);
+        Check(false, "unsafe source should never pass retries");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(rejectedFactory.Attempts == 3,
+            "invalid engineer outputs fail closed after three attempts");
+    }
+
+    // Sequential simulation of the five approved recipe milestones.
+    var recipeFactory = new Phase4FakeMafFactory();
+    var fiveTasks = Enumerable.Range(1, 5).Select(n =>
+        new ImplementationWorkItem("recipe-task-" + n,
+            "Recipe implementation " + n,
+            "Build the next recipe comparison feature with saved source.",
+            n == 1 ? [] : ["recipe-task-" + (n - 1)],
+            ["User can interact with the resulting recipe page"])).ToArray();
+    var recipePlan = fakePlan with {
+        Outline = fakePlan.Outline with { Tasks = fiveTasks }
+    };
+    var existing = new List<EngineeringSourceFile>();
+    for (var n = 1; n <= fiveTasks.Length; n++)
+    {
+        var next = await new MafSoftwareEngineer(recipeFactory).ImplementAsync(
+            assignment with { Plan = recipePlan, WorkItem = fiveTasks[n - 1],
+                ExistingFiles = existing }, CancellationToken.None);
+        foreach (var file in next.Files)
+        {
+            existing.RemoveAll(prior => prior.Path.Equals(file.Path,
+                StringComparison.OrdinalIgnoreCase));
+            existing.Add(new EngineeringSourceFile(file.Path, file.Purpose,
+                file.Content, new string('d', 64), fiveTasks[n - 1].Id,
+                "2026-11-22T00:00:00Z"));
+        }
+    }
+    Check(recipeFactory.Attempts == 5 && existing.Count == 1,
+        "five sequential recipe assignments produce host-validated source");
+
 }
 
 // Phase 5 QA: strict review-only JSON, separate MAF identity and exact
@@ -1661,6 +1740,9 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
 
 sealed class Phase4FakeMafFactory : IMafChatClientFactory
 {
+    public Queue<string> Responses { get; } = new();
+    public List<string> CorrectionReasons { get; } = [];
+    public int Attempts { get; private set; }
     public List<MafAgentPurpose> Purposes { get; } = [];
     public List<string> Models { get; } = [];
     public bool SystemPolicySeen { get; private set; }
@@ -1680,7 +1762,15 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
             IEnumerable<ChatMessage> messages, ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            parent.Attempts++;
             var history = messages.ToArray();
+            parent.CorrectionReasons.AddRange(history
+                .Where(m => m.Role == ChatRole.User &&
+                    m.Text?.Contains("Reason:", StringComparison.Ordinal) == true)
+                .Select(m => m.Text!));
+            if (parent.Responses.Count > 0)
+                return Task.FromResult(new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant, parent.Responses.Dequeue())));
             parent.SystemPolicySeen = (options?.Instructions?.Contains(
                 "Professional backstory:", StringComparison.Ordinal) ?? false) ||
                 history.Any(m => m.Role.Value == "system" &&
