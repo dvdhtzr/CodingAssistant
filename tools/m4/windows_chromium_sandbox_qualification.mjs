@@ -26,7 +26,14 @@ export function checkedChromiumSeccomp(){
   const stat=fs.lstatSync(SECCOMP_LOCATION);
   if(!stat.isFile()||stat.isSymbolicLink()||stat.size>18000)
     fail('Reviewed Chromium seccomp profile missing or not a regular file');
-  const bytes=fs.readFileSync(SECCOMP_LOCATION);
+  return {path:fs.realpathSync(SECCOMP_LOCATION),
+    ...validateChromiumSeccompBytes(fs.readFileSync(SECCOMP_LOCATION))};
+}
+// Validate and attest the exact vendored Playwright rules before dispatch.
+// Exported separately so CI can prove tampered/relaxed profiles fail closed.
+export function validateChromiumSeccompBytes(bytes){
+  if(!Buffer.isBuffer(bytes)||bytes.length<1000||bytes.length>18000)
+    fail('Chromium seccomp bytes outside reviewed bounds');
   // Windows checkout can convert LF to CRLF, but all approved contents
   // must match the upstream Git blob after newline normalization.
   const canonical=Buffer.from(bytes.toString('utf8').replace(/\r\n/g,'\n'));
@@ -44,7 +51,6 @@ export function checkedChromiumSeccomp(){
      profile.syscalls.some(rule=>rule.action!=='SCMP_ACT_ALLOW'))
     fail('Reviewed seccomp profile contract invalid');
   return {
-    path:fs.realpathSync(SECCOMP_LOCATION),
     sha256:createHash('sha256').update(canonical).digest('hex'),
     upstreamGitBlob:gitBlob,
   };
