@@ -817,6 +817,111 @@ Check(repeatedExport.Coverage == "PARTIAL_ECMA_STRUCTURE" &&
     !repeatedExport.Edges.Any(e => e.Kind == "SymbolImports"),
     "three conflicting exported declarations cannot restore a false symbol link");
 
+// M8.12: only unique explicit JS/TS type clauses create type links.
+var m812Sources = new[]
+{
+    File("ts/main.ts", """
+        import { Parent as Base, IService as Contract, IRoot } from './types';
+        class Child extends Base implements Contract, IRoot { run() {} }
+        interface IChild extends Contract, IRoot { }
+        class LocalBase { }
+        class LocalChild extends LocalBase { }
+        interface ILocal { }
+        interface IDerived extends ILocal { }
+        class Unknown extends Missing { }
+        class Generic extends factory() { }
+        const fabricated = "class Fake extends Base {}";
+        // class Comment extends Base {}
+        """),
+    File("ts/types.ts", """
+        export class Parent { }
+        export interface IService { serve(): void; }
+        export interface IRoot { root(): void; }
+        class Hidden { }
+        """)
+};
+var m812Graph = CodeAtlasIndexer.Index("ecma-types-run", m812Sources);
+var m812Inherits = m812Graph.Edges.Where(e => e.Kind == "Inherits").ToArray();
+var m812Implements = m812Graph.Edges.Where(e => e.Kind == "Implements").ToArray();
+Check(m812Graph.Coverage == "ECMA_STRUCTURE_ONLY" &&
+    m812Inherits.Length == 5 && m812Implements.Length == 2,
+    "bare type clauses yield five inheritance and two implementation links");
+AtlasNode M812Node(string path, string kind, string name) =>
+    m812Graph.Nodes.Single(n => n.Path == path &&
+        n.Kind == kind && n.Name == name);
+var m812Child = M812Node("ts/main.ts", "Class", "Child");
+var m812Base = M812Node("ts/types.ts", "Class", "Parent");
+var m812Contract = M812Node("ts/types.ts", "Interface", "IService");
+var m812RootInterface = M812Node("ts/types.ts", "Interface", "IRoot");
+Check(m812Inherits.Any(e => e.SourceId == m812Child.Id &&
+    e.TargetId == m812Base.Id) &&
+    m812Implements.Any(e => e.SourceId == m812Child.Id &&
+        e.TargetId == m812Contract.Id) &&
+    m812Implements.Any(e => e.SourceId == m812Child.Id &&
+        e.TargetId == m812RootInterface.Id),
+    "aliases connect a JS/TS class to actual direct exported type nodes");
+var m812Interface = M812Node("ts/main.ts", "Interface", "IChild");
+Check(m812Inherits.Any(e => e.SourceId == m812Interface.Id &&
+    e.TargetId == m812Contract.Id) &&
+    m812Inherits.Any(e => e.SourceId == m812Interface.Id &&
+        e.TargetId == m812RootInterface.Id) &&
+    m812Inherits.Any(e =>
+        e.SourceId == M812Node("ts/main.ts", "Class", "LocalChild").Id &&
+        e.TargetId == M812Node("ts/main.ts", "Class", "LocalBase").Id) &&
+    m812Inherits.Any(e =>
+        e.SourceId == M812Node("ts/main.ts", "Interface", "IDerived").Id &&
+        e.TargetId == M812Node("ts/main.ts", "Interface", "ILocal").Id),
+    "same-file classes and interface extensions retain source ownership");
+Check(m812Graph.Edges.Where(e =>
+    e.Kind is "Inherits" or "Implements").All(e =>
+    e.Resolution == "ExplicitEcmaTypeClause" &&
+    e.EvidencePath == "ts/main.ts" && e.EvidenceLine > 0),
+    "each relationship identifies the exact source type clause");
+Check(!m812Graph.Edges.Any(e => e.Kind == "Calls") &&
+    !m812Graph.Nodes.Any(n => n.Name is "Fake" or "Comment"),
+    "strings, comments, dynamic mixins and unknown calls remain inert");
+var m812Trace = CodeAtlasPathFinder.Trace(m812Graph,
+    m812Child.Id, m812Base.Id);
+Check(m812Trace.Found && m812Trace.Edges.Count == 1 &&
+    m812Trace.Edges[0].Kind == "Inherits",
+    "bounded graph path tracing follows explicit type clause evidence");
+var m812Reordered = CodeAtlasIndexer.Index("ecma-types-run",
+    m812Sources.Reverse().ToArray());
+Check(m812Graph.SourceRevision == m812Reordered.SourceRevision &&
+    m812Graph.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(m812Reordered.Edges.Select(e =>
+            (e.Kind, e.SourceId, e.TargetId))),
+    "type relations stay deterministic across reordered source files");
+var m812Ambiguous = CodeAtlasIndexer.Index("ambiguous-types", new[]
+{
+    File("src/main.ts", """
+        import { Parent as Duplicated } from './types';
+        import { Parent as Duplicated } from './types';
+        class DuplicatedUser extends Duplicated {}
+        class Other extends Factory<Thing> {}
+        class Parent {}
+        class Parent {}
+        class Conflict extends Parent {}
+        class BadContract implements Parent {}
+        """),
+    File("src/types.ts", "export class Parent {}")
+});
+Check(!m812Ambiguous.Edges.Any(e =>
+    e.Kind is "Inherits" or "Implements"),
+    "repeated imports, duplicate declarations, generics and wrong kinds fail closed");
+var m812Private = CodeAtlasIndexer.Index("private-types", new[]
+{
+    File("main.ts", """
+        import { Private } from './other';
+        class Child extends Private {}
+        const Mask = class Internal {};
+        class ShouldNotResolve extends Internal {}
+        """),
+    File("other.ts", "class Private {}")
+});
+Check(!m812Private.Edges.Any(e => e.Kind == "Inherits"),
+    "private imported types and class expressions cannot resolve as inheritance");
+
 // M4: only Roslyn-resolved, source-backed relationships may become graph edges.
 var semanticFiles = new[]
 {

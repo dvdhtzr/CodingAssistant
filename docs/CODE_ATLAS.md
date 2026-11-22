@@ -185,3 +185,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Local module resolution reuses the original M8.4 safe literal path logic. Dynamic imports, package imports, missing or ambiguous local modules, implicit/default exports, namespace imports, re-exports and private/non-exported declarations never produce guessed symbol links. Duplicate ambiguous export declarations result in partial-coverage diagnostics.
 - This is **deeper source-backed symbol resolution**, not the TypeScript language service. Inheritance, arbitrary callers/callees, type inference, computed exports, dynamic bindings and runtime invocation remain unverified and are reserved for later qualified semantic work.
 - No untrusted JavaScript, dependency installation, build, network fetch or process execution is introduced. Existing graph caps, source revision identity, independent QA and owner approval/security boundaries remain intact.
+
+## M8.12 — Conservative JavaScript/TypeScript type-clause relationships
+
+- Source-backed `Inherits` and `Implements` edges now connect file-scoped JS/TS classes and interfaces for explicit bare-name `extends`/`implements` clauses, including unambiguous named import aliases and direct, uniquely indexed local declarations.
+- Edges carry exact source path/line and `ExplicitEcmaTypeClause` provenance. Existing read-only path tracing and imported-commit drift comparisons can use them.
+- Ambiguous or repeated imports, duplicated declarations, wrong symbol kinds, private imported types, class expressions, computed bases, generics, unknown external symbols and dynamic factories remain unlinked. Arbitrary method/call binding is **not** claimed.
+- These are conservative source facts, **not TypeScript language-service semantic results or proof of valid build/runtime inheritance**. Full compiler-backed resolution and caller/callee analysis remain future work. Existing graph limits, task isolation, owner approval, QA boundaries and no-execution policy are unchanged.
