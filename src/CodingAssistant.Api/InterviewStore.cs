@@ -49,6 +49,9 @@ public sealed class InterviewStore(TaskStore tasks)
     // the model another question (the interview context is capped at 25 turns).
     public const int ModelDrivenAnswerLimit = 12;
     public const int MaxOwnerAnswers = ModelDrivenAnswerLimit + 1;
+    // Every persisted answer and Product Owner message is retained when
+    // drafting. The last answer also receives a deterministic handoff.
+    public const int MaxTranscriptMessages = MaxOwnerAnswers * 2 + 1;
 
     public static InterviewReply FinalAnswerAcknowledgement() => new(
         "Your final answer has been saved. Product discovery is complete. " +

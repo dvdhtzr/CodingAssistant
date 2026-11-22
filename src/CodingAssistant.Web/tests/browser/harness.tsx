@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ConversationWorkroom, type WorkroomMessage } from '../../src/ConversationWorkroom';
 import { InterviewAnswerComposer } from '../../src/InterviewAnswerComposer';
+import { InterviewStudio } from '../../src/InterviewStudio';
 import { DecisionInboxView, buildDecisionInbox } from '../../src/OwnerDecisionInbox';
 import { SourceArtifactExplorer } from '../../src/SourceArtifactExplorer';
 import { TeamWorkroomView, type TeamEvidence } from '../../src/TeamWorkroom';
@@ -200,4 +201,17 @@ function BrowserScenario() {
   </main>;
 }
 
-createRoot(document.getElementById('root')!).render(<BrowserScenario/>);
+function CompleteInterviewScenario() {
+  const task = {
+    id: 'a'.repeat(32), title: 'Podcast analytics',
+    objective: 'Build a podcast audience demographics dashboard',
+    status: 'Active', currentVersion: 1,
+    createdUtc: '2026-11-22T17:00:00Z',
+  };
+  return <InterviewStudio token={'f'.repeat(64)} task={task}/>;
+}
+
+createRoot(document.getElementById('root')!).render(
+  window.location.search.includes('specification-acceptance')
+    ? <CompleteInterviewScenario/>
+    : <BrowserScenario/>);

@@ -1500,6 +1500,24 @@ try
                     json.RootElement.GetProperty("lastSequence").GetInt32() == 27 &&
                     json.RootElement.GetProperty("readyForSpecification").GetBoolean(),
                     "final owner answer survives authenticated API restart");
+
+            // Crucial: the real HTTP specification endpoint must accept all
+            // 27 persisted messages, not just the shorter interview fixtures.
+            endingCatalog.Models.Add("qwen3.5:4b");
+            using (var specResponse = await Post(endingClient,
+                $"/api/tasks/{endingId}/interview/specification",
+                new { expectedSequence = 27 }))
+            using (var json = await ReadJson(specResponse))
+            {
+                var draft = json.RootElement.GetProperty("specification");
+                Check(specResponse.StatusCode == HttpStatusCode.OK &&
+                    draft.GetProperty("status").GetString() == "Draft" &&
+                    draft.GetProperty("content").GetString()!.Contains(
+                        "Aggregate the platform-reported audience segments only.",
+                        StringComparison.Ordinal) &&
+                    endingModel.SpecCount == 1,
+                    "finalized 27-message interview drafts a reviewable specification");
+            }
         }
         finally
         {
