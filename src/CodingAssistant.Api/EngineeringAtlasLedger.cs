@@ -28,6 +28,13 @@ public sealed class EngineeringAtlasLedger(TaskStore tasks, EngineeringRunStore 
     public void Initialize()
     {
         using var db = tasks.Open();
+        EnsureSchema(db);
+    }
+
+    // Must also be initialized by EngineeringRunStore for direct unit-test
+    // instances that bypass ApiHost dependency registration.
+    internal static void EnsureSchema(SqliteConnection db)
+    {
         TaskStore.Execute(db, null, """
             CREATE TABLE IF NOT EXISTS engineering_atlas_events (
                 run_id TEXT NOT NULL REFERENCES engineering_runs(id),
