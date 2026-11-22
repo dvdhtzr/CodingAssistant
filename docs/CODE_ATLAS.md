@@ -122,3 +122,9 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Pure declaration structure only: no TypeScript type checking, call resolution, inferred inheritance, imported-package semantics, JSX component verification, or runtime/test claims. Coverage is explicitly `ECMA_STRUCTURE_ONLY`, `PARTIAL_ECMA_STRUCTURE`, or mixed C#/JS/TS coverage.
 - Comments, quoted strings, templates and regex literals are not treated as declarations. Template expressions and malformed/unbalanced source are diagnosed as partial coverage. Node/edge and per-file token caps stay enforced.
 - This is an incremental M8 capability, not a full ECMAScript parser. Full compiler-backed semantic resolution and more language support remain open.
+
+## M8.3 — Compare saved GitHub commits
+
+- Compare two already-imported, immutable GitHub commit snapshots from the same repository and task. No new network fetches, package restores, untrusted source execution, or implied commit ancestry.
+- Normalize imported graph root IDs to stable source-backed identities so random import IDs do not create false changes. Includes C# semantic edges, JS/TS structural functions, and source file additions/removals, with explicit coverage.
+- The import panel offers a compact starting-commit selector and a bounded comparison view. The independent agent approval, owner authentication, revision binding, and project isolation contracts remain unchanged.

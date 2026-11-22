@@ -157,3 +157,23 @@ test('imported repository can be reopened after view refresh', async () => {
   }).waitFor();
   assert.match(await atlas.textContent(), /STATIC_SEMANTIC|Static C# relationships/);
 });
+
+test('two saved imports compare architecture and never claim runtime verification', async () => {
+  await page.evaluate(() => sessionStorage.setItem('atlasCompareFixture', 'yes'));
+  await page.reload();
+  const imports = page.getByRole('region', {
+    name: 'Code Atlas GitHub repository import',
+  });
+  await imports.getByRole('button', { name: /sample/ }).first().click();
+  const comparison = imports.getByRole('region', {
+    name: 'Imported commit architecture comparison',
+  });
+  await comparison.getByLabel('Starting commit').selectOption('3'.repeat(32));
+  await comparison.getByRole('button', { name: 'Compare architecture' }).click();
+  const result = comparison.getByRole('region', {
+    name: 'Imported architecture drift result',
+  });
+  await result.getByText(/1 added/).waitFor();
+  assert.match(await result.textContent(), /Added Method.*Demo.Order.Place/);
+  assert.match(await result.textContent(), /Not runtime verification/);
+});

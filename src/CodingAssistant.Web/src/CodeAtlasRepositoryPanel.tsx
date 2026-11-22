@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { CodeAtlasPanel, type AtlasSnapshot } from './CodeAtlasPanel';
 
@@ -17,6 +17,27 @@ interface ImportedGraph {
   repository: AtlasImportedRepository;
   graph: AtlasSnapshot;
 }
+interface CommitDriftChange {
+  operation: string;
+  category: string;
+  kind: string;
+  identity: string;
+}
+interface CommitDriftReport {
+  repositoryUrl: string;
+  fromImportId: string;
+  toImportId: string;
+  fromCommitSha: string;
+  toCommitSha: string;
+  fromRevision: string;
+  toRevision: string;
+  addedEntities: number;
+  removedEntities: number;
+  addedRelationships: number;
+  removedRelationships: number;
+  truncated: boolean;
+  changes: CommitDriftChange[];
+}
 
 /// <summary>
 /// Project-scoped, read-only GitHub source import UI. Import requires a literal
@@ -34,6 +55,11 @@ export function CodeAtlasRepositoryPanel({ token, taskId }: {
   const [selectedGraph, setSelectedGraph] = useState<ImportedGraph | null>(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [comparisonFrom, setComparisonFrom] = useState('');
+  const [drift, setDrift] = useState<CommitDriftReport | null>(null);
+  const [driftBusy, setDriftBusy] = useState(false);
+  const [driftError, setDriftError] = useState('');
+  const comparisonRequest = useRef(0);
 
   useEffect(() => {
     let closed = false;
@@ -41,6 +67,10 @@ export function CodeAtlasRepositoryPanel({ token, taskId }: {
     setSelectedId(null);
     setSelectedGraph(null);
     setError('');
+    comparisonRequest.current++;
+    setComparisonFrom('');
+    setDrift(null);
+    setDriftError('');
     void api<AtlasImportedRepository[]>(token,
       '/api/tasks/' + taskId + '/atlas-imports').then(results => {
       if (!closed) setItems(results);
@@ -62,8 +92,12 @@ export function CodeAtlasRepositoryPanel({ token, taskId }: {
           result.graph.runId !== importId ||
           result.graph.sourceRevision !== result.repository.sourceRevision)
         throw new Error('Imported graph identity does not match its source revision.');
+      comparisonRequest.current++;
       setSelectedGraph(result);
       setSelectedId(importId);
+      setComparisonFrom('');
+      setDrift(null);
+      setDriftError('');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message :
         'Could not open the imported repository.');
@@ -94,6 +128,41 @@ export function CodeAtlasRepositoryPanel({ token, taskId }: {
       setError(cause instanceof Error ? cause.message :
         'Import was not completed.');
     } finally { setBusy(''); }
+  }
+
+  const comparisons = selectedGraph ? items.filter(item =>
+    item.id !== selectedGraph.repository.id &&
+    item.repositoryUrl.toLowerCase() ===
+      selectedGraph.repository.repositoryUrl.toLowerCase()) : [];
+  const starting = comparisons.find(item => item.id === comparisonFrom);
+
+  async function compareCommits() {
+    if (!starting || !selectedGraph || busy || driftBusy) return;
+    const request = ++comparisonRequest.current;
+    const target = selectedGraph.repository;
+    setDrift(null);
+    setDriftError('');
+    setDriftBusy(true);
+    try {
+      const result = await api<CommitDriftReport>(token,
+        '/api/tasks/' + taskId + '/atlas-imports/drift?from=' +
+        encodeURIComponent(starting.id) + '&to=' +
+        encodeURIComponent(target.id));
+      if (request !== comparisonRequest.current) return;
+      if (result.fromImportId !== starting.id ||
+          result.toImportId !== target.id ||
+          result.fromCommitSha !== starting.commitSha ||
+          result.toCommitSha !== target.commitSha ||
+          result.fromRevision !== starting.sourceRevision ||
+          result.toRevision !== target.sourceRevision)
+        throw new Error('Commit comparison identity mismatch');
+      setDrift(result);
+    } catch {
+      if (request === comparisonRequest.current)
+        setDriftError('Saved commit comparison could not be verified.');
+    } finally {
+      if (request === comparisonRequest.current) setDriftBusy(false);
+    }
   }
 
   return <section className="atlas-repository-import"
@@ -137,6 +206,48 @@ export function CodeAtlasRepositoryPanel({ token, taskId }: {
         </button>)}
       </div>
     </div>}
+    {selectedGraph && comparisons.length > 0 && <section
+      className="atlas-import-drift" aria-label="Imported commit architecture comparison">
+      <strong>Compare imported commits</strong>
+      <p>Choose a starting commit from the same repository.
+        This compares saved source, not Git history or runtime behavior.</p>
+      <div className="atlas-import-drift-controls">
+        <label>Starting commit
+          <select value={comparisonFrom} onChange={event => {
+            comparisonRequest.current++;
+            setComparisonFrom(event.target.value);
+            setDrift(null);
+            setDriftError('');
+            setDriftBusy(false);
+          }}>
+            <option value="">Choose saved commit</option>
+            {comparisons.map(item => <option key={item.id} value={item.id}>
+              {item.commitSha.slice(0, 12)}
+            </option>)}
+          </select>
+        </label>
+        <button type="button" disabled={!starting || !!busy || driftBusy}
+          onClick={() => void compareCommits()}>
+          {driftBusy ? 'Comparing…' : 'Compare architecture'}
+        </button>
+      </div>
+      {driftError && <p role="alert" className="atlas-import-error">{driftError}</p>}
+      {drift && <div role="region" className="atlas-import-drift-result"
+        aria-label="Imported architecture drift result">
+        <strong>{drift.fromCommitSha.slice(0, 12)} → {drift.toCommitSha.slice(0, 12)}</strong>
+        <p>{drift.addedEntities} added / {drift.removedEntities} removed entities
+          {' · '}{drift.addedRelationships} added / {drift.removedRelationships} removed relationships</p>
+        <p>Static saved-source differences only. Not runtime verification.</p>
+        {drift.changes.length > 0 ? <ul>
+          {drift.changes.map((change, index) => <li key={index}>
+            <strong>{change.operation} {change.kind}</strong>
+            <span>{change.identity}</span>
+          </li>)}
+        </ul> : <p>No architecture changes in indexed source.</p>}
+        {drift.truncated && <p>Showing the first {drift.changes.length} changes.
+          Totals cover all indexed changes.</p>}
+      </div>}
+    </section>}
     {selectedGraph && selectedId && <CodeAtlasPanel
       key={selectedId} token={token} taskId={taskId}
       runId={selectedId} files={[]} running={false}

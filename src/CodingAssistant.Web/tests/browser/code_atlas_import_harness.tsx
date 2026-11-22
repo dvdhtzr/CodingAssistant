@@ -43,12 +43,18 @@ const repository = {
   coverage: graph.coverage, indexedFiles: 1,
   excludedFiles: 0, createdUtc: '2026-11-22T00:00:00Z',
 };
+const earlierRepository = {
+  ...repository, id: '3'.repeat(32), commitSha: 'c'.repeat(40),
+  sourceRevision: 'd'.repeat(64),
+};
+const compareReady = window.sessionStorage.getItem('atlasCompareFixture') === 'yes';
 let saved = window.sessionStorage.getItem('atlasImportedFixture') === 'yes';
 const original = window.fetch.bind(window);
 window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input instanceof Request ? input.url : input);
   if (url.endsWith('/atlas-imports') && (!init?.method || init.method === 'GET'))
-    return Promise.resolve(new Response(JSON.stringify(saved ? [repository] : []), {
+    return Promise.resolve(new Response(JSON.stringify(saved ? (compareReady ?
+      [repository, earlierRepository] : [repository]) : []), {
       status: 200, headers: { 'content-type': 'application/json' },
     }));
   if (url.endsWith('/atlas-imports') && init?.method === 'POST') {
@@ -57,6 +63,24 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(new Response(JSON.stringify(repository), {
       status: 200, headers: { 'content-type': 'application/json' },
     }));
+  }
+  if (url.includes('/atlas-imports/drift?')) {
+    return Promise.resolve(new Response(JSON.stringify({
+      repositoryUrl: repository.repositoryUrl,
+      fromImportId: earlierRepository.id, toImportId: repository.id,
+      fromCommitSha: earlierRepository.commitSha,
+      toCommitSha: repository.commitSha,
+      fromRevision: earlierRepository.sourceRevision,
+      toRevision: repository.sourceRevision,
+      addedEntities: 1, removedEntities: 0,
+      addedRelationships: 0, removedRelationships: 0,
+      truncated: false,
+      changes: [{
+        operation: 'Added', category: 'Entity', kind: 'Method',
+        identity: 'Demo.Order.Place()', path: 'src/Order.cs',
+        line: 3, resolution: 'SourceStructure',
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
   }
   if (url.endsWith('/atlas-imports/' + importId))
     return Promise.resolve(new Response(JSON.stringify({ repository, graph }), {
