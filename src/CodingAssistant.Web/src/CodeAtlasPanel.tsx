@@ -16,6 +16,9 @@ export interface AtlasEdge {
   sourceId: string;
   targetId: string;
   kind: string;
+  evidencePath?: string | null;
+  evidenceLine?: number | null;
+  resolution?: string;
 }
 export interface AtlasSnapshot {
   runId: string;
@@ -202,6 +205,8 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const [focus, setFocus] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [showMethods, setShowMethods] = useState(false);
+  const [relationshipDirection, setRelationshipDirection] = useState<
+    'all' | 'incoming' | 'outgoing'>('all');
   const [followBuild, setFollowBuild] = useState(true);
   const [recentIds, setRecentIds] = useState<string[]>([]);
   const [sourceEvents, setSourceEvents] = useState<AtlasSourceEvent[]>([]);
@@ -363,7 +368,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     projectAtlas(snapshot, focus, showMethods, query) : null,
     [snapshot, focus, showMethods, query]);
   const node = snapshot?.nodes.find(n => n.id === selected);
-  const links = node && snapshot ? relatedEdges(snapshot, node.id) : [];
+  const allLinks = node && snapshot ? relatedEdges(snapshot, node.id) : [];
+  const links = allLinks.filter(edge => relationshipDirection === 'all' ||
+    (relationshipDirection === 'incoming' ? edge.targetId === node?.id :
+      edge.sourceId === node?.id));
   const names = new Map(snapshot?.nodes.map(n => [n.id, n.name]) ?? []);
   const excerpt = selectedExcerpt(node, files);
   const currentChange = sourceEvents.at(-1)?.sourceRevision === snapshot?.sourceRevision
@@ -515,7 +523,9 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
         <div className="atlas-graph-footer">
           <span>{recentIds.length ? recentIds.length + ' newly discovered · ' : ''}{view.nodes.length} of {view.total} symbols
             {' · '}{view.edges.length} visible links</span>
-          <span>{snapshot.coverage === 'SYNTAX_ONLY' ? 'Syntax indexed' :
+          <span>{snapshot.coverage === 'STATIC_SEMANTIC' ? 'Static C# relationships' :
+            snapshot.coverage === 'PARTIAL_SEMANTIC' ? 'Partial static relationships' :
+            snapshot.coverage === 'SYNTAX_ONLY' ? 'Syntax indexed' :
             snapshot.coverage === 'PARTIAL_SYNTAX' ? 'Partial C# syntax' :
               snapshot.coverage}</span>
         </div>
@@ -538,13 +548,28 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
             onClick={() => { setFocus(node.id); setQuery(''); setFollowBuild(false); }}>
             Focus relationships
           </button>
+          <div className="atlas-relation-filters" role="group"
+            aria-label="Relationship direction">
+            {(['all', 'outgoing', 'incoming'] as const).map(direction =>
+              <button key={direction} type="button"
+                aria-pressed={relationshipDirection === direction}
+                onClick={() => setRelationshipDirection(direction)}>
+                {direction === 'all' ? 'All' :
+                  direction === 'outgoing' ? 'Uses →' : '← Used by'}
+              </button>)}
+          </div>
           <div className="atlas-relationships">
             {links.slice(0, 16).map(edge => {
               const other = edge.sourceId === node.id ?
                 edge.targetId : edge.sourceId;
               return <button type="button" key={edge.kind + ':' + edge.sourceId +
                 ':' + edge.targetId} onClick={() => { setSelected(other); setFollowBuild(false); }}>
-                <span>{edge.kind}</span> {names.get(other) ?? 'Unknown symbol'}
+                <span>{edge.sourceId === node.id ? '→' : '←'} {edge.kind}</span>
+                {' '}{names.get(other) ?? 'Unknown symbol'}
+                {edge.resolution === 'ResolvedStatic' &&
+                  <small className="atlas-evidence">
+                    {edge.evidencePath}:{edge.evidenceLine} · Static reference
+                  </small>}
               </button>;
             })}
             {links.length === 0 && <p>No indexed relationships yet.</p>}
