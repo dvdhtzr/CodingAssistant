@@ -178,6 +178,7 @@ public static class ApiHost
         builder.Services.AddSingleton(repairProposals);
         builder.Services.AddSingleton(repairTriage);
         builder.Services.AddSingleton(repairCycles);
+        builder.Services.AddSingleton<CodeAtlasEvidenceService>();
         builder.Services.AddSingleton<RepairCycleCoordinator>();
         builder.Services.AddSingleton<IQaSourceReviewer>(qaEngineer);
         builder.Services.AddSingleton<QaReviewCoordinator>();
@@ -593,6 +594,11 @@ public static class ApiHost
                 Safe(() => Results.Ok(CodeAtlasPathFinder.Trace(
                     CodeAtlasIndexer.Index(db.Get(id, runId)),
                     from, to, maxHops ?? 6))));
+        // QA and repair findings remain hypotheses until independent runtime
+        // verification. Overlay is read-only and bound to this saved run.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/evidence",
+            (string id, string runId, CodeAtlasEvidenceService evidence) =>
+                Safe(() => Results.Ok(evidence.Read(id, runId))));
         // Durable source-change cursor; no source contents cross the event wire.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas-events",
             (string id, string runId, int? after, EngineeringAtlasLedger ledger) =>
