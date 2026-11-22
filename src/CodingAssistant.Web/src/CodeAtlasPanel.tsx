@@ -531,11 +531,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const currentEvidence = replaySequence === null && evidence?.runId === runId &&
     evidence?.sourceRevision === snapshot?.sourceRevision ? evidence : null;
   // These are FILE-level QA hypotheses, never claims about a particular method.
-  const nodeFindings = node?.path && currentEvidence ? currentEvidence.findings
-    .filter(item => item.path === node.path) : [];
-  const nodeRepairs = node?.path && currentEvidence ? currentEvidence.repairs
+  const selectedPath = node?.path;
+  const nodeFindings = selectedPath && currentEvidence ? currentEvidence.findings
+    .filter(item => item.path === selectedPath) : [];
+  const nodeRepairs = selectedPath && currentEvidence ? currentEvidence.repairs
     .filter(repair => repair.fileNodeIds.some(id =>
-      displayGraph?.nodes.find(file => file.id === id)?.path === node.path)) : [];
+      displayGraph?.nodes.find(file => file.id === id)?.path === selectedPath)) : [];
   const findingNodeIds = new Set(currentEvidence?.findings.map(f =>
     f.fileNodeId) ?? []);
   const currentChange = replaySequence === null &&
