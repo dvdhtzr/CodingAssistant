@@ -8,7 +8,11 @@ namespace CodingAssistant.Api;
 /// </summary>
 public static class CodeAtlasEcmaIndexer
 {
-    private sealed record Token(string Text, int Line, int Depth);
+    private sealed record Token(string Text, int Line, int Depth,
+        string? Literal = null);
+    private const string LiteralToken = "#literal";
+    private static readonly string[] LocalModuleExtensions =
+        [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
     private const int MaximumTokensPerFile = 20000;
     private static readonly HashSet<string> Extensions = new(
         [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
@@ -69,12 +73,19 @@ public static class CodeAtlasEcmaIndexer
             if (ch is '"' or '\'' || ch == (char)96)
             {
                 var quote = ch;
-                i++;
+                var literalLine = line;
+                var begin = ++i;
                 var closed = false;
+                var escaped = false;
                 var interpolation = false;
                 while (i < source.Length)
                 {
-                    if (source[i] == '\\') { i = Math.Min(source.Length, i + 2); continue; }
+                    if (source[i] == '\\')
+                    {
+                        escaped = true;
+                        i = Math.Min(source.Length, i + 2);
+                        continue;
+                    }
                     if (source[i] == '\n') line++;
                     if (quote == (char)96 && source[i] == '$' &&
                         i + 1 < source.Length && source[i + 1] == '{')
@@ -84,6 +95,18 @@ public static class CodeAtlasEcmaIndexer
                 }
                 if (!closed) Partial("UNCLOSED_LITERAL");
                 if (interpolation) Partial("TEMPLATE_EXPRESSIONS_NOT_INDEXED");
+                // Retain only small, unescaped ordinary strings as inert
+                // tokens. A template/escape must never be resolved as a path.
+                var length = closed ? i - begin - 1 : 0;
+                var literal = closed && !escaped && quote != (char)96 &&
+                    length is > 0 and <= 240
+                    ? source.Substring(begin, length) : null;
+                tokens.Add(new(LiteralToken, literalLine, depth, literal));
+                if (tokens.Count >= MaximumTokensPerFile)
+                {
+                    Partial("TOKEN_LIMIT");
+                    break;
+                }
                 continue;
             }
             if (ch == '/' && (tokens.Count == 0 ||
@@ -174,6 +197,97 @@ public static class CodeAtlasEcmaIndexer
         return content.Length <= 160 ? content : content[..160] + "…";
     }
 
+    /// <summary>
+    /// Recognize only top-level ES import/export-from declarations and
+    /// side-effect imports. Dynamic import(), require(), package names,
+    /// macros, aliases and type resolution are intentionally not inferred.
+    /// </summary>
+    private static IReadOnlyList<(string Literal, int Line)> Imports(
+        IReadOnlyList<Token> tokens)
+    {
+        var found = new List<(string Literal, int Line)>();
+        for (var i = 0; i + 1 < tokens.Count; i++)
+        {
+            var marker = tokens[i];
+            if (marker.Depth != 0 ||
+                marker.Text is not ("import" or "export") ||
+                (i > 0 && tokens[i - 1].Text == "."))
+                continue;
+            var next = tokens[i + 1].Text;
+            if (marker.Text == "import" && next == LiteralToken)
+            {
+                if (tokens[i + 1].Literal is { } sideEffect)
+                    found.Add((sideEffect, marker.Line));
+                continue;
+            }
+            if (marker.Text == "import" && next is "(" or ".")
+                continue;
+            if (marker.Text == "export" && next is not ("{" or "*" or "type"))
+                continue;
+            for (var j = i + 1; j + 1 < tokens.Count &&
+                j < i + 96; j++)
+            {
+                if (tokens[j].Depth == 0 &&
+                    tokens[j].Text is (";" or "import" or "export"))
+                    break;
+                if (tokens[j].Depth == 0 && tokens[j].Text == "from" &&
+                    tokens[j + 1].Text == LiteralToken)
+                {
+                    if (tokens[j + 1].Literal is { } name)
+                        found.Add((name, marker.Line));
+                    break;
+                }
+            }
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// Canonicalize relative specifiers lexically, without reading disk.
+    /// Neither a path escape nor an ambiguous extension guess may create
+    /// a graph link. The only targets are already indexed source files.
+    /// </summary>
+    private static (string? Target, string? Problem) Resolve(
+        string path, string literal,
+        IReadOnlyDictionary<string, AtlasNode> indexedFiles)
+    {
+        if (!(literal.StartsWith("./", StringComparison.Ordinal) ||
+              literal.StartsWith("../", StringComparison.Ordinal)) ||
+            literal.Length > 200 || literal.Contains('\\') ||
+            literal.Any(c => !char.IsAsciiLetterOrDigit(c) &&
+                c is not ('/' or '.' or '_' or '-')))
+            return (null, null);
+
+        var parts = path.Split('/').SkipLast(1).ToList();
+        foreach (var component in literal.Split('/'))
+        {
+            if (component is "" or ".") continue;
+            if (component == "..")
+            {
+                if (parts.Count == 0) return (null, "OUTSIDE_ROOT");
+                parts.RemoveAt(parts.Count - 1);
+            }
+            else parts.Add(component);
+        }
+        if (parts.Count == 0) return (null, "UNRESOLVED");
+        var target = string.Join("/", parts);
+        var options = new List<string> { target };
+        if (Path.GetExtension(target).Length == 0)
+        {
+            options.AddRange(LocalModuleExtensions.Select(ext => target + ext));
+            options.AddRange(LocalModuleExtensions.Select(ext =>
+                target + "/index" + ext));
+        }
+        var matched = options.Where(indexedFiles.ContainsKey)
+            .Distinct(StringComparer.Ordinal).ToArray();
+        return matched.Length switch
+        {
+            1 => (matched[0], null),
+            0 => (null, "UNRESOLVED"),
+            _ => (null, "AMBIGUOUS")
+        };
+    }
+
     public static AtlasSnapshot Enrich(AtlasSnapshot graph,
         IReadOnlyList<EngineeringSourceFile> source)
     {
@@ -209,7 +323,9 @@ public static class CodeAtlasEcmaIndexer
             nodes.Add(id, node);
             return id;
         }
-        void Link(string from, string to, string kind)
+        void Link(string from, string to, string kind,
+            string? evidencePath = null, int? evidenceLine = null,
+            string resolution = "Syntax")
         {
             if (!nodes.ContainsKey(from) || !nodes.ContainsKey(to)) return;
             var key = kind + "|" + from + "|" + to;
@@ -221,7 +337,8 @@ public static class CodeAtlasEcmaIndexer
                 incomplete = true;
                 return;
             }
-            edges.Add(key, new AtlasEdge(from, to, kind));
+            edges.Add(key, new AtlasEdge(from, to, kind,
+                evidencePath, evidenceLine, resolution));
         }
 
         foreach (var file in candidates)
@@ -231,6 +348,20 @@ public static class CodeAtlasEcmaIndexer
                 out var lexIncomplete);
             incomplete |= lexIncomplete;
             var identity = graph.RunId + "|" + file.Path + "|";
+            foreach (var (literal, line) in Imports(tokens))
+            {
+                var (target, problem) = Resolve(file.Path, literal, files);
+                if (target is not null)
+                {
+                    Link(fileNode.Id, files[target].Id, "ModuleImports",
+                        file.Path, line, "LiteralLocalModule");
+                }
+                else if (problem is not null && diagnostics.Count < 64)
+                {
+                    diagnostics.Add("ECMA_LOCAL_IMPORT_" + problem +
+                        ":" + file.Path + ":" + line);
+                }
+            }
 
             void Declare(string kind, string qualified, string name,
                 string parentId, int line)
