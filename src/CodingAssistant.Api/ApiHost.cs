@@ -574,6 +574,12 @@ public static class ApiHost
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(
                     StaticWebSourcePreflight.Inspect(db.Get(id, runId)))));
+        // Stack-aware readiness is a source-only report: no package manager,
+        // runner, browser, untrusted process or verification admission.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/source-readiness",
+            (string id, string runId, EngineeringRunStore db) =>
+                Safe(() => Results.Ok(
+                    ProjectSourceReadiness.Inspect(db.Get(id, runId)))));
         // M4.5 exact, read-only verification-scope preview: task-bound source
         // digests and current approvals only. This is NOT a runnable contract.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/verification-scope",
