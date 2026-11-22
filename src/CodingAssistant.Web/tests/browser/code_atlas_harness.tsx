@@ -47,6 +47,28 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(new Response(JSON.stringify(response), {
       status: 200, headers: { 'content-type': 'application/json' },
     }));
+  if (url.endsWith('/atlas/evidence')) {
+    return Promise.resolve(new Response(JSON.stringify({
+      runId, sourceRevision: response.sourceRevision,
+      verificationStatus: 'NOT_TESTED',
+      qaReviewStatus: 'STATIC_REVIEW_ONLY', qaReviewId: 'q'.repeat(32),
+      findings: [{
+        id: 'Q1:TaskService.cs:0', fileNodeId: 'f',
+        path: 'TaskService.cs', index: 0, severity: 'Major',
+        requirement: 'Persistence',
+        evidence: 'No persistence implementation is visible in this file',
+        recommendation: 'Inspect and independently test storage writes',
+        classification: 'UNVERIFIED_QA_HYPOTHESIS',
+        qaReviewId: 'q'.repeat(32),
+      }],
+      repairs: [{
+        cycleId: 'c'.repeat(32), baseRunId: runId,
+        repairRunId: 'd'.repeat(32), qaReviewId: null,
+        state: 'Generated', fileNodeIds: ['f'],
+      }],
+      diagnostics: [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  }
   if (url.endsWith('/atlas/replay')) {
     const frames = [
       { sequence: 1, workItemId: 'W1',
