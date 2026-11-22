@@ -169,9 +169,40 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         MafAgentPurpose.Specification) == "# Final specification",
         "only final assistant content is used for Product Owner drafting");
 
+    // The reported live failure was at the thinking-tag check, not the
+    // empty-content check. Closed reasoning prefixes may have a complete,
+    // reviewable specification afterward. Never leak the reasoning prefix.
+    var finalSpec = "# Podcast Audience Dashboard\n\n" +
+        "## Goal\nLet a user select one or more podcasts and view aggregated " +
+        "audience demographics from authorized podcast-platform sources. " +
+        "## Acceptance criteria\nWhen the selection changes, recompute the " +
+        "aggregation while clearly displaying missing or unavailable data. " +
+        "Do not infer private demographics or fabricate third-party sources.";
+    foreach (var modelContent in new[] {
+        "<think>Private draft planning, not part of the answer.</think>\n" + finalSpec,
+        "</think>\n" + finalSpec,
+        finalSpec
+    })
+    {
+        var payload = JsonSerializer.Serialize(new {
+            done_reason = "stop",
+            message = new { role = "assistant", content = modelContent }
+        });
+        var usable = LocalMafChatClient.ReadAssistantContent(payload,
+            MafAgentPurpose.Specification);
+        Check(usable == finalSpec &&
+              InterviewStore.ValidSpecification(usable) == finalSpec &&
+              !usable.Contains("Private draft planning", StringComparison.Ordinal),
+            "closed reasoning prefix is stripped and full final specification validated");
+    }
+
     foreach (var pair in new[] {
         ("""{"done_reason":"stop","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_THINKING_ONLY"),
-        ("""{"done_reason":"stop","message":{"role":"assistant","content":"<think>private model thoughts</think> # Spec"}}""", "MODEL_THINKING_ONLY"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"<think>private model thoughts</think>"}}""", "MODEL_THINKING_ONLY"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"<think>private model thoughts"}}""", "MODEL_THINKING_ONLY"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"An unrelated prefix <think>private</think> # Spec"}}""", "MODEL_THINKING_ONLY"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"<think>nested <think>reasoning</think> # Spec"}}""", "MODEL_THINKING_ONLY"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"</think> # Spec <think>restarted"}}""", "MODEL_THINKING_ONLY"),
         ("""{"done_reason":"length","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_OUTPUT_TRUNCATED"),
         ("""{"done_reason":"length","message":{"role":"assistant","content":"# Partial draft"}}""", "MODEL_OUTPUT_TRUNCATED")
     })
