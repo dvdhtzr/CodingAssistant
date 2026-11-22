@@ -55,6 +55,8 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
           "verificationNotes":["What QA should actually check later"]
         }
         The example is only the STRUCTURE, not a mandated language or filename.
+        Prefer ONE focused complete file per task when possible to avoid
+        output truncation on local models. If needed, return 2-3 files.
         Produce 1-3 COMPLETE text files, each with a safe relative path and
         a purpose. Existing paths replace their prior content in full; never
         output a diff or a partial fragment. Reuse existing paths where
@@ -90,6 +92,25 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 choice.RuntimeProfileId == "static-web");
         var taskIndex = input.Plan.Outline.Tasks.ToList().FindIndex(
             task => task.Id == input.WorkItem.Id);
+        // Keep whole small files available across sequential tasks. Previously
+        // every file was truncated to 1100 chars, making safe later edits
+        // impossible. Keep prompts within the transport's 18k/message bound.
+        var remainingSourceBudget = 14000;
+        var priorFiles = input.ExistingFiles
+            .OrderBy(file => file.Path.Equals("index.html",
+                StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(file => {
+                var length = Math.Min(file.Content.Length,
+                    Math.Min(remainingSourceBudget, 12000));
+                remainingSourceBudget -= length;
+                return new {
+                    file.Path, file.Purpose, file.Sha256,
+                    originalLength = file.Content.Length,
+                    complete = length == file.Content.Length,
+                    content = file.Content[..length]
+                };
+            }).ToArray();
         var messages = new List<ChatMessage> {
             new(ChatRole.User, "PROJECT OBJECTIVE (data):\n" + input.Objective),
             new(ChatRole.User, "APPROVED PRODUCT SPECIFICATION (data):\n" +
@@ -119,29 +140,148 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                   + "Do not silently substitute another language or framework."),
             new(ChatRole.User, "PREVIOUS COMPLETE SOURCE FILES (data, excerpted; "
                 + "all replacements must be complete):\n" +
-                JsonSerializer.Serialize(input.ExistingFiles.Select(file =>
-                    new { file.Path, file.Purpose, file.Sha256,
-                        contentExcerpt = file.Content[..Math.Min(
-                            file.Content.Length, 1100)] })))
+                JsonSerializer.Serialize(priorFiles))
         };
-        var answer = await agent.RunAsync(messages,
-            cancellationToken: cancellation);
+        // Limit corrective inference without weakening any path or source rules.
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            string reason;
+            try
+            {
+                var answer = await agent.RunAsync(messages,
+                    cancellationToken: cancellation);
+                if (TryParse(answer.Text, out var result, out reason))
+                    return result!;
+            }
+            catch (StoreFailure error) when (error.Code is
+                "MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED")
+            {
+                reason = error.Code == "MODEL_OUTPUT_TRUNCATED"
+                    ? "OUTPUT_TRUNCATED: Reduce response size; implement a focused, complete file."
+                    : "EMPTY_OR_INVALID_RESPONSE: Return one complete JSON object.";
+            }
+            System.Diagnostics.Trace.TraceWarning(
+                "Software Engineer output rejected (attempt {0}/3): {1}",
+                attempt + 1, reason);
+            if (attempt == 2)
+                break;
+            messages.Add(new ChatMessage(ChatRole.User,
+                "The previous response FAILED validation. Reason: " + reason +
+                "\nRegenerate the COMPLETE JSON response. Include summary, " +
+                "1-3 files with path, purpose, complete source content, and " +
+                "verificationNotes. Prefer the smallest complete working " +
+                "change for THIS assigned task; avoid needless rewriting " +
+                "and return fewer files if output was truncated. " +
+                "Never output a diff, omit required behavior or replace " +
+                "approved architecture. Do not claim tests were run."));
+        }
+        throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+    }
+
+    /// <summary>
+    /// Safe diagnostic classifier: never echoes model output into a follow-up
+    /// prompt, logs or UI. Only Parse can authorize a changeset.
+    /// </summary>
+    public static bool TryParse(string? raw, out EngineeringChangeSet? result,
+        out string reason)
+    {
         try
         {
-            return Parse(answer.Text);
+            result = Parse(raw);
+            reason = "";
+            return true;
         }
-        catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+        catch (StoreFailure error) when (error.Code is
+            "MODEL_OUTPUT_REJECTED" or "STATIC_VALIDATION_FAILED")
         {
-            messages.Add(new ChatMessage(ChatRole.User,
-                "The prior source response failed bounded JSON or file "
-                + "validation. Return ONLY JSON with summary, 1-3 files "
-                + "each containing safe path, purpose, COMPLETE source content, "
-                + "and verificationNotes. Preserve prior files, approved "
-                + "architecture and assigned work item. Do not claim tests run."));
-            answer = await agent.RunAsync(messages,
-                cancellationToken: cancellation);
-            return Parse(answer.Text);
+            result = null;
+            reason = Diagnose(raw, error.Code);
+            return false;
         }
+    }
+
+    private static string Diagnose(string? raw, string failureCode)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return "EMPTY_RESPONSE: Return a complete JSON object.";
+        if (raw.Length > 85000)
+            return "OUTPUT_TOO_LONG: Return smaller complete files, maximum 85000 characters.";
+        try
+        {
+            using var document = JsonDocument.Parse(ExtractJson(raw));
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return "ROOT_SHAPE: Return a JSON object.";
+            if (root.EnumerateObject().Any(p =>
+                p.Name is not ("summary" or "files" or "verificationNotes")))
+                return "EXTRA_FIELDS: Use only summary, files and verificationNotes.";
+            if (!root.TryGetProperty("summary", out var summary) ||
+                !StringLength(summary, 10, 1600))
+                return "SUMMARY: Provide 10-1600 characters.";
+            if (!root.TryGetProperty("files", out var files) ||
+                files.ValueKind != JsonValueKind.Array ||
+                files.GetArrayLength() is < 1 or > 3)
+                return "FILES_COUNT: Provide 1-3 complete source files.";
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var file in files.EnumerateArray())
+            {
+                if (file.ValueKind != JsonValueKind.Object)
+                    return "FILE_SHAPE: Each file must be an object.";
+                if (file.EnumerateObject().Any(p =>
+                    p.Name is not ("path" or "purpose" or "content")))
+                    return "FILE_EXTRA_FIELDS: Use only path, purpose and content.";
+                if (!file.TryGetProperty("path", out var pathElement) ||
+                    pathElement.ValueKind != JsonValueKind.String)
+                    return "FILE_PATH: Provide a safe relative file path.";
+                string path;
+                try { path = ProjectDraftStore.SafePath(pathElement.GetString()); }
+                catch (StoreFailure) { return "FILE_PATH: Provide a safe relative file path."; }
+                if (!paths.Add(path) ||
+                    path.Equals("SKILL.md", StringComparison.OrdinalIgnoreCase) ||
+                    path.EndsWith("/SKILL.md", StringComparison.OrdinalIgnoreCase))
+                    return "FILE_PATH: No duplicate or reserved paths.";
+                if (!file.TryGetProperty("purpose", out var purpose) ||
+                    !StringLength(purpose, 5, 240))
+                    return "FILE_PURPOSE: Provide 5-240 characters.";
+                if (!file.TryGetProperty("content", out var content) ||
+                    content.ValueKind != JsonValueKind.String)
+                    return "FILE_CONTENT: Provide complete source text as a JSON string.";
+                try { _ = ProjectDraftStore.ValidateSource(path, content.GetString()); }
+                catch (StoreFailure) {
+                    return "FILE_CONTENT: Use valid, complete source within file size limits.";
+                }
+            }
+            if (!root.TryGetProperty("verificationNotes", out var notes) ||
+                notes.ValueKind != JsonValueKind.Array || notes.GetArrayLength() > 6 ||
+                notes.EnumerateArray().Any(note =>
+                    !StringLength(note, 1, 350)))
+                return "VERIFICATION_NOTES: Use 0-6 nonempty strings up to 350 characters.";
+            return failureCode == "STATIC_VALIDATION_FAILED"
+                ? "SOURCE_SYNTAX: Generated JSON file content must be valid JSON."
+                : "SOURCE_CONTRACT: Match exact JSON field names and file constraints.";
+        }
+        catch (JsonException)
+        {
+            return "JSON_SYNTAX: Return complete valid JSON with escaped source content.";
+        }
+    }
+
+    private static bool StringLength(JsonElement element, int min, int max) =>
+        element.ValueKind == JsonValueKind.String &&
+        element.GetString() is { } value &&
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Trim().Length >= min && value.Trim().Length <= max;
+
+    private static string ExtractJson(string raw)
+    {
+        var text = raw.Trim();
+        if (text.StartsWith("```json\n", StringComparison.OrdinalIgnoreCase) &&
+            text.EndsWith("\n```", StringComparison.Ordinal))
+            return text[8..^4].Trim();
+        if (text.StartsWith("```\n", StringComparison.Ordinal) &&
+            text.EndsWith("\n```", StringComparison.Ordinal))
+            return text[4..^4].Trim();
+        return text;
     }
 
     public static EngineeringChangeSet Parse(string? raw)
@@ -154,7 +294,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 PropertyNameCaseInsensitive = true,
                 UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
             };
-            var parsed = JsonSerializer.Deserialize<EngineeringChangeSet>(raw, options);
+            var parsed = JsonSerializer.Deserialize<EngineeringChangeSet>(ExtractJson(raw), options);
             if (parsed is null || parsed.Summary is null ||
                 parsed.Summary.Trim().Length is < 10 or > 1600 ||
                 parsed.Files is null || parsed.Files.Count is < 1 or > 3 ||
