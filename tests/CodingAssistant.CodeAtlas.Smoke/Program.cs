@@ -115,7 +115,7 @@ try
     var run = "b".PadLeft(32, 'b');
     var original = "namespace Demo; public class Example { }";
     var updated = "namespace Demo; public class Example { public void Go() {} }";
-    using (var db = new SqliteConnection("Data Source=" + database))
+    using (var db = new SqliteConnection("Data Source=" + database + ";Pooling=False"))
     {
         db.Open();
         Sql(db, null, """
@@ -198,7 +198,7 @@ try
             tx.Rollback();
         }
     }
-    using (var db = new SqliteConnection("Data Source=" + database))
+    using (var db = new SqliteConnection("Data Source=" + database + ";Pooling=False"))
     {
         db.Open();
         using var cmd = db.CreateCommand();
@@ -221,6 +221,7 @@ try
 }
 finally
 {
+    SqliteConnection.ClearAllPools();
     if (System.IO.File.Exists(database)) System.IO.File.Delete(database);
 }
 
