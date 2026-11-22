@@ -276,36 +276,39 @@ export function EngineeringDeliveryPanel({ engine }: {
 }) {
   if (!engine.snapshot) return null;
   const { job, files } = engine.snapshot;
-  return <section className="engineering-workspace"
+  const deliverable = files.length > 0 &&
+    ['Generated', 'Failed', 'Interrupted'].includes(job.state);
+  return <section className="engineering-workspace engineering-delivery"
     aria-label="Software Engineer source artifacts">
-    <h3>Software Engineer source artifacts (unverified)</h3>
-    <p className="hint">Plan v{job.planRevision} ·
-      {files.length} saved file(s) · state {job.state}.
-      These files are distinct from the legacy source generator's ZIP.
-      {job.errorCode ? ' Failure category: ' + job.errorCode + '.' : ''}</p>
-    {job.state !== 'Generated' && files.length > 0 && <p className="activity-warning">
-      Partial source only: the engineering run did not finish. The code is
-      unverified and missing planned work; QA can now inspect these saved files.
-    </p>}
-    {files.length > 0 &&
-      ['Generated', 'Failed', 'Interrupted'].includes(job.state) &&
-      <div className="actions">
-      <button type="button" disabled={!!engine.busy}
-        onClick={() => void engine.download()}>
-        {engine.busy === 'download' ? 'Preparing ZIP…' :
-          job.state === 'Generated'
-            ? 'Download Software Engineer ZIP'
-            : 'Download PARTIAL source ZIP'}
-      </button>
-    </div>}
-    {job.state !== 'Running' && <EngineeringVerificationScope
+    <div className="technical-plan-heading">
+      <strong>Generated source · {files.length} file(s)</strong>
+      <span className="pill">{job.state === 'Generated'
+        ? 'Generated · not verified' : job.state}</span>
+    </div>
+    {job.state !== 'Generated' && files.length > 0 &&
+      <p className="activity-warning">Partial source only. Remaining work is
+        incomplete and no build or test success is claimed.</p>}
+    {deliverable && <EngineeringVerificationScope
       key={job.id} token={engine.token} run={job} files={files}/>}
-    {files.length > 0 && <SourceArtifactExplorer key={job.id}
-      source="MAF Software Engineer" files={files} state={job.state}
-      runId={job.id} isCurrent={!!engine.plan?.current &&
-        engine.plan.status === 'Approved' &&
-        engine.plan.planSha256 === job.planSha256}
-      assignments={engine.snapshot.tasks}/>}
-
+    {files.length > 0 && <details className="engineering-source-details">
+      <summary>Inspect saved source ({files.length} file(s))</summary>
+      <p className="hint">Plan v{job.planRevision} · state {job.state}.
+        Source is unverified and belongs to this engineering run.</p>
+      {deliverable && <div className="actions">
+        <button type="button" disabled={!!engine.busy}
+          onClick={() => void engine.download()}>
+          {engine.busy === 'download' ? 'Preparing ZIP…' :
+            job.state === 'Generated'
+              ? 'Download Software Engineer ZIP'
+              : 'Download PARTIAL source ZIP'}
+        </button>
+      </div>}
+      <SourceArtifactExplorer key={job.id}
+        source="MAF Software Engineer" files={files} state={job.state}
+        runId={job.id} isCurrent={!!engine.plan?.current &&
+          engine.plan.status === 'Approved' &&
+          engine.plan.planSha256 === job.planSha256}
+        assignments={engine.snapshot.tasks}/>
+    </details>}
   </section>;
 }

@@ -178,3 +178,30 @@
   .verification-smoke{padding:.8rem}
   .verification-smoke>button{width:100%}
 }
+
+
+/* Delivery UX: one primary testing action, with technical evidence on demand. */
+.verification-action-stack{display:grid;gap:.55rem;min-width:0}
+.verification-action-stack .verification-smoke{margin:.4rem 0 0;padding:.8rem 1rem}
+.verification-compact-details,.engineering-source-details{
+  min-width:0;margin:.2rem 0;border:1px solid #40586a;border-radius:9px;
+  background:#162432;color:#ccdde8
+}
+.verification-compact-details > summary,.engineering-source-details > summary{
+  cursor:pointer;list-style:revert;padding:.72rem .95rem;
+  color:#d8e9f4;font-size:.83rem;font-weight:650
+}
+.verification-compact-details > summary:focus-visible,
+.engineering-source-details > summary:focus-visible{
+  outline:2px solid #a4dfd2;outline-offset:2px
+}
+.verification-compact-details > .verification-scope{
+  margin:0 .55rem .55rem;box-shadow:none
+}
+.engineering-source-details > .hint,.engineering-source-details > .actions{
+  margin:.5rem .85rem
+}
+.engineering-source-details > :not(summary):last-child{margin-bottom:.8rem}
+@media(max-width:760px){
+  .verification-action-stack .verification-smoke{padding:.7rem}
+}
