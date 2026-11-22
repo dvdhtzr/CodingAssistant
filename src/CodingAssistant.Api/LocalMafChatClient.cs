@@ -72,8 +72,8 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             {
                 temperature = purpose == MafAgentPurpose.Architecture ? 0.15 : 0.2,
                 num_predict = maxTokens,
-                num_ctx = purpose is MafAgentPurpose.SoftwareEngineer or
-                    MafAgentPurpose.Specification ? 12288 : 8192
+                num_ctx = purpose == MafAgentPurpose.SoftwareEngineer ? 16384 :
+                    purpose == MafAgentPurpose.Specification ? 12288 : 8192
             }
         };
 
@@ -132,7 +132,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         if (response.ValueKind != JsonValueKind.Object)
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
 
-        if (purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer &&
+        if ((purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer) &&
             response.TryGetProperty("done_reason", out var reason) &&
             reason.ValueKind == JsonValueKind.String &&
             reason.GetString() == "length")
