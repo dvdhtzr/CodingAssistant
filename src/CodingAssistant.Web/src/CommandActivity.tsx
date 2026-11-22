@@ -33,13 +33,70 @@ export interface AgentActivity {
   active: boolean;
 }
 
-const accents: Record<string, string> = {
-  ProductOwner: 'visionary',
-  SolutionArchitect: 'designer',
-  TechnicalLead: 'strategist',
-  SoftwareEngineer: 'builder',
-  QaEngineer: 'guardian',
+const HUE_CLASS: Record<string, string> = {
+  ProductOwner: 'ca-ag-po',
+  SolutionArchitect: 'ca-ag-sa',
+  TechnicalLead: 'ca-ag-tl',
+  SoftwareEngineer: 'ca-ag-se',
+  QaEngineer: 'ca-ag-qa',
 };
+
+export interface JourneyTile {
+  id: string;
+  label: string;
+  agent: string;
+  state: 'done' | 'now' | 'attention' | 'todo';
+  hint: string;
+}
+
+// Derived purely from saved records. A tile never claims progress beyond what
+// the persisted specification, architecture, plan, engineering and QA state show.
+export function commandJourney(evidence: CommandEvidence): JourneyTile[] {
+  const d = evidence.decisions;
+  const spec = d.specification;
+  const arch = d.decisions ?? [];
+  const plan = d.plan;
+  const eng = evidence.engineering?.job;
+  const qa = evidence.qa;
+
+  const discovery: JourneyTile['state'] = spec || d.readyForSpecification
+    ? 'done' : d.ownerAnswers > 0 ? 'now' : 'todo';
+  const specification: JourneyTile['state'] = spec?.status === 'Approved' ? 'done'
+    : spec ? 'attention'
+      : d.ownerAnswers > 0 ? 'now' : 'todo';
+  const architecture: JourneyTile['state'] = arch.length
+    ? (arch.every(item => item.status === 'Approved' && item.specificationCurrent)
+      ? 'done' : 'attention')
+    : spec?.status === 'Approved' ? 'now' : 'todo';
+  const planning: JourneyTile['state'] = plan?.status === 'Approved' && plan.current ? 'done'
+    : plan ? 'attention' : architecture === 'done' ? 'now' : 'todo';
+  const build: JourneyTile['state'] = eng?.state === 'Running' ? 'now'
+    : eng?.state === 'Generated' ? 'done'
+      : eng?.state === 'Failed' || eng?.state === 'Interrupted' ? 'attention'
+        : planning === 'done' ? 'now' : 'todo';
+  const findings = qa && evidence.engineering &&
+    qa.job.engineeringRunId === evidence.engineering.job.id &&
+    qa.job.planSha256 === evidence.engineering.job.planSha256
+    ? qa.reports.reduce((n, r) => n + (r.assessment?.findings?.length ?? 0), 0) : 0;
+  const verify: JourneyTile['state'] = findings > 0 ? 'attention'
+    : qa?.job.state === 'Reviewed' ? 'done'
+      : build === 'done' ? 'now' : 'todo';
+
+  return [
+    { id: 'discovery', label: 'Discovery', agent: 'ProductOwner', state: discovery,
+      hint: discovery === 'done' ? 'Captured' : discovery === 'now' ? 'In discovery' : 'Not started' },
+    { id: 'specification', label: 'Specification', agent: 'ProductOwner', state: specification,
+      hint: spec ? spec.status + ' · v' + spec.version : 'Awaiting interview' },
+    { id: 'architecture', label: 'Architecture', agent: 'SolutionArchitect', state: architecture,
+      hint: arch.length ? arch.length + ' decision' + (arch.length === 1 ? '' : 's') : 'Not started' },
+    { id: 'plan', label: 'Plan', agent: 'TechnicalLead', state: planning,
+      hint: plan ? plan.status + ' · rev ' + plan.revision : 'Not started' },
+    { id: 'build', label: 'Build', agent: 'SoftwareEngineer', state: build,
+      hint: eng ? 'Source run: ' + eng.state : 'Not started' },
+    { id: 'verify', label: 'Verify', agent: 'QaEngineer', state: verify,
+      hint: findings > 0 ? findings + ' to triage' : qa ? 'Review saved' : 'Not started' },
+  ];
+}
 
 export function commandActivity(evidence: CommandEvidence): ActivityEntry[] {
   const engineeringId = evidence.engineering?.job.id ?? '';
@@ -145,65 +202,94 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
               'Inspect saved work and select the next permitted step.',
               to: 'work' as const };
   const running = agents.filter(agent => agent.active);
+  const stages = commandJourney(evidence);
+  const activeStage = stages.find(step => step.state === 'now')
+    ?? stages.find(step => step.state === 'attention')
+    ?? stages.find(step => step.state === 'todo');
+  const missionState = activeStage ? activeStage.label : 'Complete';
+  const tick = (step: JourneyTile) => step.state === 'done' ? '✓'
+    : step.state === 'attention' ? '!' : '…';
+  const stageSummary = 'Spec ' + tick(stages[1]) + ' · Arch ' + tick(stages[2]) +
+    ' · Plan ' + tick(stages[3]);
 
-  return <section className="mc-command" aria-label="Mission Control command">
-    <div className="mc-command-heading">
-      <div><p className="wb-kicker">MISSION CONTROL / COMMAND</p>
-        <h2>{task.title}</h2><p>{task.objective}</p></div>
-      <span className="pill">{task.status} · local saved project</span>
-    </div>
-    <section className="mc-next-action" aria-label="Recommended next action">
-      <div><span className="wb-kicker">GUIDED SUPERVISION</span>
-        <strong>{recommendation.title}</strong>
-        <p>{recommendation.detail}</p></div>
-      <button type="button" className="primary"
-        onClick={() => onNavigate(recommendation.to)}>Open {recommendation.to}</button>
-      <span className="mc-decision-count">{reviewCount} saved owner review
-        {reviewCount === 1 ? '' : 's'} awaiting attention</span>
-    </section>
-    <DecisionQueueView items={queue} onInspect={id => showDrawer({ kind: 'decision', id })} />
-    <div className="mc-command-columns">
-      <section className="mc-command-panel" aria-label="Agent Activity Board">
-        <div className="mc-panel-heading"><div><span className="wb-kicker">TEAM STATUS</span>
-          <h3>Agent Activity Board</h3></div>
-          <button type="button" className="outline"
-            onClick={() => onNavigate('team')}>Team</button></div>
-        <div className="mc-agent-grid">
-          {agents.map(item => <button type="button" key={item.agent.id}
-            className="mc-agent-card" data-agent={item.agent.id}
-            data-accent={accents[item.agent.id] ?? 'neutral'}
-            onClick={() => showDrawer({ kind: 'agent', id: item.agent.id })}
-            aria-haspopup="dialog"
-            aria-label={'Inspect ' + item.agent.role + ': ' + item.status}>
-            <span className="mc-agent-emblem" aria-hidden="true">
-              {item.agent.role.split(' ').map(word => word[0]).join('').slice(0, 2)}
-            </span>
-            <span className="mc-agent-copy"><strong>{item.agent.role}</strong>
-              <span className="mc-agent-state">{item.status}</span>
-              <small>{item.detail}</small></span>
-            {item.active && <span className="mc-agent-active">Recorded running</span>}
-          </button>)}
+  return <section className="mc-command ca-command" aria-label="Mission Control command">
+    <div className="ca-hero">
+      <div className="ca-hero-top">
+        <div className="ca-hero-mission">
+          <span className="wb-kicker ca-hero-eye">ACTIVE MISSION · LOCAL</span>
+          <h2>{task.title}</h2>
+          <p>{task.objective}</p>
         </div>
-        {!agents.length && <p className="hint">No host-defined agent identities returned.</p>}
-      </section>
-      <section className="mc-command-panel" aria-label="Recent Activity Stream">
+        <div className="ca-statecap">
+          <span className="l">MISSION STATE</span>
+          <strong>{missionState}</strong>
+          <small>{stageSummary}</small>
+        </div>
+      </div>
+      <div className="ca-cta-row">
+        <button type="button" className="primary"
+          onClick={() => onNavigate(recommendation.to)}>{recommendation.title} →</button>
+        <span className="ca-cta-meta">{reviewCount} decision{reviewCount === 1 ? '' : 's'} awaiting you
+          {' · '}{running.length} agent{running.length === 1 ? '' : 's'} running</span>
+      </div>
+    </div>
+
+    <div className="ca-section-head">
+      <div><span className="wb-kicker">BUILD JOURNEY</span><h3>Where the work is</h3></div>
+    </div>
+    <ol className="ca-track" aria-label="Build journey">
+      {stages.map((stage, index) => <li key={stage.id}
+        className={'ca-stage ca-' + stage.state + ' ' + (HUE_CLASS[stage.agent] ?? '')}>
+        {stage.state === 'now' && <span className="ca-stage-live" aria-hidden="true" />}
+        <span className="ca-stage-n">{String(index + 1).padStart(2, '0')}</span>
+        <span className="ca-stage-nm">{stage.label}</span>
+        <span className="ca-stage-sp">{stage.hint}</span>
+      </li>)}
+    </ol>
+
+    <div className="ca-section-head">
+      <div><span className="wb-kicker">THE CREW · HANDOFF PIPELINE</span>
+        <h3>Agent Activity Board</h3></div>
+      <button type="button" className="link" onClick={() => onNavigate('team')}>Open Team →</button>
+    </div>
+    <div className="ca-crew">
+      {agents.map(item => <button type="button" key={item.agent.id}
+        className={'ca-node ' + (HUE_CLASS[item.agent.id] ?? '') +
+          (item.active ? ' ca-running' : ' ca-idle')}
+        onClick={() => showDrawer({ kind: 'agent', id: item.agent.id })}
+        aria-haspopup="dialog"
+        aria-label={'Inspect ' + item.agent.role + ': ' + item.status}>
+        <span className="ca-wire" aria-hidden="true" />
+        <span className="ca-orb" aria-hidden="true">
+          {item.agent.role.split(' ').map(word => word[0]).join('').slice(0, 2)}</span>
+        <span className="ca-node-role">{item.agent.role}</span>
+        <span className="ca-node-stat">{item.detail}</span>
+        {item.active && <span className="ca-node-flag">Recorded running</span>}
+      </button>)}
+      {!agents.length && <p className="hint">No host-defined agent identities returned.</p>}
+    </div>
+
+    <div className="ca-lower">
+      <DecisionQueueView items={queue} onInspect={id => showDrawer({ kind: 'decision', id })} />
+      <section className="mc-command-panel ca-activity" aria-label="Recent Activity Stream">
         <div className="mc-panel-heading"><div><span className="wb-kicker">SAVED EVIDENCE</span>
           <h3>Recent activity</h3></div>
           <button type="button" className="outline"
             onClick={() => onNavigate('history')}>View all</button></div>
-        {events.length ? <ol className="mc-recent-events">
-          {events.slice(0, 5).map(event => <li key={event.id}>
+        {events.length ? <ol className="mc-recent-events ca-ticker">
+          {events.slice(0, 6).map(event => <li key={event.id}>
             <button type="button" aria-haspopup="dialog"
               onClick={() => showDrawer({ kind: 'event', id: event.id })}>
               <span className="mc-event-top"><strong>{event.source}</strong>
-                <time dateTime={event.at}>{new Date(event.at).toLocaleString()}</time></span>
+                <time dateTime={event.at}>{new Date(event.at).toLocaleTimeString()}</time></span>
               <span>{event.label}</span><small>{event.detail}</small>
             </button>
           </li>)}
         </ol> : <p className="hint">No saved agent, engineering, or QA events yet.</p>}
       </section>
     </div>
-    <section className="mc-operation" aria-label="Current engineering operation">
+
+    <section className="ca-operation" aria-label="Current engineering operation">
       <strong>{running.length ? 'Recorded active operation' : 'No active agent run recorded'}</strong>
       {running.length ? <p>{running.map(item => item.agent.role + ': ' + item.detail).join(' · ')}</p>
         : <p>{latestEngineering ? 'Latest source run: ' + latestEngineering.state :

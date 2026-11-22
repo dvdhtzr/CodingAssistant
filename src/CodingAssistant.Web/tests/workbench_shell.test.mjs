@@ -7,6 +7,7 @@ import { createServer } from 'vite';
 
 let vite;
 let WorkbenchSidebar;
+let ProjectSwitcher;
 let WorkbenchInspector;
 let ProjectOverview;
 let TeamDestination;
@@ -32,7 +33,7 @@ before(async () => {
     server: { middlewareMode: true, hmr: false },
     appType: 'custom',
   });
-  ({ WorkbenchSidebar, WorkbenchInspector, ProjectOverview } =
+  ({ WorkbenchSidebar, ProjectSwitcher, WorkbenchInspector, ProjectOverview } =
     await vite.ssrLoadModule('/src/Workbench.tsx'));
   ({ TeamDestination, QualityDestination, SkillsDestination, HistoryDestination } =
     await vite.ssrLoadModule('/src/MissionDestinations.tsx'));
@@ -40,11 +41,10 @@ before(async () => {
 
 after(async () => { if (vite) await vite.close(); });
 
-test('Workbench sidebar exposes only functional navigation and honest agent descriptions', () => {
+test('Workbench rail exposes only functional destination navigation', () => {
   const html = renderToStaticMarkup(React.createElement(WorkbenchSidebar, {
-    tasks: [task], selectedId: task.id, view: 'work', disabled: false,
-    onSelectTask: noop, onNewProject: noop, onChangeView: noop, onRefresh: noop,
-    onDeleteTask: async () => true,
+    selectedId: task.id, view: 'work', disabled: false,
+    onNewProject: noop, onChangeView: noop,
   }));
   assert.match(html, /aria-label="Workspace navigation"/);
   for (const destination of ['Command', 'Team', 'Work', 'Quality', 'Skills', 'History']) {
@@ -52,17 +52,22 @@ test('Workbench sidebar exposes only functional navigation and honest agent desc
   }
   assert.doesNotMatch(html, />Legacy diagnostics<\/button>/);
   assert.match(html, /aria-current="page"/);
+  assert.doesNotMatch(html, /Verified engineer run/);
+});
+
+test('Context-bar project switcher keeps search, selection and guarded deletion', () => {
+  const html = renderToStaticMarkup(React.createElement(ProjectSwitcher, {
+    tasks: [task], selectedId: task.id, disabled: false,
+    onSelectTask: noop, onRefresh: noop, onDeleteTask: async () => true,
+  }));
   assert.match(html, /PROJECT SWITCHER/);
-  assert.match(html, /<details class="wb-projects wb-project-switcher">/);
-  assert.doesNotMatch(html, /<details class="wb-projects wb-project-switcher" open/);
-  assert.match(html, /<details class="wb-team">/);
+  assert.match(html, /<details class="wb-projects wb-project-switcher ca-ctx-switcher">/);
+  assert.doesNotMatch(html, /<details class="wb-projects wb-project-switcher[^>]*open>/);
   assert.match(html, /Offline Notes/);
+  assert.match(html, /Search saved projects/);
   assert.match(html, /aria-label="Delete project Offline Notes"/);
   assert.match(html, /aria-expanded="false"/);
   assert.doesNotMatch(html, /Delete permanently/);
-  assert.match(html, /MAF · local Ollama \(on request\)/);
-  assert.match(html, /Planned — no live agent/);
-  assert.doesNotMatch(html, /Verified engineer run/);
 });
 
 test('Inspector distinguishes local capability from authorization', () => {

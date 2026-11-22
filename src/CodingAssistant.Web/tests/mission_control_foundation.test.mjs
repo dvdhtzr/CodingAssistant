@@ -7,6 +7,7 @@ import { createServer } from 'vite';
 
 let vite;
 let WorkbenchSidebar;
+let ProjectSwitcher;
 let WorkbenchInspector;
 let ProjectOverview;
 let AgentRosterCards;
@@ -30,7 +31,7 @@ before(async () => {
     server: { middlewareMode: true, hmr: false },
     appType: 'custom',
   });
-  ({ WorkbenchSidebar, WorkbenchInspector, ProjectOverview } =
+  ({ WorkbenchSidebar, ProjectSwitcher, WorkbenchInspector, ProjectOverview } =
     await vite.ssrLoadModule('/src/Workbench.tsx'));
   ({ AgentRosterCards } = await vite.ssrLoadModule('/src/AgentIdentityPanel.tsx'));
   ({ EngineeringGenerationPanel } =
@@ -38,24 +39,27 @@ before(async () => {
 });
 after(async () => { if (vite) await vite.close(); });
 
-test('searchable saved projects retain real selection and destructive confirmation controls', () => {
-  const markup = renderToStaticMarkup(React.createElement(WorkbenchSidebar, {
-    tasks: [task], selectedId: task.id, view: 'command', disabled: false,
-    onSelectTask: noop, onNewProject: noop, onChangeView: noop,
-    onRefresh: noop, onDeleteTask: async () => true,
+test('rail navigation and the project switcher retain selection and guarded deletion', () => {
+  const nav = renderToStaticMarkup(React.createElement(WorkbenchSidebar, {
+    selectedId: task.id, view: 'command', disabled: false,
+    onNewProject: noop, onChangeView: noop,
   }));
-  assert.match(markup, /Search saved projects/);
-  assert.match(markup, /value=""/);
-  assert.match(markup, /SAVED PROJECTS/);
-  assert.match(markup, /PROJECT SWITCHER/);
   for (const name of ['Command', 'Team', 'Work', 'Quality', 'Skills', 'History']) {
-    assert.match(markup, new RegExp('>' + name + '</button>'));
+    assert.match(nav, new RegExp('>' + name + '</button>'));
   }
-  assert.match(markup, /aria-current="page"/);
-  assert.match(markup, /Research &lt;Lab&gt;/);
-  assert.match(markup, /Delete project Research/);
-  assert.match(markup, /ENGINEERING TEAM/);
-  assert.doesNotMatch(markup, /Delete permanently/);
+  assert.match(nav, /aria-current="page"/);
+
+  const projects = renderToStaticMarkup(React.createElement(ProjectSwitcher, {
+    tasks: [task], selectedId: task.id, disabled: false,
+    onSelectTask: noop, onRefresh: noop, onDeleteTask: async () => true,
+  }));
+  assert.match(projects, /Search saved projects/);
+  assert.match(projects, /value=""/);
+  assert.match(projects, /SAVED PROJECTS/);
+  assert.match(projects, /PROJECT SWITCHER/);
+  assert.match(projects, /Research &lt;Lab&gt;/);
+  assert.match(projects, /Delete project Research/);
+  assert.doesNotMatch(projects, /Delete permanently/);
 });
 
 test('collapsed inspector is hidden, but its real history and roster remain mounted', () => {

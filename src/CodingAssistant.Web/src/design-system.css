@@ -1,0 +1,795 @@
+/* ===========================================================================
+   CodingAssistant — Design System foundation  (M-UX1)
+   "Operations Room + Journey Track" direction.
+
+   This file is imported LAST. It introduces the single token system (dark-first
+   with a complete light palette for later milestones) and re-skins the shared
+   application chrome through those tokens. It does not restructure the DOM, so
+   the existing component contracts and the workbench regression suite are
+   unchanged. Later milestones rebuild individual screens on top of these tokens.
+
+   Fonts are deliberately a local system stack — this is a local-first, offline,
+   no-cloud app, so no web fonts are fetched at runtime.
+   =========================================================================== */
+
+:root {
+  /* ---- surfaces (dark, default) ---- */
+  --ca-bg:#090d15;
+  --ca-panel:#111826;
+  --ca-raised:#16202f;
+  --ca-inset:#0c131f;
+  --ca-line:#1f2a3b;
+  --ca-line-soft:#182134;
+
+  /* ---- ink ---- */
+  --ca-fg:#e9eff7;
+  --ca-muted:#8f9fb4;
+  --ca-faint:#61718700;    /* reserved */
+  --ca-faint:#647284;
+
+  /* ---- brand + semantic ---- */
+  --ca-accent:#e7b55c;         /* signature "mission" gold (CTAs) */
+  --ca-accent-hi:#f0c877;
+  --ca-accent-ink:#2a1e07;
+  --ca-teal:#5fd6c6;           /* structural secondary / links / focus */
+  --ca-good:#3fcf98;           /* verified / running-positive */
+  --ca-warn:#e7b35a;           /* pending / approval required */
+  --ca-att:#e8926f;            /* attention */
+  --ca-bad:#ec6f8e;            /* blocked / error */
+  --ca-info:#5aa9e6;
+
+  /* ---- agent identities ---- */
+  --ca-po:#1fbcd1;  /* Product Owner — cyan */
+  --ca-sa:#8f80f2;  /* Solution Architect — violet */
+  --ca-tl:#e3a93e;  /* Technical Lead — amber */
+  --ca-se:#33c493;  /* Software Engineer — emerald */
+  --ca-qa:#ec6f8e;  /* QA Engineer — rose */
+
+  /* ---- type ---- */
+  --ca-display:"Segoe UI Variable Display","Segoe UI Variable","Segoe UI",system-ui,-apple-system,sans-serif;
+  --ca-sans:"Segoe UI Variable Text","Segoe UI Variable","Segoe UI",system-ui,-apple-system,sans-serif;
+  --ca-mono:"Cascadia Code","Cascadia Mono",ui-monospace,"Segoe UI Mono",Consolas,monospace;
+
+  /* ---- shape / elevation ---- */
+  --ca-r-sm:9px; --ca-r:13px; --ca-r-lg:18px; --ca-r-pill:999px;
+  --ca-shadow:0 18px 48px rgba(0,0,0,.42);
+  --ca-shadow-sm:0 4px 14px rgba(0,0,0,.28);
+
+  color-scheme:dark;
+}
+
+/* Complete light palette — used by migrated screens once a visible theme
+   toggle ships. Defined now so later milestones build light-correct markup. */
+:root[data-theme="light"] {
+  --ca-bg:#f3f3ef;
+  --ca-panel:#ffffff;
+  --ca-raised:#fbfaf7;
+  --ca-inset:#f0efe9;
+  --ca-line:#e4e1d7;
+  --ca-line-soft:#edeae1;
+  --ca-fg:#1b2027;
+  --ca-muted:#5e6774;
+  --ca-faint:#8a93a0;
+  --ca-accent:#b67a1e;
+  --ca-accent-hi:#a76d14;
+  --ca-accent-ink:#fff6e6;
+  --ca-teal:#1c8577;
+  --ca-good:#1c9c6e;
+  --ca-warn:#b2802a;
+  --ca-att:#c56a44;
+  --ca-bad:#c6456a;
+  --ca-info:#2f7fc4;
+  --ca-po:#0f8fa3; --ca-sa:#6a58d6; --ca-tl:#b9811f; --ca-se:#1aa06f; --ca-qa:#c6456a;
+  --ca-shadow:0 14px 36px rgba(40,40,30,.14);
+  --ca-shadow-sm:0 3px 12px rgba(40,40,30,.10);
+  color-scheme:light;
+}
+
+/* ---- global baseline --------------------------------------------------- */
+:root { font-family:var(--ca-sans); background:var(--ca-bg); color:var(--ca-fg); }
+body { background:
+    radial-gradient(130% 90% at 85% -12%, color-mix(in srgb, var(--ca-teal) 9%, transparent), transparent 55%),
+    var(--ca-bg);
+  color:var(--ca-fg); }
+h1,h2,h3,h4 { font-family:var(--ca-display); letter-spacing:-.015em; text-wrap:balance; }
+a { color:var(--ca-teal); }
+:focus-visible { outline:2px solid var(--ca-teal); outline-offset:2px; }
+
+/* ---- shared controls --------------------------------------------------- */
+button {
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r-sm);
+  background:var(--ca-raised);
+  color:var(--ca-fg);
+  font-weight:600;
+}
+button:hover:not(:disabled) { background:color-mix(in srgb,var(--ca-raised) 70%,var(--ca-fg)); border-color:var(--ca-line); }
+.primary {
+  background:linear-gradient(120deg,var(--ca-accent-hi),var(--ca-accent));
+  border:1px solid color-mix(in srgb,var(--ca-accent) 60%,#000);
+  color:var(--ca-accent-ink);
+  box-shadow:none;
+}
+.primary:hover:not(:disabled) { background:linear-gradient(120deg,var(--ca-accent-hi),var(--ca-accent-hi)); filter:brightness(1.03); }
+.outline { background:transparent; border:1px solid var(--ca-line); color:var(--ca-fg); }
+.outline:hover:not(:disabled) { background:var(--ca-raised); }
+.danger { background:color-mix(in srgb,var(--ca-bad) 24%,var(--ca-inset)); border:1px solid color-mix(in srgb,var(--ca-bad) 55%,var(--ca-line)); color:var(--ca-fg); }
+
+input, textarea, select {
+  background:var(--ca-inset);
+  border:1px solid var(--ca-line);
+  color:var(--ca-fg);
+  border-radius:var(--ca-r-sm);
+}
+input::placeholder, textarea::placeholder { color:var(--ca-faint); }
+
+/* ---- surfaces & text helpers ------------------------------------------ */
+.panel, .build-stage, .architect-stage, .spec-review {
+  background:var(--ca-panel);
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r);
+  box-shadow:var(--ca-shadow-sm);
+}
+.pill {
+  background:var(--ca-inset);
+  border:1px solid var(--ca-line);
+  color:var(--ca-muted);
+  border-radius:var(--ca-r-pill);
+  font-weight:600;
+}
+.hint, .muted, .wb-muted, .secure { color:var(--ca-muted); }
+.alert {
+  background:color-mix(in srgb,var(--ca-bad) 16%,var(--ca-panel));
+  border:1px solid color-mix(in srgb,var(--ca-bad) 50%,var(--ca-line));
+  border-radius:var(--ca-r-sm);
+  color:var(--ca-fg);
+}
+.success { color:var(--ca-good); }
+.hash, .verified-patch, .specification-text, .draft-files pre {
+  background:var(--ca-inset);
+  border:1px solid var(--ca-line);
+  color:var(--ca-fg);
+  font-family:var(--ca-mono);
+}
+.task { background:var(--ca-raised); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.task.selected { border-color:var(--ca-teal); background:color-mix(in srgb,var(--ca-teal) 12%,var(--ca-raised)); }
+
+/* readable labels — was as small as .56rem */
+.wb-kicker {
+  color:var(--ca-muted);
+  font-size:.7rem;
+  font-weight:700;
+  letter-spacing:.14em;
+}
+
+/* ---- shell chrome ------------------------------------------------------ */
+.wb-header {
+  background:linear-gradient(90deg,var(--ca-panel),var(--ca-inset) 60%,var(--ca-panel));
+  border-bottom:1px solid var(--ca-line);
+  box-shadow:0 1px 0 var(--ca-line);
+}
+.wb-header h1 { color:var(--ca-fg); font-size:1.15rem; }
+.wb-header .wb-brand p { color:var(--ca-muted); }
+.wb-mark {
+  background:radial-gradient(circle at 28% 20%, color-mix(in srgb,var(--ca-teal) 42%,var(--ca-inset)), var(--ca-inset));
+  border:1px solid color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line));
+  color:var(--ca-teal);
+  box-shadow:none;
+}
+.wb-header-context { border-left:1px solid var(--ca-line); }
+.wb-header-context-label { color:var(--ca-muted); }
+.wb-local-pill { border-color:color-mix(in srgb,var(--ca-good) 45%,var(--ca-line)); color:color-mix(in srgb,var(--ca-good) 70%,var(--ca-fg)); }
+.wb-local-dot { background:var(--ca-good); box-shadow:0 0 9px color-mix(in srgb,var(--ca-good) 60%,transparent); }
+.wb-execution-pill { background:var(--ca-inset); border-color:var(--ca-line); color:var(--ca-warn); }
+
+.wb-sidebar { background:linear-gradient(180deg,var(--ca-panel),var(--ca-inset)); border-right:1px solid var(--ca-line); }
+.wb-sidebar-rail { background:linear-gradient(var(--ca-teal), color-mix(in srgb,var(--ca-teal) 30%,var(--ca-inset))); }
+.wb-new-project {
+  background:linear-gradient(120deg,var(--ca-accent-hi),var(--ca-accent));
+  border:1px solid color-mix(in srgb,var(--ca-accent) 55%,#000);
+  color:var(--ca-accent-ink);
+  box-shadow:none;
+  font-weight:650;
+}
+.wb-nav-item { color:var(--ca-muted); font-size:.86rem; border:1px solid transparent; }
+.wb-nav-item:hover { background:var(--ca-raised); color:var(--ca-fg); }
+.wb-nav-icon { background:var(--ca-inset); border:1px solid var(--ca-line); color:var(--ca-muted); }
+.wb-nav-item.wb-selected {
+  background:color-mix(in srgb,var(--ca-teal) 14%,var(--ca-panel));
+  border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line));
+  color:var(--ca-fg);
+  box-shadow:inset 3px 0 var(--ca-teal);
+}
+.wb-nav-item.wb-selected .wb-nav-icon { background:color-mix(in srgb,var(--ca-teal) 30%,var(--ca-inset)); border-color:color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line)); color:var(--ca-teal); }
+.wb-project-link.wb-project-active { background:color-mix(in srgb,var(--ca-teal) 12%,var(--ca-inset)); border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line)); }
+.wb-project-switcher-trigger { background:var(--ca-raised); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+
+/* calmer workspace: drop the grid-paper, keep a soft ambient wash */
+.wb-main {
+  background:
+    radial-gradient(120% 70% at 50% -12%, color-mix(in srgb,var(--ca-teal) 8%,transparent), transparent 46%),
+    var(--ca-bg);
+  background-size:auto,auto;
+}
+.wb-inspector { background:var(--ca-panel); border-left:1px solid var(--ca-line); }
+
+/* ---- status + journey color mapping ----------------------------------- */
+.wb-status-card { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.wb-status-card::before { background:var(--ca-line); }
+.wb-status-card[data-state="complete"]::before { background:var(--ca-good); }
+.wb-status-card[data-state="attention"]::before { background:var(--ca-warn); }
+.wb-status-card[data-state="active"]::before { background:var(--ca-teal); }
+.wb-status-card[data-state="blocked"]::before { background:var(--ca-bad); }
+
+.journey-stage { background:var(--ca-panel); border:1px solid var(--ca-line); border-left:3px solid var(--ca-line); border-radius:var(--ca-r); }
+.journey-stage.journey-open { border-color:color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line)); border-left-color:var(--ca-teal); }
+.journey-stage.journey-complete { border-left-color:var(--ca-good); }
+.journey-stage.journey-attention { border-left-color:var(--ca-warn); }
+.journey-stage.journey-blocked { border-left-color:var(--ca-bad); }
+.journey-trigger { background:var(--ca-raised); }
+.journey-progress-segment { background:var(--ca-line); }
+.journey-progress-segment.journey-complete { background:var(--ca-good); }
+.journey-progress-segment.journey-active { background:var(--ca-teal); }
+.journey-progress-segment.journey-attention { background:var(--ca-warn); }
+.journey-progress-segment.journey-blocked { background:var(--ca-bad); }
+.mc-work-focus { background:var(--ca-panel); border:1px solid color-mix(in srgb,var(--ca-teal) 30%,var(--ca-line)); border-radius:var(--ca-r); }
+
+/* ---- Command surface (will be rebuilt in M-UX3, tokenized now) --------- */
+.mc-next-action { background:color-mix(in srgb,var(--ca-teal) 10%,var(--ca-panel)); border:1px solid color-mix(in srgb,var(--ca-teal) 32%,var(--ca-line)); border-radius:var(--ca-r); }
+.mc-command-panel, .mc-operation, .mc-decision-queue { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+
+/* ---- agent identity hues (shared mapping) ------------------------------ */
+.mc-agent-card[data-accent="visionary"]  { border-left:3px solid var(--ca-po); }
+.mc-agent-card[data-accent="designer"]    { border-left:3px solid var(--ca-sa); }
+.mc-agent-card[data-accent="strategist"]  { border-left:3px solid var(--ca-tl); }
+.mc-agent-card[data-accent="builder"]     { border-left:3px solid var(--ca-se); }
+.mc-agent-card[data-accent="guardian"]    { border-left:3px solid var(--ca-qa); }
+.mc-agent-card { background:var(--ca-raised); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.mc-agent-emblem { background:var(--ca-inset); color:var(--ca-fg); }
+.mc-agent-card[data-accent="visionary"]  .mc-agent-emblem { background:color-mix(in srgb,var(--ca-po) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-po) 70%,#fff); }
+.mc-agent-card[data-accent="designer"]   .mc-agent-emblem { background:color-mix(in srgb,var(--ca-sa) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-sa) 70%,#fff); }
+.mc-agent-card[data-accent="strategist"] .mc-agent-emblem { background:color-mix(in srgb,var(--ca-tl) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-tl) 72%,#fff); }
+.mc-agent-card[data-accent="builder"]    .mc-agent-emblem { background:color-mix(in srgb,var(--ca-se) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-se) 70%,#fff); }
+.mc-agent-card[data-accent="guardian"]   .mc-agent-emblem { background:color-mix(in srgb,var(--ca-qa) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-qa) 72%,#fff); }
+.mc-agent-active { color:var(--ca-good); }
+
+/* sidebar team avatars → unified hue set */
+.wb-team-member:nth-of-type(1) .wb-avatar { background:color-mix(in srgb,var(--ca-po) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-po) 72%,#fff); }
+.wb-team-member:nth-of-type(2) .wb-avatar { background:color-mix(in srgb,var(--ca-sa) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-sa) 72%,#fff); }
+.wb-team-member:nth-of-type(3) .wb-avatar { background:color-mix(in srgb,var(--ca-tl) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-tl) 74%,#fff); }
+.wb-team-member:nth-of-type(4) .wb-avatar { background:color-mix(in srgb,var(--ca-se) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-se) 72%,#fff); }
+.wb-team-member:nth-of-type(5) .wb-avatar { background:color-mix(in srgb,var(--ca-qa) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-qa) 74%,#fff); }
+
+/* decision queue accents */
+.mc-queue-list li[data-kind="approval"] button { border-left:3px solid var(--ca-warn); }
+.mc-queue-list li[data-kind="qa-review"] button { border-left:3px solid var(--ca-qa); }
+.mc-queue-list li[data-kind="blocked"] button { border-left:3px solid var(--ca-att); }
+
+/* login / new-project hero */
+.login.panel, .new-project-panel {
+  background:radial-gradient(circle at 85% 0%, color-mix(in srgb,var(--ca-teal) 16%,transparent), transparent 42%), var(--ca-panel);
+  border:1px solid color-mix(in srgb,var(--ca-teal) 30%,var(--ca-line));
+}
+
+/* ========================================================================
+   M-UX2 — Operations Room shell: thin destination rail + context bar
+   ======================================================================== */
+.ca-shell {
+  display:grid;
+  grid-template-columns:154px minmax(0,1fr);
+  height:100dvh;
+  min-height:0;
+  overflow:hidden;
+}
+
+/* pre-auth brand header */
+.ca-auth-header {
+  display:flex;
+  align-items:center;
+  gap:.9rem;
+  padding:.9rem clamp(1rem,2vw,2rem);
+  border-bottom:1px solid var(--ca-line);
+  background:linear-gradient(90deg,var(--ca-panel),var(--ca-inset) 60%,var(--ca-panel));
+}
+
+/* ---- rail ---- */
+.ca-rail {
+  display:flex;
+  flex-direction:column;
+  gap:.3rem;
+  padding:1rem .6rem 1.4rem;
+  min-height:0;
+  overflow-y:auto;
+  background:linear-gradient(180deg,var(--ca-panel),var(--ca-inset));
+  border-right:1px solid var(--ca-line);
+  scrollbar-width:thin;
+}
+.ca-rail-logo {
+  display:grid;
+  place-items:center;
+  width:40px;
+  height:40px;
+  margin:.1rem auto 1rem;
+  border-radius:12px;
+  color:var(--ca-teal);
+  background:radial-gradient(circle at 28% 20%, color-mix(in srgb,var(--ca-teal) 40%,var(--ca-inset)), var(--ca-inset));
+  border:1px solid color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line));
+  font-size:1.15rem;
+}
+.ca-rail-new {
+  display:flex;
+  align-items:center;
+  gap:.45rem;
+  padding:.6rem .7rem;
+  margin:0 .15rem .7rem;
+  border-radius:var(--ca-r-sm);
+  border:1px solid color-mix(in srgb,var(--ca-accent) 55%,#000);
+  background:linear-gradient(120deg,var(--ca-accent-hi),var(--ca-accent));
+  color:var(--ca-accent-ink);
+  font-weight:650;
+  font-size:.85rem;
+}
+.ca-rail-new-glyph { font-size:1.05rem; line-height:0; }
+.ca-rail-nav { display:flex; flex-direction:column; gap:.18rem; margin-top:.4rem; }
+.ca-rail-item {
+  display:flex;
+  align-items:center;
+  gap:.6rem;
+  padding:.56rem .6rem;
+  border-radius:var(--ca-r-sm);
+  border:1px solid transparent;
+  background:transparent;
+  color:var(--ca-muted);
+  font-size:.86rem;
+  font-weight:550;
+  text-align:left;
+}
+.ca-rail-item:hover:not(:disabled) { background:var(--ca-raised); color:var(--ca-fg); }
+.ca-rail-icon {
+  display:grid;
+  place-items:center;
+  width:26px;
+  height:26px;
+  flex:none;
+  border-radius:7px;
+  background:var(--ca-inset);
+  border:1px solid var(--ca-line);
+  color:var(--ca-muted);
+  font-size:.95rem;
+}
+.ca-rail-selected {
+  background:color-mix(in srgb,var(--ca-teal) 14%,var(--ca-panel));
+  border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line));
+  color:var(--ca-fg);
+  box-shadow:inset 3px 0 var(--ca-teal);
+}
+.ca-rail-selected .ca-rail-icon {
+  background:color-mix(in srgb,var(--ca-teal) 30%,var(--ca-inset));
+  border-color:color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line));
+  color:var(--ca-teal);
+}
+
+/* ---- work area + context bar ---- */
+.ca-work { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
+.ca-ctxbar {
+  position:relative;
+  z-index:30;
+  display:flex;
+  align-items:center;
+  gap:.6rem;
+  flex-wrap:wrap;
+  padding:.55rem clamp(.8rem,1.6vw,1.3rem);
+  border-bottom:1px solid var(--ca-line);
+  background:color-mix(in srgb,var(--ca-panel) 82%,transparent);
+  backdrop-filter:blur(6px);
+}
+.ca-ctx-spacer { flex:1 1 auto; }
+.ca-ctxbar .pill { white-space:nowrap; }
+.ca-ctxbar button.outline { font-size:.76rem; padding:.45rem .7rem; white-space:nowrap; }
+
+/* project switcher as a context-bar popover (not an inline-expanding block) */
+.ca-ctx-switcher { position:relative; min-width:0; max-width:300px; }
+.ca-ctx-switcher > .wb-project-switcher-trigger {
+  position:static;
+  display:grid;
+  gap:.1rem;
+  padding:.4rem 1.9rem .4rem .75rem;
+  background:var(--ca-raised);
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r-sm);
+  max-width:300px;
+}
+.ca-ctx-switcher > .wb-project-switcher-trigger::after { top:.55rem; right:.7rem; }
+.ca-ctx-switcher > .wb-project-switcher-trigger .wb-kicker { font-size:.56rem; margin:0; }
+.ca-ctx-switcher > .wb-project-switcher-trigger strong {
+  font-size:.86rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.ca-ctx-switcher > .wb-project-switcher-trigger small {
+  font-size:.66rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.ca-ctx-switcher-panel {
+  position:absolute;
+  top:calc(100% + 6px);
+  left:0;
+  width:min(380px,92vw);
+  max-height:min(62vh,520px);
+  overflow-y:auto;
+  padding:.85rem;
+  background:var(--ca-panel);
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r);
+  box-shadow:var(--ca-shadow);
+  z-index:60;
+  display:grid;
+  gap:.5rem;
+}
+.ca-ctx-switcher-panel .wb-section-title { display:flex; align-items:center; justify-content:space-between; }
+
+/* main workspace fills the remaining height and scrolls on its own */
+.ca-work > .wb-main {
+  flex:1 1 auto;
+  min-height:0;
+  overflow-y:auto;
+  overflow-x:hidden;
+}
+.ca-work > .alert { margin:.6rem clamp(.8rem,1.6vw,1.3rem) 0; max-width:none; }
+
+/* inspector overlay now anchors to the top of the viewport (no global header) */
+.wb-inspector-host:not([hidden]) { top:0 !important; }
+
+/* ---- responsive: rail becomes a horizontal strip on narrow viewports ---- */
+@media (max-width:760px) {
+  .ca-shell { grid-template-columns:1fr; grid-template-rows:auto auto 1fr; height:auto; min-height:100dvh; overflow:visible; }
+  .ca-rail {
+    flex-direction:row;
+    align-items:center;
+    gap:.35rem;
+    overflow-x:auto;
+    padding:.5rem .6rem;
+    border-right:0;
+    border-bottom:1px solid var(--ca-line);
+  }
+  .ca-rail-logo { margin:0 .3rem 0 0; width:34px; height:34px; }
+  .ca-rail-new { margin:0 .3rem 0 0; }
+  .ca-rail-nav { flex-direction:row; margin-top:0; }
+  .ca-rail-item { white-space:nowrap; }
+  .ca-work { overflow:visible; }
+  .ca-work > .wb-main { overflow:visible; }
+}
+
+/* honor reduced motion for anything added here (no new motion in M-UX1/2) */
+@media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto; } }
+
+/* ========================================================================
+   M-UX3 — Command: mission hero, journey track, crew pipeline
+   ======================================================================== */
+.ca-command { display:grid; gap:1.2rem; align-content:start; }
+.ca-ag-po{--h:var(--ca-po)} .ca-ag-sa{--h:var(--ca-sa)} .ca-ag-tl{--h:var(--ca-tl)}
+.ca-ag-se{--h:var(--ca-se)} .ca-ag-qa{--h:var(--ca-qa)}
+
+.ca-hero {
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r-lg);
+  overflow:hidden;
+  padding:clamp(1.2rem,2.4vw,1.9rem);
+  background:
+    radial-gradient(120% 140% at 88% -25%, color-mix(in srgb,var(--ca-teal) 15%,transparent), transparent 55%),
+    linear-gradient(135deg, var(--ca-panel), var(--ca-inset));
+}
+.ca-hero-top { display:flex; gap:1.5rem; justify-content:space-between; flex-wrap:wrap; align-items:flex-start; }
+.ca-hero-eye { color:var(--ca-accent); display:block; margin-bottom:.5rem; }
+.ca-hero-mission h2 { font-size:clamp(1.7rem,3.4vw,2.4rem); letter-spacing:-.025em; line-height:1.05; margin:0 0 .45rem; }
+.ca-hero-mission p { color:var(--ca-muted); max-width:56ch; margin:0; }
+.ca-statecap { border:1px solid var(--ca-line); border-radius:var(--ca-r); background:var(--ca-inset); padding:.8rem 1rem; min-width:150px; }
+.ca-statecap .l { font-family:var(--ca-mono); font-size:.58rem; letter-spacing:.12em; text-transform:uppercase; color:var(--ca-muted); }
+.ca-statecap strong { display:block; font-family:var(--ca-display); font-size:1.05rem; margin:.35rem 0 .15rem; }
+.ca-statecap small { color:var(--ca-muted); font-size:.74rem; }
+.ca-cta-row { display:flex; gap:.8rem; align-items:center; flex-wrap:wrap; margin-top:1.4rem; }
+.ca-cta-row .primary { font-size:.92rem; padding:.78rem 1.2rem; }
+.ca-cta-meta { color:var(--ca-muted); font-size:.82rem; }
+
+.ca-section-head { display:flex; align-items:baseline; justify-content:space-between; gap:1rem; margin:.1rem 0 -.4rem; }
+.ca-section-head h3 { font-size:1.02rem; margin:.2rem 0 0; }
+.ca-section-head .wb-kicker { display:block; }
+.link { background:none; border:none; color:var(--ca-teal); font-weight:600; font-size:.82rem; padding:.2rem; }
+.link:hover { text-decoration:underline; }
+
+/* journey track */
+.ca-track { display:flex; gap:.45rem; list-style:none; margin:0; padding:.1rem 0 .3rem; overflow-x:auto; }
+.ca-stage { flex:1 1 0; min-width:132px; position:relative; border:1px solid var(--ca-line); border-radius:var(--ca-r); padding:.7rem .8rem; background:var(--ca-panel); display:grid; gap:.12rem; }
+.ca-stage::after { content:""; position:absolute; right:-.47rem; top:50%; width:.47rem; height:2px; background:var(--ca-line); }
+.ca-stage:last-child::after { display:none; }
+.ca-stage-n { font-family:var(--ca-mono); font-size:.58rem; letter-spacing:.1em; color:var(--ca-faint); }
+.ca-stage-nm { font-weight:650; font-size:.88rem; }
+.ca-stage-sp { font-size:.68rem; color:var(--ca-muted); }
+.ca-stage.ca-done { border-color:color-mix(in srgb,var(--ca-good) 42%,var(--ca-line)); }
+.ca-stage.ca-done .ca-stage-nm::before { content:"✓ "; color:var(--ca-good); }
+.ca-stage.ca-attention { border-left:3px solid var(--ca-warn); }
+.ca-stage.ca-now {
+  border-color:var(--ca-teal);
+  background:linear-gradient(150deg, color-mix(in srgb,var(--ca-teal) 15%,var(--ca-panel)), var(--ca-panel));
+  box-shadow:0 0 0 1px var(--ca-teal), var(--ca-shadow-sm);
+  transform:translateY(-3px);
+}
+.ca-stage.ca-todo { opacity:.68; }
+.ca-stage-live { position:absolute; top:.55rem; right:.6rem; width:8px; height:8px; border-radius:50%; background:var(--ca-good); animation:ca-pulse 1.6s ease-in-out infinite; }
+
+/* crew pipeline */
+.ca-crew { display:flex; gap:0; overflow-x:auto; padding:.4rem 0 .2rem; }
+.ca-node { flex:1 1 0; min-width:150px; position:relative; padding:.3rem .5rem .5rem; text-align:center; background:transparent; border:0; border-radius:var(--ca-r); color:var(--ca-fg); }
+.ca-node:hover { background:var(--ca-raised); }
+.ca-wire { position:absolute; top:40px; left:50%; right:-50%; height:2px; background:var(--ca-line); z-index:0; }
+.ca-node:last-child .ca-wire { display:none; }
+.ca-node:not(.ca-idle) .ca-wire { background:linear-gradient(90deg, var(--h), var(--ca-line)); }
+.ca-orb {
+  position:relative; z-index:1; display:grid; place-items:center;
+  width:62px; height:62px; margin:0 auto; border-radius:50%;
+  font-family:var(--ca-mono); font-weight:700; color:#fff; border:3px solid var(--ca-bg);
+  box-shadow:0 0 0 1px var(--h);
+  background:radial-gradient(circle at 32% 24%, color-mix(in srgb,var(--h) 80%,#fff), var(--h));
+}
+.ca-node.ca-idle .ca-orb { filter:saturate(.5) brightness(.82); box-shadow:0 0 0 1px var(--ca-line); }
+.ca-node.ca-running .ca-orb::before { content:""; position:absolute; inset:-7px; border-radius:50%; border:2px solid var(--h); animation:ca-orbit 1.8s ease-in-out infinite; }
+.ca-node-role { display:block; font-weight:650; font-size:.78rem; margin-top:.6rem; }
+.ca-node-stat { display:block; font-size:.7rem; color:var(--ca-muted); margin-top:.2rem; line-height:1.4; overflow-wrap:anywhere; }
+.ca-node.ca-running .ca-node-stat { color:var(--ca-good); }
+.ca-node-flag { display:inline-block; font-family:var(--ca-mono); font-size:.56rem; letter-spacing:.08em; text-transform:uppercase; margin-top:.35rem; color:#06231a; background:var(--ca-good); border-radius:6px; padding:.1rem .45rem; }
+
+/* lower grid: decision queue + activity */
+.ca-lower { display:grid; grid-template-columns:1.05fr .95fr; gap:1.1rem; align-items:start; }
+.ca-operation { border:1px solid var(--ca-line); border-radius:var(--ca-r); padding:.9rem 1.1rem; background:var(--ca-panel); }
+.ca-operation strong { color:var(--ca-fg); }
+.ca-operation p { color:var(--ca-muted); margin:.4rem 0; }
+.ca-operation small { color:var(--ca-faint); display:block; line-height:1.5; }
+@media (max-width:860px) { .ca-lower { grid-template-columns:1fr; } .ca-hero-top { flex-direction:column; } }
+
+@keyframes ca-pulse { 0%,100% { opacity:.5; transform:scale(.8); } 50% { opacity:1; transform:scale(1.15); } }
+@keyframes ca-orbit { 50% { opacity:.4; } }
+@media (prefers-reduced-motion:reduce) {
+  .ca-stage-live, .ca-node.ca-running .ca-orb::before { animation:none; }
+  .ca-stage.ca-now { transform:none; }
+}
+
+/* ========================================================================
+   M-UX4 — Work: focused build flow (journey track, interview, approvals)
+   Re-skin through tokens only; component structure and copy are unchanged.
+   ======================================================================== */
+/* alias legacy mission-control vars onto the new palette so var()-based
+   rules (journey-quick-tone, focus rings, etc.) follow the design system */
+:root {
+  --mc-void:var(--ca-bg); --mc-base:var(--ca-bg); --mc-panel:var(--ca-panel);
+  --mc-panel-raised:var(--ca-raised); --mc-hairline:var(--ca-line);
+  --mc-hairline-bright:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line));
+  --mc-text:var(--ca-fg); --mc-muted:var(--ca-muted);
+  --mc-accent:var(--ca-teal); --mc-accent-strong:var(--ca-teal);
+  --mc-good:var(--ca-good); --mc-warning:var(--ca-warn); --mc-error:var(--ca-bad);
+  --mc-copper:var(--ca-accent);
+}
+
+/* tone → semantic colour, shared by the Work journey surfaces */
+.journey-complete { --tone:var(--ca-good); }
+.journey-active   { --tone:var(--ca-teal); }
+.journey-attention{ --tone:var(--ca-warn); }
+.journey-blocked  { --tone:var(--ca-bad); }
+.journey-pending  { --tone:var(--ca-line); }
+
+/* compact clickable journey track at the top of Work */
+.ca-work-track { display:flex; gap:.4rem; list-style:none; margin:.3rem 0 .2rem; padding:0 0 .3rem; overflow-x:auto; }
+.ca-work-track li { flex:1 1 0; min-width:120px; display:flex; }
+.ca-wt {
+  position:relative; flex:1; min-width:0; text-align:left;
+  display:grid; gap:.1rem; padding:.55rem .65rem;
+  border:1px solid var(--ca-line); border-radius:var(--ca-r-sm);
+  background:var(--ca-panel); color:var(--ca-fg);
+  border-top:3px solid var(--tone,var(--ca-line));
+}
+.ca-wt:hover { border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line)); }
+.ca-wt-n { font-family:var(--ca-mono); font-size:.56rem; letter-spacing:.1em; color:var(--ca-faint); }
+.ca-wt-nm { font-weight:650; font-size:.78rem; line-height:1.2; }
+.ca-wt-sp { font-size:.64rem; color:var(--ca-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ca-wt-current { box-shadow:inset 0 0 0 1px var(--ca-teal); border-color:var(--ca-teal); }
+.ca-wt.journey-pending { opacity:.72; }
+
+/* project journey strip (inside the technical-history disclosure) */
+.journey-status-strip { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); box-shadow:var(--ca-shadow-sm); }
+.journey-strip-top p { color:var(--ca-muted); }
+.journey-strip-current { border:1px solid var(--tone,var(--ca-line)); color:color-mix(in srgb,var(--tone,var(--ca-fg)) 75%,var(--ca-fg)); border-radius:7px; }
+.journey-progress-segment { background:var(--ca-line); }
+.journey-progress-segment.journey-complete { background:var(--ca-good); }
+.journey-progress-segment.journey-active { background:var(--ca-teal); }
+.journey-progress-segment.journey-attention { background:var(--ca-warn); }
+.journey-progress-segment.journey-blocked { background:var(--ca-bad); }
+.journey-strip-summary { color:var(--ca-muted); }
+
+/* journey quick-nav */
+.journey-quick-step { background:var(--ca-panel); border:1px solid var(--ca-line); color:var(--ca-muted); border-radius:var(--ca-r-sm); }
+.journey-quick-step:hover:not(:disabled) { background:var(--ca-raised); border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line)); }
+.journey-quick-step.journey-quick-current { border-color:var(--ca-teal); background:color-mix(in srgb,var(--ca-teal) 12%,var(--ca-panel)); color:var(--ca-fg); }
+.journey-quick-index { color:var(--ca-muted); }
+.journey-quick-tone { background:var(--tone,var(--ca-line)); }
+
+/* journey stages (accordion) */
+.journey-stage { background:var(--ca-panel); border:1px solid var(--ca-line); border-left:3px solid var(--tone,var(--ca-line)); border-radius:var(--ca-r); }
+.journey-trigger { background:var(--ca-raised); color:var(--ca-fg); }
+.journey-trigger:hover:not(:disabled) { background:color-mix(in srgb,var(--ca-raised) 70%,var(--ca-fg)); }
+.journey-complete .journey-trigger { background:color-mix(in srgb,var(--ca-good) 8%,var(--ca-raised)); }
+.journey-active .journey-trigger { background:color-mix(in srgb,var(--ca-teal) 10%,var(--ca-raised)); }
+.journey-attention .journey-trigger { background:color-mix(in srgb,var(--ca-warn) 10%,var(--ca-raised)); }
+.journey-blocked .journey-trigger { background:color-mix(in srgb,var(--ca-bad) 10%,var(--ca-raised)); }
+.journey-index { color:var(--ca-muted); }
+.journey-heading-copy strong { color:var(--ca-fg); }
+.journey-heading-copy small { color:var(--ca-muted); }
+.journey-heading-state { color:var(--ca-fg); }
+.journey-state-symbol { border:1px solid var(--tone,var(--ca-line)); color:color-mix(in srgb,var(--tone,var(--ca-fg)) 75%,var(--ca-fg)); }
+.journey-chevron { color:var(--ca-muted); }
+.journey-stage-body { background:var(--ca-panel); border-top:1px solid var(--ca-line); }
+.journey-discovery .journey-stage-body form { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); box-shadow:none; }
+
+/* discovery = Product Owner: cyan accent ties it to the crew identity */
+.journey-discovery.journey-stage { border-left-color:var(--ca-po); }
+.conversation-current {
+  border:1px solid color-mix(in srgb,var(--ca-po) 45%,var(--ca-line));
+  border-left:4px solid var(--ca-po);
+  border-radius:var(--ca-r);
+  background:
+    radial-gradient(circle at 95% 0%, color-mix(in srgb,var(--ca-po) 14%,transparent), transparent 46%),
+    linear-gradient(125deg, color-mix(in srgb,var(--ca-po) 10%,var(--ca-panel)), var(--ca-panel));
+  box-shadow:var(--ca-shadow-sm);
+}
+.conversation-current-heading .wb-kicker { color:color-mix(in srgb,var(--ca-po) 70%,var(--ca-fg)); }
+.conversation-current-number { color:var(--ca-muted); border:1px solid var(--ca-line); background:var(--ca-inset); }
+.conversation-current-content { color:var(--ca-fg); }
+.conversation-current .interview-speaker { color:color-mix(in srgb,var(--ca-po) 60%,var(--ca-fg)); }
+.conversation-history { border:1px solid var(--ca-line); background:var(--ca-panel); border-radius:var(--ca-r-sm); }
+.conversation-history > summary { color:var(--ca-fg); }
+.conversation-history > summary:hover { background:var(--ca-raised); }
+.conversation-history-icon { color:var(--ca-po); }
+
+/* interview transcript bubbles */
+.interview-studio { border:1px solid color-mix(in srgb,var(--ca-po) 35%,var(--ca-line)); box-shadow:none; }
+.interview-transcript .assistant-message { background:color-mix(in srgb,var(--ca-po) 10%,var(--ca-panel)); border:1px solid color-mix(in srgb,var(--ca-po) 32%,var(--ca-line)); }
+.interview-transcript .owner-message { background:var(--ca-raised); border:1px solid var(--ca-line); }
+.interview-speaker { color:var(--ca-fg); }
+.interview-start { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.interview-start select { background:var(--ca-inset); color:var(--ca-fg); border:1px solid var(--ca-line); }
+
+/* answer composer (multiple-choice first, free text always available) */
+.journey-discovery .interview-answer-composer,
+.interview-answer-composer { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.interview-choice-fieldset legend { color:var(--ca-fg); }
+.interview-choice-option { background:var(--ca-inset); color:var(--ca-fg); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.interview-choice-option:hover, .interview-choice-option:focus-within { border-color:var(--ca-teal); background:color-mix(in srgb,var(--ca-teal) 8%,var(--ca-inset)); }
+.interview-choice-option.interview-choice-selected { background:color-mix(in srgb,var(--ca-teal) 12%,var(--ca-inset)); border-color:var(--ca-teal); box-shadow:inset 0 0 0 1px var(--ca-teal); }
+.interview-choice-option input { accent-color:var(--ca-teal); }
+.interview-choice-letter { background:var(--ca-panel); color:var(--ca-teal); }
+.interview-choice-selected .interview-choice-letter { background:var(--ca-teal); color:var(--ca-accent-ink); }
+.interview-other-label, .interview-freeform-label, .interview-other-label small { color:var(--ca-fg); }
+.interview-composer-hint { color:var(--ca-muted); }
+.interview-completion-notice { border:1px solid color-mix(in srgb,var(--ca-good) 45%,var(--ca-line)); border-left:4px solid var(--ca-good); border-radius:var(--ca-r); background:color-mix(in srgb,var(--ca-good) 8%,var(--ca-panel)); }
+.interview-completion-notice strong { color:var(--ca-fg); }
+.interview-completion-notice p { color:var(--ca-muted); }
+
+/* specification review + exact-hash approval */
+.spec-review { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.specification-text { background:var(--ca-inset); border:1px solid var(--ca-line); color:var(--ca-fg); font-family:var(--ca-mono); }
+.spec-consent { color:var(--ca-fg); }
+.interview-objective { border:1px solid var(--ca-line); background:var(--ca-inset); border-radius:var(--ca-r-sm); }
+
+/* architecture + technical-lead + draft studios */
+.architect-stage { background:var(--ca-panel); border:1px solid var(--ca-line); border-left:3px solid var(--ca-sa); border-radius:var(--ca-r); }
+.architect-options { border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.architect-option { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.technical-plan-tasks > li { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.technical-plan-tasks code { color:color-mix(in srgb,var(--ca-teal) 70%,var(--ca-fg)); }
+.build-stage { background:var(--ca-panel); border:1px solid var(--ca-line); border-left:3px solid var(--ca-se); border-radius:var(--ca-r); }
+.draft-files > details { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+
+/* work shell surfaces */
+.mc-work-secondary, .mc-work-qa-details { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.mc-work-focus { background:var(--ca-panel); border:1px solid color-mix(in srgb,var(--ca-teal) 28%,var(--ca-line)); border-radius:var(--ca-r-lg); }
+
+/* ========================================================================
+   M-UX5 — Quality + Skills
+   ======================================================================== */
+.mc-destination > h2 { font-size:clamp(1.3rem,2.4vw,1.7rem); letter-spacing:-.02em; }
+.ca-dest-head { display:flex; align-items:flex-end; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.ca-dest-head .wb-kicker { display:block; margin-bottom:.25rem; }
+.ca-dest-head h2 { margin:0; }
+
+/* quality evidence tiles */
+.ca-evidence { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.75rem; margin:.3rem 0 .4rem; }
+.ca-ev { border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); background:var(--ca-panel); padding:.8rem .9rem; }
+.ca-ev .l { font-family:var(--ca-mono); font-size:.58rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ca-muted); display:block; }
+.ca-ev .v { font-weight:650; margin-top:.35rem; display:block; }
+.ca-ev .v.ca-no { color:var(--ca-muted); }
+
+.ca-report { border:1px solid var(--ca-line); border-radius:var(--ca-r); background:var(--ca-panel); padding:1rem 1.1rem; }
+.ca-report-head { display:flex; align-items:center; justify-content:space-between; gap:.6rem; flex-wrap:wrap; }
+.ca-path { font-family:var(--ca-mono); font-size:.82rem; overflow-wrap:anywhere; }
+.ca-finding { display:flex; gap:.7rem; align-items:flex-start; border-left:3px solid var(--sev,var(--ca-line));
+  background:var(--ca-inset); border-radius:var(--ca-r-sm); padding:.7rem .85rem; margin-top:.6rem; }
+.ca-finding[data-sev="high"] { --sev:var(--ca-bad); }
+.ca-finding[data-sev="med"] { --sev:var(--ca-att); }
+.ca-finding[data-sev="low"] { --sev:var(--ca-info); }
+.ca-sevchip { flex:none; font-family:var(--ca-mono); font-size:.6rem; letter-spacing:.06em; text-transform:uppercase;
+  border-radius:6px; padding:.18rem .5rem; color:var(--sev,var(--ca-fg));
+  background:color-mix(in srgb,var(--sev,var(--ca-line)) 16%,transparent);
+  border:1px solid color-mix(in srgb,var(--sev,var(--ca-line)) 40%,transparent); }
+.ca-finding-text { font-size:.84rem; line-height:1.5; min-width:0; overflow-wrap:anywhere; }
+.ca-quality .primary { justify-self:start; }
+
+/* skills: declared / installed / granted / used */
+.ca-skill-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.9rem; align-items:start; }
+.ca-skill-declared { grid-column:1 / -1; }
+@media (min-width:900px) { .ca-skill-declared { grid-column:span 2; } }
+.ca-skill-col { border:1px solid var(--ca-line); border-radius:var(--ca-r); background:var(--ca-panel); padding:1rem; min-width:0; }
+.ca-skill-col h3 { font-size:.9rem; }
+.ca-skill-cap { display:block; font-family:var(--ca-mono); font-size:.58rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ca-muted); margin-top:.15rem; margin-bottom:.6rem; }
+.ca-skill-empty { border:1px dashed var(--ca-line); border-radius:var(--ca-r-sm); padding:.9rem; color:var(--ca-muted); font-size:.82rem; text-align:center; }
+
+/* ========================================================================
+   M-UX6 — polish: theme toggle, loading states, shared chrome, light mode
+   ======================================================================== */
+.ca-theme-toggle { font-size:.95rem; line-height:1; padding:.45rem .6rem; }
+
+/* loading state: a quiet pulsing marker instead of bare text */
+.wb-main p[role="status"], .mc-destination > p[role="status"] {
+  display:flex; align-items:center; gap:.6rem; color:var(--ca-muted);
+}
+.wb-main p[role="status"]::before, .mc-destination > p[role="status"]::before {
+  content:""; width:9px; height:9px; border-radius:50%; flex:none;
+  background:var(--ca-teal); animation:ca-pulse 1.4s ease-in-out infinite;
+}
+
+/* History timeline */
+.mc-history li { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.mc-history p { color:var(--ca-fg); }
+.mc-history small { color:var(--ca-muted); }
+
+/* contextual drawer + inspector (shared, both themes) */
+.mc-context-drawer { background:var(--ca-panel); border-left:1px solid var(--ca-line); color:var(--ca-fg); }
+.mc-drawer-header, .mc-drawer-footer { border-color:var(--ca-line); }
+.mc-drawer-header small, .mc-drawer-fields dt { color:var(--ca-muted); }
+.mc-drawer-ledger li { border-color:var(--ca-line); }
+.mc-drawer-backdrop { background:color-mix(in srgb,var(--ca-bg) 72%,transparent); }
+.wb-inspector-row { border-color:var(--ca-line); }
+.wb-inspector-row span { color:var(--ca-muted); }
+.wb-inspector-disclosure { border-color:var(--ca-line); }
+.wb-inspector-disclosure > summary { color:var(--ca-fg); }
+
+/* ---- light mode: flatten dense legacy panels onto the light surface ----
+   Flat dark backgrounds collapse to the panel colour and their text darkens;
+   gradient-based agent avatars keep their identity (background-image survives).
+   Dark mode is untouched. */
+:root[data-theme="light"] .wb-agent-identities,
+:root[data-theme="light"] .owner-decision-inbox,
+:root[data-theme="light"] .team-workroom,
+:root[data-theme="light"] .verification-disclosure,
+:root[data-theme="light"] .source-explorer {
+  background:var(--ca-panel); color:var(--ca-fg); border-color:var(--ca-line);
+}
+:root[data-theme="light"] .wb-agent-identities *,
+:root[data-theme="light"] .owner-decision-inbox *,
+:root[data-theme="light"] .team-workroom *,
+:root[data-theme="light"] .verification-disclosure *,
+:root[data-theme="light"] .source-explorer * {
+  background-color:transparent;
+  border-color:var(--ca-line);
+  color:var(--ca-fg);
+}
+/* keep readable text on the coloured agent avatars/orbs */
+:root[data-theme="light"] .wb-avatar,
+:root[data-theme="light"] .wb-agent-emblem,
+:root[data-theme="light"] [class*="avatar"],
+:root[data-theme="light"] [class*="orb"] { color:#fff; }
+/* muted sub-text stays muted in these panels */
+:root[data-theme="light"] .wb-agent-identities small,
+:root[data-theme="light"] .owner-decision-inbox small,
+:root[data-theme="light"] .team-workroom small,
+:root[data-theme="light"] .verification-disclosure small,
+:root[data-theme="light"] .source-explorer small,
+:root[data-theme="light"] .wb-muted,
+:root[data-theme="light"] .hint { color:var(--ca-muted); }
+/* a light inset for code/pre blocks in those panels */
+:root[data-theme="light"] .source-explorer pre,
+:root[data-theme="light"] .verification-disclosure pre { background:var(--ca-inset); }
