@@ -125,8 +125,8 @@ public static class ImplementationPlanContract
         if (raw.Length > 16000)
             return "RESPONSE_TOO_LONG: Keep the entire response under 16000 characters.";
         var text = raw.Trim();
-        if (text.StartsWith("```json\\n", StringComparison.OrdinalIgnoreCase) &&
-            text.EndsWith("\\n```", StringComparison.Ordinal))
+        if (text.StartsWith("```json\n", StringComparison.OrdinalIgnoreCase) &&
+            text.EndsWith("\n```", StringComparison.Ordinal))
             text = text[8..^4].Trim();
         try
         {
