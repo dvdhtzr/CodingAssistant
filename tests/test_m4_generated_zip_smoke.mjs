@@ -272,3 +272,19 @@ test('running without explicit ZIP never touches Docker',()=>{
   assert.equal(check.status,0,check.stderr);
   assert.match(check.stdout,/NOT_RUN/);
 });
+
+
+test('internal API consumes JSON directly without user-facing ZIP artifact handoff',()=>{
+  const result=spawnSync(process.execPath,[
+    'tools/m4/smoke_generated_zip.mjs','--zip',
+    path.join(os.tmpdir(),'ca-definitely-does-not-exist.zip'),'--json',
+  ],{encoding:'utf8',timeout:5000});
+  assert.equal(result.status,2);
+  const parsed=JSON.parse(result.stdout.trim());
+  assert.equal(parsed.status,'BLOCKED');
+  assert.equal(parsed.generatedArtifactVerified,false);
+  assert.equal(parsed.browserSandbox,'DISABLED_CONTAINER_ONLY');
+  assert.equal(parsed.required,9);
+  assert.ok(!result.stdout.includes('Evidence:'));
+  assert.equal(result.stderr,'');
+});

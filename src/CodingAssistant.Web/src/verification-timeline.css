@@ -151,3 +151,30 @@
   .verification-scope-manifest li{display:grid;grid-template-columns:1fr auto}
   .verification-scope-manifest li strong{grid-column:1 / -1}
 }
+
+
+/* Single owner click: source-specific Docker smoke beside persisted source. */
+.verification-smoke{
+  display:flex;flex-wrap:wrap;align-items:center;gap:.7rem 1rem;
+  min-width:0;margin:0 0 1rem;padding:1rem 1.1rem;border:1px solid #476d83;
+  border-radius:11px;background:#192b3a;color:#e4eef7;
+}
+.verification-smoke>div:first-child{flex:1 1 15rem;min-width:0}
+.verification-smoke>div:first-child strong{font-size:.95rem}
+.verification-smoke p{font-size:.82rem;line-height:1.5;margin:.4rem 0;color:#d0dae5}
+.verification-smoke>button{min-width:9rem;align-self:center}
+.verification-smoke>[role="status"],.verification-smoke>[role="alert"]{
+  flex-basis:100%;margin:0
+}
+.verification-smoke [role="alert"]{color:#f6c7aa}
+.verification-smoke-result{
+  width:100%;background:#102734;border-radius:8px;padding:.8rem;
+  border:1px solid #456f79
+}
+.verification-smoke-result strong{color:#e1f4f3}
+.verification-smoke-result ul{margin:.5rem 0;padding-left:1.3rem;
+  font-size:.83rem;line-height:1.6;color:#f5d7b4}
+@media(max-width:760px){
+  .verification-smoke{padding:.8rem}
+  .verification-smoke>button{width:100%}
+}

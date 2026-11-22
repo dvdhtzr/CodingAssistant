@@ -2212,6 +2212,76 @@ try
             "M4.5 current approved Static Web run produces exact non-executable scope");
         Check(candidate.ScopeSha256 == Preview(jobScope, sourceFiles).ScopeSha256,
             "M4.5 same task/plan/source produces stable immutable scope digest");
+        // One-click smoke is bound to the same approved, exact source hash
+        // and requires an explicit click acknowledging container-only Chrome.
+        StaticWebProjectSmokeChecks();
+        void StaticWebProjectSmokeChecks()
+        {
+            bool ConsentDenied(StartSourceSmokeRequest request,
+                StaticWebVerificationScopePreview scope)
+            {
+                try
+                {
+                    SourceSmokeCoordinator.RequireOwnerConsent(request, scope);
+                    return false;
+                }
+                catch (StoreFailure) { return true; }
+            }
+            Check(!ConsentDenied(new StartSourceSmokeRequest(
+                candidate.ScopeSha256, true), candidate),
+                "One-click source smoke accepts exact current scope with owner opt-in");
+            Check(ConsentDenied(new StartSourceSmokeRequest(
+                candidate.ScopeSha256, false), candidate),
+                "One-click source smoke cannot silently bypass isolation disclosure");
+            Check(ConsentDenied(new StartSourceSmokeRequest(
+                "0" + candidate.ScopeSha256![1..], true), candidate),
+                "One-click source smoke denies mismatched source binding");
+            Check(ConsentDenied(new StartSourceSmokeRequest(
+                candidate.ScopeSha256, true),
+                Preview(jobScope, sourceFiles, latest: false)),
+                "One-click source smoke denies prior source run");
+            Check(ConsentDenied(new StartSourceSmokeRequest(
+                candidate.ScopeSha256, true),
+                Preview(jobScope with { State = "Running" }, sourceFiles)),
+                "One-click source smoke denies unfinished source");
+
+            var successful = System.Text.Json.JsonSerializer.Serialize(new {
+                status = "SMOKE_PASS_NOT_VERIFIED",
+                generatedArtifactVerified = false,
+                independentFunctionalVerification = false,
+                browserSandbox = "DISABLED_CONTAINER_ONLY",
+                passed = 9, required = 9, containerRemoved = true,
+                reason = (string?)null,
+                checks = new Dictionary<string, bool> {
+                    ["exact_source_hashes"] = true, ["non_root"] = true,
+                    ["no_host_mounts"] = true, ["root_write_denied"] = true,
+                    ["network_denied"] = true, ["javascript_syntax"] = true,
+                    ["local_assets_linked"] = true,
+                    ["browser_rendered"] = true,
+                    ["source_integrity_unchanged"] = true
+                }
+            });
+            var parsed = WindowsDockerSourceSmokeRunner.ParseRunnerResult(
+                successful);
+            Check(parsed.Status == "SMOKE_PASS_NOT_VERIFIED" &&
+                parsed.Passed == 9 && parsed.ContainerRemoved &&
+                parsed.Checks.Count == 9 &&
+                parsed.BrowserSandbox == "DISABLED_CONTAINER_ONLY",
+                "One-click source smoke is explicitly NOT VERIFIED");
+            Check(WindowsDockerSourceSmokeRunner.ParseRunnerResult(
+                successful.Replace("\"generatedArtifactVerified\":false",
+                    "\"generatedArtifactVerified\":true")).Status == "BLOCKED",
+                "Forcing a VERIFIED flag invalidates source smoke evidence");
+            Check(WindowsDockerSourceSmokeRunner.ParseRunnerResult(
+                successful.Replace("\"browser_rendered\":true",
+                    "\"browser_rendered\":false")).Status == "BLOCKED",
+                "Contradictory positive result with failed browser blocks");
+            Check(WindowsDockerSourceSmokeRunner.ParseRunnerResult(
+                "{\"malicious\":\"VERIFIED\"}").Status == "BLOCKED",
+                "Unknown runner response cannot certify source");
+        }
+
+
         Check(Preview(jobScope with { PlanSha256 = specSha },
             sourceFiles).Blockers.Contains("APPROVED_PLAN_MISMATCH"),
             "M4.5 stale plan digest blocks scope candidate");

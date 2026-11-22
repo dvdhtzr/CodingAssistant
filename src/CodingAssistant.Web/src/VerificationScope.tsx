@@ -2,6 +2,42 @@ import { useEffect, useState } from 'react';
 import { api } from './api';
 import type { EngineerRun, EngineerFile } from './EngineeringWorkspace';
 
+export interface SourceSmokeResponse {
+  engineeringRunId: string;
+  scopeSha256: string;
+  status: 'SMOKE_PASS_NOT_VERIFIED' | 'SMOKE_TEST_FAILED' | 'BLOCKED';
+  passed: number;
+  required: number;
+  containerRemoved: boolean;
+  browserSandbox: 'DISABLED_CONTAINER_ONLY';
+  reason: string | null;
+  checks: Record<string, boolean>;
+  verified: false;
+}
+
+export function smokeMatchesScope(
+  result: SourceSmokeResponse, scope: VerificationScope
+): boolean {
+  return result !== null && scope.status === 'SCOPE_CANDIDATE' &&
+    result.engineeringRunId === scope.engineeringRunId &&
+    result.scopeSha256 === scope.scopeSha256 &&
+    result.verified === false &&
+    result.browserSandbox === 'DISABLED_CONTAINER_ONLY' &&
+    ['SMOKE_PASS_NOT_VERIFIED','SMOKE_TEST_FAILED','BLOCKED']
+      .includes(result.status) &&
+    result.required === 9 && Number.isInteger(result.passed) &&
+    result.passed >= 0 && result.passed <= 9 &&
+    typeof result.containerRemoved === 'boolean' &&
+    result.checks !== null && typeof result.checks === 'object' &&
+    !Array.isArray(result.checks) &&
+    Object.keys(result.checks).length <= 9 &&
+    Object.values(result.checks).every(value => typeof value === 'boolean') &&
+    (result.status !== 'SMOKE_PASS_NOT_VERIFIED' ||
+      (result.containerRemoved && result.passed === 9 &&
+       Object.keys(result.checks).length === 9 &&
+       Object.values(result.checks).every(Boolean)));
+}
+
 export interface VerificationScopeFile {
   path: string;
   sha256: string;
@@ -157,6 +193,9 @@ export function EngineeringVerificationScope({ token, run, files }: {
 }) {
   const [scope, setScope] = useState<VerificationScope | null>(null);
   const [error, setError] = useState('');
+  const [smoke, setSmoke] = useState<SourceSmokeResponse | null>(null);
+  const [smokeBusy, setSmokeBusy] = useState(false);
+  const [smokeError, setSmokeError] = useState('');
   const sourceSignature = files.map(file => file.path + ':' + file.sha256)
     .sort().join('|');
   useEffect(() => {
@@ -164,6 +203,8 @@ export function EngineeringVerificationScope({ token, run, files }: {
     let pending = false;
     setScope(null);
     setError('');
+    setSmoke(null);
+    setSmokeError('');
     async function load() {
       if (pending) return;
       pending = true;
@@ -188,5 +229,71 @@ export function EngineeringVerificationScope({ token, run, files }: {
     const interval = window.setInterval(() => void load(), 8000);
     return () => { closed = true; window.clearInterval(interval); };
   }, [token, run.id, run.taskId, run.planSha256, run.state, sourceSignature]);
-  return <VerificationScopeView scope={scope} error={error}/>;
+  async function runSmoke() {
+    if (smokeBusy || !scope || !scopeMatchesRun(scope, run, files) ||
+        scope.status !== 'SCOPE_CANDIDATE') return;
+    setSmokeBusy(true);
+    setSmoke(null);
+    setSmokeError('');
+    try {
+      const result = await api<SourceSmokeResponse>(token,
+        '/api/tasks/' + run.taskId + '/engineering-runs/' + run.id +
+        '/source-smoke', {
+          scopeSha256: scope.scopeSha256,
+          // Clicking the clearly labeled control is the owner's explicit opt-in.
+          acceptContainerOnlyBrowserSandbox: true,
+        });
+      if (!smokeMatchesScope(result, scope))
+        throw new Error('The test report did not match this saved source.');
+      setSmoke(result);
+    } catch (cause) {
+      setSmokeError(cause instanceof Error ? cause.message :
+        'Docker smoke test could not start.');
+    } finally {
+      setSmokeBusy(false);
+    }
+  }
+  return <>
+    <VerificationScopeView scope={scope} error={error}/>
+    {scope?.status === 'SCOPE_CANDIDATE' && <section
+      aria-label="Test generated project"
+      className="verification-smoke">
+      <div>
+        <strong>Test this project</strong>
+        <p>A one-click, offline Docker smoke test of the saved files.
+          Chromium's internal sandbox is disabled inside the restricted
+          disposable container. Use only code generated for your own project.
+          This is not full functional verification.</p>
+      </div>
+      <button type="button" className="primary"
+        disabled={smokeBusy}
+        onClick={() => void runSmoke()}>
+        {smokeBusy ? 'Running browser smoke test…' :
+          'Test Project'}
+      </button>
+      {smokeBusy && <p role="status">
+        Running your saved source in an isolated container; no ZIP download
+        is needed.</p>}
+      {smokeError && <p role="alert">{smokeError}</p>}
+      {smoke && <div className="verification-smoke-result" role="status">
+        <strong>{smoke.status === 'SMOKE_PASS_NOT_VERIFIED'
+          ? 'Smoke checks passed — not fully verified'
+          : smoke.status === 'SMOKE_TEST_FAILED'
+            ? 'Source smoke checks failed' : 'Smoke test blocked'}</strong>
+        <p>{smoke.passed}/{smoke.required} source-specific checks passed.
+          Container removed: {smoke.containerRemoved ? 'Yes' : 'Not confirmed'}.
+          {smoke.reason ? ' ' + smoke.reason : ''}</p>
+        {Object.entries(smoke.checks).some(([, passed]) => !passed) &&
+          <ul aria-label="Failing source smoke checks">
+            {Object.entries(smoke.checks)
+              .filter(([, passed]) => !passed)
+              .map(([name]) => <li key={name}>
+                {name.replaceAll('_', ' ')}
+              </li>)}
+          </ul>}
+        <p>QA result: smoke-only, NOT VERIFIED. A passing render
+          does not establish that every button or requirement works.</p>
+      </div>}
+    </section>}
+  </>;
 }

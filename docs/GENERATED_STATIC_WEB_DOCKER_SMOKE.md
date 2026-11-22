@@ -88,3 +88,41 @@ M4.7 sandbox-on remains BLOCKED on this Windows Docker host. We do not
 silently alter or bypass its existing runtime gate. This standalone
 opt-in lane is intentionally separate from the unqualified registry,
 current API or background agent executor.
+
+
+## Mission Control: one-click project testing (preferred)
+
+**No manual ZIP download, patch file, command prompt, or new token.**
+After a successful Software Engineer run for an approved Static Web project,
+open **Software Engineer source artifacts** in Mission Control and choose
+**Test Project** under **Verification readiness**.
+
+The authenticated Windows API:
+1. Re-reads the latest persisted Engineering run and the approved plan,
+   specification, architecture, and Static Web runtime selection.
+2. Recomputes the exact immutable source scope and matches the
+   \`scopeSha256\` sent by that particular button click.
+3. Requires explicit opt-in from the click, which is labeled with the
+   Docker-only Chromium isolation risk. This is not general execution
+   permission and cannot be invoked for a blocked source scope.
+4. Internally assembles the already-saved source ZIP from SQLite in memory.
+   A short-lived ZIP file is created and removed by the local Windows runner,
+   entirely behind the scenes.
+5. Invokes the same reviewed Docker source smoke through Node's
+   shell-free process API and consumes the bounded \`--json\` result.
+6. Displays the nine check outcomes and concrete failures in Mission Control.
+   It never reports VERIFIED, never enables the runtime registry, and never
+   automatically runs an agent repair.
+
+Only one local test may run at a time. In this first integrated version,
+results remain in the open UI after the request completes; durable
+background jobs, detailed functional acceptance checks and bounded
+engineer repair are the next work. Closing the browser during the test
+may interrupt the request. The standalone \`--zip\` command still exists
+for diagnostics but is **not required for normal use**.
+
+The host-only Docker and reduced Chromium sandboxing tradeoff remain
+as documented above. Only use the button for projects you knowingly
+generated and own; do not test arbitrary third-party source. If Docker
+is not installed or configured, the UI displays a bounded BLOCKED
+result rather than pretending any browser test ran.
