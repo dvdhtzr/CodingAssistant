@@ -522,4 +522,88 @@ finally
         Directory.Delete(privateDirectory, recursive: true);
 }
 
+
+// M6: map static QA findings to their exact source file; no test success claims.
+var ownerTask = new string('e', 32);
+var ownerRun = new string('f', 32);
+var qaId = new string('a', 32);
+var overlayFiles = new[] { File("Demo/Service.cs",
+    "namespace Demo; public class Service { public void Save() {} }") };
+var ownerRunRecord = new EngineeringRun(ownerRun, ownerTask, 1,
+    new string('1',64), 1, new string('2',64),
+    new string('3',64), "local", "Generated", "SourceOnlyGenerated",
+    null, "2026-11-22T00:00:00Z", "2026-11-22T00:00:00Z");
+var ownerSource = new EngineeringRunSnapshot(ownerRunRecord,
+    Array.Empty<EngineeringAssignedTask>(),
+    Array.Empty<EngineeringRunEvent>(), overlayFiles);
+var ownerGraph = CodeAtlasIndexer.Index(ownerSource);
+var qaFinding = new QaFinding("Major", "Save persistence",
+    "Service.Save has no storage call", "Implement persistence");
+var qaRunRecord = new QaReviewRun(qaId, ownerTask, ownerRun,
+    QaReviewStore.Fingerprint(overlayFiles), 1,
+    new string('1',64), 1, new string('2',64),
+    new string('3',64), "local", "Reviewed", "StaticReviewOnly",
+    null, "2026-11-22T00:00:00Z", "2026-11-22T00:00:00Z");
+var qaReports = new[] { new QaFileReport(overlayFiles[0].Path,
+    overlayFiles[0].Sha256, new QaFileAssessment("Unverified static review",
+        new[] { qaFinding }, new[] { "Manually test Save" }),
+    "2026-11-22T00:00:00Z") };
+var reviewed = new QaReviewSnapshot(qaRunRecord, qaReports,
+    Array.Empty<QaReviewEvent>(), "Generated");
+var repair = new RepairCycle(new string('b',32), ownerTask,
+    new string('c',32), ownerRun, new string('d',32),
+    null, qaRunRecord.SourceSha256, "Generated", 1,
+    null, new[] { new RepairFindingReference("Demo/Service.cs",0,"Major",
+        qaFinding.Requirement,qaFinding.Evidence,
+        qaFinding.Recommendation,"NeedsVerification") },
+    "2026-11-22T00:00:00Z", "2026-11-22T00:00:00Z");
+var overlay = CodeAtlasEvidenceProjector.Project(ownerSource,
+    ownerGraph, reviewed, new[] { repair });
+var fileNodeId = ownerGraph.Nodes.Single(n => n.Kind == "File").Id;
+Check(overlay.VerificationStatus == "NOT_TESTED" &&
+    overlay.QaReviewStatus == "STATIC_REVIEW_ONLY",
+    "completed MAF QA static review never claims passed tests");
+Check(overlay.Findings.Count == 1 &&
+    overlay.Findings[0].FileNodeId == fileNodeId &&
+    overlay.Findings[0].Classification == "UNVERIFIED_QA_HYPOTHESIS",
+    "hypothesis attaches only to the exact existing file node");
+Check(overlay.Repairs.Count == 1 &&
+    overlay.Repairs[0].FileNodeIds.Contains(fileNodeId) &&
+    overlay.Repairs[0].State == "Generated",
+    "repair attempt is attached but never treated as resolved verification");
+
+var mismatchedReport = reviewed with {
+    Reports = new[] { qaReports[0] with { SourceSha256 = "different" } }
+};
+var staleMarker = CodeAtlasEvidenceProjector.Project(ownerSource,
+    ownerGraph, mismatchedReport, Array.Empty<RepairCycle>());
+Check(staleMarker.Findings.Count == 0 &&
+    staleMarker.Diagnostics.Contains("QA_FILE_EVIDENCE_MISMATCH:Demo/Service.cs"),
+    "report from another file hash cannot label current graph");
+var otherReview = reviewed with {
+    Job = qaRunRecord with { EngineeringRunId = new string('9',32) }
+};
+var otherOverlay = CodeAtlasEvidenceProjector.Project(ownerSource,
+    ownerGraph, otherReview, Array.Empty<RepairCycle>());
+Check(otherOverlay.Findings.Count == 0 &&
+    otherOverlay.QaReviewStatus == "NOT_REVIEWED" &&
+    otherOverlay.Diagnostics.Contains("QA_REVIEW_FOR_DIFFERENT_SOURCE_REVISION"),
+    "other-run QA findings are hidden from the current source graph");
+var wrongRepair = repair with { TaskId = new string('0', 32) };
+var scoped = CodeAtlasEvidenceProjector.Project(ownerSource,
+    ownerGraph, reviewed, new[] { wrongRepair });
+Check(scoped.Repairs.Count == 0,
+    "foreign-task repair cycles cannot appear on the current graph");
+bool invalidOverlay = false;
+try
+{
+    _ = CodeAtlasEvidenceProjector.Project(ownerSource,
+        ownerGraph with { RunId = new string('8', 32) }, reviewed, []);
+}
+catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+{
+    invalidOverlay = true;
+}
+Check(invalidOverlay, "graph and engineering-run mismatch is rejected");
+
 Console.WriteLine("CODE_ATLAS_SOURCE_GRAPH_PASS: " + checks + " assertions");
