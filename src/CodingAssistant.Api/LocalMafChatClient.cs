@@ -155,14 +155,41 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             throw new StoreFailure(hasThinking
                 ? "MODEL_THINKING_ONLY" : "MODEL_OUTPUT_REJECTED");
 
-        // Some Qwen templates place their thinking markers in content even
-        // with think:false. Never persist their reasoning as a specification.
-        if (purpose == MafAgentPurpose.Specification &&
-            (finalText.Contains("<think>", StringComparison.OrdinalIgnoreCase) ||
-             finalText.Contains("</think>", StringComparison.OrdinalIgnoreCase)))
+        // Some local Qwen templates place a complete <think>...</think> block
+        // inside message.content even when think:false. Use ONLY the content
+        // after a properly terminated reasoning block as the proposed answer.
+        // Never save or expose anything from the thinking section.
+        return purpose == MafAgentPurpose.Specification
+            ? StripClosedThinkingPrefix(finalText) : finalText;
+    }
+
+    /// <summary>
+    /// Accept the final response after a closed Qwen reasoning prefix. Some
+    /// Ollama templates omit the opening tag but retain the closing tag.
+    /// Open-only, nested, non-prefix or repeated tags are not safe to strip.
+    /// The caller still validates the extracted product specification.
+    /// </summary>
+    public static string StripClosedThinkingPrefix(string text)
+    {
+        const string open = "<think>";
+        const string close = "</think>";
+        var value = text.Trim();
+        var opening = value.IndexOf(open, StringComparison.OrdinalIgnoreCase);
+        var closing = value.IndexOf(close, StringComparison.OrdinalIgnoreCase);
+        if (opening < 0 && closing < 0)
+            return value;
+
+        // The model must finish its reasoning before the spec can be used.
+        if (closing < 0 || (opening >= 0 &&
+            (opening != 0 || closing <= opening + open.Length)))
             throw new StoreFailure("MODEL_THINKING_ONLY");
 
-        return finalText;
+        var answer = value[(closing + close.Length)..].Trim();
+        if (answer.Length == 0 ||
+            answer.Contains(open, StringComparison.OrdinalIgnoreCase) ||
+            answer.Contains(close, StringComparison.OrdinalIgnoreCase))
+            throw new StoreFailure("MODEL_THINKING_ONLY");
+        return answer;
     }
 
     // Public for model-free contract regression checks; no credentials/tools
