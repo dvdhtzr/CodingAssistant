@@ -113,3 +113,26 @@
 @media(prefers-reduced-motion:reduce){
   .atlas-replay *{transition:none;animation:none}
 }
+
+
+/* M6: source-file QA observations stay visually distinct from test results. */
+.atlas-node.atlas-qa-flag .atlas-node-core{
+  stroke:#e1ac62;stroke-width:2.6}
+.atlas-node.atlas-qa-flag .atlas-node-halo{
+  fill:#db9340;fill-opacity:.21}
+.atlas-qa-evidence,.atlas-repair-evidence{
+  border:1px solid #6b543a;border-radius:9px;padding:.65rem;
+  background:#30291f;margin:.7rem 0;color:#e5d6bd}
+.atlas-qa-evidence>strong,.atlas-repair-evidence>strong{
+  font-size:.72rem;color:#f0c990}
+.atlas-qa-evidence p,.atlas-repair-evidence p{margin:.35rem 0;font-size:.68rem}
+.atlas-qa-evidence article{border-top:1px solid #5a4e3d;margin:.55rem 0 0;
+  padding-top:.45rem;overflow-wrap:anywhere}
+.atlas-qa-evidence article b{font-size:.69rem;color:#f6dac0}
+.atlas-qa-evidence article small{display:block;line-height:1.45;
+  font-size:.65rem;color:#c3b2a0}
+.atlas-qa-summary{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center;
+  font-size:.69rem;color:#bcd9de;background:#192b35;
+  border:1px solid #3c5662;border-radius:9px;padding:.55rem .7rem;margin:.65rem 0}
+.atlas-qa-summary strong{color:#e4bf87}
+.atlas-qa-summary span+span{border-left:1px solid #42606a;padding-left:.55rem}
