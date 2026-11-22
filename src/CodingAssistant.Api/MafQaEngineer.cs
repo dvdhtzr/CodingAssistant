@@ -96,6 +96,10 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 "\n" + Policy,
             name: "QaEngineer",
             description: "Independent static source review and evidence-based defect hypotheses");
+        // Host supplies a small, source-derived graph summary as DATA.
+        // The independent QA agent still has ZERO callable functions.
+        var atlasIndex = new CodeAtlasAgentReadOnlyTools(
+            input.SourceRun.Id, input.AllFiles, input.File.Path);
         var messages = new List<ChatMessage> {
             new(ChatRole.User, "PROJECT OBJECTIVE (untrusted data):\n" + input.Objective),
             new(ChatRole.User, "ENGINEERING SUBMISSION STATUS (data): " +
@@ -115,6 +119,10 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 + "NOT inspected as source):\n" +
                 JsonSerializer.Serialize(input.AllFiles.Select(f =>
                     new { f.Path, f.Purpose, f.Sha256 }))),
+            new(ChatRole.User, "CODE ATLAS STATIC STRUCTURE IN THE ONE "
+                + "REVIEWED FILE (host-derived, untrusted source metadata; "
+                + "NOT compiled or tested):\n" +
+                JsonSerializer.Serialize(atlasIndex.ListFileSymbols())),
             new(ChatRole.User, "THIS IS THE ONLY FILE WHOSE FULL SOURCE YOU "
                 + "MAY CLAIM TO HAVE READ. FILE: " + input.File.Path +
                 "\nSHA256: " + input.File.Sha256 +
