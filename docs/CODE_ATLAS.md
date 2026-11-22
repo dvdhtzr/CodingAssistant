@@ -156,3 +156,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - The managed-code lexer masks comments, string/character literals and Java text blocks. It never invokes `javac`, restores a classpath, downloads dependencies, loads bytecode, or runs application source.
 - Java package/type/member detection is conservative and **structural only**. Record types are currently displayed as classes. Inline type bodies, complex multiline declarations, unbalanced braces, and unclosed literals are explicitly partial; inherited interfaces, resolved method calls, classpath symbols, generics and Java reflection are not claimed as semantic facts.
 - Graph size caps, deterministic source revisions, task/commit scoping and all owner/approval/QA boundaries are unchanged. Full Java semantic analysis remains follow-on work.
+
+## M8.8 — Cross-language explicit HTML references (bounded)
+
+- A read-only HTML tokenizer recognizes only quoted, literal local `<script src="...">` and `<link rel="stylesheet" href="...">` references that resolve to **an exact saved JS/TS/CSS file** within the same task/commit revision. Each `MarkupReferences` edge includes its actual source path, line and `LiteralMarkupReference` resolution.
+- The parser skips HTML comments and script/style/textarea/template raw-text bodies; it never runs JavaScript, loads web resources, uses a browser/URL resolver, executes npm tools or infers module bundling output. Remote/protocol-relative URLs, credentials, query strings, unsupported file types, unquoted/dynamic attributes, or missing targets never become edges.
+- Path escapes, missing local targets, duplicate attributes, malformed HTML, and bounded node/edge/tag limits produce partial-coverage diagnostics instead of imagined links.
+- Explicit HTML references are source facts, not proof that scripts load at runtime or that a CSS or JS dependency will build. Existing approval, sandbox, independent QA and identity boundaries are unchanged.

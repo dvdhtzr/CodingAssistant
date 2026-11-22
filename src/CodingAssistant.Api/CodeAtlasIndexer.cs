@@ -285,16 +285,29 @@ public static class CodeAtlasIndexer
                     new[] { "PYTHON_STRUCTURE_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
+        AtlasSnapshot javaGraph;
         try
         {
-            return CodeAtlasJavaIndexer.Enrich(pythonGraph, valid);
+            javaGraph = CodeAtlasJavaIndexer.Enrich(pythonGraph, valid);
         }
         catch (Exception)
         {
-            return pythonGraph with
+            javaGraph = pythonGraph with
             {
                 Diagnostics = pythonGraph.Diagnostics.Concat(
                     new[] { "JAVA_STRUCTURE_ANALYSIS_UNAVAILABLE" }).ToArray()
+            };
+        }
+        try
+        {
+            return CodeAtlasMarkupIndexer.Enrich(javaGraph, valid);
+        }
+        catch (Exception)
+        {
+            return javaGraph with
+            {
+                Diagnostics = javaGraph.Diagnostics.Concat(
+                    new[] { "MARKUP_REFERENCE_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
     }

@@ -888,6 +888,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
               'Java source declarations only' :
             displayGraph.coverage === 'PARTIAL_JAVA_STRUCTURE' ?
               'Partial Java source structure' :
+            displayGraph.coverage === 'MARKUP_STATIC_REFERENCES_ONLY' ?
+              'Literal HTML script/style references' :
+            displayGraph.coverage === 'PARTIAL_MARKUP_STATIC_REFERENCES' ?
+              'Partial HTML reference coverage' :
+            displayGraph.coverage.includes('MARKUP_STATIC_REFERENCES') ?
+              'Mixed source analysis · literal HTML references' :
             displayGraph.coverage.includes('JAVA_STRUCTURE') ?
               'Mixed source analysis · Java declarations only' :
             displayGraph.coverage.includes('PYTHON_STRUCTURE') ?
