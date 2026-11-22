@@ -715,7 +715,10 @@ public static class CodeAtlasEcmaIndexer
                 // and incompatible kinds cannot be safely linked.
                 if (localBindings.Contains(name))
                 {
-                    if (!ownTypes.TryGetValue(kind + "|" + name, out var count)
+                    var declarationKind = kind == "Class" ?
+                        "class" : "interface";
+                    if (!ownTypes.TryGetValue(
+                        declarationKind + "|" + name, out var count)
                         || count != 1 ||
                         bindings.Any(b => b.LocalName == name))
                         return null;
