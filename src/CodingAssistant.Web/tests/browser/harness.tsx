@@ -6,6 +6,8 @@ import { DecisionInboxView, buildDecisionInbox } from '../../src/OwnerDecisionIn
 import { SourceArtifactExplorer } from '../../src/SourceArtifactExplorer';
 import { TeamWorkroomView, type TeamEvidence } from '../../src/TeamWorkroom';
 import { VerificationTimelineView } from '../../src/VerificationTimeline';
+import { VerificationScopeView, type VerificationScope }
+  from '../../src/VerificationScope';
 import { JourneyStage, JourneyStatusStrip, journeySteps, type JourneyId }
   from '../../src/ProjectJourney';
 import '../../src/styles.css';
@@ -98,6 +100,18 @@ const teamFixture: TeamEvidence = {
   },
 };
 
+const scopeFixture: VerificationScope = {
+  schemaVersion: 1, taskId: 'a'.repeat(32), engineeringRunId: 'c'.repeat(32),
+  planRevision: 1, planSha256: 'b'.repeat(64),
+  specificationVersion: 2, specificationSha256: 'a'.repeat(64),
+  architectureSha256: 'd'.repeat(64), model: 'qwen3.5:9b',
+  sourceFingerprint: 'e'.repeat(64), scopeSha256: 'f'.repeat(64),
+  status: 'SCOPE_CANDIDATE', executionEnabled: false,
+  verificationStatus: 'GENERATED_NOT_TESTED', blockers: [],
+  files: [{ path: 'index.html', sha256: '1'.repeat(64), utf8Bytes: 240 },
+    { path: 'app.js', sha256: '2'.repeat(64), utf8Bytes: 181 }],
+};
+
 function BrowserScenario() {
   const [active, setActive] = useState<JourneyId>('discovery');
   const [submitted, setSubmitted] = useState('');
@@ -152,6 +166,10 @@ function BrowserScenario() {
             path: 'index.html', detail: 'Saved JavaScript not linked from HTML' },
         ] },
     }}/>
+    <VerificationScopeView scope={scopeFixture}/>
+    <VerificationScopeView scope={{ ...scopeFixture, status: 'BLOCKED',
+      blockers: ['MISSING_ROOT_INDEX_HTML', 'SOURCE_FILE_HASH_MISMATCH'],
+      scopeSha256: null, sourceFingerprint: null, files: [] }}/>
     <SourceArtifactExplorer
       source="MAF Software Engineer"
       state="Generated" runId={'f'.repeat(32)} isCurrent
