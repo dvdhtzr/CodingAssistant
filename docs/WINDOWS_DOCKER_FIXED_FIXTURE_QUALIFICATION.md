@@ -89,6 +89,38 @@ Windows Docker Desktop attempt. The result must remain BLOCKED if
 the host still cannot launch the guest. See official
 [Docker PID namespace documentation](https://docs.docker.com/reference/cli/docker/container/run/#pid-settings---pid).
 
+## M4.2c — Real Windows 16/18: two Chromium-only failures
+
+The owner ran the real Windows Docker Desktop fixed guest and observed
+16 of 18 successful security/functional observations, with
+container absent after run: true. The only failures were
+chromium_working_fixture_executed and chromium_broken_fixture_stayed_inert.
+This means Node and the remaining security probes ran successfully; it
+does NOT qualify browser behavior or any untrusted application.
+
+Playwright distributes a dedicated Chromium headless shell in its browser
+images. This guest now prefers the fixed image's headless-shell binary for
+headless DOM testing, falling back to full Chromium only when headless
+shell is unavailable. It also removes the unnecessary no-zygote argument
+and disables crash reporting. The existing no-sandbox exception is still
+strictly limited to these two frozen trusted HTML controls.
+
+The guest sends a strict version-2 JSON envelope with the same 18
+mandatory Boolean cases plus THREE independently validated, allowlisted
+Chromium diagnostic fields: binary (HEADLESS_SHELL, FULL_CHROMIUM,
+BINARY_NOT_FOUND or DISCOVERY_FAILED), working and broken. Outcome
+categories include PASS, CHROMIUM_TIMEOUT, CHROMIUM_EXIT_NONZERO,
+CHROMIUM_SHARED_LIBRARY_ERROR, CHROMIUM_RESOURCE_EXHAUSTED and
+CHROMIUM_DOM_MISSING_MARKER. No raw browser stderr, environment, paths
+or arbitrary process output is persisted or printed. An unrecognized
+diagnostic category makes the host BLOCKED.
+
+Model-free CI tests headless-binary preference, classification, strict
+envelope validation, and the 16/18 failure path, not actual owner-host
+Docker Desktop execution. An owner-host rerun is still required.
+No change to the Static Web untrusted-source authorization gate.
+Reference: https://playwright.dev/docs/browsers#chromium-headless-shell .
+
 ## Still required before model-generated source may execute
 
 - Independently pinned Node/Playwright/Chromium evaluator and reviewed dependencies with browser sandbox suitable for untrusted source
