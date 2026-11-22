@@ -317,7 +317,7 @@ public sealed class EngineeringRunStore(
         tx.Commit();
     }
 
-    public void CompleteTask(string taskId, string runId, string workItemId,
+    public AtlasSourceEvent? CompleteTask(string taskId, string runId, string workItemId,
         EngineeringChangeSet changes)
     {
         ValidId(taskId); ValidId(runId);
@@ -375,6 +375,9 @@ public sealed class EngineeringRunStore(
         if (existing.Count > MaxDistinctFiles || total > MaxTotalCharacters)
             throw new StoreFailure("PROJECT_SIZE_LIMIT");
 
+        // Compare committed source hashes inside this same transaction. Atlas
+        // events must never claim a file changed if the source save rolled back.
+        var beforeAtlas = EngineeringAtlasLedger.CaptureHashes(db, tx, runId);
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var file in safe.Files)
         {
@@ -392,6 +395,8 @@ public sealed class EngineeringRunStore(
                 ("@purpose", file.Purpose), ("@content", file.Content),
                 ("@sha", sha), ("@item", workItemId), ("@now", now));
         }
+        var atlasEvent = EngineeringAtlasLedger.Append(
+            db, tx, runId, workItemId, beforeAtlas);
         TaskStore.Execute(db, tx, """
             UPDATE engineering_run_tasks SET state='Completed',
                 summary=@summary,completed_utc=@now
@@ -406,6 +411,7 @@ public sealed class EngineeringRunStore(
             workItemId + ": " + safe.Files.Count +
             " complete source file replacement(s) persisted (not tested)");
         tx.Commit();
+        return atlasEvent;
     }
 
     public void Finish(string taskId, string runId, bool success, string? reason)
