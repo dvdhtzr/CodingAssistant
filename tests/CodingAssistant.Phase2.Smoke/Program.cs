@@ -1276,6 +1276,42 @@ try
                   .GetProperty("id").GetString() == repairProposalId,
             "R1 proposal survives a new SQLite read");
 
+    // Host-owned classification is not authorization to repair or execute code.
+    var triagePath = proposalPath + "/" + repairProposalId + "/triage";
+    var classification = new ClassifyRepairFindingRequest(
+        "app.js", 0, "NeedsVerification",
+        "Static QA has not established a functional test failure");
+    using (var invalidTriage = await Post(client, triagePath,
+        new ClassifyRepairFindingRequest("not-a-file", 0,
+            "ImplementationDefect", "No verified evidence exists for that file")))
+        Check(invalidTriage.StatusCode == HttpStatusCode.BadRequest,
+            "triage rejects finding identities absent from the immutable QA record");
+    using (var unsafeTriage = await Post(client, triagePath,
+        new ClassifyRepairFindingRequest("app.js", 0,
+            "ExecuteAndRepair", "Attempt to authorize model execution directly")))
+        Check(unsafeTriage.StatusCode == HttpStatusCode.BadRequest,
+            "triage cannot become model execution authorization");
+    using (var triaged = await Post(client, triagePath, classification))
+    using (var body = await Body(triaged))
+        Check(triaged.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("classification").GetString() ==
+                  "NeedsVerification" &&
+              body.RootElement.GetProperty("proposalId").GetString() ==
+                  repairProposalId,
+            "classification records a non-executing owner triage decision");
+    using (var again = await Post(client, triagePath, classification))
+        Check(again.StatusCode == HttpStatusCode.OK,
+            "repeated identical owner classification is idempotent");
+    using (var conflict = await Post(client, triagePath,
+        classification with { Classification = "ImplementationDefect" }))
+        Check(conflict.StatusCode == HttpStatusCode.Conflict,
+            "append-only triage refuses conflicting reclassification");
+    using (var decisions = await client.GetAsync(triagePath))
+    using (var body = await Body(decisions))
+        Check(decisions.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("decisions").GetArrayLength() == 1,
+            "triage decision is durably readable without source mutation");
+
     // Real FlowBoard failure: the first source file survives but a later
     // engineering task fails. Static QA must accept only the immutable saved
     // partial artifact, and the status must remain clearly incomplete.
@@ -1404,6 +1440,11 @@ try
         new CreateRepairProposalRequest(qaReviewId)))
         Check(staleProposal.StatusCode == HttpStatusCode.Conflict,
             "repair proposal replay fails after a newer engineering source is saved");
+    using (var staleTriage = await Post(client, triagePath,
+        classification with { Classification = "ImplementationDefect" }))
+        Check(staleTriage.StatusCode == HttpStatusCode.Conflict,
+            "stale source cannot receive a new classification");
+
 
 
     using (var noHash = await Post(client, boundPath, approvedRequest))
