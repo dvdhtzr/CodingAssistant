@@ -51,7 +51,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             MafAgentPurpose.Interview => 750,
             MafAgentPurpose.Specification => 3500,
             MafAgentPurpose.TechnicalLead => 3500,
-            MafAgentPurpose.SoftwareEngineer => 6000,
+            MafAgentPurpose.SoftwareEngineer => 8000,
             MafAgentPurpose.QaEngineer => 2200,
             _ => 1800
         };
@@ -70,7 +70,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             {
                 temperature = purpose == MafAgentPurpose.Architecture ? 0.15 : 0.2,
                 num_predict = maxTokens,
-                num_ctx = 8192
+                num_ctx = purpose == MafAgentPurpose.SoftwareEngineer ? 16384 : 8192
             }
         };
 
@@ -103,6 +103,13 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             if (payload.Length > 130_000)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             using var decoded = JsonDocument.Parse(payload);
+            if (decoded.RootElement.ValueKind != JsonValueKind.Object)
+                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            if (purpose == MafAgentPurpose.SoftwareEngineer &&
+                decoded.RootElement.TryGetProperty("done_reason", out var done) &&
+                done.ValueKind == JsonValueKind.String &&
+                done.GetString() == "length")
+                throw new StoreFailure("MODEL_OUTPUT_TRUNCATED");
             if (decoded.RootElement.ValueKind != JsonValueKind.Object ||
                 !decoded.RootElement.TryGetProperty("message", out var message) ||
                 message.ValueKind != JsonValueKind.Object ||
