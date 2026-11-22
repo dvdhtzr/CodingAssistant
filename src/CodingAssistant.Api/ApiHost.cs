@@ -95,6 +95,9 @@ public static class ApiHost
         engineeringRuns.Initialize();
         var atlasLedger = new EngineeringAtlasLedger(store, engineeringRuns);
         atlasLedger.Initialize();
+        var atlasImports = new CodeAtlasRepositoryImportStore(store,
+            new PublicGitHubCommitArchiveDownloader());
+        atlasImports.Initialize();
         engineeringRuns.MarkInterruptedOnStartup();
         var qaReviews = new QaReviewStore(store, implementationPlans);
         qaReviews.Initialize();
@@ -172,6 +175,7 @@ public static class ApiHost
         builder.Services.AddSingleton(implementationPlans);
         builder.Services.AddSingleton(engineeringRuns);
         builder.Services.AddSingleton(atlasLedger);
+        builder.Services.AddSingleton(atlasImports);
         builder.Services.AddSingleton<IEngineeringTaskModel>(softwareEngineer);
         builder.Services.AddSingleton<EngineeringRunCoordinator>();
         builder.Services.AddSingleton(qaReviews);
@@ -573,6 +577,23 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(db.Get(id, runId))));
+        // M7: import only a public, exact-commit GitHub source archive.
+        // No repo scripts, assembly loading, shell or untrusted execution.
+        app.MapGet("/api/tasks/{id}/atlas-imports",
+            (string id, CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(db.List(id))));
+        app.MapPost("/api/tasks/{id}/atlas-imports",
+            (string id, AtlasImportGitHubRequest request,
+             CodeAtlasRepositoryImportStore db, CancellationToken cancellation) =>
+                SafeAsync(async () => Results.Ok(
+                    await db.ImportAsync(id, request, cancellation))));
+        app.MapGet("/api/tasks/{id}/atlas-imports/{importId}",
+            (string id, string importId, CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(db.Get(id, importId))));
+        app.MapGet("/api/tasks/{id}/atlas-imports/{importId}/file",
+            (string id, string importId, string path,
+             CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(db.GetFile(id, importId, path))));
         // Atlas is a read-only projection of persisted source. It performs
         // syntax parsing only; it does not compile or execute user code.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas",
