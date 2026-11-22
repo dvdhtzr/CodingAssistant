@@ -144,12 +144,16 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         {
             using var decoded = JsonDocument.Parse(payload);
             var root = decoded.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return "non-object-json-response";
             var done = root.TryGetProperty("done_reason", out var reason) &&
                 reason.ValueKind == JsonValueKind.String
                 ? reason.GetString() : "missing";
             var promptTokens = root.TryGetProperty("prompt_eval_count", out var prompt) &&
+                prompt.ValueKind == JsonValueKind.Number &&
                 prompt.TryGetInt32(out var p) ? p : 0;
             var completionTokens = root.TryGetProperty("eval_count", out var eval) &&
+                eval.ValueKind == JsonValueKind.Number &&
                 eval.TryGetInt32(out var e) ? e : 0;
             var chars = 0;
             var hasThinking = false;
