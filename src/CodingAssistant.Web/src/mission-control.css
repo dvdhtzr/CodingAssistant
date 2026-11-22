@@ -893,9 +893,21 @@ a { color: #91e2d8; }
   white-space: normal;
 }
 .interview-ready-action {
-  margin-top: .35rem;
-  align-self: flex-end;
-  font-size: .8rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .6rem 1rem;
+  width: 100%;
+  margin: .45rem 0;
+}
+.interview-ready-action .hint {
+  flex: 1 1 260px;
+  margin: 0;
+}
+.interview-ready-action button {
+  flex: none;
+  white-space: normal;
 }
 @media (max-width: 760px) {
   .journey-discovery .interview-transcript {
