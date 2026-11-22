@@ -57,7 +57,7 @@ public sealed class RepairCycleStore(
         TaskStore.Execute(db, null, """
             UPDATE repair_cycles SET state='Interrupted',
                 error_code='PROCESS_INTERRUPTED',updated_utc=@now
-            WHERE state='Running'
+            WHERE state IN ('Running','QaRunning')
             """, ("@now", DateTimeOffset.UtcNow.ToString("O")));
     }
 
