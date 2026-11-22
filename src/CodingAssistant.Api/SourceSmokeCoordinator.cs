@@ -51,7 +51,7 @@ public sealed class WindowsDockerSourceSmokeRunner(string? repositoryRoot = null
         foreach (var start in starts)
         {
             if (string.IsNullOrWhiteSpace(start)) continue;
-            var current = new DirectoryInfo(Path.GetFullPath(start));
+            DirectoryInfo? current = new DirectoryInfo(Path.GetFullPath(start));
             for (var i = 0; i < 8 && current is not null; i++,
                  current = current.Parent)
             {
