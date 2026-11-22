@@ -26,8 +26,9 @@ const noop = () => {};
 before(async () => {
   vite = await createServer({
     configFile: false,
+    optimizeDeps: { noDiscovery: true, include: [] },
     root: process.cwd(),
-    server: { middlewareMode: true },
+    server: { middlewareMode: true, hmr: false },
     appType: 'custom',
   });
   ({ WorkbenchSidebar, WorkbenchInspector, ProjectOverview } =
