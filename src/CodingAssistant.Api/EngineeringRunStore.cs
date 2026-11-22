@@ -379,6 +379,13 @@ public sealed class EngineeringRunStore(
         // Compare committed source hashes inside this same transaction. Atlas
         // events must never claim a file changed if the source save rolled back.
         var beforeAtlas = EngineeringAtlasLedger.CaptureHashes(db, tx, runId);
+        AtlasSnapshot? previousGraph = null;
+        try { previousGraph = EngineeringAtlasLedger.CaptureGraph(db, tx, runId); }
+        catch (Exception)
+        {
+            // An indexer failure must not prevent saving authorized source.
+            // The file ledger remains authoritative and can be replayed.
+        }
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var file in safe.Files)
         {
@@ -396,8 +403,14 @@ public sealed class EngineeringRunStore(
                 ("@purpose", file.Purpose), ("@content", file.Content),
                 ("@sha", sha), ("@item", workItemId), ("@now", now));
         }
+        AtlasSnapshot? currentGraph = null;
+        try { currentGraph = EngineeringAtlasLedger.CaptureGraph(db, tx, runId); }
+        catch (Exception)
+        {
+            // Source-only work remains valid even if graph enrichment fails.
+        }
         var atlasEvent = EngineeringAtlasLedger.Append(
-            db, tx, runId, workItemId, beforeAtlas);
+            db, tx, runId, workItemId, beforeAtlas, previousGraph, currentGraph);
         TaskStore.Execute(db, tx, """
             UPDATE engineering_run_tasks SET state='Completed',
                 summary=@summary,completed_utc=@now
