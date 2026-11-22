@@ -16,7 +16,9 @@ const CASES=Object.freeze([
 ]);
 function sha(buf){return createHash('sha256').update(buf).digest('hex');}
 function safe(p){return typeof p==='string'&&p.length<=140&&
-  /^(?:[A-Za-z0-9_-]+\/){0,3}[A-Za-z0-9_-]+\.(?:html|css|js|json)$/.test(p);}
+  /^(?:[A-Za-z0-9_-]+\/){0,3}[A-Za-z0-9_-]+\.(?:html|css|js|json)$/.test(p)&&
+  !p.split('/').some(x=>['node_modules','bin','obj','artifacts']
+    .includes(x.toLowerCase()));}
 function denied(fn){try{fn();return false;}catch{return true;}}
 async function netDenied(){
   return await new Promise(resolve=>{
