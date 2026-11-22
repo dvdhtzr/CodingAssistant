@@ -186,27 +186,30 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
                 "(do not reinterpret or override):\n" +
                 JsonSerializer.Serialize(architecture.ApprovedChoices))
         };
-        var response = await InvokeAsync("TechnicalLead",
-            MafAgentPurpose.TechnicalLead, TechnicalLeadPolicy,
-            model, history, cancellation);
-        try
+        // A rejected model response is never accepted as a plan. Retries receive
+        // only safe contract diagnostics (never raw model output or secrets).
+        // Three attempts total keeps inference bounded on local hardware.
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            return ImplementationPlanContract.Parse(response);
-        }
-        catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
-        {
-            history.Add(new ChatMessage(ChatRole.User,
-                "The previous response did not match the bounded implementation " +
-                "plan JSON contract. Return ONLY valid JSON with a 20-1800 " +
-                "character summary, 1-8 tasks in dependency order (each ID " +
-                "unique kebab-case, dependsOn only earlier IDs, description " +
-                "and acceptanceCriteria), 1-8 testStrategy items, and 0-8 " +
-                "risks. Respect the exact approved architecture."));
-            var retry = await InvokeAsync("TechnicalLead",
+            var response = await InvokeAsync("TechnicalLead",
                 MafAgentPurpose.TechnicalLead, TechnicalLeadPolicy,
                 model, history, cancellation);
-            return ImplementationPlanContract.Parse(retry);
+            if (ImplementationPlanContract.TryParse(response, out var outline,
+                    out var reason))
+                return outline!;
+            if (attempt == 2)
+                break;
+            history.Add(new ChatMessage(ChatRole.User,
+                "Your previous implementation plan was rejected by the " +
+                "strict validator. Reason: " + reason + "\\n" +
+                "Regenerate the COMPLETE plan as one JSON object using the " +
+                "exact documented fields. Do not add markdown or commentary. " +
+                "Preserve the owner's approved technology stack and architecture. " +
+                "Tasks must be dependency-ordered with unique kebab-case IDs; " +
+                "use 1-8 tasks, 1-8 testStrategy items, 0-8 risks. " +
+                "This is a correction request, not implementation approval."));
         }
+        throw new StoreFailure("MODEL_OUTPUT_REJECTED");
     }
 
 }
