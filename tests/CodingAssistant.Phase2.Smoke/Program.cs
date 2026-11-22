@@ -1400,6 +1400,11 @@ try
               qaModel.ReviewedFiles.Count == 4,
             "QA refuses superseded engineering source even under the same plan");
     engineeringStore.Interrupt(taskBound.Id, supersedingSource.Id);
+    using (var staleProposal = await Post(client, proposalPath,
+        new CreateRepairProposalRequest(qaReviewId)))
+        Check(staleProposal.StatusCode == HttpStatusCode.Conflict,
+            "repair proposal replay fails after a newer engineering source is saved");
+
 
     using (var noHash = await Post(client, boundPath, approvedRequest))
         Check(noHash.StatusCode == HttpStatusCode.Conflict,
