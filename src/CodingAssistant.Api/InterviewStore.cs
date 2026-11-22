@@ -25,7 +25,9 @@ public sealed record InterviewSnapshot(
     IReadOnlyList<InterviewMessage> Messages, InterviewSpecification? Specification);
 public sealed record InterviewTurnRequest(
     int ExpectedSequence, string? Message, string? Model);
-public sealed record SpecificationRequest(int ExpectedSequence);
+// The human can explicitly select another installed local model for drafting.
+// This never changes the model or decisions of the saved interview.
+public sealed record SpecificationRequest(int ExpectedSequence, string? Model = null);
 public sealed record ApproveSpecificationRequest(int Version, string? Sha256);
 
 public interface IInterviewModel
@@ -284,9 +286,11 @@ public sealed class InterviewStore(TaskStore tasks)
     }
 
     public InterviewSnapshot CommitSpecification(
-        string taskId, int expectedSequence, string content)
+        string taskId, int expectedSequence, string content, string? model = null)
     {
         ValidateId(taskId);
+        if (model is not null && !LocalInterviewModel.AllowedModel(model))
+            throw new StoreFailure("INVALID_MODEL");
         var specification = ValidSpecification(content);
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
@@ -296,6 +300,7 @@ public sealed class InterviewStore(TaskStore tasks)
         if (current != expectedSequence || session is null ||
             !messages.Any(x => x.Role == "owner"))
             throw new StoreFailure("STALE_INTERVIEW");
+        var selectedModel = model ?? session.Value.Model;
         var prior = LastSpec(db, tx, taskId);
         var version = (prior?.Version ?? 0) + 1;
         var sha = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
@@ -310,7 +315,7 @@ public sealed class InterviewStore(TaskStore tasks)
                 task_id,version,model,content,sha256,status,created_utc)
             VALUES(@task,@version,@model,@content,@sha,'Draft',@utc)
             """, ("@task", taskId), ("@version", version),
-            ("@model", session.Value.Model),
+            ("@model", selectedModel),
             ("@content", specification), ("@sha", sha),
             ("@utc", DateTimeOffset.UtcNow.ToString("O")));
         tx.Commit();
