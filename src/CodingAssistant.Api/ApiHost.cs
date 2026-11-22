@@ -99,6 +99,8 @@ public static class ApiHost
         qaReviews.MarkInterruptedOnStartup();
         var repairProposals = new RepairProposalStore(store);
         repairProposals.Initialize();
+        var repairTriage = new RepairTriageStore(store);
+        repairTriage.Initialize();
         var qaEngineer = qaReviewerOverride ?? new MafQaEngineer();
         var sourceSmokeRunner = sourceSmokeOverride ??
             new WindowsDockerSourceSmokeRunner(settings.RepositoryRoot);
@@ -168,6 +170,7 @@ public static class ApiHost
         builder.Services.AddSingleton<EngineeringRunCoordinator>();
         builder.Services.AddSingleton(qaReviews);
         builder.Services.AddSingleton(repairProposals);
+        builder.Services.AddSingleton(repairTriage);
         builder.Services.AddSingleton<IQaSourceReviewer>(qaEngineer);
         builder.Services.AddSingleton<QaReviewCoordinator>();
         builder.Services.AddSingleton<ILocalSourceSmokeRunner>(sourceSmokeRunner);
@@ -600,6 +603,13 @@ public static class ApiHost
                 Safe(() => Results.Created(
                     $"/api/tasks/{id}/repair-proposals/latest",
                     db.Propose(id, request))));
+        app.MapGet("/api/tasks/{id}/repair-proposals/{proposalId}/triage",
+            (string id, string proposalId, RepairTriageStore db) =>
+                Safe(() => Results.Ok(new { decisions = db.List(id, proposalId) })));
+        app.MapPost("/api/tasks/{id}/repair-proposals/{proposalId}/triage",
+            (string id, string proposalId, ClassifyRepairFindingRequest request,
+             RepairTriageStore db) =>
+                Safe(() => Results.Ok(db.Classify(id, proposalId, request))));
         app.MapGet("/api/tasks/{id}/qa-reviews/latest",
             (string id, QaReviewStore db) =>
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
