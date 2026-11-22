@@ -55,6 +55,15 @@ export interface AtlasSourceEventPage {
   events: AtlasSourceEvent[];
 }
 export interface AtlasPosition { x: number; y: number; depth: number; }
+export interface AtlasPathResult {
+  fromId: string;
+  toId: string;
+  found: boolean;
+  nodeIds: string[];
+  edges: AtlasEdge[];
+  visited: number;
+  truncated: boolean;
+}
 export interface AtlasView {
   nodes: AtlasNode[];
   edges: AtlasEdge[];
@@ -209,6 +218,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     'all' | 'incoming' | 'outgoing'>('all');
   const [followBuild, setFollowBuild] = useState(true);
   const [recentIds, setRecentIds] = useState<string[]>([]);
+  const [traceFrom, setTraceFrom] = useState<string | null>(null);
+  const [traceResult, setTraceResult] = useState<AtlasPathResult | null>(null);
+  const [traceError, setTraceError] = useState('');
+  const [traceBusy, setTraceBusy] = useState(false);
   const [sourceEvents, setSourceEvents] = useState<AtlasSourceEvent[]>([]);
   const [replayStatus, setReplayStatus] = useState('');
   const [zoom, setZoom] = useState(1);
@@ -226,6 +239,9 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     revision.current = '';
     lastNodeIds.current = [];
     setRecentIds([]);
+    setTraceFrom(null);
+    setTraceResult(null);
+    setTraceError('');
     setSourceEvents([]);
     setReplayStatus('');
   }, [runId]);
@@ -247,6 +263,8 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
         setSnapshot(value);
         setError('');
         if (existing && existing !== value.sourceRevision) {
+          setTraceResult(null);
+          setTraceError('');
           setRecentIds(added.map(n => n.id));
           if (followBuild && added.length) {
             // Follow a node that the current abstraction level can actually
@@ -380,8 +398,27 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     .filter(change => change.kind === 'Modified')
     .map(change => change.path) ?? []);
 
+  async function tracePath(to: string) {
+    if (!traceFrom || traceBusy) return;
+    setTraceBusy(true);
+    setTraceError('');
+    setTraceResult(null);
+    try {
+      const path = await api<AtlasPathResult>(token,
+        '/api/tasks/' + taskId + '/engineering-runs/' + runId +
+        '/atlas/path?from=' + encodeURIComponent(traceFrom) +
+        '&to=' + encodeURIComponent(to) + '&maxHops=6');
+      if (path.fromId !== traceFrom || path.toId !== to)
+        throw new Error('Path identity mismatch');
+      setTraceResult(path);
+    } catch {
+      setTraceError('Could not trace this source dependency path.');
+    } finally { setTraceBusy(false); }
+  }
+
   function reset() {
     setSelected(null); setFocus(null); setQuery('');
+    setTraceFrom(null); setTraceResult(null); setTraceError('');
     setZoom(1); setOffset({ x: 0, y: 0 });
   }
 
@@ -472,9 +509,14 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
                   if (!from || !to) return null;
                   const relevant = selected &&
                     (edge.sourceId === selected || edge.targetId === selected);
+                  const traced = traceResult?.edges.some(pathEdge =>
+                    pathEdge.kind === edge.kind &&
+                    pathEdge.sourceId === edge.sourceId &&
+                    pathEdge.targetId === edge.targetId);
                   return <line key={edge.kind + edge.sourceId + edge.targetId}
                     x1={from.x} y1={from.y} x2={to.x} y2={to.y}
-                    className={'atlas-edge' + (relevant ? ' atlas-related' : '')}/>;
+                    className={'atlas-edge' + (relevant ? ' atlas-related' : '') +
+                      (traced ? ' atlas-traced' : '')}/>;
                 })}
                 {view.nodes.map(current => {
                   const at = view.positions[current.id];
@@ -548,6 +590,31 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
             onClick={() => { setFocus(node.id); setQuery(''); setFollowBuild(false); }}>
             Focus relationships
           </button>
+          <div className="atlas-path-actions">
+            <button type="button" className="outline"
+              aria-pressed={traceFrom === node.id}
+              onClick={() => { setTraceFrom(node.id); setTraceResult(null); setTraceError(''); }}>
+              {traceFrom === node.id ? 'Path start selected' : 'Set path start'}
+            </button>
+            {traceFrom && traceFrom !== node.id && <button type="button"
+              className="outline" disabled={traceBusy}
+              onClick={() => void tracePath(node.id)}>
+              {traceBusy ? 'Tracing…' : 'Trace path to this node'}
+            </button>}
+          </div>
+          {traceFrom && <p className="atlas-path-hint">Path start: {
+            names.get(traceFrom) ?? 'Selected source'}</p>}
+          {traceError && <p role="alert" className="atlas-error">{traceError}</p>}
+          {traceResult && <section className="atlas-path-result"
+            aria-label="Dependency path result">
+            <strong>{traceResult.found ? 'Directed path found' :
+              traceResult.truncated ? 'Search limit reached' : 'No path found within six hops'}</strong>
+            {traceResult.found && <ol>{traceResult.edges.map((edge, index) =>
+              <li key={index}>{names.get(edge.sourceId) ?? 'Unknown'}
+                {' → '}{edge.kind}{' → '}{names.get(edge.targetId) ?? 'Unknown'}
+                {edge.evidencePath && <small> {edge.evidencePath}:{edge.evidenceLine}</small>}
+              </li>)}</ol>}
+          </section>}
           <div className="atlas-relation-filters" role="group"
             aria-label="Relationship direction">
             {(['all', 'outgoing', 'incoming'] as const).map(direction =>
