@@ -9,6 +9,8 @@ let commandActivity;
 let commandAgents;
 let CommandActivityView;
 let CommandDrawer;
+let buildCommandDecisionQueue;
+let DecisionQueueView;
 const time1 = '2026-11-22T12:01:00Z';
 const time2 = '2026-11-22T12:02:00Z';
 const agent = (id, role) => ({
@@ -56,6 +58,8 @@ before(async () => {
   ({ commandActivity, commandAgents, CommandActivityView } =
     await vite.ssrLoadModule('/src/CommandActivity.tsx'));
   ({ CommandDrawer } = await vite.ssrLoadModule('/src/CommandDrawer.tsx'));
+  ({ buildCommandDecisionQueue, DecisionQueueView } =
+    await vite.ssrLoadModule('/src/DecisionQueue.tsx'));
 });
 after(async () => { if (vite) await vite.close(); });
 
@@ -151,4 +155,71 @@ test('a missing record is not replaced by a plausible record from another projec
   }));
   assert.match(html, /This selection is no longer in the current project evidence/);
   assert.doesNotMatch(html, /Work item W1/);
+});
+
+test('current owner approvals rank ahead of QA hypotheses', () => {
+  const data = evidence();
+  data.decisions.specification = { version: 2, status: 'Draft', sha256: 'e'.repeat(64) };
+  data.qa = {
+    job: { id: 'f'.repeat(32), state: 'Reviewed',
+      engineeringRunId: data.engineering.job.id, planSha256: data.engineering.job.planSha256 },
+    reports: [{ path: 'App.cs', reviewedUtc: time2,
+      assessment: { findings: [{ severity: 'Major', requirement: 'Potential bug' }] } }],
+  };
+  const queue = buildCommandDecisionQueue(data);
+  assert.equal(queue[0].category, 'approval');
+  assert.equal(queue[0].title, 'Review specification v2');
+  assert.equal(queue.filter(item => item.category === 'qa-review').length, 1);
+});
+test('stale QA findings are not claimed as current decisions', () => {
+  const data = evidence();
+  data.qa = {
+    job: { id: 'f'.repeat(32), state: 'Reviewed',
+      engineeringRunId: 'e'.repeat(32), planSha256: data.engineering.job.planSha256 },
+    reports: [{ path: 'App.cs', reviewedUtc: time2,
+      assessment: { findings: [{ severity: 'Critical', requirement: 'Historical' }] } }],
+  };
+  assert.equal(buildCommandDecisionQueue(data).some(item =>
+    item.category === 'qa-review'), false);
+  data.qa.job.engineeringRunId = data.engineering.job.id;
+  data.decisions.plan.current = false;
+  assert.equal(buildCommandDecisionQueue(data).some(item =>
+    item.category === 'qa-review'), false);
+});
+test('current static findings require review but do not automatically authorize repair', () => {
+  const data = evidence();
+  data.qa = {
+    job: { id: 'f'.repeat(32), state: 'Reviewed',
+      engineeringRunId: data.engineering.job.id, planSha256: data.engineering.job.planSha256 },
+    reports: [{ path: 'App.cs', reviewedUtc: time2,
+      assessment: { findings: [{ severity: 'Major', requirement: 'Check behavior' }] } }],
+  };
+  const queue = buildCommandDecisionQueue(data);
+  const qa = queue.find(item => item.category === 'qa-review');
+  assert.ok(qa);
+  assert.equal(qa.requiresApproval, false);
+  assert.match(qa.binding, /plan SHA-256/);
+  const markup = renderToStaticMarkup(React.createElement(DecisionQueueView, {
+    items: queue, onInspect: () => {},
+  }));
+  assert.match(markup, /Decision Queue/);
+  assert.match(markup, /aria-haspopup="dialog"/);
+  assert.doesNotMatch(markup, /Authorize repair|Approve current plan/);
+  const details = renderToStaticMarkup(React.createElement(CommandDrawer, {
+    projectTitle: task.title,
+    selection: { kind: 'decision', id: qa.id }, decisions: queue,
+    agents: commandAgents(data), events: commandActivity(data), evidence: data,
+    onClose: () => {}, onNavigate: () => {},
+  }));
+  assert.match(details, /role="dialog"/);
+  assert.match(details, /Source \/ approval binding/);
+  assert.match(details, /Open in Quality/);
+  assert.match(details, /Inspection only/);
+});
+test('failed source run is surfaced as an inspection blocker, not approval', () => {
+  const data = evidence();
+  data.engineering.job.state = 'Failed';
+  const blocked = buildCommandDecisionQueue(data).find(item => item.category === 'blocked');
+  assert.ok(blocked);
+  assert.equal(blocked.requiresApproval, false);
 });
