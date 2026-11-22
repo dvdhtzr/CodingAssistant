@@ -149,3 +149,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - The managed-code scanner masks comments, quoted text and multiline triple-quoted strings, tracks indentation scopes, avoids executing Python or importing modules, and caps per-file lines and graph nodes/edges.
 - This is **structural, not compiler-backed semantic resolution**. Calls, inheritance, decorators, type annotations, runtime dispatch, and dynamic module dependencies are NOT inferred. Unsupported multiline signatures, ambiguous tab indentation, truncated source, or unclosed literals yield explicit partial-coverage diagnostics.
 - Preserve independent QA verification and all existing owner-token, approval, source-execution, and cross-task boundaries. Full Python semantic analysis and Java language support remain future M8 increments.
+
+## M8.7 — Java source declarations (bounded static increment)
+
+- Java `.java` source now produces source-backed package/namespace, class/interface/enum/record, constructor, and method nodes with lexical nesting and persisted line numbers.
+- The managed-code lexer masks comments, string/character literals and Java text blocks. It never invokes `javac`, restores a classpath, downloads dependencies, loads bytecode, or runs application source.
+- Java package/type/member detection is conservative and **structural only**. Record types are currently displayed as classes. Inline type bodies, complex multiline declarations, unbalanced braces, and unclosed literals are explicitly partial; inherited interfaces, resolved method calls, classpath symbols, generics and Java reflection are not claimed as semantic facts.
+- Graph size caps, deterministic source revisions, task/commit scoping and all owner/approval/QA boundaries are unchanged. Full Java semantic analysis remains follow-on work.

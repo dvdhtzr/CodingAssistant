@@ -884,6 +884,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
               'Python source declarations only' :
             displayGraph.coverage === 'PARTIAL_PYTHON_STRUCTURE' ?
               'Partial Python source structure' :
+            displayGraph.coverage === 'JAVA_STRUCTURE_ONLY' ?
+              'Java source declarations only' :
+            displayGraph.coverage === 'PARTIAL_JAVA_STRUCTURE' ?
+              'Partial Java source structure' :
+            displayGraph.coverage.includes('JAVA_STRUCTURE') ?
+              'Mixed source analysis · Java declarations only' :
             displayGraph.coverage.includes('PYTHON_STRUCTURE') ?
               'Mixed source analysis · Python declarations only' :
             displayGraph.coverage === 'MIXED_CSHARP_STATIC_ECMA_STRUCTURE' ?

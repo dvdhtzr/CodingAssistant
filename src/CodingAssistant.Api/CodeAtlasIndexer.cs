@@ -271,18 +271,30 @@ public static class CodeAtlasIndexer
                     new[] { "ECMA_STRUCTURE_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
+        AtlasSnapshot pythonGraph;
         try
         {
-            return CodeAtlasPythonIndexer.Enrich(ecmaGraph, valid);
+            pythonGraph = CodeAtlasPythonIndexer.Enrich(ecmaGraph, valid);
         }
         catch (Exception)
         {
-            // Python source is inert input, and parsing failure cannot
-            // invalidate the saved graph or claim successful verification.
-            return ecmaGraph with
+            // Failed indexing never rolls back an accepted source revision.
+            pythonGraph = ecmaGraph with
             {
                 Diagnostics = ecmaGraph.Diagnostics.Concat(
                     new[] { "PYTHON_STRUCTURE_ANALYSIS_UNAVAILABLE" }).ToArray()
+            };
+        }
+        try
+        {
+            return CodeAtlasJavaIndexer.Enrich(pythonGraph, valid);
+        }
+        catch (Exception)
+        {
+            return pythonGraph with
+            {
+                Diagnostics = pythonGraph.Diagnostics.Concat(
+                    new[] { "JAVA_STRUCTURE_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
     }
