@@ -560,6 +560,11 @@ public static class CodeAtlasEcmaIndexer
                     (kind == "Function"
                         ? n.Name.StartsWith(name + "(", StringComparison.Ordinal)
                         : n.Name == name)).ToArray();
+                // Constants without an indexed callable declaration are
+                // unsupported symbol kinds, not ambiguous source. Once a
+                // name is ambiguous it cannot become resolvable again.
+                if (matches.Length == 0 || ambiguous.Contains(name))
+                    continue;
                 if (matches.Length != 1 || !exports.TryAdd(name, matches[0]))
                 {
                     ambiguous.Add(name);

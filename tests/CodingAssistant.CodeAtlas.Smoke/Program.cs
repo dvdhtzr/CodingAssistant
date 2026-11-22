@@ -792,6 +792,31 @@ Check(ambiguousExport.Diagnostics.Any(d =>
     !ambiguousExport.Edges.Any(e => e.Kind == "SymbolImports"),
     "ambiguous named exports fail closed with partial-coverage diagnostics");
 
+var valueOnlyExport = CodeAtlasIndexer.Index("value-export", new[]
+{
+    File("source.ts", "import { answer } from './values';"),
+    File("values.ts", "export const answer = 42;")
+});
+Check(valueOnlyExport.Coverage == "ECMA_STRUCTURE_ONLY" &&
+    !valueOnlyExport.Diagnostics.Any(d =>
+        d.StartsWith("ECMA_EXPORT_AMBIGUOUS:", StringComparison.Ordinal)) &&
+    !valueOnlyExport.Edges.Any(e => e.Kind == "SymbolImports"),
+    "plain exported constants are not misclassified as callable symbols");
+var repeatedExport = CodeAtlasIndexer.Index("repeated-export", new[]
+{
+    File("caller.ts", "import { repeat } from './provider';"),
+    File("provider.ts", """
+        export function repeat(n: number) { return n; }
+        export function repeat(n: string) { return n; }
+        export function repeat(n: boolean) { return n; }
+        """)
+});
+Check(repeatedExport.Coverage == "PARTIAL_ECMA_STRUCTURE" &&
+    repeatedExport.Diagnostics.Any(d =>
+        d.StartsWith("ECMA_EXPORT_AMBIGUOUS:", StringComparison.Ordinal)) &&
+    !repeatedExport.Edges.Any(e => e.Kind == "SymbolImports"),
+    "three conflicting exported declarations cannot restore a false symbol link");
+
 // M4: only Roslyn-resolved, source-backed relationships may become graph edges.
 var semanticFiles = new[]
 {
