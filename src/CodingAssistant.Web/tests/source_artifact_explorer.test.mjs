@@ -78,7 +78,7 @@ test('MAF source viewer shows stored SHA, task provenance and line numbers; neve
   assert.doesNotMatch(markup, /Verified build/);
 });
 
-test('legacy source has honest provenance and partial source warnings', () => {
+test('saved draft source has honest provenance and partial source warnings', () => {
   const markup = renderToStaticMarkup(React.createElement(SourceArtifactExplorer, {
     files: [{ path: 'app/Program.cs', purpose: 'Entry point',
       content: 'Console.WriteLine("Hi");', sha256: 'e'.repeat(64),
@@ -86,7 +86,7 @@ test('legacy source has honest provenance and partial source warnings', () => {
     source: 'Saved draft', state: 'Failed',
     runId: 'e'.repeat(32), isCurrent: false,
   }));
-  assert.match(markup, /Classic generator/);
+  assert.match(markup, /Saved draft/);
   assert.match(markup, /Failed · NOT TESTED/);
   assert.match(markup, /Historical source/);
   assert.match(markup, /per-file task not recorded/);
@@ -108,7 +108,7 @@ test('long files retain complete copyable data but start with a bounded numbered
     .join('\n');
   const markup = renderToStaticMarkup(React.createElement(SourceArtifactExplorer, {
     files: [{ path: 'big.ts', purpose: 'Long file', content, sha256: 'f'.repeat(64) }],
-    source: 'Classic generator', state: 'Generated',
+    source: 'Saved draft', state: 'Generated',
     runId: 'b'.repeat(32), isCurrent: true,
   }));
   assert.match(markup, /Displaying the first 750 lines/);
