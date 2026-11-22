@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
 import { CommandActivity } from './CommandActivity';
 import { TeamDestination, QualityDestination, SkillsDestination, HistoryDestination } from './MissionDestinations';
-import { WorkbenchInspector, WorkbenchSidebar,
+import { WorkbenchInspector, WorkbenchSidebar, ProjectSwitcher,
   type WorkbenchView } from './Workbench';
 import * as signalR from '@microsoft/signalr';
 import {
@@ -363,8 +363,8 @@ export default function App() {
     : 'No intermediate runner milestone recorded yet.';
 
   return <>
-    <header className="wb-header">
-      <a className="wb-skip-link" href="#mission-workspace">Skip to workspace</a>
+    <a className="wb-skip-link" href="#mission-workspace">Skip to workspace</a>
+    {!token && <header className="ca-auth-header">
       <div className="wb-brand">
         <span className="wb-mark" aria-hidden="true"><span>◆</span></span>
         <div>
@@ -373,28 +373,9 @@ export default function App() {
             <span>LOCAL ENGINEERING ENVIRONMENT</span></p>
         </div>
       </div>
-      {token && <div className="wb-header-context" title={taskView?.task.title ?? ''}>
-        <span className="wb-header-context-label">ACTIVE PROJECT</span>
-        <strong>{taskView?.task.title ?? (taskId ? 'Opening project…' : 'No project selected')}</strong>
-      </div>}
-      {token && <div className="actions">
-        <span className="pill wb-local-pill"><span className="wb-local-dot" aria-hidden="true" />Local session</span>
-        <span className="pill wb-execution-pill">{status?.executionEnabled ?
-          'Execution requires approval' : 'Execution unavailable'}</span>
-        <button type="button" className="outline wb-inspector-toggle"
-          aria-expanded={inspectorOpen} aria-controls="mission-inspector"
-          onClick={() => setInspectorOpen(value => !value)}>
-          {inspectorOpen ? 'Hide inspector' : 'Show inspector'}
-        </button>
-        {sessionMode === 'automatic'
-          ? <button type="button" className="outline" onClick={() => window.location.reload()}>
-              Refresh local session
-            </button>
-          : <button type="button" className="outline" onClick={disconnect}>Disconnect</button>}
-      </div>}
-    </header>
+    </header>}
 
-    {error && <div className="alert" role="alert">{error}</div>}
+    {!token && error && <div className="alert" role="alert">{error}</div>}
 
     {!token && sessionMode === 'checking' && <section className="panel login"
       role="status">
@@ -434,33 +415,51 @@ export default function App() {
       <p className="secure">No cloud AI • no automatic coding • explicit approval required</p>
     </section>}
 
-    {token && <div className={'layout wb-layout' +
-      (!inspectorOpen ? ' wb-layout--inspector-closed' : '')}>
-      <WorkbenchSidebar token={token} tasks={tasks} selectedId={taskId} view={view}
-        onOpenRoster={() => setView('team')}
-        disabled={isBusy} onSelectTask={chooseTask}
-        onNewProject={() => chooseTask('')} onChangeView={setView}
-        onRefresh={() => void action('refresh', async () => {
-          await fetchTasks(); refreshTask();
-        })}
-        onDeleteTask={async id => {
-          setBusy('delete-task');
-          setError('');
-          try {
-            await deleteTask(token, id);
-            setTasks(previous => previous.filter(task => task.id !== id));
-            if (taskId === id) chooseTask('');
-            return true;
-          } catch (cause) {
-            const code = cause instanceof Error ? cause.message : 'Unknown error';
-            setError(code.includes('BUILD_BUSY') || code.includes('EXECUTION_BUSY')
-              ? 'This project has an active job. Stop or complete it before deletion.'
-              : 'Could not delete project: ' + code);
-            return false;
-          } finally {
-            setBusy('');
-          }
-        }} />
+    {token && <div className={'ca-shell' +
+      (inspectorOpen ? ' ca-shell--inspector' : '')}>
+      <WorkbenchSidebar selectedId={taskId} view={view} disabled={isBusy}
+        onNewProject={() => chooseTask('')} onChangeView={setView} />
+      <div className="ca-work">
+        <div className="ca-ctxbar">
+          <ProjectSwitcher tasks={tasks} selectedId={taskId} disabled={isBusy}
+            onSelectTask={chooseTask}
+            onRefresh={() => void action('refresh', async () => {
+              await fetchTasks(); refreshTask();
+            })}
+            onDeleteTask={async id => {
+              setBusy('delete-task');
+              setError('');
+              try {
+                await deleteTask(token, id);
+                setTasks(previous => previous.filter(task => task.id !== id));
+                if (taskId === id) chooseTask('');
+                return true;
+              } catch (cause) {
+                const code = cause instanceof Error ? cause.message : 'Unknown error';
+                setError(code.includes('BUILD_BUSY') || code.includes('EXECUTION_BUSY')
+                  ? 'This project has an active job. Stop or complete it before deletion.'
+                  : 'Could not delete project: ' + code);
+                return false;
+              } finally {
+                setBusy('');
+              }
+            }} />
+          <span className="ca-ctx-spacer" />
+          <span className="pill wb-local-pill"><span className="wb-local-dot" aria-hidden="true" />Local session</span>
+          <span className="pill wb-execution-pill">{status?.executionEnabled ?
+            'Execution requires approval' : 'Execution unavailable'}</span>
+          <button type="button" className="outline wb-inspector-toggle"
+            aria-expanded={inspectorOpen} aria-controls="mission-inspector"
+            onClick={() => setInspectorOpen(value => !value)}>
+            {inspectorOpen ? 'Hide inspector' : 'Show inspector'}
+          </button>
+          {sessionMode === 'automatic'
+            ? <button type="button" className="outline" onClick={() => window.location.reload()}>
+                Refresh local session
+              </button>
+            : <button type="button" className="outline" onClick={disconnect}>Disconnect</button>}
+        </div>
+        {error && <div className="alert" role="alert">{error}</div>}
       <main className="stack wb-main" id="mission-workspace" tabIndex={-1}>
         {!taskId && <section className="panel new-project-panel">
           <span className="pill">Start a project</span>
@@ -798,6 +797,7 @@ export default function App() {
         </section>}
         </details>}
       </main>
+      </div>
       <div id="mission-inspector" className="wb-inspector-host" hidden={!inspectorOpen}>
         <WorkbenchInspector token={token} view={view} taskView={taskView} run={run}
           status={status} collapsed={!inspectorOpen}

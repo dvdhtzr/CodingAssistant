@@ -271,5 +271,191 @@ input::placeholder, textarea::placeholder { color:var(--ca-faint); }
   border:1px solid color-mix(in srgb,var(--ca-teal) 30%,var(--ca-line));
 }
 
-/* honor reduced motion for anything added here (no new motion in M-UX1) */
+/* ========================================================================
+   M-UX2 — Operations Room shell: thin destination rail + context bar
+   ======================================================================== */
+.ca-shell {
+  display:grid;
+  grid-template-columns:154px minmax(0,1fr);
+  height:100dvh;
+  min-height:0;
+  overflow:hidden;
+}
+
+/* pre-auth brand header */
+.ca-auth-header {
+  display:flex;
+  align-items:center;
+  gap:.9rem;
+  padding:.9rem clamp(1rem,2vw,2rem);
+  border-bottom:1px solid var(--ca-line);
+  background:linear-gradient(90deg,var(--ca-panel),var(--ca-inset) 60%,var(--ca-panel));
+}
+
+/* ---- rail ---- */
+.ca-rail {
+  display:flex;
+  flex-direction:column;
+  gap:.3rem;
+  padding:1rem .6rem 1.4rem;
+  min-height:0;
+  overflow-y:auto;
+  background:linear-gradient(180deg,var(--ca-panel),var(--ca-inset));
+  border-right:1px solid var(--ca-line);
+  scrollbar-width:thin;
+}
+.ca-rail-logo {
+  display:grid;
+  place-items:center;
+  width:40px;
+  height:40px;
+  margin:.1rem auto 1rem;
+  border-radius:12px;
+  color:var(--ca-teal);
+  background:radial-gradient(circle at 28% 20%, color-mix(in srgb,var(--ca-teal) 40%,var(--ca-inset)), var(--ca-inset));
+  border:1px solid color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line));
+  font-size:1.15rem;
+}
+.ca-rail-new {
+  display:flex;
+  align-items:center;
+  gap:.45rem;
+  padding:.6rem .7rem;
+  margin:0 .15rem .7rem;
+  border-radius:var(--ca-r-sm);
+  border:1px solid color-mix(in srgb,var(--ca-accent) 55%,#000);
+  background:linear-gradient(120deg,var(--ca-accent-hi),var(--ca-accent));
+  color:var(--ca-accent-ink);
+  font-weight:650;
+  font-size:.85rem;
+}
+.ca-rail-new-glyph { font-size:1.05rem; line-height:0; }
+.ca-rail-nav { display:flex; flex-direction:column; gap:.18rem; margin-top:.4rem; }
+.ca-rail-item {
+  display:flex;
+  align-items:center;
+  gap:.6rem;
+  padding:.56rem .6rem;
+  border-radius:var(--ca-r-sm);
+  border:1px solid transparent;
+  background:transparent;
+  color:var(--ca-muted);
+  font-size:.86rem;
+  font-weight:550;
+  text-align:left;
+}
+.ca-rail-item:hover:not(:disabled) { background:var(--ca-raised); color:var(--ca-fg); }
+.ca-rail-icon {
+  display:grid;
+  place-items:center;
+  width:26px;
+  height:26px;
+  flex:none;
+  border-radius:7px;
+  background:var(--ca-inset);
+  border:1px solid var(--ca-line);
+  color:var(--ca-muted);
+  font-size:.95rem;
+}
+.ca-rail-selected {
+  background:color-mix(in srgb,var(--ca-teal) 14%,var(--ca-panel));
+  border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line));
+  color:var(--ca-fg);
+  box-shadow:inset 3px 0 var(--ca-teal);
+}
+.ca-rail-selected .ca-rail-icon {
+  background:color-mix(in srgb,var(--ca-teal) 30%,var(--ca-inset));
+  border-color:color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line));
+  color:var(--ca-teal);
+}
+
+/* ---- work area + context bar ---- */
+.ca-work { display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; }
+.ca-ctxbar {
+  position:relative;
+  z-index:30;
+  display:flex;
+  align-items:center;
+  gap:.6rem;
+  flex-wrap:wrap;
+  padding:.55rem clamp(.8rem,1.6vw,1.3rem);
+  border-bottom:1px solid var(--ca-line);
+  background:color-mix(in srgb,var(--ca-panel) 82%,transparent);
+  backdrop-filter:blur(6px);
+}
+.ca-ctx-spacer { flex:1 1 auto; }
+.ca-ctxbar .pill { white-space:nowrap; }
+.ca-ctxbar button.outline { font-size:.76rem; padding:.45rem .7rem; white-space:nowrap; }
+
+/* project switcher as a context-bar popover (not an inline-expanding block) */
+.ca-ctx-switcher { position:relative; min-width:0; max-width:300px; }
+.ca-ctx-switcher > .wb-project-switcher-trigger {
+  position:static;
+  display:grid;
+  gap:.1rem;
+  padding:.4rem 1.9rem .4rem .75rem;
+  background:var(--ca-raised);
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r-sm);
+  max-width:300px;
+}
+.ca-ctx-switcher > .wb-project-switcher-trigger::after { top:.55rem; right:.7rem; }
+.ca-ctx-switcher > .wb-project-switcher-trigger .wb-kicker { font-size:.56rem; margin:0; }
+.ca-ctx-switcher > .wb-project-switcher-trigger strong {
+  font-size:.86rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.ca-ctx-switcher > .wb-project-switcher-trigger small {
+  font-size:.66rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.ca-ctx-switcher-panel {
+  position:absolute;
+  top:calc(100% + 6px);
+  left:0;
+  width:min(380px,92vw);
+  max-height:min(62vh,520px);
+  overflow-y:auto;
+  padding:.85rem;
+  background:var(--ca-panel);
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r);
+  box-shadow:var(--ca-shadow);
+  z-index:60;
+  display:grid;
+  gap:.5rem;
+}
+.ca-ctx-switcher-panel .wb-section-title { display:flex; align-items:center; justify-content:space-between; }
+
+/* main workspace fills the remaining height and scrolls on its own */
+.ca-work > .wb-main {
+  flex:1 1 auto;
+  min-height:0;
+  overflow-y:auto;
+  overflow-x:hidden;
+}
+.ca-work > .alert { margin:.6rem clamp(.8rem,1.6vw,1.3rem) 0; max-width:none; }
+
+/* inspector overlay now anchors to the top of the viewport (no global header) */
+.wb-inspector-host:not([hidden]) { top:0 !important; }
+
+/* ---- responsive: rail becomes a horizontal strip on narrow viewports ---- */
+@media (max-width:760px) {
+  .ca-shell { grid-template-columns:1fr; grid-template-rows:auto auto 1fr; height:auto; min-height:100dvh; overflow:visible; }
+  .ca-rail {
+    flex-direction:row;
+    align-items:center;
+    gap:.35rem;
+    overflow-x:auto;
+    padding:.5rem .6rem;
+    border-right:0;
+    border-bottom:1px solid var(--ca-line);
+  }
+  .ca-rail-logo { margin:0 .3rem 0 0; width:34px; height:34px; }
+  .ca-rail-new { margin:0 .3rem 0 0; }
+  .ca-rail-nav { flex-direction:row; margin-top:0; }
+  .ca-rail-item { white-space:nowrap; }
+  .ca-work { overflow:visible; }
+  .ca-work > .wb-main { overflow:visible; }
+}
+
+/* honor reduced motion for anything added here (no new motion in M-UX1/2) */
 @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto; } }
