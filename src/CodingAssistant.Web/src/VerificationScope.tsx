@@ -253,8 +253,7 @@ export function EngineeringVerificationScope({ token, run, files }: {
       setSmokeBusy(false);
     }
   }
-  return <>
-    <VerificationScopeView scope={scope} error={error}/>
+  return <div className="verification-action-stack">
     {scope?.status === 'SCOPE_CANDIDATE' && <section
       aria-label="Test generated project"
       className="verification-smoke">
@@ -295,5 +294,11 @@ export function EngineeringVerificationScope({ token, run, files }: {
           does not establish that every button or requirement works.</p>
       </div>}
     </section>}
-  </>;
+    <details className="verification-compact-details">
+      <summary>Source verification details · {scope?.status === 'SCOPE_CANDIDATE'
+        ? 'Scope candidate' : scope?.status === 'BLOCKED'
+          ? 'Needs attention' : 'Not assessed'}</summary>
+      <VerificationScopeView scope={scope} error={error}/>
+    </details>
+  </div>;
 }
