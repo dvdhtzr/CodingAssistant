@@ -11,7 +11,7 @@ namespace CodingAssistant.Api;
 public sealed class EngineeringRunCoordinator(
     TaskStore tasks, InterviewStore interviews, ImplementationPlanStore plans,
     EngineeringRunStore store, IEngineeringTaskModel engineer,
-    IHostApplicationLifetime lifetime)
+    EngineeringAtlasNotifier atlasNotifier, IHostApplicationLifetime lifetime)
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
@@ -61,7 +61,10 @@ public sealed class EngineeringRunCoordinator(
                     new EngineeringTaskInput(objective, spec, plan,
                         architecture, item, prior), token);
                 token.ThrowIfCancellationRequested();
-                store.CompleteTask(job.TaskId, job.Id, item.Id, result);
+                var committed = store.CompleteTask(job.TaskId, job.Id, item.Id, result);
+                // Notification is best effort AFTER the durable transaction.
+                // Missing SignalR messages are reconciled via atlas-events.
+                await atlasNotifier.PublishAsync(committed);
             }
             token.ThrowIfCancellationRequested();
             store.Finish(job.TaskId, job.Id, true, null);
