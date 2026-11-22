@@ -289,7 +289,8 @@ public static class CodeAtlasEcmaIndexer
     }
 
 
-    private sealed record NamedImport(string Module, string Name, int Line);
+    private sealed record NamedImport(string Module, string Name,
+        string LocalName, int Line);
 
     /// <summary>
     /// Only simple, top-level ES named imports with an ordinary literal
@@ -312,7 +313,7 @@ public static class CodeAtlasEcmaIndexer
                 tokens[end + 1].Text != "from" ||
                 tokens[end + 2].Text != LiteralToken ||
                 tokens[end + 2].Literal is not { } module) continue;
-            var names = new List<string>();
+            var names = new List<(string Imported, string Local)>();
             var valid = true;
             var j = start + 1;
             while (j < end)
@@ -323,21 +324,23 @@ public static class CodeAtlasEcmaIndexer
                     tokens[j].Text is "as" or "default")
                 { valid = false; break; }
                 var importedName = tokens[j++].Text;
+                var localName = importedName;
                 if (j < end && tokens[j].Text == "as")
                 {
                     j++;
                     if (j >= end || !Word(tokens[j].Text))
                     { valid = false; break; }
-                    j++;
+                    localName = tokens[j++].Text;
                 }
-                names.Add(importedName);
+                names.Add((importedName, localName));
                 if (j == end) break;
                 if (tokens[j].Text != ",") { valid = false; break; }
                 j++;
             }
             if (valid)
                 found.AddRange(names.Select(name =>
-                    new NamedImport(module, name, tokens[i].Line)));
+                    new NamedImport(module, name.Imported, name.Local,
+                        tokens[i].Line)));
             i = end + 2;
         }
         return found;
@@ -366,6 +369,87 @@ public static class CodeAtlasEcmaIndexer
                 exports.Add((tokens[j + 1].Text, kind));
         }
         return exports;
+    }
+
+
+    private sealed record TypeClause(string Owner, string OwnerKind,
+        string Target, string Relation, int Line);
+
+    // Only declarations at file scope. A class expression assigned to
+    // a const must not be treated as a declaration for type binding.
+    private static bool TypeDeclarationAt(IReadOnlyList<Token> t, int i)
+    {
+        if (i + 1 >= t.Count || t[i].Depth != 0 ||
+            t[i].Text is not ("class" or "interface") ||
+            !Word(t[i + 1].Text)) return false;
+        if (i == 0) return true;
+        return t[i - 1].Text is ";" or "}" or "export" or
+            "default" or "declare" or "abstract";
+    }
+
+    // Parse a narrow type grammar: an unqualified name in an extends or
+    // implements clause, optional comma-separated interfaces. Reject all
+    // generic, computed, qualified, mixed-in and unrecognized syntax.
+    private static IReadOnlyList<TypeClause> TypeClauses(
+        IReadOnlyList<Token> t)
+    {
+        var found = new List<TypeClause>();
+        for (var i = 0; i + 2 < t.Count; i++)
+        {
+            if (!TypeDeclarationAt(t, i)) continue;
+            var end = -1;
+            for (var j = i + 2; j < t.Count && j < i + 120; j++)
+            {
+                if (t[j].Depth != 0 || t[j].Text is ";" or "=") break;
+                if (t[j].Text == "{") { end = j; break; }
+            }
+            if (end < 0) continue;
+            var kind = t[i].Text;
+            var name = t[i + 1].Text;
+            var cursor = i + 2;
+            var pending = new List<TypeClause>();
+            var valid = true;
+
+            bool One(string relationship)
+            {
+                if (cursor >= end || !Word(t[cursor].Text) ||
+                    t[cursor].Text is "new" or "this" or "super")
+                    return false;
+                pending.Add(new TypeClause(name, kind, t[cursor++].Text,
+                    relationship, t[i].Line));
+                return true;
+            }
+
+            if (cursor < end && t[cursor].Text == "extends")
+            {
+                cursor++;
+                if (kind == "class")
+                    valid = One("Inherits");
+                else
+                {
+                    valid = One("Inherits");
+                    while (valid && cursor < end && t[cursor].Text == ",")
+                    {
+                        cursor++;
+                        valid = One("Inherits");
+                    }
+                }
+            }
+            if (valid && kind == "class" && cursor < end &&
+                t[cursor].Text == "implements")
+            {
+                cursor++;
+                valid = One("Implements");
+                while (valid && cursor < end && t[cursor].Text == ",")
+                {
+                    cursor++;
+                    valid = One("Implements");
+                }
+            }
+            if (valid && cursor == end)
+                found.AddRange(pending);
+        }
+        return found;
     }
 
     public static AtlasSnapshot Enrich(AtlasSnapshot graph,
@@ -592,6 +676,81 @@ public static class CodeAtlasEcmaIndexer
                     continue;
                 Link(files[file.Path].Id, symbol.Id, "SymbolImports",
                     file.Path, imported.Line, "ExplicitLocalNamedExport");
+            }
+        }
+
+        // M8.12: file-scoped bare-name extends/implements relationships.
+        // Bind only uniquely declared types or uniquely named local imports
+        // with direct exports. Never infer a call or runtime implementation.
+        foreach (var file in candidates)
+        {
+            var tokens = tokenCache[file.Path];
+            var typeClauses = TypeClauses(tokens);
+            if (typeClauses.Count == 0) continue;
+            var ownTypes = tokens.Select((token, index) => (token, index))
+                .Where(x => TypeDeclarationAt(tokens, x.index))
+                .GroupBy(x => x.token.Text + "|" + tokens[x.index + 1].Text,
+                    StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.Count(),
+                    StringComparer.Ordinal);
+            var localBindings = new HashSet<string>(StringComparer.Ordinal);
+            for (var i = 0; i + 1 < tokens.Count; i++)
+                if (tokens[i].Depth == 0 &&
+                    (tokens[i].Text is "class" or "interface" or
+                        "function" or "const" or "let" or "var") &&
+                    Word(tokens[i + 1].Text))
+                    localBindings.Add(tokens[i + 1].Text);
+
+            var bindings = NamedImports(tokens);
+            var uniqueImports = bindings.GroupBy(b => b.LocalName,
+                    StringComparer.Ordinal)
+                .Where(g => g.Count() == 1 &&
+                    !localBindings.Contains(g.Key))
+                .ToDictionary(g => g.Key, g => g.Single(),
+                    StringComparer.Ordinal);
+
+            AtlasNode? ResolveType(string name, string kind)
+            {
+                // Local declarations shadow imported bindings; duplicates
+                // and incompatible kinds cannot be safely linked.
+                if (localBindings.Contains(name))
+                {
+                    if (!ownTypes.TryGetValue(kind + "|" + name, out var count)
+                        || count != 1 ||
+                        bindings.Any(b => b.LocalName == name))
+                        return null;
+                    return nodes.Values.SingleOrDefault(n =>
+                        n.Path == file.Path && n.Kind == kind &&
+                        n.Name == name && n.ParentId == files[file.Path].Id);
+                }
+                if (!uniqueImports.TryGetValue(name, out var imported))
+                    return null;
+                var (target, _) = Resolve(file.Path, imported.Module, files);
+                return target is not null &&
+                    exported.TryGetValue(target, out var symbols) &&
+                    symbols.TryGetValue(imported.Name, out var symbol) &&
+                    symbol.Kind == kind ? symbol : null;
+            }
+
+            foreach (var clause in typeClauses)
+            {
+                if (!ownTypes.TryGetValue(
+                    clause.OwnerKind + "|" + clause.Owner,
+                    out var ownerCount) || ownerCount != 1)
+                    continue;
+                var owner = nodes.Values.SingleOrDefault(n =>
+                    n.Path == file.Path && n.Name == clause.Owner &&
+                    n.Kind == (clause.OwnerKind == "class"
+                        ? "Class" : "Interface") &&
+                    n.ParentId == files[file.Path].Id);
+                if (owner is null) continue;
+                var expectedKind = clause.Relation == "Implements" ||
+                    clause.OwnerKind == "interface"
+                    ? "Interface" : "Class";
+                var target = ResolveType(clause.Target, expectedKind);
+                if (target is null || owner.Id == target.Id) continue;
+                Link(owner.Id, target.Id, clause.Relation,
+                    file.Path, clause.Line, "ExplicitEcmaTypeClause");
             }
         }
         var hasCSharp = source.Any(f => files.ContainsKey(f.Path) &&
