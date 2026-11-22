@@ -105,8 +105,22 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             var payload = await response.Content.ReadAsStringAsync(cancellationToken);
             if (payload.Length > 130_000)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-            return new ChatResponse(new ChatMessage(
-                ChatRole.Assistant, ReadAssistantContent(payload, purpose)));
+            try
+            {
+                return new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant, ReadAssistantContent(payload, purpose)));
+            }
+            catch (StoreFailure error) when (purpose == MafAgentPurpose.Specification &&
+                error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
+                    "MODEL_OUTPUT_TRUNCATED")
+            {
+                // Metadata only: no interview text, answer content, thinking,
+                // credentials or full Ollama response is written to logs.
+                Console.Error.WriteLine(
+                    "Ollama specification output: " + SafeCompletionSummary(payload) +
+                    " result=" + error.Code);
+                throw;
+            }
         }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
         {
@@ -117,6 +131,49 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         catch (JsonException)
         {
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+        }
+    }
+
+    /// <summary>
+    /// Safe model-response metadata for troubleshooting local drafting.
+    /// Never include content, hidden reasoning, prompts, or response payloads.
+    /// </summary>
+    public static string SafeCompletionSummary(string payload)
+    {
+        try
+        {
+            using var decoded = JsonDocument.Parse(payload);
+            var root = decoded.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return "non-object-json-response";
+            var done = root.TryGetProperty("done_reason", out var reason) &&
+                reason.ValueKind == JsonValueKind.String
+                ? reason.GetString() : "missing";
+            var promptTokens = root.TryGetProperty("prompt_eval_count", out var prompt) &&
+                prompt.ValueKind == JsonValueKind.Number &&
+                prompt.TryGetInt32(out var p) ? p : 0;
+            var completionTokens = root.TryGetProperty("eval_count", out var eval) &&
+                eval.ValueKind == JsonValueKind.Number &&
+                eval.TryGetInt32(out var e) ? e : 0;
+            var chars = 0;
+            var hasThinking = false;
+            if (root.TryGetProperty("message", out var message) &&
+                message.ValueKind == JsonValueKind.Object)
+            {
+                if (message.TryGetProperty("content", out var content) &&
+                    content.ValueKind == JsonValueKind.String)
+                    chars = content.GetString()?.Length ?? 0;
+                hasThinking = message.TryGetProperty("thinking", out var thinking) &&
+                    thinking.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(thinking.GetString());
+            }
+            return $"done_reason={done}, content_chars={chars}, " +
+                $"has_thinking={hasThinking.ToString().ToLowerInvariant()}, " +
+                $"prompt_tokens={promptTokens}, generated_tokens={completionTokens}";
+        }
+        catch (JsonException)
+        {
+            return "invalid-json-response";
         }
     }
 

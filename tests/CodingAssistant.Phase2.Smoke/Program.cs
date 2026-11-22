@@ -144,8 +144,13 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "qwen3.5:4b", CancellationToken.None);
     Check(draft.Length >= 180 &&
           factory.Purposes.SequenceEqual([MafAgentPurpose.Specification]) &&
+          factory.SpecificationLastMessages.Count == 1 &&
+          factory.SpecificationLastMessages[0].StartsWith(
+              "PRODUCT OWNER REQUEST: Draft the product specification NOW",
+              StringComparison.Ordinal) &&
+          factory.SpecificationOwnerDecisionCounts.SequenceEqual([13]) &&
           factory.AllowedToolsSeen == 0,
-        "MAF drafts from all 27 saved messages without tool execution");
+        "MAF drafts all 27 saved messages with an explicit final user command");
     try
     {
         _ = await new MafAgentTeam(new Phase3FakeMafFactory()).DraftAsync(
@@ -159,6 +164,20 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     {
         Check(true, "messages beyond the documented limit still fail closed");
     }
+}
+
+// Capture only non-sensitive completion metadata when local generation
+// returned no usable final answer. Never echo response or thinking text.
+{
+    var response = """{"done_reason":"stop","prompt_eval_count":900,"eval_count":4800,"message":{"role":"assistant","content":"","thinking":"PRIVATE SECRET TEXT"}}""";
+    var safe = LocalMafChatClient.SafeCompletionSummary(response);
+    Check(safe.Contains("done_reason=stop") &&
+          safe.Contains("content_chars=0") &&
+          safe.Contains("prompt_tokens=900") &&
+          safe.Contains("generated_tokens=4800") &&
+          safe.Contains("has_thinking=true") &&
+          !safe.Contains("PRIVATE") && !safe.Contains("SECRET"),
+        "Ollama empty response diagnostics never expose model content");
 }
 
 // A local Ollama response may finish with no final content, or with a
@@ -236,6 +255,11 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               model.Purposes.SequenceEqual([
                   MafAgentPurpose.Specification, MafAgentPurpose.Specification]) &&
               model.SpecificationCorrectionPrompts.Count == 1 &&
+              model.SpecificationLastMessages[0].StartsWith(
+                  "PRODUCT OWNER REQUEST: Draft the product specification NOW",
+                  StringComparison.Ordinal) &&
+              model.SpecificationLastMessages[1].Contains(
+                  "previous response was empty", StringComparison.Ordinal) &&
               model.Models.All(x => x == "qwen3:30b") &&
               model.AllowedToolsSeen == 0,
             "MAF retries one blank or truncated specification with same local model");
@@ -2102,6 +2126,8 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
     public Queue<string> InterviewReplies { get; } = new();
     public Queue<string> SpecificationFailures { get; } = new();
     public List<string> SpecificationCorrectionPrompts { get; } = [];
+    public List<string> SpecificationLastMessages { get; } = [];
+    public List<int> SpecificationOwnerDecisionCounts { get; } = [];
     public List<string> InterviewCorrectionPrompts { get; } = [];
     public List<string> TechnicalLeadCorrectionPrompts { get; } = [];
     public List<MafAgentPurpose> Purposes { get; } = [];
@@ -2138,6 +2164,11 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                     .Select(m => m.Text!));
             if (purpose == MafAgentPurpose.Specification)
             {
+                parent.SpecificationLastMessages.Add(history.Last().Text ?? "");
+                parent.SpecificationOwnerDecisionCounts.Add(history.Count(m =>
+                    m.Role == ChatRole.User &&
+                    m.Text?.StartsWith("Owner requirement decision ",
+                        StringComparison.Ordinal) == true));
                 parent.SpecificationCorrectionPrompts.AddRange(history
                     .Where(m => m.Role == ChatRole.User &&
                         m.Text?.Contains("previous response was empty",
