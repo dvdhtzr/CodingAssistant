@@ -217,6 +217,113 @@ Check(invalidPython.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
         n.Name == "Ghost"),
     "Python unsafe paths and unterminated strings create no graph nodes");
 
+// M8.7: Java source declarations are source evidence, not compiled code.
+var javaFiles = new[]
+{
+    File("src/demo/Worker.java", """
+        package demo.app;
+        // class Ghost {}
+        public class Worker {
+            private int value;
+            public Worker(int value) { this.value = value; }
+            public void run() {}
+            public String label() { return "class Phantom {}"; }
+            class Inner {
+                void ping() {}
+            }
+        }
+        interface Service {
+            void save();
+        }
+        enum Mode {
+            A, B;
+        }
+        """),
+    File("src/demo/Other.java", """
+        package demo.app;
+        public class Other {}
+        """)
+};
+var javaGraph = CodeAtlasIndexer.Index("java-run", javaFiles);
+Check(javaGraph.Coverage == "JAVA_STRUCTURE_ONLY" &&
+    javaGraph.Diagnostics.Count == 0,
+    "Java-only source is explicitly structural, not executable or semantic");
+Check(javaGraph.Nodes.Count(n => n.Kind == "Namespace" &&
+    n.Name == "demo.app") == 1,
+    "Java package is a stable, shared source-backed namespace");
+var javaWorker = javaGraph.Nodes.Single(n =>
+    n.Kind == "Class" && n.Name == "Worker");
+Check(javaWorker.Line == 3 &&
+    javaWorker.Path == "src/demo/Worker.java",
+    "Java class is bound to exact source file and line");
+var javaCtor = javaGraph.Nodes.Single(n =>
+    n.Kind == "Constructor" &&
+    n.Name.StartsWith("Worker(", StringComparison.Ordinal));
+Check(javaCtor.ParentId == javaWorker.Id && javaCtor.Line == 5,
+    "Java constructor is attached to its declaring class");
+Check(javaGraph.Nodes.Any(n => n.Kind == "Method" &&
+    n.Name.StartsWith("run(", StringComparison.Ordinal) &&
+    n.ParentId == javaWorker.Id && n.Line == 6),
+    "Java method is declared with source line and owning class");
+var javaInner = javaGraph.Nodes.Single(n =>
+    n.Kind == "Class" && n.Name == "Inner");
+Check(javaInner.ParentId == javaWorker.Id &&
+    javaGraph.Nodes.Any(n =>
+        n.Kind == "Method" &&
+        n.Name.StartsWith("ping(", StringComparison.Ordinal) &&
+        n.ParentId == javaInner.Id),
+    "nested Java class and its method retain source containment");
+Check(javaGraph.Nodes.Any(n => n.Kind == "Interface" &&
+    n.Name == "Service") &&
+    javaGraph.Nodes.Any(n => n.Kind == "Enum" && n.Name == "Mode") &&
+    javaGraph.Nodes.Any(n => n.Kind == "Method" &&
+        n.Name.StartsWith("save(", StringComparison.Ordinal)),
+    "Java interfaces, enums, and interface member declarations are indexed");
+Check(!javaGraph.Nodes.Any(n =>
+    n.Name is "Ghost" or "Phantom") &&
+    !javaGraph.Edges.Any(e =>
+        e.Kind is "Calls" or "Inherits" or "Implements" or
+        "ConstructorDependsOn"),
+    "Java comment/string decoys and unresolved relationships stay absent");
+Check(javaGraph.Edges.All(e =>
+    javaGraph.Nodes.Any(n => n.Id == e.SourceId) &&
+    javaGraph.Nodes.Any(n => n.Id == e.TargetId)),
+    "Java graph contains no dangling source edges");
+var javaReordered = CodeAtlasIndexer.Index("java-run",
+    javaFiles.Reverse().ToArray());
+Check(javaReordered.SourceRevision == javaGraph.SourceRevision &&
+    javaReordered.Nodes.Select(n => n.Id).SequenceEqual(
+        javaGraph.Nodes.Select(n => n.Id)),
+    "Java nodes and revisions are deterministic across source order");
+var pyJava = CodeAtlasIndexer.Index("mixed-py-java", new[]
+{
+    File("pkg/helper.py", "def helper(): pass"),
+    File("pkg/Worker.java", "class Worker {}")
+});
+Check(pyJava.Coverage ==
+    "PYTHON_STRUCTURE_ONLY+JAVA_STRUCTURE_ONLY" &&
+    pyJava.Nodes.Any(n => n.Kind == "Function" && n.Name == "helper") &&
+    pyJava.Nodes.Any(n => n.Kind == "Class" && n.Name == "Worker"),
+    "Python and Java language coverage compose without invented linking");
+var brokenJava = CodeAtlasIndexer.Index("broken-java", new[]
+{
+    File("app/Broken.java", """"
+        public class Broken {
+          String description = """
+          class Fake {}
+        """"),
+    File("../escape.java", "public class Escaped {}")
+});
+Check(brokenJava.Coverage == "PARTIAL_JAVA_STRUCTURE" &&
+    brokenJava.Diagnostics.Any(d =>
+        d.StartsWith("JAVA_UNBALANCED_BRACES:", StringComparison.Ordinal)) &&
+    brokenJava.Diagnostics.Any(d =>
+        d.StartsWith("JAVA_UNCLOSED_TEXT_BLOCK:", StringComparison.Ordinal)),
+    "unbalanced Java scopes and text blocks report partial coverage");
+Check(brokenJava.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
+    !brokenJava.Nodes.Any(n => n.Name is "Fake" or "Escaped"),
+    "untrusted Java paths and text-block decoys cannot enter the graph");
+
 // M8.2: source-only JS/TS declarations are never runtime/semantic facts.
 var ecmaFiles = new[]
 {
