@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CASES } from './windows_docker_guest.mjs';
+import { CASES, BROWSER_CODES, BROWSER_KINDS } from './windows_docker_guest.mjs';
 
 export const IMAGE_TAG = 'mcr.microsoft.com/playwright:v1.65.1-noble-amd64';
 const GUEST_SOURCE = fs.readFileSync(
@@ -52,6 +52,30 @@ export function parseObservations(raw) {
         typeof parsed[key] === 'boolean'))
     fail('Guest observations do not have the exact Boolean case schema');
   return Object.fromEntries(CASES.map(key => [key, parsed[key]]));
+}
+
+
+export function parseGuestReport(raw) {
+  if (typeof raw !== 'string' || raw.length < 2 || raw.length > 6000)
+    fail('Guest report absent or oversized');
+  let payload;
+  try { payload = JSON.parse(raw.trim()); }
+  catch { fail('Guest report is not valid JSON'); }
+  if (!payload || Array.isArray(payload) || typeof payload !== 'object' ||
+      Object.keys(payload).length !== 3 || payload.schemaVersion !== 2 ||
+      !Object.hasOwn(payload,'cases') || !Object.hasOwn(payload,'browser'))
+    fail('Guest report must have exact v2 envelope');
+  const cases = parseObservations(JSON.stringify(payload.cases));
+  const browser = payload.browser;
+  if (!browser || Array.isArray(browser) || typeof browser !== 'object' ||
+      Object.keys(browser).length !== 3 ||
+      !BROWSER_KINDS.includes(browser.binary) ||
+      !BROWSER_CODES.includes(browser.working) ||
+      !BROWSER_CODES.includes(browser.broken))
+    fail('Guest browser diagnostics invalid or unrecognized');
+  return {cases,browser:{
+    binary:browser.binary,working:browser.working,broken:browser.broken,
+  }};
 }
 
 function parseJsonResponse(response, label) {
@@ -140,7 +164,8 @@ export function runFixture({
     host: platform, imageId: null, imageTag: IMAGE_TAG,
     registryDigest: null,
     guestPayloadSha256: createHash('sha256').update(GUEST_SOURCE).digest('hex'),
-    cases: null, passedCases: 0, requiredCases: CASES.length,
+    cases: null, browserDiagnostics: null,
+    passedCases: 0, requiredCases: CASES.length,
     guestRemoved: false,
     modelInvoked: false, userSourceExecuted: false,
     sourceCodeMounted: false, cloudModelUsed: false,
@@ -193,8 +218,10 @@ export function runFixture({
       fail('No guest observations; docker exit=' + guestExit +
         '; category=' + classifyGuestFailure(guest));
     }
-    const observations = parseObservations(guest.stdout);
+    const guestReport = parseGuestReport(guest.stdout);
+    const observations = guestReport.cases;
     report.cases = observations;
+    report.browserDiagnostics = guestReport.browser;
     report.passedCases = CASES.filter(key => observations[key]).length;
     if (report.passedCases !== CASES.length)
       fail('Guest checks failed: ' +
@@ -263,6 +290,11 @@ export function main(argv = process.argv.slice(2), options = {}) {
   process.stdout.write('  fixed guest cases: ' +
     report.passedCases + '/' + report.requiredCases + '\n');
   process.stdout.write('  container absent after run: ' + report.guestRemoved + '\n');
+  if (report.browserDiagnostics) {
+    const browser = report.browserDiagnostics;
+    process.stdout.write('  Chromium binary: ' + browser.binary +
+      '; working: ' + browser.working + '; broken: ' + browser.broken + '\n');
+  }
   process.stdout.write('  generated code and untrusted browser: NOT_AUTHORIZED\n');
   process.stdout.write('  Static Web runtime profile: UNQUALIFIED\n');
   if (report.reason) process.stdout.write('  blocker: ' + report.reason + '\n');
