@@ -369,6 +369,18 @@ export function InterviewStudio({ token, task }: {
             ? ' The Product Owner believes there is enough information to draft a specification.'
             : ' Continue discussing requirements, or draft a first specification when you are ready.'}
         </p>
+        {ownerAnswers > 0 && ownerAnswers < MAX_OWNER_ANSWERS && !spec &&
+          (snapshot.readyForSpecification || ownerAnswers >= 5) &&
+          <div className="interview-ready-action">
+            <p className="hint">
+              {ownerAnswers} answers saved. You can draft a first specification now;
+              answering more questions is optional. You'll review it before approval.
+            </p>
+            <button type="button" className="outline"
+              disabled={!!busy} onClick={continueToSpecification}>
+              Review a first specification →
+            </button>
+          </div>}
         {ownerAnswers < MAX_OWNER_ANSWERS && <InterviewAnswerComposer
           key={snapshot.lastSequence}
           choice={snapshot.messages[snapshot.messages.length - 1]?.choice ?? null}
@@ -382,12 +394,7 @@ export function InterviewStudio({ token, task }: {
         {ownerAnswers >= MAX_OWNER_ANSWERS &&
           <InterviewCompletionNotice ownerAnswers={ownerAnswers}
             hasSpecification={!!spec} onContinue={continueToSpecification} />}
-        {ownerAnswers > 0 && ownerAnswers < MAX_OWNER_ANSWERS &&
-          snapshot.readyForSpecification && !spec &&
-          <button type="button" className="outline interview-ready-action"
-            disabled={!!busy} onClick={continueToSpecification}>
-            Ready to draft? Open Specification →
-          </button>}
+
       </>}
 
     </>}
