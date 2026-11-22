@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { CommandDrawer, type DrawerSelection } from './CommandDrawer';
 import { api, type TaskItem } from './api';
 import { buildDecisionInbox, type DecisionInboxSnapshot } from './OwnerDecisionInbox';
 import type { AgentIdentity } from './AgentIdentityPanel';
@@ -104,6 +105,20 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
 }) {
   const events = commandActivity(evidence);
   const agents = commandAgents(evidence);
+  const [selected, setSelected] = useState<DrawerSelection | null>(null);
+  const triggerRef = useRef<HTMLElement | null>(null);
+  const showDrawer = (selection: DrawerSelection) => {
+    triggerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement : null;
+    setSelected(selection);
+  };
+  const closeDrawer = useCallback(() => {
+    setSelected(null);
+    // Only restore focus to a still-connected trigger in this same project view.
+    const prior = triggerRef.current;
+    if (prior?.isConnected) prior.focus();
+    triggerRef.current = null;
+  }, []);
   const decisions = buildDecisionInbox(evidence.decisions);
   const reviewCount = decisions.filter(item => item.kind === 'review').length;
   const latestEngineering = evidence.engineering?.job;
@@ -151,7 +166,8 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
           {agents.map(item => <button type="button" key={item.agent.id}
             className="mc-agent-card" data-agent={item.agent.id}
             data-accent={accents[item.agent.id] ?? 'neutral'}
-            onClick={() => onNavigate('team')}
+            onClick={() => showDrawer({ kind: 'agent', id: item.agent.id })}
+            aria-haspopup="dialog"
             aria-label={'Inspect ' + item.agent.role + ': ' + item.status}>
             <span className="mc-agent-emblem" aria-hidden="true">
               {item.agent.role.split(' ').map(word => word[0]).join('').slice(0, 2)}
@@ -171,7 +187,8 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
             onClick={() => onNavigate('history')}>View all</button></div>
         {events.length ? <ol className="mc-recent-events">
           {events.slice(0, 5).map(event => <li key={event.id}>
-            <button type="button" onClick={() => onNavigate(event.destination)}>
+            <button type="button" aria-haspopup="dialog"
+              onClick={() => showDrawer({ kind: 'event', id: event.id })}>
               <span className="mc-event-top"><strong>{event.source}</strong>
                 <time dateTime={event.at}>{new Date(event.at).toLocaleString()}</time></span>
               <span>{event.label}</span><small>{event.detail}</small>
@@ -190,13 +207,16 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
       <button type="button" className="outline mc-legacy-link"
         onClick={() => onNavigate('diagnostics')}>Legacy diagnostics</button>
     </section>
+    {selected && <CommandDrawer projectTitle={task.title} selection={selected}
+      agents={agents} events={events} evidence={evidence} onClose={closeDrawer}
+      onNavigate={onNavigate} />}
   </section>;
 }
 
 export function CommandActivity({ token, task, onNavigate }: {
   token: string;
   task: TaskItem;
-  onNavigate: (destination: 'team' | 'work' | 'quality' | 'history') => void;
+  onNavigate: (destination: 'team' | 'work' | 'quality' | 'history' | 'diagnostics') => void;
 }) {
   const [evidence, setEvidence] = useState<CommandEvidence | null>(null);
   const [error, setError] = useState(false);
