@@ -617,6 +617,9 @@ public static class ApiHost
                 Safe(() => Results.Ok(db.Classify(id, proposalId, request))));
         // R2-R5: owner-authorized repairs remain source-only. Persisted
         // progress is derived from actual engineering and QA records.
+        app.MapGet("/api/tasks/{id}/repair-cycles",
+            (string id, RepairCycleStore db) =>
+                Safe(() => Results.Ok(new { cycles = db.History(id) })));
         app.MapGet("/api/tasks/{id}/repair-cycles/latest",
             (string id, RepairCycleStore db) =>
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
