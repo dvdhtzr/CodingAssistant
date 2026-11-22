@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace CodingAssistant.Api;
 
@@ -9,6 +10,76 @@ namespace CodingAssistant.Api;
 /// agent, code execution or filesystem access. The LLM chooses the next
 /// clarifying question based on the objective and prior answers.
 /// </summary>
+/// <summary>
+/// Model-independent guard against saving the same resolved question again.
+/// This is intentionally conservative: related follow-ups with new decisions
+/// are allowed, and uncertain semantic matches are left to the model.
+/// </summary>
+public static class InterviewQuestionQuality
+{
+    private static readonly HashSet<string> CommonWords = new(StringComparer.Ordinal)
+    {
+        "a", "an", "and", "are", "as", "at", "be", "by", "can", "could",
+        "do", "does", "for", "from", "how", "i", "in", "is", "it", "like",
+        "of", "on", "or", "our", "should", "that", "the", "their", "them",
+        "there", "these", "this", "those", "through", "to", "we", "what",
+        "when", "where", "which", "who", "will", "with", "would", "you", "your"
+    };
+
+    private static HashSet<string> Terms(string value)
+    {
+        var terms = new HashSet<string>(StringComparer.Ordinal);
+        foreach (Match match in Regex.Matches(value.ToLowerInvariant(), @"[a-z0-9]+"))
+        {
+            var term = match.Value;
+            if (term == "publicly") term = "public";
+            if (term.Length > 6 && term.EndsWith('s') && !term.EndsWith("ss", StringComparison.Ordinal))
+                term = term[..^1];
+            if (term.Length > 2 && !CommonWords.Contains(term))
+                terms.Add(term);
+        }
+        return terms;
+    }
+
+    public static bool RepeatsResolvedQuestion(
+        InterviewReply candidate, IReadOnlyList<InterviewMessage> history)
+    {
+        if (!candidate.Message.Contains('?')) return false;
+        var current = Terms(candidate.Message);
+        if (current.Count < 3) return false;
+        foreach (var prior in history)
+        {
+            if (prior.Role != "assistant" || !prior.Content.Contains('?'))
+                continue;
+            var old = Terms(prior.Content);
+            if (old.Count < 3) continue;
+            var shared = current.Count(old.Contains);
+            var smaller = Math.Min(current.Count, old.Count);
+            var larger = Math.Max(current.Count, old.Count);
+            if (shared >= 3 && (shared == smaller && shared == larger ||
+                shared >= 4 && (shared / (double)larger >= 0.72 ||
+                    shared / (double)smaller >= 0.85 &&
+                    shared / (double)larger >= 0.50)))
+                return true;
+        }
+        return false;
+    }
+
+    public const string Correction =
+        "The previous response either repeated a previously answered question " +
+        "or failed validation. Review EVERY recorded owner answer. Do not ask an " +
+        "already resolved question again. Ask ONE materially different, high-value " +
+        "unresolved PRODUCT question, or if the information is sufficient, " +
+        "provide a concise readiness summary with readyForSpecification=true " +
+        "and no choice. Return only valid JSON per the output contract.";
+
+    public static InterviewReply RepetitionFallback() => new(
+        "We've covered that question already. Rather than repeat it, you can " +
+        "draft a first product specification now and review any remaining " +
+        "assumptions or open questions before approving it.",
+        true);
+}
+
 public sealed class LocalInterviewModel : IInterviewModel
 {
     public const string DefaultModel = "qwen3.5:4b";
@@ -65,6 +136,10 @@ public sealed class LocalInterviewModel : IInterviewModel
         usability, quality attributes, dependencies and acceptance criteria.
         Identify assumptions, contradictory answers and meaningful omissions.
         Ask intelligent follow-up questions specific to the current project.
+        Before every turn, review all previously answered questions. Do not
+        repeat confirmations or reopen a settled decision without a clear new
+        contradiction. If no new high-value question remains, summarize the
+        agreed scope, set readyForSpecification=true, and omit choice.
 
         Ask exactly ONE high-value decision question per turn, based on the
         objective and the owner's previous answers. Do not combine two decisions
@@ -209,28 +284,29 @@ public sealed class LocalInterviewModel : IInterviewModel
         string objective, IReadOnlyList<InterviewMessage> messages, string model,
         CancellationToken cancellation)
     {
-        var content = await ChatAsync(
-            InterviewPolicy, objective, messages, model,
-            json: true, maxTokens: 750, cancellation);
-        try
+        // Both malformed output and previously answered questions get one
+        // bounded corrective retry. Never persist the rejected candidate.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            return ParseInterviewReply(content);
-        }
-        catch (StoreFailure ex) when (ex.Code == "MODEL_OUTPUT_REJECTED")
-        {
-            // One bounded retry, with the exact same task and interview
-            // history. A bad model response is never saved as an owner turn.
-            var retry = await ChatAsync(
+            var content = await ChatAsync(
                 InterviewPolicy, objective, messages, model,
                 json: true, maxTokens: 750, cancellation,
-                correction: "The previous answer was unusable. Respond with " +
-                    "one valid JSON object containing a nonempty 'message' " +
-                    "with one project-specific question, a boolean " +
-                    "'readyForSpecification', and an optional 'choice' " +
-                    "object with kind single/multiple and 2-5 options. No reasoning, " +
-                    "code fences, or surrounding commentary.");
-            return ParseInterviewReply(retry);
+                correction: attempt == 0 ? null : InterviewQuestionQuality.Correction);
+            try
+            {
+                var reply = ParseInterviewReply(content);
+                if (!InterviewQuestionQuality.RepeatsResolvedQuestion(reply, messages))
+                    return reply;
+                if (attempt == 1)
+                    return InterviewQuestionQuality.RepetitionFallback();
+            }
+            catch (StoreFailure ex) when (
+                ex.Code == "MODEL_OUTPUT_REJECTED" && attempt == 0)
+            {
+                // The next attempt receives a contract correction.
+            }
         }
+        throw new StoreFailure("MODEL_OUTPUT_REJECTED");
     }
 
     public async Task<string> DraftAsync(
