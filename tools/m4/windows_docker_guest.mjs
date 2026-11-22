@@ -84,10 +84,10 @@ export function browserCandidatePaths(dirs) {
     for (const relative of [
       'chrome-headless-shell-linux64/chrome-headless-shell',
       'chrome-linux/headless_shell', 'chrome-linux/headless-shell',
-    ]) result.push({kind:'HEADLESS_SHELL', path:path.join('/ms-playwright',name,relative)});
+    ]) result.push({kind:'HEADLESS_SHELL', path:path.posix.join('/ms-playwright',name,relative)});
   for (const name of revisions.filter(x => x.startsWith('chromium-')))
     for (const relative of ['chrome-linux64/chrome', 'chrome-linux/chrome'])
-      result.push({kind:'FULL_CHROMIUM', path:path.join('/ms-playwright',name,relative)});
+      result.push({kind:'FULL_CHROMIUM', path:path.posix.join('/ms-playwright',name,relative)});
   return result;
 }
 
