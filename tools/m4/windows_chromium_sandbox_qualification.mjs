@@ -153,6 +153,159 @@ export function runSandboxCompatibility({
     report.seccompSha256=policy.sha256;
     report.seccompUpstreamGitBlob=policy.upstreamGitBlob;
     const collision=docker(['ps','-a','--filter','name=^/'+name+'
+    if(collision.status!==0||collision.stdout.trim())
+      fail('Disposable name collision or Docker preflight error');
+    attempted=true;
+    const guest=docker(sandboxDockerArgs(pin.imageId,name),110000,SOURCE);
+    if(guest.timedOut)fail('Fixed sandbox compatibility probe timed out');
+    if(!guest.stdout||!guest.stdout.trim())
+      fail('No sandbox observations; docker exit='+
+        (Number.isInteger(guest.status)?guest.status:'unavailable')+
+        '; category='+classifyGuestFailure(guest));
+    const findings=parseSandboxReport(guest.stdout);
+    report.checks=findings.cases;
+    report.browser=findings.browser;
+    report.passedChecks=CASES.filter(k=>findings.cases[k]).length;
+    if(report.passedChecks!==CASES.length)
+      fail('Sandbox compatibility checks failed: '+
+        CASES.filter(k=>!findings.cases[k]).join(', '));
+    if(guest.status!==0)
+      fail('Sandbox guest exited nonzero despite all observations; category='+
+        classifyGuestFailure(guest));
+    // "COMPATIBILITY_PASS" is not "untrusted sandbox QUALIFIED".
+    report.status='SANDBOX_COMPATIBILITY_PASS';
+  }catch(e){
+    report.reason=String(e?.message??e).slice(0,260);
+  }finally{
+    if(attempted){
+      try{
+        const found=docker(['container','inspect',name,
+          '--format','{{json .Config.Labels}}'],15000);
+        if(found.status===0){
+          const labels=JSON.parse(found.stdout.trim());
+          if(labels?.['codingassistant.m47']!==name)
+            fail('Container ownership label mismatch; refusing removal');
+          docker(['rm','-f',name],15000);
+        }
+        const left=docker(['ps','-a','--filter','name=^/'+name+'$',
+          '--format','{{.ID}}'],15000);
+        report.containerRemoved=left.status===0 && left.stdout.trim()==='';
+      }catch{report.containerRemoved=false;}
+    }
+    if(attempted&&!report.containerRemoved){
+      report.status='BLOCKED';
+      report.reason='Disposable container cleanup not confirmed';
+    }
+  }
+  return report;
+}
+export function main(argv=process.argv.slice(2),options={}){
+  if(argv.length===0){
+    process.stdout.write('M4.7 WINDOWS_CHROMIUM_SANDBOX: NOT_RUN\n');
+    process.stdout.write('Use --run for fixed browser compatibility only.\n');
+    return 0;
+  }
+  if(argv.length!==1||argv[0]!=='--run'){
+    process.stderr.write(
+      'Usage: node tools/m4/windows_chromium_sandbox_qualification.mjs [--run]\n');
+    return 2;
+  }
+  const report=runSandboxCompatibility(options);
+  const evidence=writePrivateEvidence(report,options.evidenceFolder);
+  process.stdout.write('M4.7 WINDOWS_'+report.status+'\n');
+  process.stdout.write('  fixed isolation and browser checks: '+
+    report.passedChecks+'/'+report.requiredChecks+'\n');
+  process.stdout.write('  container removed: '+report.containerRemoved+'\n');
+  if(report.browser)
+    process.stdout.write('  Chromium: '+report.browser.binary+
+      '; fixed DOM: '+report.browser.dom+
+      '; sandbox status: '+report.browser.sandbox+'\n');
+  if(report.reason)process.stdout.write('  blocker: '+report.reason+'\n');
+  process.stdout.write('  generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED\n');
+  process.stdout.write('Evidence: '+evidence+'\n');
+  return report.status==='SANDBOX_COMPATIBILITY_PASS' && 
+    report.containerRemoved ? 0:2;
+}
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))
+  process.exitCode=main();
+,
+      '--format','{{.ID}}'],8000);
+    if(collision.status!==0||collision.stdout.trim())
+      fail('Disposable name collision or Docker preflight error');
+    attempted=true;
+    const guest=docker(sandboxDockerArgs(pin.imageId,name),110000,SOURCE);
+    if(guest.timedOut)fail('Fixed sandbox compatibility probe timed out');
+    if(!guest.stdout||!guest.stdout.trim())
+      fail('No sandbox observations; docker exit='+
+        (Number.isInteger(guest.status)?guest.status:'unavailable')+
+        '; category='+classifyGuestFailure(guest));
+    const findings=parseSandboxReport(guest.stdout);
+    report.checks=findings.cases;
+    report.browser=findings.browser;
+    report.passedChecks=CASES.filter(k=>findings.cases[k]).length;
+    if(report.passedChecks!==CASES.length)
+      fail('Sandbox compatibility checks failed: '+
+        CASES.filter(k=>!findings.cases[k]).join(', '));
+    if(guest.status!==0)
+      fail('Sandbox guest exited nonzero despite all observations; category='+
+        classifyGuestFailure(guest));
+    // "COMPATIBILITY_PASS" is not "untrusted sandbox QUALIFIED".
+    report.status='SANDBOX_COMPATIBILITY_PASS';
+  }catch(e){
+    report.reason=String(e?.message??e).slice(0,260);
+  }finally{
+    if(attempted){
+      try{
+        const found=docker(['container','inspect',name,
+          '--format','{{json .Config.Labels}}'],15000);
+        if(found.status===0){
+          const labels=JSON.parse(found.stdout.trim());
+          if(labels?.['codingassistant.m47']!==name)
+            fail('Container ownership label mismatch; refusing removal');
+          docker(['rm','-f',name],15000);
+        }
+        const left=docker(['ps','-a','--filter','name=^/'+name+'$',
+          '--format','{{.ID}}'],15000);
+        report.containerRemoved=left.status===0 && left.stdout.trim()==='';
+      }catch{report.containerRemoved=false;}
+    }
+    if(attempted&&!report.containerRemoved){
+      report.status='BLOCKED';
+      report.reason='Disposable container cleanup not confirmed';
+    }
+  }
+  return report;
+}
+export function main(argv=process.argv.slice(2),options={}){
+  if(argv.length===0){
+    process.stdout.write('M4.7 WINDOWS_CHROMIUM_SANDBOX: NOT_RUN\n');
+    process.stdout.write('Use --run for fixed browser compatibility only.\n');
+    return 0;
+  }
+  if(argv.length!==1||argv[0]!=='--run'){
+    process.stderr.write(
+      'Usage: node tools/m4/windows_chromium_sandbox_qualification.mjs [--run]\n');
+    return 2;
+  }
+  const report=runSandboxCompatibility(options);
+  const evidence=writePrivateEvidence(report,options.evidenceFolder);
+  process.stdout.write('M4.7 WINDOWS_'+report.status+'\n');
+  process.stdout.write('  fixed isolation and browser checks: '+
+    report.passedChecks+'/'+report.requiredChecks+'\n');
+  process.stdout.write('  container removed: '+report.containerRemoved+'\n');
+  if(report.browser)
+    process.stdout.write('  Chromium: '+report.browser.binary+
+      '; fixed DOM: '+report.browser.dom+
+      '; sandbox status: '+report.browser.sandbox+'\n');
+  if(report.reason)process.stdout.write('  blocker: '+report.reason+'\n');
+  process.stdout.write('  generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED\n');
+  process.stdout.write('Evidence: '+evidence+'\n');
+  return report.status==='SANDBOX_COMPATIBILITY_PASS' && 
+    report.containerRemoved ? 0:2;
+}
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))
+  process.exitCode=main();
+,
       '--format','{{.ID}}'],8000);
     if(collision.status!==0||collision.stdout.trim())
       fail('Disposable name collision or Docker preflight error');
