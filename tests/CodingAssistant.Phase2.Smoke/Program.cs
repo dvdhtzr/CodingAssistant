@@ -143,6 +143,70 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     }
 }
 
+
+// Contract diagnosis is bounded, schema-aware and never echoes untrusted output.
+{
+    const string goodPlan = """{"summary":"Build a minimal offline notes application with working controls and persistence.","tasks":[{"id":"create-ui","title":"Create the browser interface","description":"Create accessible controls for notes and search","dependsOn":[],"acceptanceCriteria":["A user can type into the note editor and click Save"]}],"testStrategy":["Independently check button clicks using keyboard and mouse"],"risks":[]}""";
+    Check(ImplementationPlanContract.TryParse(goodPlan, out var validOutline,
+            out var okReason) && validOutline!.Tasks.Count == 1 && okReason == "",
+        "valid Technical Lead plan remains acceptable");
+    Check(!ImplementationPlanContract.TryParse("not-json SECRET_SENTINEL",
+            out _, out var syntaxReason) &&
+          syntaxReason.StartsWith("JSON_SYNTAX:", StringComparison.Ordinal) &&
+          !syntaxReason.Contains("SECRET_SENTINEL", StringComparison.Ordinal),
+        "invalid JSON diagnostic never includes raw model content");
+    var invalidOrder = goodPlan.Replace("\"dependsOn\":[]",
+        "\"dependsOn\":[\"future-task\"]", StringComparison.Ordinal);
+    Check(!ImplementationPlanContract.TryParse(invalidOrder,
+            out _, out var orderReason) &&
+          orderReason.StartsWith("DEPENDENCY_ORDER:", StringComparison.Ordinal),
+        "dependency-order error receives a targeted correction hint");
+    var invalidDescription = goodPlan.Replace(
+        "Create accessible controls for notes and search", "short",
+        StringComparison.Ordinal);
+    Check(!ImplementationPlanContract.TryParse(invalidDescription,
+            out _, out var descriptionReason) &&
+          descriptionReason.StartsWith("TASK_DESCRIPTION:", StringComparison.Ordinal),
+        "too-short task descriptions receive specific correction hints");
+
+    var readiness = new DraftArchitectureReadiness("READY", true,
+        new string('a', 64), [], [
+            new DraftArchitectureChoice("technology-stack", 1,
+                new string('b', 64), "static-web", "Static HTML and JavaScript",
+                "Offline", "Manual DOM", "static-web"),
+            new DraftArchitectureChoice("architecture-style", 1,
+                new string('c', 64), "small-modules", "Small modules",
+                "Simple to test", "Manual boundaries", null)
+        ]);
+    var correctingFactory = new Phase3FakeMafFactory();
+    correctingFactory.TechnicalLeadReplies.Enqueue(invalidOrder);
+    correctingFactory.TechnicalLeadReplies.Enqueue(goodPlan);
+    var corrected = await new MafAgentTeam(correctingFactory).PlanAsync(
+        "Build an offline notes tracker", new string('s', 180), readiness,
+        "qwen3.5:4b", CancellationToken.None);
+    Check(corrected.Tasks.Count == 1 &&
+          correctingFactory.Purposes.Count == 2 &&
+          correctingFactory.TechnicalLeadCorrectionPrompts.Any(p =>
+              p.Contains("DEPENDENCY_ORDER:", StringComparison.Ordinal)),
+        "Technical Lead recovers from invalid dependency order using validator hint");
+
+    var rejectingFactory = new Phase3FakeMafFactory();
+    for (var i = 0; i < 3; i++)
+        rejectingFactory.TechnicalLeadReplies.Enqueue(invalidOrder);
+    try
+    {
+        _ = await new MafAgentTeam(rejectingFactory).PlanAsync(
+            "Build an offline notes tracker", new string('s', 180), readiness,
+            "qwen3.5:4b", CancellationToken.None);
+        Check(false, "persistently invalid Technical Lead plans must fail");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(rejectingFactory.Purposes.Count == 3,
+            "Technical Lead fails closed after exactly three model attempts");
+    }
+}
+
 // Five true MAF roles have separate goals, fictional work histories and
 // no rights to use executable tools or load skills merely by naming them.
 {
@@ -1530,6 +1594,8 @@ sealed class Phase2DraftModel : IProjectDraftModel
 
 sealed class Phase3FakeMafFactory : IMafChatClientFactory
 {
+    public Queue<string> TechnicalLeadReplies { get; } = new();
+    public List<string> TechnicalLeadCorrectionPrompts { get; } = [];
     public List<MafAgentPurpose> Purposes { get; } = [];
     public List<string> Models { get; } = [];
     public int SystemPoliciesSeen { get; private set; }
@@ -1556,6 +1622,15 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                     StringComparison.Ordinal) == true)
                 parent.SystemPoliciesSeen++;
             parent.AllowedToolsSeen += options?.Tools?.Count ?? 0;
+            if (purpose == MafAgentPurpose.TechnicalLead)
+                parent.TechnicalLeadCorrectionPrompts.AddRange(history
+                    .Where(m => m.Role == ChatRole.User &&
+                        m.Text?.Contains("Reason:", StringComparison.Ordinal) == true)
+                    .Select(m => m.Text!));
+            if (purpose == MafAgentPurpose.TechnicalLead &&
+                parent.TechnicalLeadReplies.Count > 0)
+                return Task.FromResult(new ChatResponse(new ChatMessage(
+                    ChatRole.Assistant, parent.TechnicalLeadReplies.Dequeue())));
             var text = purpose switch
             {
                 MafAgentPurpose.Interview =>
