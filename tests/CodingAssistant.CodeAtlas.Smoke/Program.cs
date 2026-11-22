@@ -845,7 +845,14 @@ var m812Inherits = m812Graph.Edges.Where(e => e.Kind == "Inherits").ToArray();
 var m812Implements = m812Graph.Edges.Where(e => e.Kind == "Implements").ToArray();
 Check(m812Graph.Coverage == "ECMA_STRUCTURE_ONLY" &&
     m812Inherits.Length == 5 && m812Implements.Length == 2,
-    "bare type clauses yield five inheritance and two implementation links");
+    "bare type clauses expected five inheritance/two implementation links; actual " +
+    m812Graph.Coverage + " inherit=" + m812Inherits.Length +
+    " impl=" + m812Implements.Length + "; edges: " +
+    string.Join("; ", m812Graph.Edges.Where(e =>
+        e.Kind is "Inherits" or "Implements").Select(e =>
+            m812Graph.Nodes.Single(n => n.Id == e.SourceId).Name + " " +
+            e.Kind + " " +
+            m812Graph.Nodes.Single(n => n.Id == e.TargetId).Name)));
 AtlasNode M812Node(string path, string kind, string name) =>
     m812Graph.Nodes.Single(n => n.Path == path &&
         n.Kind == kind && n.Name == name);
