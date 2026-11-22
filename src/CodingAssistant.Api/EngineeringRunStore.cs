@@ -94,6 +94,7 @@ public sealed class EngineeringRunStore(
                 PRIMARY KEY(run_id,path)
             );
             """);
+        EngineeringAtlasLedger.EnsureSchema(db);
     }
 
     public void MarkInterruptedOnStartup()
