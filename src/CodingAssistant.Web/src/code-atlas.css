@@ -73,3 +73,14 @@
 .atlas-relation-filters button[aria-pressed="true"]{background:#285d5b;border-color:#61d4b9;color:#d9fff2}
 .atlas-relation-filters button:focus-visible{outline:2px solid #6ce2c9;outline-offset:2px}
 .atlas-relationships button .atlas-evidence{display:block;margin:.25rem 0 0;font-size:.61rem;color:#a9c3d1;overflow-wrap:anywhere}
+
+.atlas-edge.atlas-traced{stroke:#ffd18a;stroke-opacity:1;stroke-width:3.3}
+.atlas-path-actions{display:flex;gap:.3rem;flex-wrap:wrap;margin:.35rem 0}
+.atlas-path-actions button{font-size:.68rem;padding:.4rem .52rem}
+.atlas-path-actions button[aria-pressed="true"]{background:#305b50;color:#e0fff0}
+.atlas-path-hint{margin:.5rem 0!important;color:#95dbb9!important}
+.atlas-path-result{padding:.55rem .65rem;border:1px solid #3b6e63;border-radius:8px;background:#16332e;font-size:.7rem}
+.atlas-path-result strong{color:#d5f5e7}
+.atlas-path-result ol{margin:.5rem 0 0;padding-left:1.2rem}
+.atlas-path-result li{overflow-wrap:anywhere;margin:.2rem 0;color:#c1ddcf}
+.atlas-path-result small{display:block;color:#91b5a6}
