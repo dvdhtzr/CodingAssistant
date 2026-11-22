@@ -11,6 +11,7 @@ let summarizeVerificationEvidence;
 let VerificationScopeView;
 let scopeMatchesRun;
 let smokeMatchesScope;
+let ProjectReadinessView;
 const sha = 'a'.repeat(64);
 const when = '2026-11-21T15:00:00Z';
 function fixture() {
@@ -44,7 +45,8 @@ before(async () => {
     server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   ({ VerificationTimelineView, summarizeVerificationEvidence } =
     await vite.ssrLoadModule('/src/VerificationTimeline.tsx'));
-  ({ VerificationScopeView, scopeMatchesRun, smokeMatchesScope } =
+  ({ VerificationScopeView, scopeMatchesRun, smokeMatchesScope,
+    ProjectReadinessView } =
     await vite.ssrLoadModule('/src/VerificationScope.tsx'));
 });
 after(async () => { await vite?.close(); });
@@ -332,4 +334,44 @@ test('delivery keeps one prominent Test Project action and collapses technical e
   assert.match(deliveryCode, /<summary>Inspect saved source/);
   assert.match(css, /verification-compact-details > summary:focus-visible/);
   assert.match(css, /engineering-source-details > summary:focus-visible/);
+});
+
+
+test('Node.js podcast source reports missing manifests without claiming a build', () => {
+  const html = renderToStaticMarkup(React.createElement(ProjectReadinessView, {
+    report: {
+      runId: 'e'.repeat(32), sourceState: 'Generated',
+      sourceSha256: 'b'.repeat(64), projectKind: 'NODE_SERVER',
+      runtimeProfileId: 'node-server', status: 'INCOMPLETE',
+      verificationStatus: 'GENERATED_NOT_TESTED', executionAvailable: false,
+      findings: [
+        { code: 'MISSING_PACKAGE_MANIFEST', severity: 'Error',
+          path: 'package.json', detail: 'The server needs dependencies.' },
+        { code: 'MISSING_TEST_FILES', severity: 'Error',
+          path: 'tests/', detail: 'No tests are saved.' },
+      ],
+    },
+  }));
+  assert.match(html, /Node.js server application/);
+  assert.match(html, /Incomplete source/);
+  assert.match(html, /package.json/);
+  assert.match(html, /No tests are saved/);
+  assert.match(html, /Static Web browser profile cannot test its Express server/);
+  assert.match(html, /Build and tests: not run/);
+  assert.doesNotMatch(html, /Verified application|Tests passed/);
+});
+
+test('ready-to-review source never claims execution or passing tests', () => {
+  const html = renderToStaticMarkup(React.createElement(ProjectReadinessView, {
+    report: {
+      runId: 'f'.repeat(32), sourceState: 'Generated',
+      sourceSha256: 'a'.repeat(64), projectKind: 'STATIC_WEB',
+      runtimeProfileId: 'static-web', status: 'SOURCE_READY_FOR_REVIEW',
+      verificationStatus: 'GENERATED_NOT_TESTED', executionAvailable: false,
+      findings: [],
+    },
+  }));
+  assert.match(html, /Source structure ready for review/);
+  assert.match(html, /does not establish that the project builds or works/);
+  assert.match(html, /Build and tests: not run/);
 });
