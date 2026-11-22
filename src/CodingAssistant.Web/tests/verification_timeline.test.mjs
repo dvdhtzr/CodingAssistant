@@ -10,6 +10,7 @@ let VerificationTimelineView;
 let summarizeVerificationEvidence;
 let VerificationScopeView;
 let scopeMatchesRun;
+let smokeMatchesScope;
 const sha = 'a'.repeat(64);
 const when = '2026-11-21T15:00:00Z';
 function fixture() {
@@ -42,7 +43,7 @@ before(async () => {
     server: { middlewareMode: true }, appType: 'custom' });
   ({ VerificationTimelineView, summarizeVerificationEvidence } =
     await vite.ssrLoadModule('/src/VerificationTimeline.tsx'));
-  ({ VerificationScopeView, scopeMatchesRun } =
+  ({ VerificationScopeView, scopeMatchesRun, smokeMatchesScope } =
     await vite.ssrLoadModule('/src/VerificationScope.tsx'));
 });
 after(async () => { await vite?.close(); });
@@ -268,4 +269,51 @@ test('M4.6 UI is registered for normal CI and does not fetch an execution URL',(
   assert.match(css,/verification-scope-blockers/);
   assert.match(css,/max-width:760px/);
   assert.match(css,/focus-visible/);
+});
+
+
+test('one-click smoke is bound to current source and never called VERIFIED',()=>{
+  const scope=goodScope();
+  const smoke={
+    engineeringRunId:scope.engineeringRunId,scopeSha256:scope.scopeSha256,
+    status:'SMOKE_PASS_NOT_VERIFIED',passed:9,required:9,
+    containerRemoved:true,browserSandbox:'DISABLED_CONTAINER_ONLY',
+    reason:null,verified:false,checks:{
+      exact_source_hashes:true,non_root:true,no_host_mounts:true,
+      root_write_denied:true,network_denied:true,javascript_syntax:true,
+      local_assets_linked:true,browser_rendered:true,
+      source_integrity_unchanged:true,
+    },
+  };
+  assert.equal(smokeMatchesScope(smoke,scope),true);
+  for(const wrong of [
+    {...smoke,verified:true},
+    {...smoke,status:'VERIFIED'},
+    {...smoke,browserSandbox:'ENABLED'},
+    {...smoke,engineeringRunId:'0'.repeat(32)},
+    {...smoke,scopeSha256:'0'.repeat(64)},
+    {...smoke,containerRemoved:false},
+    {...smoke,checks:{...smoke.checks,browser_rendered:false}},
+    {...smoke,passed:8},
+  ])assert.equal(smokeMatchesScope(wrong,scope),false,JSON.stringify(wrong));
+  const failed={...smoke,status:'SMOKE_TEST_FAILED',passed:8,
+    checks:{...smoke.checks,browser_rendered:false}};
+  assert.equal(smokeMatchesScope(failed,scope),true);
+  const blocked={...smoke,status:'BLOCKED',passed:0,containerRemoved:false,
+    checks:{}};
+  assert.equal(smokeMatchesScope(blocked,scope),true);
+});
+test('one-click UI posts scope binding and explicit sandbox consent, no ZIP download',()=>{
+  const code=readFileSync('src/VerificationScope.tsx','utf8');
+  const api=readFileSync('../CodingAssistant.Api/ApiHost.cs','utf8');
+  const backend=readFileSync('../CodingAssistant.Api/SourceSmokeCoordinator.cs','utf8');
+  assert.match(code,/Test Project/);
+  assert.match(code,/acceptContainerOnlyBrowserSandbox: true/);
+  assert.match(code,/scopeSha256: scope.scopeSha256/);
+  assert.match(code,/source-smoke/);
+  assert.match(code,/no ZIP download/);
+  assert.match(api,/source-smoke/);
+  assert.match(backend,/engineering.Zip\(taskId, runId\)/);
+  assert.doesNotMatch(code,/href=.*zip|new Blob\(/);
+  assert.match(code,/not full functional verification/);
 });
