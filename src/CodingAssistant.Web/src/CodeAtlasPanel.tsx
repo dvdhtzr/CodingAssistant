@@ -253,6 +253,30 @@ export function projectAtlas(snapshot: AtlasSnapshot, focusId: string | null,
   };
 }
 
+// M8.5: bounded search across the full saved graph (not just visible nodes).
+// Search never creates a node or relationship; a selected match is focused
+// through the same source-backed navigation used by a clicked graph node.
+export function searchAtlasSymbols(snapshot: AtlasSnapshot, query: string): {
+  results: AtlasNode[]; total: number;
+} {
+  const term = query.trim().toLowerCase();
+  if (!term) return { results: [], total: 0 };
+  function rank(node: AtlasNode) {
+    const name = node.name.toLowerCase();
+    const full = node.qualifiedName.toLowerCase();
+    if (name === term || full === term) return 0;
+    if (name.startsWith(term)) return 1;
+    if (full.endsWith('.' + term) || full.endsWith('/' + term)) return 2;
+    return 3;
+  }
+  const matches = snapshot.nodes.filter(node =>
+    node.kind !== 'Repository' &&
+    (node.name.toLowerCase().includes(term) ||
+      node.qualifiedName.toLowerCase().includes(term)));
+  matches.sort((a, b) => rank(a) - rank(b) || graphSort(a, b));
+  return { results: matches.slice(0, 8), total: matches.length };
+}
+
 function relatedEdges(snapshot: AtlasSnapshot, id: string): AtlasEdge[] {
   return snapshot.edges.filter(edge =>
     edge.sourceId === id || edge.targetId === id);
@@ -599,6 +623,9 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const view = useMemo(() => displayGraph ?
     projectAtlas(displayGraph, focus, showMethods, query) : null,
     [displayGraph, focus, showMethods, query]);
+  const symbolMatches = useMemo(() => displayGraph ?
+    searchAtlasSymbols(displayGraph, query) : { results: [], total: 0 },
+    [displayGraph, query]);
   const node = displayGraph?.nodes.find(n => n.id === selected);
   const allLinks = node && displayGraph ?
     relatedEdges(displayGraph, node.id) : [];
@@ -698,6 +725,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
             const search = event.target.value;
             setQuery(search); setFocus(null); setFollowBuild(false);
             const found = search.trim() ? displayGraph?.nodes.find(item =>
+              (showMethods || !SKIP_METHODS.has(item.kind)) &&
               (item.qualifiedName + ' ' + item.name).toLowerCase()
                 .includes(search.trim().toLowerCase())) : null;
             setSelected(found?.id ?? null);
@@ -714,6 +742,24 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
       </label>}
       <button type="button" className="outline" onClick={reset}>Overview</button>
     </div>
+    {displayGraph && query.trim() && <section className="atlas-search-results"
+      role="region" aria-label="Code Atlas matching symbols">
+      <p>{symbolMatches.total === 0 ? 'No saved symbols match this search.' :
+        'Showing ' + symbolMatches.results.length + ' of ' +
+          symbolMatches.total + ' matching source symbols'}</p>
+      {symbolMatches.results.length > 0 && <div className="atlas-search-jumps">
+        {symbolMatches.results.map(match => <button type="button" key={match.id}
+          aria-label={'Jump to ' + match.kind + ': ' + match.qualifiedName}
+          onClick={() => {
+            setSelected(match.id); setFocus(match.id); setQuery('');
+            if (SKIP_METHODS.has(match.kind)) setShowMethods(true);
+            setFollowBuild(false);
+          }}>
+          <strong>{match.name}</strong>
+          <span>{match.kind} · {match.path ?? match.qualifiedName}</span>
+        </button>)}
+      </div>}
+    </section>}
     {error && <p role="alert" className="atlas-error">{error}</p>}
     {!snapshot && !error && <p role="status" className="atlas-empty">
       {importedGraph ? 'Reading imported source structure…' :

@@ -217,3 +217,19 @@
   font-size:.7rem;padding-left:1.1rem}
 .atlas-import-drift-result li{margin:.3rem 0}
 .atlas-import-drift-result li span{margin-left:.45rem}
+
+/* M8.5: bounded, flat symbol jump strip, no nested cards or extra scrollbars. */
+.atlas-search-results{margin:-.35rem 0 .8rem;min-width:0}
+.atlas-search-results p{margin:0 0 .4rem;color:#9fbac8;font-size:.67rem}
+.atlas-search-jumps{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:.25rem .55rem}
+.atlas-search-jumps button{min-width:0;text-align:left;display:flex;gap:.35rem;
+  align-items:baseline;padding:.35rem .45rem;border:0;border-bottom:1px solid #314b5a;
+  border-radius:0;background:transparent;color:#dfedf5;font-size:.72rem}
+.atlas-search-jumps button:hover{background:#1a3544}
+.atlas-search-jumps button:focus-visible{outline:2px solid #75e4ce;outline-offset:2px}
+.atlas-search-jumps button strong{max-width:48%;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;flex-shrink:0}
+.atlas-search-jumps button span{color:#9fb8c7;font-size:.65rem;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:630px){.atlas-search-jumps{grid-template-columns:1fr}}

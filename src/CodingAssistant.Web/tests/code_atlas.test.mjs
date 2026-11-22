@@ -117,6 +117,27 @@ test('focused file reveals only recorded local module import links', () => {
   assert.ok(!withoutEvidence.edges.some(e => e.kind === 'ModuleImports'));
 });
 
+test('large graph symbol search stays bounded, ranked, deterministic and source-only', async () => {
+  const { searchAtlasSymbols } = await vite.ssrLoadModule('/src/CodeAtlasPanel.tsx');
+  const files = Array.from({ length: 4000 }, (_, i) => ({
+    id: 'node-' + i, kind: 'Class', name: i === 3580 ? 'TargetService' : 'Service' + i,
+    qualifiedName: 'Source.Service' + i, parentId: 'root',
+    path: 'Source/' + i + '.cs', line: 1,
+  }));
+  const bigGraph = { ...snapshot, nodes: [nodes[0], ...files], edges: [] };
+  const first = searchAtlasSymbols(bigGraph, 'Service');
+  const second = searchAtlasSymbols(bigGraph, 'Service');
+  assert.equal(first.total, 4000);
+  assert.equal(first.results.length, 8);
+  assert.deepEqual(first, second);
+  const targeted = searchAtlasSymbols(bigGraph, 'TargetService');
+  assert.equal(targeted.total, 1);
+  assert.equal(targeted.results[0].id, 'node-3580');
+  assert.equal(searchAtlasSymbols(bigGraph, 'not-in-repository').total, 0);
+  assert.equal(searchAtlasSymbols(bigGraph, '').results.length, 0);
+  assert.ok(first.results.every(item => bigGraph.nodes.includes(item)));
+});
+
 test('Atlas method view remains deterministic and source based', () => {
   const first = projectAtlas(snapshot, null, true);
   const second = projectAtlas(snapshot, null, true);

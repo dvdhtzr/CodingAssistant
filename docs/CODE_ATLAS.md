@@ -135,3 +135,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Resolution is purely lexical and in-memory: no filesystem access, bundler, TypeScript compiler, package installation, network call, build, or untrusted code execution. Supported exact paths, unambiguous extensionless `.ts/.tsx/.js/.jsx/.mjs/.cjs`, and `index.*` are source-backed. Package names, alias resolution, runtime `import()`, `require()`, and inferred symbol calls are omitted.
 - The relationship carries `LiteralLocalModule` resolution plus import source path and line. Ambiguous, missing, and escaping local specifiers produce bounded diagnostics without guessed edges. Imports from comments, templates, strings, regex, and dynamic expressions do not create edges.
 - Existing task/import isolation, owner authentication, Node/edge caps, diff/replay snapshots, and independent test/approval boundaries remain intact.
+
+## M8.5 — Bounded large-graph symbol jumps
+
+- Search now surfaces up to eight real, ranked matches across the entire saved/imported source graph rather than relying on the first matching node or the 50-node visualization window.
+- Clicking a result focuses the exact source-backed entity; selecting a method/function automatically reveals that abstraction level. Follow Build relinquishes focus only after explicit user exploration.
+- Search displays the total match count without rendering thousands of rows, adding nested card stacks, enabling new agent actions, or changing the graph's existing 50-visible-node cap.
+- Deterministic 4,000-node unit fixture and real Chromium keyboard/button navigation acceptance retain the existing source-only verification contract.

@@ -61,6 +61,31 @@ test('Code Atlas search and mouse zoom are functional, not inert decoration', as
   assert.match(await svg.getAttribute('transform'), /scale\(1\)/);
 });
 
+test('bounded source search jumps to a saved symbol without extra scrolling', async () => {
+  const searchPage = await browser.newPage({ viewport: { width: 1420, height: 970 } });
+  try {
+    await searchPage.goto(page.url());
+    const atlas = searchPage.getByRole('region', { name: 'Code Atlas', exact: true });
+    await atlas.getByRole('searchbox', { name: 'Find a symbol' }).fill('TaskService');
+    const matches = atlas.getByRole('region', {
+      name: 'Code Atlas matching symbols',
+    });
+    await matches.getByText(/matching source symbols/).waitFor();
+    assert.ok(await matches.getByRole('button').count() <= 8);
+    await matches.getByRole('button', {
+      name: /Jump to Class: Demo.TaskService/,
+    }).click();
+    assert.equal(await matches.count(), 0);
+    await atlas.getByRole('complementary', {
+      name: 'Selected source entity',
+    }).getByRole('heading', { name: 'TaskService' }).waitFor();
+    assert.equal(await atlas.getByRole('checkbox', { name: 'Follow build' })
+      .isChecked(), false);
+  } finally {
+    await searchPage.close();
+  }
+});
+
 test('new persisted source creates method node and honest live indicator', async () => {
   const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   await atlas.getByRole('button', { name: 'Overview' }).click();
