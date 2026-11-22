@@ -90,7 +90,7 @@ public sealed class CodeAtlasRepositoryImportStore(
         "^[a-f0-9]{32}$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
-    internal static (string Owner, string Repo, string Commit)
+    public static (string Owner, string Repo, string Commit)
         ParseRequest(AtlasImportGitHubRequest request)
     {
         if (request.RepositoryUrl is null ||
