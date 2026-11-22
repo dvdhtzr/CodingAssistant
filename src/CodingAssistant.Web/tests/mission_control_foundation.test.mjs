@@ -39,14 +39,17 @@ after(async () => { if (vite) await vite.close(); });
 
 test('searchable saved projects retain real selection and destructive confirmation controls', () => {
   const markup = renderToStaticMarkup(React.createElement(WorkbenchSidebar, {
-    tasks: [task], selectedId: task.id, view: 'overview', disabled: false,
+    tasks: [task], selectedId: task.id, view: 'command', disabled: false,
     onSelectTask: noop, onNewProject: noop, onChangeView: noop,
     onRefresh: noop, onDeleteTask: async () => true,
   }));
   assert.match(markup, /Search saved projects/);
   assert.match(markup, /value=""/);
   assert.match(markup, /SAVED PROJECTS/);
-  assert.match(markup, /Engineering Studio/);
+  assert.match(markup, /PROJECT SWITCHER/);
+  for (const name of ['Command', 'Team', 'Work', 'Quality', 'Skills', 'History']) {
+    assert.match(markup, new RegExp('>' + name + '</button>'));
+  }
   assert.match(markup, /aria-current="page"/);
   assert.match(markup, /Research &lt;Lab&gt;/);
   assert.match(markup, /Delete project Research/);
