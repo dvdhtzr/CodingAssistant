@@ -197,11 +197,15 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
             if (ImplementationPlanContract.TryParse(response, out var outline,
                     out var reason))
                 return outline!;
+            // Log the safe contract reason, not the rejected model text.
+            System.Diagnostics.Trace.TraceWarning(
+                "Technical Lead plan rejected (attempt {0}/3): {1}",
+                attempt + 1, reason);
             if (attempt == 2)
                 break;
             history.Add(new ChatMessage(ChatRole.User,
                 "Your previous implementation plan was rejected by the " +
-                "strict validator. Reason: " + reason + "\\n" +
+                "strict validator. Reason: " + reason + "\n" +
                 "Regenerate the COMPLETE plan as one JSON object using the " +
                 "exact documented fields. Do not add markdown or commentary. " +
                 "Preserve the owner's approved technology stack and architecture. " +
