@@ -241,6 +241,40 @@ if (OperatingSystem.IsWindows())
         "specification drafting remains Markdown, not the interview response schema");
 }
 
+// A model must not save a confirmation which was already asked and answered.
+// Test this without calling Ollama, including the podcast-data failure report.
+{
+    var conversation = new InterviewMessage[] {
+        new(1, "assistant",
+            "Should we only use publicly available demographic data from podcast platforms?",
+            "2026-11-22T12:00:00Z"),
+        new(2, "owner", "Yes", "2026-11-22T12:00:01Z")
+    };
+    Check(InterviewQuestionQuality.RepeatsResolvedQuestion(
+        new InterviewReply(
+            "To confirm, we will only use demographic data that is publicly " +
+            "available through podcast platforms, correct?", false), conversation),
+        "rephrased already-answered podcast demographic confirmation is rejected");
+    Check(InterviewQuestionQuality.RepeatsResolvedQuestion(
+        new InterviewReply(
+            "Should we only use publicly available demographic data from podcast platforms?",
+            false), conversation),
+        "identical answered question is rejected");
+    Check(!InterviewQuestionQuality.RepeatsResolvedQuestion(
+        new InterviewReply(
+            "Which geographic markets should your podcast analytics cover?",
+            false), conversation),
+        "new product decision is allowed despite shared podcast vocabulary");
+    Check(!InterviewQuestionQuality.RepeatsResolvedQuestion(
+        new InterviewReply("The requirements are ready for review.", true),
+        conversation),
+        "readiness summary is not mistaken for a repeated question");
+    var recovered = InterviewQuestionQuality.RepetitionFallback();
+    Check(recovered.ReadyForSpecification && recovered.Choice is null &&
+          !recovered.Message.Contains('?'),
+        "persistent repetition offers specification review without approval");
+}
+
 // Small local models may ignore JSON-only prompts; validate strict schema,
 // bounded plain-question recovery, and fail-closed malformed reasoning without
 // making real Ollama requests in model-free CI.
