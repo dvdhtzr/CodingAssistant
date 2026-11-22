@@ -47,7 +47,8 @@ var input = new[]
     File("Demo/Web/app.ts", "export const add = (n: number) => n + 1;")
 };
 var graph = CodeAtlasIndexer.Index("run-one", input);
-Check(graph.Coverage == "SYNTAX_ONLY", "syntax-only coverage");
+Check(graph.Coverage == "STATIC_SEMANTIC",
+    "trusted Roslyn resolves local C# relationships without executing source");
 Check(graph.Diagnostics.Count == 0, "clean diagnostics");
 Check(graph.Nodes.Count(n => n.Kind == "Project") == 1, "one project");
 Check(graph.Nodes.Count(n => n.Kind == "File") == 6, "all file types shown");
@@ -95,6 +96,80 @@ Check(bad.Coverage == "PARTIAL_SYNTAX",
     "invalid syntax never reported fully analyzed");
 Check(!bad.Nodes.Any(n => n.Path == "../private.cs"),
     "unsafe source not represented");
+
+// M4: only Roslyn-resolved, source-backed relationships may become graph edges.
+var semanticFiles = new[]
+{
+    File("Sample/Sample.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"/>"),
+    File("Sample/Domain/IStore.cs", """
+        namespace Sample;
+        public interface IStore { void Save(); }
+        """),
+    File("Sample/Domain/SqlStore.cs", """
+        namespace Sample;
+        public class SqlStore : IStore { public void Save() {} }
+        """),
+    File("Sample/Services/OrderService.cs", """
+        namespace Sample;
+        public abstract class BaseService {}
+        public class OrderService : BaseService
+        {
+            private readonly IStore _store;
+            public OrderService(IStore store) { _store = store; }
+            public void Place() { _store.Save(); Helper(); }
+            private void Helper() {}
+        }
+        """)
+};
+var semantic = CodeAtlasIndexer.Index("run-semantic", semanticFiles);
+Check(semantic.Coverage == "STATIC_SEMANTIC",
+    "complete C# source gets static semantic coverage");
+string SemanticId(string kind, string ending) =>
+    semantic.Nodes.Single(n => n.Kind == kind &&
+        n.QualifiedName.EndsWith(ending, StringComparison.Ordinal)).Id;
+bool Link(string from, string to, string kind) =>
+    semantic.Edges.Any(e => e.SourceId == from &&
+        e.TargetId == to && e.Kind == kind &&
+        e.Resolution == "ResolvedStatic" &&
+        e.EvidencePath?.EndsWith(".cs", StringComparison.Ordinal) == true &&
+        e.EvidenceLine > 0);
+var orderService = SemanticId("Class", "|Sample.OrderService");
+var baseService = SemanticId("Class", "|Sample.BaseService");
+var storeContract = SemanticId("Interface", "|Sample.IStore");
+var concreteStore = SemanticId("Class", "|Sample.SqlStore");
+var place = SemanticId("Method", "|Sample.OrderService.Place()");
+var helper = SemanticId("Method", "|Sample.OrderService.Helper()");
+var saveContract = SemanticId("Method", "|Sample.IStore.Save()");
+Check(Link(orderService, baseService, "Inherits"),
+    "type inheritance is resolved with source evidence");
+Check(Link(concreteStore, storeContract, "Implements"),
+    "interface implementation is statically resolved");
+Check(Link(orderService, storeContract, "ConstructorDependsOn"),
+    "constructor dependency points to the declared interface");
+Check(Link(place, helper, "Calls"),
+    "same-class invocation resolves its exact declared target");
+Check(Link(place, saveContract, "Calls"),
+    "interface dispatch records compile-time target, not imagined implementation");
+Check(!semantic.Edges.Any(e => e.Kind == "Calls" &&
+    e.TargetId == SemanticId("Method", "|Sample.SqlStore.Save()") &&
+    e.SourceId == place),
+    "interface call is never misreported as the concrete runtime dispatch");
+
+var isolated = CodeAtlasIndexer.Index("run-scope", new[]
+{
+    File("One/One.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"/>"),
+    File("One/A.cs", """
+        namespace One;
+        public class A { public void Go() { Two.B.Action(); } }
+        """),
+    File("Two/Two.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\"/>"),
+    File("Two/B.cs", """
+        namespace Two;
+        public class B { public static void Action() {} }
+        """),
+});
+Check(!isolated.Edges.Any(e => e.Kind == "Calls"),
+    "no cross-project calls without declared project reference semantics");
 
 // M3: exercise a real SQLite commit/rollback and immutable source-change
 // cursor without launching any untrusted project code or model.
