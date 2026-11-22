@@ -75,8 +75,9 @@ const evidence = () => ({
 
 before(async () => {
   vite = await createServer({
-    configFile: false, root: process.cwd(),
-    server: { middlewareMode: true }, appType: 'custom',
+    configFile: false,
+    optimizeDeps: { noDiscovery: true, include: [] }, root: process.cwd(),
+    server: { middlewareMode: true, hmr: false }, appType: 'custom',
   });
   ({ TeamWorkroomView, summarizeTeamEvidence } =
     await vite.ssrLoadModule('/src/TeamWorkroom.tsx'));
