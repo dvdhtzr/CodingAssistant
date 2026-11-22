@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 import type { EngineerSnapshot } from './EngineeringWorkspace';
+import { VerificationScopeView, scopeMatchesRun,
+  type VerificationScope } from './VerificationScope';
 
 interface SavedEvent {
   sequence: number;
@@ -35,6 +37,8 @@ export interface StaticWebPreflightReport {
   findings: { code: string; severity: string; path: string; detail: string }[];
 }
 export interface VerificationEvidence {
+  scope?: VerificationScope | null;
+  scopeError?: string | null;
   preflight?: StaticWebPreflightReport | null;
   preflightError?: string | null;
   engineering: EngineerSnapshot | null;
@@ -129,6 +133,9 @@ export function VerificationTimelineView({ evidence }: {
         <small>Only a qualified host evaluator can record VERIFIED evidence.</small>
       </article>
     </div>
+    {run && <VerificationScopeView scope={evidence.scope ?? null}
+      error={evidence.scopeError}
+      empty={run.state === 'Running'}/>}
     {run && <section className="verification-preflight"
       aria-label="Static Web source preflight">
       <div className="verification-preflight-heading">
@@ -247,7 +254,21 @@ export function VerificationTimeline({ token, taskId }: {
         ]);
         let preflight: StaticWebPreflightReport | null = null;
         let preflightError: string | null = null;
+        let scope: VerificationScope | null = null;
+        let scopeError: string | null = null;
         const job = engineer.snapshot?.job;
+        if (job && job.state !== 'Running') {
+          try {
+            const response = await api<VerificationScope>(token,
+              '/api/tasks/' + taskId + '/engineering-runs/' +
+              job.id + '/verification-scope');
+            if (!scopeMatchesRun(response, job, engineer.snapshot?.files))
+              throw new Error('invalid scope binding');
+            scope = response;
+          } catch {
+            scopeError = 'No matching current scope report was returned';
+          }
+        }
         if (job && job.state !== 'Running' && engineer.snapshot?.files.length) {
           try {
             preflight = await api<StaticWebPreflightReport>(token,
@@ -266,7 +287,7 @@ export function VerificationTimeline({ token, taskId }: {
             engineering: engineer.snapshot, qa: qa.snapshot, plan: plan.plan,
             profile: registry.profiles.find(item => item?.id === 'static-web') ?? null,
             registryExecutionAvailable: registry.registryExecutionAvailable,
-            preflight, preflightError,
+            preflight, preflightError, scope, scopeError,
           });
           setError('');
         }
