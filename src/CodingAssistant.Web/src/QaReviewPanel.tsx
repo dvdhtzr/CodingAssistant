@@ -72,6 +72,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
   const [repair, setRepair] = useState<RepairCycleView | null>(null);
+  const [repairHistory, setRepairHistory] = useState<RepairCycleView['cycle'][]>([]);
   const [repairOpen, setRepairOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmed, setConfirmed] = useState(false);
@@ -101,14 +102,22 @@ export function QaReviewPanel({ token, taskId, engineering }: {
     let closed = false;
     async function sync() {
       try {
-        const value = await api<{ snapshot: RepairCycleView | null }>(token,
-          '/api/tasks/' + taskId + '/repair-cycles/latest');
-        if (!closed) setRepair(value.snapshot);
+        const [value, history] = await Promise.all([
+          api<{ snapshot: RepairCycleView | null }>(token,
+            '/api/tasks/' + taskId + '/repair-cycles/latest'),
+          api<{ cycles: RepairCycleView['cycle'][] }>(token,
+            '/api/tasks/' + taskId + '/repair-cycles'),
+        ]);
+        if (!closed) {
+          setRepair(value.snapshot);
+          setRepairHistory(history.cycles);
+        }
       } catch {
         // QA itself remains usable if repair history cannot be loaded.
       }
     }
     setRepair(null);
+    setRepairHistory([]);
     void sync();
     const timer = window.setInterval(() => void sync(), 3000);
     return () => { closed = true; window.clearInterval(timer); };
@@ -332,6 +341,17 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         Stop repair cycle
       </button>}
     </div>}
+    {repairHistory.length > 0 && <details className="qa-repair-history">
+      <summary>Repair history ({repairHistory.length})</summary>
+      <ol className="events" aria-label="Saved Software Engineer repair cycles">
+        {repairHistory.map(cycle => <li key={cycle.id}>
+          <strong>Cycle {cycle.attempt}: {cycle.state}</strong>
+          {' · '}{cycle.engineeringRunId.slice(0, 12)}
+          {cycle.qaReviewId ? ' · Independent QA recorded' : ' · No completed QA yet'}
+          {cycle.errorCode ? ' · ' + cycle.errorCode : ''}
+        </li>)}
+      </ol>
+    </details>}
     {error && <p className="activity-warning" role="alert">{error}</p>}
     {result && <>
       <p className="hint" role="status">
