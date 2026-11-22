@@ -59,32 +59,72 @@ function cannotConnect(host, port) {
   });
 }
 
-// Browser binary layout differs between Playwright Chromium and headless shell
-// releases. Search only inside the fixed image's known browser directory,
-// never the Windows host or an arbitrary PATH executable.
-function browserExecutable() {
-  const root = '/ms-playwright';
-  if (!fs.existsSync(root)) return null;
-  const subdirs = fs.readdirSync(root).filter(dir =>
-    /^chromium(?:_headless_shell)?-\d+$/.test(dir));
-  for (const dir of subdirs) {
+// Official Playwright images contain a dedicated headless-shell binary.
+// Prefer it for --dump-dom; fall back to full Chromium only if it is not
+// installed. Never search PATH or the Windows host.
+export const BROWSER_KINDS = Object.freeze([
+  'HEADLESS_SHELL', 'FULL_CHROMIUM', 'BINARY_NOT_FOUND', 'DISCOVERY_FAILED',
+]);
+export const BROWSER_CODES = Object.freeze([
+  'PASS', 'BINARY_NOT_FOUND', 'DISCOVERY_FAILED',
+  'CHROMIUM_SPAWN_ENOENT', 'CHROMIUM_SPAWN_EACCES',
+  'CHROMIUM_SPAWN_OTHER', 'CHROMIUM_TIMEOUT',
+  'CHROMIUM_SHARED_LIBRARY_ERROR', 'CHROMIUM_SANDBOX_REJECTED',
+  'CHROMIUM_RESOURCE_EXHAUSTED', 'CHROMIUM_CRASHED',
+  'CHROMIUM_EXIT_NONZERO', 'CHROMIUM_DOM_MISSING_MARKER',
+  'CHROMIUM_WORKING_HANDLER_FAILED', 'CHROMIUM_NEGATIVE_FIXTURE_FAILED',
+]);
+
+export function browserCandidatePaths(dirs) {
+  const revisions = [...dirs].filter(name =>
+    /^chromium(?:_headless_shell)?-\d+$/.test(name)).sort();
+  const result = [];
+  // Headless shell is the preferred binary for automated headless tests.
+  for (const name of revisions.filter(x => x.startsWith('chromium_headless_shell-')))
     for (const relative of [
-      'chrome-linux64/chrome',
-      'chrome-linux/chrome',
       'chrome-headless-shell-linux64/chrome-headless-shell',
-      'chrome-linux/headless_shell',
-      'chrome-linux/headless-shell',
-    ]) {
-      const candidate = path.join(root, dir, relative);
-      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile())
-        return candidate;
-    }
-  }
-  return null;
+      'chrome-linux/headless_shell', 'chrome-linux/headless-shell',
+    ]) result.push({kind:'HEADLESS_SHELL', path:path.posix.join('/ms-playwright',name,relative)});
+  for (const name of revisions.filter(x => x.startsWith('chromium-')))
+    for (const relative of ['chrome-linux64/chrome', 'chrome-linux/chrome'])
+      result.push({kind:'FULL_CHROMIUM', path:path.posix.join('/ms-playwright',name,relative)});
+  return result;
 }
 
-function runBrowserCase(executable, good) {
-  if (!executable) return false;
+function browserExecutable() {
+  try {
+    if (!fs.existsSync('/ms-playwright'))
+      return {executable:null,kind:'BINARY_NOT_FOUND'};
+    for (const item of browserCandidatePaths(fs.readdirSync('/ms-playwright')))
+      if (fs.existsSync(item.path) && fs.statSync(item.path).isFile())
+        return {executable:item.path,kind:item.kind};
+    return {executable:null,kind:'BINARY_NOT_FOUND'};
+  } catch {
+    return {executable:null,kind:'DISCOVERY_FAILED'};
+  }
+}
+
+// Exit diagnostics are strictly allowlisted, not raw Chromium stderr.
+// Never emit paths, environment values or browser profiles.
+export function classifyBrowserFailure(proc) {
+  if (proc.error?.code === 'ETIMEDOUT') return 'CHROMIUM_TIMEOUT';
+  if (proc.error?.code === 'ENOENT') return 'CHROMIUM_SPAWN_ENOENT';
+  if (proc.error?.code === 'EACCES') return 'CHROMIUM_SPAWN_EACCES';
+  if (proc.error) return 'CHROMIUM_SPAWN_OTHER';
+  const message=String(proc.stderr||'').slice(0,8192);
+  if (/error while loading shared libraries|cannot open shared object file/i.test(message))
+    return 'CHROMIUM_SHARED_LIBRARY_ERROR';
+  if (/no usable sandbox|sandbox.*failed|sandbox.*denied/i.test(message))
+    return 'CHROMIUM_SANDBOX_REJECTED';
+  if (/resource temporarily unavailable|no space left on device|out of memory/i.test(message))
+    return 'CHROMIUM_RESOURCE_EXHAUSTED';
+  if (proc.signal) return 'CHROMIUM_CRASHED';
+  return 'CHROMIUM_EXIT_NONZERO';
+}
+
+function runBrowserCase(browser, good) {
+  if (!browser.executable)
+    return {passed:false,code:browser.kind};
   const marker = good ? 'CA_GUEST_REFERENCE_OK' : 'CA_GUEST_BROKEN_INERT';
   const script = good
     ? "document.querySelector('[data-n]').addEventListener('click',()=>{document.body.dataset.acceptance='5'})"
@@ -98,11 +138,11 @@ function runBrowserCase(executable, good) {
     '</script></body></html>';
   const file = '/tmp/ca-m4-' + (good ? 'working' : 'broken') + '.html';
   fs.writeFileSync(file, html, { flag: 'wx', mode: 0o600 });
-  const proc = spawnSync(executable, [
-    '--no-sandbox', // Trusted fixed fixture ONLY; no untrusted browsing.
+  const proc = spawnSync(browser.executable, [
+    '--no-sandbox', // Trusted fixed fixture ONLY; never untrusted source.
     '--headless', '--disable-gpu', '--disable-dev-shm-usage',
     '--disable-background-networking', '--no-first-run',
-    '--no-default-browser-check', '--no-zygote',
+    '--disable-crash-reporter', '--no-default-browser-check',
     '--user-data-dir=/tmp/ca-m4-browser-' + (good ? 'good' : 'bad'),
     '--dump-dom', 'file://' + file,
   ], {
@@ -112,9 +152,15 @@ function runBrowserCase(executable, good) {
       XDG_CACHE_HOME: '/tmp/cache', XDG_RUNTIME_DIR: '/tmp',
     },
   });
-  if (proc.status !== 0 || !proc.stdout.includes(marker)) return false;
-  return good ? proc.stdout.includes('data-acceptance="5"') :
-    !proc.stdout.includes('data-acceptance="5"');
+  if (proc.status !== 0)
+    return {passed:false,code:classifyBrowserFailure(proc)};
+  if (!proc.stdout.includes(marker))
+    return {passed:false,code:'CHROMIUM_DOM_MISSING_MARKER'};
+  if (good && !proc.stdout.includes('data-acceptance="5"'))
+    return {passed:false,code:'CHROMIUM_WORKING_HANDLER_FAILED'};
+  if (!good && proc.stdout.includes('data-acceptance="5"'))
+    return {passed:false,code:'CHROMIUM_NEGATIVE_FIXTURE_FAILED'};
+  return {passed:true,code:'PASS'};
 }
 
 export async function fixedFixtureChecks() {
@@ -128,9 +174,15 @@ export async function fixedFixtureChecks() {
   }).status !== 0;
   checks.syntax_side_effect_not_executed =
     !fs.existsSync('/tmp/ca-m4-should-not-exist');
-  const executable = browserExecutable();
-  checks.chromium_working_fixture_executed = runBrowserCase(executable, true);
-  checks.chromium_broken_fixture_stayed_inert = runBrowserCase(executable, false);
+  const browser = browserExecutable();
+  const workingBrowser = runBrowserCase(browser, true);
+  const brokenBrowser = runBrowserCase(browser, false);
+  checks.chromium_working_fixture_executed = workingBrowser.passed;
+  checks.chromium_broken_fixture_stayed_inert = brokenBrowser.passed;
+  // These are stable, allowlisted categories, not command output.
+  const browserDiagnostics = {
+    binary: browser.kind, working: workingBrowser.code, broken: brokenBrowser.code,
+  };
   checks.non_root_user = typeof process.getuid === 'function' && process.getuid() !== 0;
   checks.system_write_denied =
     denied(() => fs.writeFileSync('/etc/ca-m4-write', 'BAD'));
@@ -178,16 +230,22 @@ export async function fixedFixtureChecks() {
   checks.git_remote_unavailable =
     (remote.error?.code === 'ENOENT') ||
     (remote.status !== null && remote.status !== 0);
-  return checks;
+  return {checks,browserDiagnostics};
 }
 
 if (process.argv.includes('--run-fixed-guest')) {
   try {
     const result = await fixedFixtureChecks();
-    // Host accepts EXACTLY these Boolean keys with every result true.
-    if (Object.keys(result).length !== CASES.length) throw new Error('wrong result count');
-    process.stdout.write(JSON.stringify(result) + '\n');
-    if (!CASES.every(key => result[key] === true)) process.exitCode = 2;
+    if (Object.keys(result.checks).length !== CASES.length ||
+        !BROWSER_KINDS.includes(result.browserDiagnostics.binary) ||
+        !BROWSER_CODES.includes(result.browserDiagnostics.working) ||
+        !BROWSER_CODES.includes(result.browserDiagnostics.broken))
+      throw new Error('Invalid fixed diagnostic schema');
+    // Host independently verifies exact case and diagnostic schemas.
+    process.stdout.write(JSON.stringify({
+      schemaVersion:2, cases:result.checks, browser:result.browserDiagnostics,
+    }) + '\n');
+    if (!CASES.every(key => result.checks[key] === true)) process.exitCode = 2;
   } catch {
     process.stdout.write(JSON.stringify({ blocked: true }) + '\n');
     process.exitCode = 2;

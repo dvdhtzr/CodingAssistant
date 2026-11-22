@@ -5,10 +5,12 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  IMAGE_TAG, dockerArgs, parseObservations, classifyGuestFailure, validateDockerContext,
+  IMAGE_TAG, dockerArgs, parseObservations, parseGuestReport,
+  classifyGuestFailure, validateDockerContext,
   validatePinnedImage, runFixture, writePrivateEvidence, main,
 } from '../tools/m4/windows_docker_qualification.mjs';
-import { CASES } from '../tools/m4/windows_docker_guest.mjs';
+import { CASES, BROWSER_CODES, BROWSER_KINDS, browserCandidatePaths,
+  classifyBrowserFailure } from '../tools/m4/windows_docker_guest.mjs';
 
 const IMAGE_ID = 'sha256:' + 'a'.repeat(64);
 const DIGEST = 'mcr.microsoft.com/playwright@sha256:' + 'b'.repeat(64);
@@ -21,6 +23,10 @@ const INFO = {
   PidsLimit: true, MemoryLimit: true,
 };
 const goodCases = Object.fromEntries(CASES.map(name => [name, true]));
+const goodBrowser = {binary:'HEADLESS_SHELL', working:'PASS', broken:'PASS'};
+function guestEnvelope(cases = goodCases, browser = goodBrowser) {
+  return {schemaVersion:2,cases,browser};
+}
 function result(status, stdout = '') { return { status, stdout }; }
 function fakeDocker(overrides = {}) {
   const calls = [];
@@ -43,7 +49,8 @@ function fakeDocker(overrides = {}) {
     if (args[0] === 'run') return {
       ...result(overrides.guestStatus ?? 0,
         overrides.guestOutput ??
-        JSON.stringify(overrides.cases ?? goodCases)),
+        JSON.stringify(overrides.report ?? guestEnvelope(
+          overrides.cases ?? goodCases, overrides.browser ?? goodBrowser))),
       timedOut: overrides.timeout ?? false,
       stderr: overrides.guestStderr ?? '',
       errorCode: overrides.guestErrorCode ?? null,
@@ -170,6 +177,7 @@ test('passing simulated Windows guest remains explicitly NOT product-qualified',
   assert.equal(report.guestRemoved, true);
   assert.equal(report.imageId, IMAGE_ID);
   assert.equal(report.registryDigest, DIGEST);
+  assert.deepEqual(report.browserDiagnostics, goodBrowser);
   for (const key of [
     'modelInvoked', 'userSourceExecuted', 'sourceCodeMounted',
     'cloudModelUsed', 'untrustedChromiumSandboxQualified',
@@ -326,4 +334,79 @@ test('a failed fixed security observation names the failing case, without qualif
   assert.equal(report.passedCases,CASES.length-1);
   assert.equal(report.guestRemoved,true);
   assert.equal(report.generatedCodeExecutionEnabled,false);
+});
+
+
+test('browser paths prefer pinned headless-shell and never search the host', () => {
+  const paths = browserCandidatePaths([
+    'bad/../host', 'chromium-1280', 'chromium_headless_shell-1280',
+    'firefox-999', 'chromium-1281',
+  ]);
+  assert.equal(paths[0].kind, 'HEADLESS_SHELL');
+  assert.match(paths[0].path, /^\/ms-playwright\/chromium_headless_shell-1280\//);
+  assert.equal(paths.filter(p => p.kind === 'HEADLESS_SHELL').length, 3);
+  assert.ok(paths.some(p => p.kind === 'FULL_CHROMIUM'));
+  assert.ok(paths.every(p => p.path.startsWith('/ms-playwright/')));
+  assert.ok(!paths.some(p => p.path.includes('host') && !p.path.includes('headless')));
+  assert.deepEqual(browserCandidatePaths(['wrong','../','firefox-22']), []);
+});
+
+test('browser failure categories are bounded and never embed Chromium stderr', () => {
+  for (const [proc, expected] of [
+    [{error:{code:'ENOENT'}}, 'CHROMIUM_SPAWN_ENOENT'],
+    [{error:{code:'EACCES'}}, 'CHROMIUM_SPAWN_EACCES'],
+    [{error:{code:'ETIMEDOUT'}}, 'CHROMIUM_TIMEOUT'],
+    [{error:{code:'UNKNOWN'}}, 'CHROMIUM_SPAWN_OTHER'],
+    [{stderr:'error while loading shared libraries: SECRET'}, 'CHROMIUM_SHARED_LIBRARY_ERROR'],
+    [{stderr:'No usable sandbox!', signal:null}, 'CHROMIUM_SANDBOX_REJECTED'],
+    [{stderr:'Resource temporarily unavailable'}, 'CHROMIUM_RESOURCE_EXHAUSTED'],
+    [{signal:'SIGSYS', stderr:'SECRET'}, 'CHROMIUM_CRASHED'],
+    [{status:1,stderr:'SECRET'}, 'CHROMIUM_EXIT_NONZERO'],
+  ]) {
+    const category = classifyBrowserFailure(proc);
+    assert.equal(category, expected);
+    assert.ok(BROWSER_CODES.includes(category));
+    assert.ok(!category.includes('SECRET'));
+  }
+  assert.ok(BROWSER_KINDS.includes('HEADLESS_SHELL'));
+  assert.ok(BROWSER_KINDS.includes('FULL_CHROMIUM'));
+  assert.ok(BROWSER_KINDS.includes('BINARY_NOT_FOUND'));
+});
+
+test('v2 guest envelope requires exact 18 Boolean cases and allowlisted browser diagnostics', () => {
+  const actual = parseGuestReport(JSON.stringify(guestEnvelope()));
+  assert.deepEqual(actual.cases, goodCases);
+  assert.deepEqual(actual.browser, goodBrowser);
+  const cases = {...goodCases,chromium_working_fixture_executed:false};
+  const browser={binary:'BINARY_NOT_FOUND',working:'BINARY_NOT_FOUND',broken:'BINARY_NOT_FOUND'};
+  assert.deepEqual(parseGuestReport(JSON.stringify(guestEnvelope(cases,browser))),
+    {cases,browser});
+  for (const bad of [
+    JSON.stringify(goodCases),
+    JSON.stringify({...guestEnvelope(), extra:true}),
+    JSON.stringify({...guestEnvelope(),schemaVersion:1}),
+    JSON.stringify({...guestEnvelope(), browser:{...goodBrowser,working:'SECRET'}}),
+    JSON.stringify({...guestEnvelope(), browser:{...goodBrowser,path:'/host/private'}}),
+    JSON.stringify({...guestEnvelope(), browser:{...goodBrowser,broken:1}}),
+    JSON.stringify({...guestEnvelope(), cases:{...goodCases,extra:true}}),
+    JSON.stringify({blocked:true}),
+    '{"unclosed":',
+    'x'.repeat(7000),
+  ]) assert.throws(()=>parseGuestReport(bad));
+});
+
+test('a 16/18 real-host-style result keeps both Chromium failures visible and blocks', () => {
+  const observed={...goodCases,chromium_working_fixture_executed:false,
+    chromium_broken_fixture_stayed_inert:false};
+  const diag={binary:'HEADLESS_SHELL',working:'CHROMIUM_EXIT_NONZERO',
+    broken:'CHROMIUM_EXIT_NONZERO'};
+  const fake=fakeDocker({guestStatus:2,cases:observed,browser:diag});
+  const report=runFixture({platform:'win32',docker:fake.docker,name:NAME,env:{}});
+  assert.equal(report.status,'BLOCKED');
+  assert.equal(report.passedCases,16);
+  assert.equal(report.guestRemoved,true);
+  assert.deepEqual(report.browserDiagnostics,diag);
+  assert.match(report.reason,/chromium_working_fixture_executed/);
+  assert.match(report.reason,/chromium_broken_fixture_stayed_inert/);
+  assert.equal(report.staticWebProfileQualified,false);
 });
