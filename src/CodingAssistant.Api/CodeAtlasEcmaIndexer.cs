@@ -847,6 +847,32 @@ public static class CodeAtlasEcmaIndexer
             return names;
         }, StringComparer.Ordinal);
 
+        // A file-scoped assignment can replace a declared function before
+        // its call site runs. Avoid presenting that mutable binding as an
+        // unambiguous callee. Unresolved module-level destructuring/eval
+        // invalidates this deliberately limited projection for the file.
+        var rebound = new Dictionary<string, HashSet<string>>(
+            StringComparer.Ordinal);
+        var unsafeFiles = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var file in candidates)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            var t = tokenCache[file.Path];
+            for (var i = 0; i + 1 < t.Count; i++)
+            {
+                if (t[i].Depth != 0) continue;
+                var word = t[i].Text;
+                var next = t[i + 1].Text;
+                if ((word is "let" or "const" or "var") &&
+                    (next is "{" or "[") ||
+                    (word == "eval" && next == "("))
+                    unsafeFiles.Add(file.Path);
+                if (Word(word) && next == "=")
+                    names.Add(word);
+            }
+            rebound[file.Path] = names;
+        }
+
         AtlasNode? FunctionNode(string path, string name)
         {
             var matches = nodes.Values.Where(n =>
@@ -859,6 +885,7 @@ public static class CodeAtlasEcmaIndexer
 
         foreach (var file in candidates)
         {
+            if (unsafeFiles.Contains(file.Path)) continue;
             var t = tokenCache[file.Path];
             var imported = NamedImports(t);
             var importsByName = imported
@@ -875,7 +902,8 @@ public static class CodeAtlasEcmaIndexer
                 .ToDictionary(g => g.Key, g => g.Single(),
                     StringComparer.Ordinal);
             foreach (var caller in direct[file.Path].Where(f =>
-                !f.HasParameters && localDirect.ContainsKey(f.Name)))
+                !f.HasParameters && localDirect.ContainsKey(f.Name) &&
+                !rebound[file.Path].Contains(f.Name)))
             {
                 var callerNode = FunctionNode(file.Path, caller.Name);
                 if (callerNode is null) continue;
@@ -887,7 +915,8 @@ public static class CodeAtlasEcmaIndexer
                 {
                     if (t[i].Depth != 1 || !Word(t[i].Text) ||
                         t[i + 1].Text != "(" ||
-                        blocked.Contains(t[i].Text))
+                        blocked.Contains(t[i].Text) ||
+                        rebound[file.Path].Contains(t[i].Text))
                         continue;
                     var before = t[i - 1].Text;
                     if (before is not ("{" or ";" or "return" or "await"))
