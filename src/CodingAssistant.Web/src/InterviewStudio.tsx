@@ -85,18 +85,17 @@ export function InterviewStudio({ token, task }: {
     setExpanded(current => showAllStages ? toggleJourneyStage(current, id) : id);
   }, [showAllStages]);
   const navigateToStage = useCallback((id: JourneyId) => {
-    // Direct navigation opens the requested panel; clicking its progress tile
-    // again must not collapse it. Honor deliberate navigation over polling.
+    // A navigation control must reveal the actual work, even when the stage
+    // is already selected. Never jump back to the journey picker instead.
     manuallySelected.current = true;
     setExpanded(id);
     window.requestAnimationFrame(() => {
       const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-      const target = showAllStages
-        ? document.getElementById('journey-label-' + id)
-        : document.querySelector('.mc-work-focus');
-      target?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
+      document.getElementById('journey-panel-' + id)?.scrollIntoView({
+        block: 'start', behavior: reducedMotion ? 'auto' : 'smooth',
+      });
     });
-  }, [showAllStages]);
+  }, []);
   const reportArchitecture = useCallback((step: JourneyStep) => {
     setArchitectureStep(previous => previous.tone === step.tone &&
       previous.status === step.status ? previous : step);
@@ -295,17 +294,6 @@ export function InterviewStudio({ token, task }: {
       <p className="hint">Only the selected step is shown. Use the stage selector to
         review earlier decisions or continue work; no approvals happen automatically.</p>
     </section>
-    <details className="mc-work-secondary">
-      <summary>Project progress & technical history</summary>
-      <div className="mc-work-secondary-content">
-        <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded}
-          onNavigate={navigateToStage} />
-        <OwnerDecisionInbox token={token} taskId={task.id}
-          refreshSignal={inboxSignal} onNavigate={navigateToStage} />
-        <TeamWorkroom token={token} taskId={task.id} onNavigate={navigateToStage} />
-        <VerificationTimeline token={token} taskId={task.id} />
-      </div>
-    </details>
     {!!busy && <div className="activity" role="status" aria-live="polite">
       <div className="activity-heading">
         <span className="activity-dot" aria-hidden="true" />
@@ -467,5 +455,16 @@ export function InterviewStudio({ token, task }: {
     <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null}
       expanded={expanded} onExpand={openStage} onGenerated={generationComplete}
       onStageChange={reportDraft} />
+    <details className="mc-work-secondary">
+      <summary>Project progress & technical history</summary>
+      <div className="mc-work-secondary-content">
+        <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded}
+          onNavigate={navigateToStage} />
+        <OwnerDecisionInbox token={token} taskId={task.id}
+          refreshSignal={inboxSignal} onNavigate={navigateToStage} />
+        <TeamWorkroom token={token} taskId={task.id} onNavigate={navigateToStage} />
+        <VerificationTimeline token={token} taskId={task.id} />
+      </div>
+    </details>
   </div>;
 }
