@@ -50,7 +50,8 @@ public static class ApiHost
         IArchitectureAdvisor? architectureAdvisorOverride = null,
         IImplementationPlanner? implementationPlannerOverride = null,
         IEngineeringTaskModel? engineeringModelOverride = null,
-        IQaSourceReviewer? qaReviewerOverride = null)
+        IQaSourceReviewer? qaReviewerOverride = null,
+        ILocalSourceSmokeRunner? sourceSmokeOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -97,6 +98,8 @@ public static class ApiHost
         qaReviews.Initialize();
         qaReviews.MarkInterruptedOnStartup();
         var qaEngineer = qaReviewerOverride ?? new MafQaEngineer();
+        var sourceSmokeRunner = sourceSmokeOverride ??
+            new WindowsDockerSourceSmokeRunner(settings.RepositoryRoot);
         var softwareEngineer = engineeringModelOverride ?? new MafSoftwareEngineer();
         var technicalLead = implementationPlannerOverride ?? (IImplementationPlanner)mafTeam;
         var catalog = catalogOverride ?? new LocalOllamaModelCatalog();
@@ -164,6 +167,8 @@ public static class ApiHost
         builder.Services.AddSingleton(qaReviews);
         builder.Services.AddSingleton<IQaSourceReviewer>(qaEngineer);
         builder.Services.AddSingleton<QaReviewCoordinator>();
+        builder.Services.AddSingleton<ILocalSourceSmokeRunner>(sourceSmokeRunner);
+        builder.Services.AddSingleton<SourceSmokeCoordinator>();
         builder.Services.AddSingleton<IImplementationPlanner>(technicalLead);
         builder.Services.AddSingleton<IArchitectureAdvisor>(architectModel);
         builder.Services.AddSingleton<IInterviewModel>(interviewModel);
@@ -557,6 +562,16 @@ public static class ApiHost
                      source, plan, specification, architecture,
                      current?.Job.Id == runId));
              }));
+        // One explicit owner click uses the exact latest approved source
+        // snapshot; no ZIP download, no arbitrary file/command input.
+        // Chromium inner sandbox is disabled ONLY inside restricted Docker.
+        // This is a smoke test, never project VERIFIED or runtime QUALIFIED.
+        app.MapPost("/api/tasks/{id}/engineering-runs/{runId}/source-smoke",
+            (string id, string runId, StartSourceSmokeRequest request,
+             SourceSmokeCoordinator coordinator,
+             CancellationToken cancellation) =>
+                SafeAsync(async () => Results.Ok(await coordinator.RunAsync(
+                    id, runId, request, cancellation))));
         app.MapPost("/api/tasks/{id}/engineering-runs/{runId}/cancel",
             (string id, string runId, EngineeringRunCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, runId))));
@@ -852,7 +867,8 @@ public static class ApiHost
                 "ARCHITECTURE_NOT_READY" or "ARCHITECTURE_CONFLICT" or
                 "ARCHITECTURE_PLAN_CONFLICT" or
                 "STALE_DECISION" or "STALE_IMPLEMENTATION_PLAN" or
-                "SOURCE_CHANGED" or
+                "SOURCE_CHANGED" or "SOURCE_SCOPE_CHANGED" or
+                "SMOKE_BUSY" or "SMOKE_ISOLATION_ACK_REQUIRED" or
                 "SPECIFICATION_NOT_APPROVED" or
                 "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
