@@ -687,3 +687,42 @@ input::placeholder, textarea::placeholder { color:var(--ca-faint); }
 /* work shell surfaces */
 .mc-work-secondary, .mc-work-qa-details { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
 .mc-work-focus { background:var(--ca-panel); border:1px solid color-mix(in srgb,var(--ca-teal) 28%,var(--ca-line)); border-radius:var(--ca-r-lg); }
+
+/* ========================================================================
+   M-UX5 — Quality + Skills
+   ======================================================================== */
+.mc-destination > h2 { font-size:clamp(1.3rem,2.4vw,1.7rem); letter-spacing:-.02em; }
+.ca-dest-head { display:flex; align-items:flex-end; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.ca-dest-head .wb-kicker { display:block; margin-bottom:.25rem; }
+.ca-dest-head h2 { margin:0; }
+
+/* quality evidence tiles */
+.ca-evidence { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.75rem; margin:.3rem 0 .4rem; }
+.ca-ev { border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); background:var(--ca-panel); padding:.8rem .9rem; }
+.ca-ev .l { font-family:var(--ca-mono); font-size:.58rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ca-muted); display:block; }
+.ca-ev .v { font-weight:650; margin-top:.35rem; display:block; }
+.ca-ev .v.ca-no { color:var(--ca-muted); }
+
+.ca-report { border:1px solid var(--ca-line); border-radius:var(--ca-r); background:var(--ca-panel); padding:1rem 1.1rem; }
+.ca-report-head { display:flex; align-items:center; justify-content:space-between; gap:.6rem; flex-wrap:wrap; }
+.ca-path { font-family:var(--ca-mono); font-size:.82rem; overflow-wrap:anywhere; }
+.ca-finding { display:flex; gap:.7rem; align-items:flex-start; border-left:3px solid var(--sev,var(--ca-line));
+  background:var(--ca-inset); border-radius:var(--ca-r-sm); padding:.7rem .85rem; margin-top:.6rem; }
+.ca-finding[data-sev="high"] { --sev:var(--ca-bad); }
+.ca-finding[data-sev="med"] { --sev:var(--ca-att); }
+.ca-finding[data-sev="low"] { --sev:var(--ca-info); }
+.ca-sevchip { flex:none; font-family:var(--ca-mono); font-size:.6rem; letter-spacing:.06em; text-transform:uppercase;
+  border-radius:6px; padding:.18rem .5rem; color:var(--sev,var(--ca-fg));
+  background:color-mix(in srgb,var(--sev,var(--ca-line)) 16%,transparent);
+  border:1px solid color-mix(in srgb,var(--sev,var(--ca-line)) 40%,transparent); }
+.ca-finding-text { font-size:.84rem; line-height:1.5; min-width:0; overflow-wrap:anywhere; }
+.ca-quality .primary { justify-self:start; }
+
+/* skills: declared / installed / granted / used */
+.ca-skill-cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:.9rem; align-items:start; }
+.ca-skill-declared { grid-column:1 / -1; }
+@media (min-width:900px) { .ca-skill-declared { grid-column:span 2; } }
+.ca-skill-col { border:1px solid var(--ca-line); border-radius:var(--ca-r); background:var(--ca-panel); padding:1rem; min-width:0; }
+.ca-skill-col h3 { font-size:.9rem; }
+.ca-skill-cap { display:block; font-family:var(--ca-mono); font-size:.58rem; letter-spacing:.1em; text-transform:uppercase; color:var(--ca-muted); margin-top:.15rem; margin-bottom:.6rem; }
+.ca-skill-empty { border:1px dashed var(--ca-line); border-radius:var(--ca-r-sm); padding:.9rem; color:var(--ca-muted); font-size:.82rem; text-align:center; }

@@ -69,49 +69,93 @@ export function TeamDestination({ token, taskId, onWork }: {
   </section>;
 }
 
+function severityRank(severity: string): 'high' | 'med' | 'low' {
+  const s = severity.toLowerCase();
+  if (s.includes('crit') || s.includes('high') || s.includes('block')) return 'high';
+  if (s.includes('maj') || s.includes('med')) return 'med';
+  return 'low';
+}
+
 export function QualityDestination({ token, taskId, onWork }: {
   token: string; taskId: string; onWork: () => void;
 }) {
   const { data, error } = useRecordedProject(token, taskId);
-  return <section className="mc-destination" aria-label="Quality evidence">
-    <h2>Quality</h2>
-    <p className="hint">Saved static QA evidence. Findings are hypotheses until classified;
-      static inspection never verifies compilation or execution.</p>
+  const qa = data?.qa ?? null;
+  const boundToLatest = !!qa && !!data?.engineering &&
+    data.engineering.job.id === qa.job.engineeringRunId &&
+    data.engineering.job.planSha256 === qa.job.planSha256;
+  const findingCount = qa
+    ? qa.reports.reduce((n, r) => n + (r.assessment?.findings?.length ?? 0), 0) : 0;
+  return <section className="mc-destination ca-quality" aria-label="Quality evidence">
+    <div className="ca-dest-head">
+      <div><span className="wb-kicker">STATIC QA EVIDENCE</span>
+        <h2>Quality &amp; verification</h2></div>
+      {qa && <span className="pill">Review {qa.job.engineeringRunId.slice(0, 8)} · {qa.job.state}</span>}
+    </div>
+    <p className="hint">Findings are hypotheses from a static source review until you classify
+      them — static inspection never verifies compilation or execution.</p>
     {error && <p role="alert" className="alert">Could not load saved quality evidence.</p>}
     {!data && !error && <p role="status">Loading saved QA evidence…</p>}
-    {data && <div className="panel">
-      <h3>{data.qa ? 'Latest QA review: ' + data.qa.job.state : 'No QA review recorded'}</h3>
-      {data.qa && <>
-        <p>{data.qa.reports.length} saved file report(s).</p>
-        <p className="hint">{data.engineering?.job.id === data.qa.job.engineeringRunId &&
-          data.engineering.job.planSha256 === data.qa.job.planSha256
-          ? 'Review references the latest recorded engineering run and plan hash.'
-          : 'Historical review or current source binding not established.'}</p>
-        <ul>{data.qa.reports.map(report => <li key={report.path}>
-          <strong>{report.path}</strong>
-          <span> · {report.assessment?.findings?.length ?? 0} recorded finding(s)</span>
-          {report.assessment?.summary && <p>{report.assessment.summary}</p>}
-        </li>)}</ul>
-      </>}
+    {data && <>
+      <div className="ca-evidence">
+        <div className="ca-ev"><span className="l">Static review</span>
+          <span className="v">{qa ? findingCount + ' finding' + (findingCount === 1 ? '' : 's') : 'None'}</span></div>
+        <div className="ca-ev"><span className="l">Build verified</span>
+          <span className="v ca-no">Not run</span></div>
+        <div className="ca-ev"><span className="l">Tests executed</span>
+          <span className="v ca-no">Not run</span></div>
+        <div className="ca-ev"><span className="l">Source binding</span>
+          <span className="v">{boundToLatest ? 'Matches latest run'
+            : qa ? 'Historical / unbound' : '—'}</span></div>
+      </div>
+      {!qa && <p className="panel">No QA review recorded yet.</p>}
+      {qa && qa.reports.map(report => <div className="ca-report" key={report.path}>
+        <div className="ca-report-head">
+          <strong className="ca-path">{report.path}</strong>
+          <span className="pill">{report.assessment?.findings?.length ?? 0} finding(s)</span>
+        </div>
+        {report.assessment?.summary && <p className="hint">{report.assessment.summary}</p>}
+        {(report.assessment?.findings ?? []).map((finding, index) =>
+          <div className="ca-finding" key={index} data-sev={severityRank(finding.severity)}>
+            <span className="ca-sevchip">{finding.severity}</span>
+            <span className="ca-finding-text">{finding.requirement}</span>
+          </div>)}
+      </div>)}
+      <div className="honest"><b>Repair stays gated:</b> classifying a finding never runs code.
+        A repair cycle runs only after you authorize the exact plan hash in Work.</div>
       <button type="button" className="primary" onClick={onWork}>
-        Open Work for QA review, finding triage and repair authorization
+        Open Work for finding triage and repair authorization
       </button>
-      <p className="hint">Approval and repair controls remain in the existing
-        host-bound engineering workflow until their dedicated migration is verified.</p>
-    </div>}
+    </>}
   </section>;
 }
 
 export function SkillsDestination({ token }: { token: string }) {
-  return <section className="mc-destination" aria-label="Agent skills">
-    <h2>Skills</h2>
-    <p className="hint">Portable SKILL.md package management is planned under Architecture
-      Extension A1. No installed registry or assignment controls are claimed here.</p>
-    <div className="panel">
-      <h3>Declared agent capabilities</h3>
-      <p className="hint">These are host-defined scope descriptions, not installed skills,
-        permissions, or proof that a skill has run.</p>
-      <AgentIdentityPanel token={token} />
+  return <section className="mc-destination ca-skills" aria-label="Agent skills">
+    <div className="ca-dest-head">
+      <div><span className="wb-kicker">AGENT CAPABILITIES</span><h2>Skills</h2></div>
+      <span className="pill">Planned · Architecture Extension A1</span>
+    </div>
+    <p className="hint">Portable SKILL.md packages are planned. This view separates declared
+      scope from what is actually installed, granted, and used. No installed registry or
+      assignment controls are claimed here.</p>
+    <div className="ca-skill-cols">
+      <div className="ca-skill-col ca-skill-declared">
+        <h3>Declared</h3><span className="ca-skill-cap">Host-defined scope</span>
+        <AgentIdentityPanel token={token} />
+      </div>
+      <div className="ca-skill-col">
+        <h3>Installed</h3><span className="ca-skill-cap">Portable packages</span>
+        <div className="ca-skill-empty">No skill packages installed. The registry is not built yet.</div>
+      </div>
+      <div className="ca-skill-col">
+        <h3>Granted</h3><span className="ca-skill-cap">Permissions</span>
+        <div className="ca-skill-empty">Execution requires per-run approval. No standing grants.</div>
+      </div>
+      <div className="ca-skill-col">
+        <h3>Used</h3><span className="ca-skill-cap">Recorded usage</span>
+        <div className="ca-skill-empty">No skill invocations recorded.</div>
+      </div>
     </div>
   </section>;
 }
