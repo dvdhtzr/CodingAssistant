@@ -277,6 +277,13 @@ try
                 delta_json TEXT NOT NULL, PRIMARY KEY(run_id,sequence),
                 FOREIGN KEY(run_id,sequence)
                   REFERENCES engineering_atlas_events(run_id,sequence));
+            CREATE TABLE engineering_atlas_snapshots (
+                run_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+                source_revision TEXT NOT NULL,
+                graph_json TEXT NOT NULL,
+                PRIMARY KEY(run_id,sequence),
+                FOREIGN KEY(run_id,sequence)
+                  REFERENCES engineering_atlas_events(run_id,sequence));
             INSERT INTO engineering_runs(id)
             VALUES('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
             """);
@@ -377,6 +384,18 @@ try
         cmd.CommandText = "SELECT COUNT(*) FROM engineering_atlas_graph_deltas";
         Check(Convert.ToInt32(cmd.ExecuteScalar()) == 2,
             "graph deltas survive restart and rolled-back updates do not");
+        cmd.CommandText = "SELECT COUNT(*) FROM engineering_atlas_snapshots";
+        Check(Convert.ToInt32(cmd.ExecuteScalar()) == 2,
+            "both committed graph checkpoints survive restart without rollback");
+        cmd.CommandText = """
+            SELECT graph_json FROM engineering_atlas_snapshots
+            WHERE sequence=1
+            """;
+        var historic = (string?)cmd.ExecuteScalar() ?? "";
+        Check(historic.Contains("Example.cs", StringComparison.Ordinal) &&
+            !historic.Contains("Go()", StringComparison.Ordinal) &&
+            !historic.Contains("namespace Demo;", StringComparison.Ordinal),
+            "first graph checkpoint keeps its old structure but no source text");
         cmd.CommandText = """
             SELECT changes_json FROM engineering_atlas_events
             WHERE run_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
@@ -444,6 +463,33 @@ try
             """;
         cmd.ExecuteNonQuery();
     }
+    var checkpoint = CodeAtlasIndexer.Index(secondRun,
+        new[] { File("Example.cs", original) });
+    using (var db = new SqliteConnection("Data Source=" +
+        Path.Combine(privateDirectory, "codingassistant.db") + ";Pooling=False"))
+    {
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO engineering_atlas_snapshots(
+                run_id,sequence,source_revision,graph_json)
+            VALUES($run,1,$revision,$graph)
+            """;
+        cmd.Parameters.AddWithValue("$run", secondRun);
+        cmd.Parameters.AddWithValue("$revision", checkpoint.SourceRevision);
+        cmd.Parameters.AddWithValue("$graph",
+            System.Text.Json.JsonSerializer.Serialize(checkpoint));
+        cmd.ExecuteNonQuery();
+    }
+    var timeline = ledger.Timeline(secondTask, secondRun);
+    Check(timeline.Frames.Count == 1 &&
+        timeline.Frames.Single().Sequence == 1,
+        "history lists only committed available graph checkpoints");
+    var replayed = ledger.Replay(secondTask, secondRun, 1);
+    Check(replayed.Graph.SourceRevision == checkpoint.SourceRevision &&
+        replayed.Graph.Nodes.Select(n => n.Id).SequenceEqual(
+            checkpoint.Nodes.Select(n => n.Id)),
+        "historical graph can be reconstructed exactly after restart");
     var page = ledger.Read(secondTask, secondRun, 0);
     Check(page.LastSequence == 1 && page.Events.Single().Sequence == 1,
         "authorized project can replay a committed source cursor");
@@ -453,6 +499,14 @@ try
     try { _ = ledger.Read(firstTask, secondRun, 0); }
     catch (StoreFailure error) when (error.Code == "NOT_FOUND") { denied = true; }
     Check(denied, "another project's run is not readable by guessed ID");
+    denied = false;
+    try { _ = ledger.Replay(firstTask, secondRun, 1); }
+    catch (StoreFailure error) when (error.Code == "NOT_FOUND") { denied = true; }
+    Check(denied, "historical snapshots deny cross-project access");
+    denied = false;
+    try { _ = ledger.Replay(secondTask, secondRun, 99); }
+    catch (StoreFailure error) when (error.Code == "NOT_FOUND") { denied = true; }
+    Check(denied, "unrecorded history is never reconstructed from current source");
     denied = false;
     try { _ = ledger.Read(secondTask, secondRun, -1); }
     catch (StoreFailure error) when (error.Code == "INVALID_INPUT") { denied = true; }
