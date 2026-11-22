@@ -36,12 +36,19 @@ function hash(bytes){return createHash('sha256').update(bytes).digest('hex');}
 export function gitBlobHash(bytes){
   return createHash('sha1').update('blob '+bytes.length+'\0').update(bytes).digest('hex');
 }
+// Windows git checkout may transform LF into CRLF; only this lossless
+// canonical Git text normalization is permitted before immutable hash check.
+// A modified character, extra file, symlink, or arbitrary bytes still fail.
+export function canonicalGitText(bytes){
+  const content=Buffer.isBuffer(bytes)?bytes:Buffer.from(bytes);
+  return Buffer.from(content.toString('utf8').replace(/\r\n/g,'\n'),'utf8');
+}
 function unchangedFile(location,expected){
   try{
     const stat=fs.lstatSync(location);
     if(!stat.isFile()||stat.isSymbolicLink()||stat.size>50000)
       return false;
-    return gitBlobHash(fs.readFileSync(location))===expected;
+    return gitBlobHash(canonicalGitText(fs.readFileSync(location)))===expected;
   }catch{return false;}
 }
 export function readPinnedSources(){
@@ -53,7 +60,7 @@ export function readPinnedSources(){
     const original=path.join(BASE,name);
     if(!unchangedFile(original,EXPECTED[name]))
       fail('Reviewed fixture hash changed: '+name);
-    sources[name]=fs.readFileSync(original);
+    sources[name]=canonicalGitText(fs.readFileSync(original));
   }
   return sources;
 }
