@@ -19,7 +19,7 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
         string objective, IReadOnlyList<InterviewMessage> history)
     {
         if (string.IsNullOrWhiteSpace(objective) || objective.Length > 4000 ||
-            history.Count > 25)
+            history.Count > InterviewStore.MaxTranscriptMessages)
             throw new StoreFailure("INVALID_INPUT");
         var messages = new List<ChatMessage>
         {
