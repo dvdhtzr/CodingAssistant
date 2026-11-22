@@ -63,8 +63,8 @@ export default function App() {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [taskId, setTaskId] = useState('');
   const [view, setView] = useState<WorkbenchView>('command');
-  const [inspectorOpen, setInspectorOpen] = useState(() =>
-    typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches);
+  // Inspection is contextual and opt-in, not a permanent third column.
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [taskView, setTaskView] = useState<TaskView | null>(null);
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [runId, setRunId] = useState('');
@@ -425,7 +425,7 @@ export default function App() {
     {token && <div className={'layout wb-layout' +
       (!inspectorOpen ? ' wb-layout--inspector-closed' : '')}>
       <WorkbenchSidebar token={token} tasks={tasks} selectedId={taskId} view={view}
-        onOpenRoster={() => setInspectorOpen(true)}
+        onOpenRoster={() => setView('team')}
         disabled={isBusy} onSelectTask={chooseTask}
         onNewProject={() => chooseTask('')} onChangeView={setView}
         onRefresh={() => void action('refresh', async () => {
