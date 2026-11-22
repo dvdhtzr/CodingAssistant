@@ -260,6 +260,12 @@ public sealed class RepairCycleStore(
                 throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
         }
 
+        // The execution context reflects the persisted owner decision,
+        // rather than the model's earlier conservative QA classification.
+        selected = selected.Select(f => f with {
+            Classification = "ImplementationDefect"
+        }).ToList();
+
         var originalWorkItem = files.First(f =>
             string.Equals(f.Path, allowedPaths[0], StringComparison.OrdinalIgnoreCase))
             .LastWorkItemId;
