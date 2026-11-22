@@ -47,6 +47,18 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(new Response(JSON.stringify(response), {
       status: 200, headers: { 'content-type': 'application/json' },
     }));
+  if (url.includes('/atlas/path?')) {
+    const request = new URL(url, window.location.href);
+    const from = request.searchParams.get('from');
+    const to = request.searchParams.get('to');
+    const found = from === 'c' && to === 'm' && response === next;
+    return Promise.resolve(new Response(JSON.stringify({
+      fromId: from, toId: to, found,
+      nodeIds: found ? ['c', 'm'] : [],
+      edges: found ? [{ sourceId: 'c', targetId: 'm', kind: 'Contains' }] : [],
+      visited: found ? 2 : 1, truncated: false,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  }
   if (url.includes('/atlas-events?')) {
     const after = Number(new URL(url, window.location.href).searchParams.get('after') ?? 0);
     const committed = response === next;
