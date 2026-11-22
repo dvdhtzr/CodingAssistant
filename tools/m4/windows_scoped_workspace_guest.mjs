@@ -3,7 +3,21 @@
 import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import net from 'node:net';
-import {browserCandidatePaths} from './windows_docker_guest.mjs';
+import path from 'node:path';
+// The fixed guest is streamed through stdin and MUST be entirely standalone:
+// no repository, host module or package is mounted into the container.
+function browserCandidatePaths(dirs){
+  const good=dirs.filter(x=>/^chromium(?:_headless_shell)?-\d+$/.test(x)).sort();
+  const out=[];
+  for(const name of good.filter(x=>x.startsWith('chromium_headless_shell-')))
+    for(const rel of ['chrome-headless-shell-linux64/chrome-headless-shell',
+       'chrome-linux/headless_shell'])
+      out.push({path:path.posix.join('/ms-playwright',name,rel)});
+  for(const name of good.filter(x=>x.startsWith('chromium-')))
+    for(const rel of ['chrome-linux64/chrome','chrome-linux/chrome'])
+      out.push({path:path.posix.join('/ms-playwright',name,rel)});
+  return out;
+}
 
 export const FIXTURE=Object.freeze({
   seedBefore:'CA_M43_SCOPED_BEFORE\n',
