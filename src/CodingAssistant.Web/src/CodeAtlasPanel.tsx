@@ -188,7 +188,6 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
     setFocus(null);
     revision.current = '';
     lastFileSet.current = '';
-    return () => { active = false; };
   }, [runId]);
 
   useEffect(() => {
