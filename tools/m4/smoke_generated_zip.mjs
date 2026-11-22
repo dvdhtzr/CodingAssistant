@@ -90,7 +90,9 @@ export function parseTrustedStaticZip(buf){
       fail('ZIP_NONREGULAR_ENTRY');
     const name=nameOf(buf.subarray(cursor+46,cursor+46+nlen));
     cursor+=46+nlen+elen+comment;
-    if(!SAFE.test(name)||name.length>140||seen.has(name.toLowerCase()))
+    if(!SAFE.test(name)||name.length>140||seen.has(name.toLowerCase())||
+       name.split('/').some(part=>['node_modules','bin','obj','artifacts']
+         .includes(part.toLowerCase())))
       fail('ZIP_UNSAFE_OR_DUPLICATE_PATH');
     seen.add(name.toLowerCase());
     if(u32(buf,local)!==0x04034b50||
