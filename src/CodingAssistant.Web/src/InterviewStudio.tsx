@@ -91,10 +91,12 @@ export function InterviewStudio({ token, task }: {
     setExpanded(id);
     window.requestAnimationFrame(() => {
       const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-      document.getElementById('journey-label-' + id)
-        ?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
+      const target = showAllStages
+        ? document.getElementById('journey-label-' + id)
+        : document.querySelector('.mc-work-focus');
+      target?.scrollIntoView({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
     });
-  }, []);
+  }, [showAllStages]);
   const reportArchitecture = useCallback((step: JourneyStep) => {
     setArchitectureStep(previous => previous.tone === step.tone &&
       previous.status === step.status ? previous : step);
