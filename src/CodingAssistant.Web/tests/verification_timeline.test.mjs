@@ -8,6 +8,8 @@ import { createServer } from 'vite';
 let vite;
 let VerificationTimelineView;
 let summarizeVerificationEvidence;
+let VerificationScopeView;
+let scopeMatchesRun;
 const sha = 'a'.repeat(64);
 const when = '2026-11-21T15:00:00Z';
 function fixture() {
@@ -40,6 +42,8 @@ before(async () => {
     server: { middlewareMode: true }, appType: 'custom' });
   ({ VerificationTimelineView, summarizeVerificationEvidence } =
     await vite.ssrLoadModule('/src/VerificationTimeline.tsx'));
+  ({ VerificationScopeView, scopeMatchesRun } =
+    await vite.ssrLoadModule('/src/VerificationScope.tsx'));
 });
 after(async () => { await vite?.close(); });
 
@@ -159,4 +163,109 @@ test('no detected static findings do not imply browser checks ran', () => {
     VerificationTimelineView, { evidence: data }));
   assert.match(html, /JavaScript syntax, application behavior and browser tests are NOT TESTED/);
   assert.match(html, /independent runtime evaluator remains unqualified/);
+});
+
+
+const runForScope = Object.freeze({
+  id:'e'.repeat(32),taskId:'1'.repeat(32),planRevision:2,
+  planSha256:sha,specificationVersion:3,
+  specificationSha256:'b'.repeat(64),architectureSha256:'c'.repeat(64),
+  model:'qwen3.5:9b',state:'Generated',
+});
+function goodScope() {
+  return {
+    schemaVersion:1,taskId:runForScope.taskId,
+    engineeringRunId:runForScope.id,planRevision:runForScope.planRevision,
+    planSha256:runForScope.planSha256,
+    specificationVersion:runForScope.specificationVersion,
+    specificationSha256:runForScope.specificationSha256,
+    architectureSha256:runForScope.architectureSha256,
+    model:runForScope.model,sourceFingerprint:'d'.repeat(64),
+    scopeSha256:'f'.repeat(64),status:'SCOPE_CANDIDATE',
+    executionEnabled:false,verificationStatus:'GENERATED_NOT_TESTED',
+    blockers:[],files:[{path:'index.html',sha256:'e'.repeat(64),utf8Bytes:120},
+      {path:'app.js',sha256:'c'.repeat(64),utf8Bytes:91}],
+  };
+}
+test('M4.6 candidate displays authenticated scope but never implies executable tests',()=>{
+  const scope=goodScope();
+  assert.equal(scopeMatchesRun(scope,runForScope),true);
+  const html=renderToStaticMarkup(React.createElement(
+    VerificationScopeView,{scope}));
+  assert.match(html,/Scope candidate/);
+  assert.match(html,/Bound files/);
+  assert.match(html,/Execution <strong>DISABLED/);
+  assert.match(html,/GENERATED_NOT_TESTED|Generated · not tested/);
+  assert.match(html,/source fingerprint and scope digest/);
+  assert.match(html,/index\.html/);
+  assert.match(html,/app\.js/);
+  assert.match(html,/untrusted Static Web executor remains unqualified/);
+  assert.doesNotMatch(html,/Run verification|Successfully verified|PASSED 16\/16/);
+  assert.doesNotMatch(html,/<button/);
+});
+test('M4.6 blocked scope shows human-readable blockers and no scope approval',()=>{
+  const scope={...goodScope(),status:'BLOCKED',scopeSha256:null,
+    sourceFingerprint:null,blockers:['MISSING_ROOT_INDEX_HTML','APPROVED_PLAN_MISMATCH'],
+    files:[]};
+  assert.equal(scopeMatchesRun(scope,runForScope),true);
+  const html=renderToStaticMarkup(React.createElement(
+    VerificationScopeView,{scope}));
+  assert.match(html,/Needs attention/);
+  assert.match(html,/needs a root index\.html/);
+  assert.match(html,/approved Technical Lead plan has changed/);
+  assert.doesNotMatch(html,/Scope candidate/);
+  assert.doesNotMatch(html,/<button/);
+});
+test('M4.6 mismatch, forged authorization or altered manifest never display as ready',()=>{
+  const scope=goodScope();
+  for(const wrong of [
+    {...scope,engineeringRunId:'0'.repeat(32)},
+    {...scope,taskId:'0'.repeat(32)},
+    {...scope,planSha256:'0'.repeat(64)},
+    {...scope,specificationSha256:'0'.repeat(64)},
+    {...scope,architectureSha256:'0'.repeat(64)},
+    {...scope,model:'unknown:latest'},
+    {...scope,executionEnabled:true},
+    {...scope,verificationStatus:'VERIFIED'},
+    {...scope,scopeSha256:null},
+    {...scope,sourceFingerprint:null},
+    {...scope,files:[{path:'../private.js',sha256:'a'.repeat(64),utf8Bytes:10}]},
+    {...scope,files:[{path:'index.html',sha256:'a'.repeat(64),utf8Bytes:-1}]},
+    {...scope,blockers:['SOURCE_NOT_COMPLETE']},
+  ])assert.equal(scopeMatchesRun(wrong,runForScope),false,JSON.stringify(wrong));
+  assert.equal(scopeMatchesRun(scope,{...runForScope,state:'Running'}),false);
+  assert.equal(scopeMatchesRun(scope,runForScope,[{path:'index.html',sha256:'0'.repeat(64)}]),
+    false);
+  assert.equal(scopeMatchesRun(scope,runForScope,scope.files.map(file=>({
+    path:file.path,sha256:file.sha256,
+  }))),true);
+  const html=renderToStaticMarkup(React.createElement(
+    VerificationScopeView,{scope:null,error:'Scope binding mismatch'}));
+  assert.match(html,/Not assessed/);
+  assert.match(html,/No eligibility can be inferred/);
+  assert.doesNotMatch(html,/Scope candidate/);
+});
+test('M4.6 verification timeline shows scope blockers with independent status',()=>{
+  const data=fixture();
+  data.scope={...goodScope(),status:'BLOCKED',scopeSha256:null,
+    sourceFingerprint:null,files:[],blockers:['STATIC_SOURCE_PREFLIGHT_HAS_FINDINGS']};
+  const html=renderToStaticMarkup(React.createElement(
+    VerificationTimelineView,{evidence:data}));
+  assert.match(html,/Verification readiness/);
+  assert.match(html,/Static checks found issues/);
+  assert.match(html,/Build, test, and browser outcomes: NOT TESTED/);
+  assert.doesNotMatch(html,/Run verification/);
+});
+test('M4.6 UI is registered for normal CI and does not fetch an execution URL',()=>{
+  const code=readFileSync('src/VerificationScope.tsx','utf8');
+  const css=readFileSync('src/verification-timeline.css','utf8');
+  const delivery=readFileSync('src/EngineeringWorkspace.tsx','utf8');
+  const timeline=readFileSync('src/VerificationTimeline.tsx','utf8');
+  assert.match(code,/\/verification-scope/);
+  assert.doesNotMatch(code,/\/execute|\/run-verification|\/build-test/);
+  assert.match(delivery,/EngineeringVerificationScope/);
+  assert.match(timeline,/scopeMatchesRun/);
+  assert.match(css,/verification-scope-blockers/);
+  assert.match(css,/max-width:760px/);
+  assert.match(css,/focus-visible/);
 });
