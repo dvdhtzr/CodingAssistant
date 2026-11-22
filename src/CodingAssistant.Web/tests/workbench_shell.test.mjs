@@ -43,6 +43,10 @@ test('Workbench sidebar exposes only functional navigation and honest agent desc
   assert.match(html, /Engineering Studio/);
   assert.match(html, /Legacy diagnostics/);
   assert.match(html, /aria-current="page"/);
+  assert.match(html, /PROJECT SWITCHER/);
+  assert.match(html, /<details class="wb-projects wb-project-switcher">/);
+  assert.doesNotMatch(html, /<details class="wb-projects wb-project-switcher" open/);
+  assert.match(html, /<details class="wb-team">/);
   assert.match(html, /Offline Notes/);
   assert.match(html, /aria-label="Delete project Offline Notes"/);
   assert.match(html, /aria-expanded="false"/);
