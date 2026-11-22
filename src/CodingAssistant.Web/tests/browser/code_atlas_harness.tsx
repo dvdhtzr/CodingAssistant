@@ -47,6 +47,28 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(new Response(JSON.stringify(response), {
       status: 200, headers: { 'content-type': 'application/json' },
     }));
+  if (url.endsWith('/atlas/replay')) {
+    const frames = [
+      { sequence: 1, workItemId: 'W1',
+        sourceRevision: initial.sourceRevision, createdUtc: '2026-11-22T14:00:00Z' },
+      { sequence: 2, workItemId: 'W2',
+        sourceRevision: next.sourceRevision, createdUtc: '2026-11-22T14:00:01Z' },
+    ];
+    return Promise.resolve(new Response(JSON.stringify({ runId, frames }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+  }
+  if (url.endsWith('/atlas/replay/1') || url.endsWith('/atlas/replay/2')) {
+    const first = url.endsWith('/1');
+    const graph = first ? initial : next;
+    return Promise.resolve(new Response(JSON.stringify({
+      sequence: first ? 1 : 2,
+      workItemId: first ? 'W1' : 'W2',
+      sourceRevision: graph.sourceRevision,
+      createdUtc: first ? '2026-11-22T14:00:00Z' : '2026-11-22T14:00:01Z',
+      graph,
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  }
   if (url.includes('/atlas/path?')) {
     const request = new URL(url, window.location.href);
     const from = request.searchParams.get('from');
