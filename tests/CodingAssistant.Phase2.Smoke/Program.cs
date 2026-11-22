@@ -1248,14 +1248,14 @@ try
         new CreateRepairProposalRequest(qaReviewId)))
     using (var body = await Body(created))
     {
-        var proposal = body.RootElement;
-        repairProposalId = proposal.GetProperty("id").GetString()!;
-        var findings = proposal.GetProperty("findings");
+        var repairJson = body.RootElement;
+        repairProposalId = repairJson.GetProperty("id").GetString()!;
+        var findings = repairJson.GetProperty("findings");
         Check(created.StatusCode == HttpStatusCode.Created &&
-              proposal.GetProperty("state").GetString() == "NeedsTriage" &&
-              proposal.GetProperty("qaReviewId").GetString() == qaReviewId &&
-              proposal.GetProperty("engineeringRunId").GetString() == engineeringRunId &&
-              proposal.GetProperty("sourceSha256").GetString() ==
+              repairJson.GetProperty("state").GetString() == "NeedsTriage" &&
+              repairJson.GetProperty("qaReviewId").GetString() == qaReviewId &&
+              repairJson.GetProperty("engineeringRunId").GetString() == engineeringRunId &&
+              repairJson.GetProperty("sourceSha256").GetString() ==
                   qaResult!.Job.SourceSha256 &&
               findings.GetArrayLength() == 1 &&
               findings[0].GetProperty("classification").GetString() ==
