@@ -324,6 +324,84 @@ Check(brokenJava.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
     !brokenJava.Nodes.Any(n => n.Name is "Fake" or "Escaped"),
     "untrusted Java paths and text-block decoys cannot enter the graph");
 
+// M8.8: only literal HTML -> accepted JS/TS/CSS references are linked.
+var markupFiles = new[]
+{
+    File("web/index.html", """
+        <!doctype html>
+        <html><head>
+          <link rel="stylesheet" href="./styles.css">
+          <link rel="stylesheet" href="https://cdn.example/x.css">
+          <!-- <script src="./spoof.js"></script> -->
+        </head><body>
+          <script>const fake = '<script src="./spoof.js"></script>';</script>
+          <script src="./main.js"></script>
+          <script type="module" src="/web/app.tsx"></script>
+          <script src="./missing.js"></script>
+          <script src="../../outside.js"></script>
+          <script src="./main.js" src="./spoof.js"></script>
+        </body></html>
+        """),
+    File("web/main.js", "export function start() {}"),
+    File("web/app.tsx", "export const App = () => null;"),
+    File("web/styles.css", "body { color: red; }"),
+    File("web/spoof.js", "export function Fake() {}")
+};
+var markupGraph = CodeAtlasIndexer.Index("markup-run", markupFiles);
+var markupFileNodes = markupGraph.Nodes.Where(n =>
+    n.Kind == "File" && n.Path is not null)
+    .ToDictionary(n => n.Path!, n => n.Id);
+var markupLinks = markupGraph.Edges.Where(e =>
+    e.Kind == "MarkupReferences").ToArray();
+Check(markupLinks.Length == 3 &&
+    markupLinks.All(e =>
+        e.SourceId == markupFileNodes["web/index.html"] &&
+        e.Resolution == "LiteralMarkupReference" &&
+        e.EvidencePath == "web/index.html" && e.EvidenceLine > 0),
+    "exactly three saved HTML source references have source-line evidence");
+Check(new[] { "web/styles.css", "web/main.js",
+    "web/app.tsx" }.All(path =>
+        markupLinks.Any(e => e.TargetId == markupFileNodes[path])),
+    "literal CSS, JS and TSX targets resolve to existing indexed files");
+Check(!markupLinks.Any(e =>
+    e.TargetId == markupFileNodes["web/spoof.js"]),
+    "comments, JS string decoys, and duplicate attributes never invent edges");
+Check(markupGraph.Diagnostics.Any(d =>
+    d.StartsWith("MARKUP_LOCAL_UNRESOLVED:", StringComparison.Ordinal)) &&
+    markupGraph.Diagnostics.Any(d =>
+    d.StartsWith("MARKUP_LOCAL_OUTSIDE_ROOT:", StringComparison.Ordinal)) &&
+    markupGraph.Diagnostics.Any(d =>
+    d.StartsWith("MARKUP_DUPLICATE_ATTRIBUTE:", StringComparison.Ordinal)) &&
+    markupGraph.Coverage.EndsWith("+PARTIAL_MARKUP_STATIC_REFERENCES",
+        StringComparison.Ordinal),
+    "missing, escaping and ambiguous HTML references are diagnosed as partial");
+var markupTrace = CodeAtlasPathFinder.Trace(markupGraph,
+    markupFileNodes["web/index.html"],
+    markupFileNodes["web/app.tsx"]);
+Check(markupTrace.Found && markupTrace.Edges.Count == 1 &&
+    markupTrace.Edges[0].Kind == "MarkupReferences",
+    "read-only graph path tracing follows actual HTML to TSX source references");
+var markupReordered = CodeAtlasIndexer.Index("markup-run",
+    markupFiles.Reverse().ToArray());
+Check(markupGraph.SourceRevision == markupReordered.SourceRevision &&
+    markupGraph.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(markupReordered.Edges.Select(e =>
+            (e.Kind, e.SourceId, e.TargetId))),
+    "cross-language references are deterministic regardless of source order");
+var malformedMarkup = CodeAtlasIndexer.Index("markup-bad", new[]
+{
+    File("pages/index.html", "<!-- <script src='./missing.js'>"),
+    File("../escape.html", "<script src='safe.js'></script>"),
+    File("pages/safe.js", "export const ok = 1;")
+});
+Check(malformedMarkup.Coverage.EndsWith(
+    "PARTIAL_MARKUP_STATIC_REFERENCES", StringComparison.Ordinal) &&
+    malformedMarkup.Diagnostics.Any(d =>
+        d.StartsWith("MARKUP_UNCLOSED_COMMENT:", StringComparison.Ordinal)) &&
+    !malformedMarkup.Nodes.Any(n => n.Path == "../escape.html") &&
+    !malformedMarkup.Edges.Any(e => e.Kind == "MarkupReferences"),
+    "unsafe paths and incomplete HTML cannot produce imagined links");
+
 // M8.2: source-only JS/TS declarations are never runtime/semantic facts.
 var ecmaFiles = new[]
 {
