@@ -170,7 +170,8 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "only final assistant content is used for Product Owner drafting");
 
     foreach (var pair in new[] {
-        ("""{"done_reason":"stop","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_OUTPUT_REJECTED"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_THINKING_ONLY"),
+        ("""{"done_reason":"stop","message":{"role":"assistant","content":"<think>private model thoughts</think> # Spec"}}""", "MODEL_THINKING_ONLY"),
         ("""{"done_reason":"length","message":{"role":"assistant","content":"","thinking":"private model thoughts"}}""", "MODEL_OUTPUT_TRUNCATED"),
         ("""{"done_reason":"length","message":{"role":"assistant","content":"# Partial draft"}}""", "MODEL_OUTPUT_TRUNCATED")
     })
