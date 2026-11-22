@@ -152,3 +152,61 @@ test('real browser traces a bounded path between two indexed symbols', async () 
     await tracePage.close();
   }
 });
+
+
+test('Build Replay shows historical graph without substituting current source contents', async () => {
+  const replayPage = await browser.newPage({ viewport: { width: 1420, height: 980 } });
+  try {
+    await replayPage.goto(page.url());
+    const atlas = replayPage.getByRole('region', { name: 'Code Atlas' });
+    const graph = atlas.getByRole('group', {
+      name: 'Interactive Code Atlas graph of saved source',
+    });
+    const replay = atlas.getByRole('region', { name: 'Code Atlas Build Replay' });
+    await replay.getByText('Build Replay', { exact: true }).waitFor();
+
+    await atlas.getByRole('checkbox', { name: 'Methods' }).check();
+    await replayPage.getByRole('button', {
+      name: 'Persist next source revision',
+    }).click();
+    await graph.getByRole('button', {
+      name: 'Method: Demo.TaskService.CreateTask()',
+    }).waitFor();
+    // Move from live to the most recent historical checkpoint, then back
+    // to the first work item before the method was written.
+    await replay.getByRole('button', { name: 'Previous' }).click();
+    await replay.getByText('Historical work item #2').waitFor();
+    await replay.getByRole('button', { name: 'Previous' }).click();
+    await replay.getByText('Historical work item #1').waitFor();
+    assert.equal(await graph.getByRole('button', {
+      name: 'Method: Demo.TaskService.CreateTask()',
+    }).count(), 0);
+
+    await graph.getByRole('button', { name: 'Class: Demo.TaskService' }).click();
+    const inspector = atlas.getByRole('complementary', {
+      name: 'Selected source entity',
+    });
+    assert.match(await inspector.textContent(),
+      /Historical graph only/);
+    assert.equal(await inspector.locator('.atlas-excerpt').count(), 0);
+    assert.equal(await inspector.getByRole('button', {
+      name: 'Set path start',
+    }).count(), 0);
+
+    await replay.getByRole('button', { name: 'Next' }).click();
+    await replay.getByText('Historical work item #2').waitFor();
+    await graph.getByRole('button', {
+      name: 'Method: Demo.TaskService.CreateTask()',
+    }).waitFor();
+
+    await replay.getByRole('button', { name: 'Return live' }).click();
+    await replay.getByText('Live saved source').waitFor();
+    await graph.getByRole('button', { name: 'Class: Demo.TaskService' }).click();
+    assert.match(await inspector.textContent(), /CreateTask/);
+    assert.equal(await inspector.getByRole('button', {
+      name: 'Set path start',
+    }).isVisible(), true);
+  } finally {
+    await replayPage.close();
+  }
+});
