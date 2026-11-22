@@ -83,7 +83,7 @@ test('legacy source has honest provenance and partial source warnings', () => {
     files: [{ path: 'app/Program.cs', purpose: 'Entry point',
       content: 'Console.WriteLine("Hi");', sha256: 'e'.repeat(64),
       createdUtc: '2026-11-21T14:30:00Z' }],
-    source: 'Classic generator', state: 'Failed',
+    source: 'Saved draft', state: 'Failed',
     runId: 'e'.repeat(32), isCurrent: false,
   }));
   assert.match(markup, /Classic generator/);
