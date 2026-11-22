@@ -606,4 +606,35 @@ catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
 }
 Check(invalidOverlay, "graph and engineering-run mismatch is rejected");
 
+
+// M6: the actual MAF QA tools cannot read another file or mutate source.
+var otherFile = File("Demo/Private.cs",
+    "namespace Demo; public class PrivateDetails {}");
+var atlasTools = new CodeAtlasAgentReadOnlyTools(ownerRun,
+    overlayFiles.Concat(new[] { otherFile }).ToArray(),
+    "Demo/Service.cs");
+Check(atlasTools.FindSymbols("Service").Any(n => n.Kind == "Class" &&
+    n.Name == "Service"), "QA tool finds declared local symbols");
+Check(atlasTools.FindSymbols("PrivateDetails").Count == 0,
+    "QA tool cannot search another file's private source symbols");
+Check(atlasTools.FindSymbols(new string('a',81)).Count == 0,
+    "QA symbol queries are bounded");
+var ownClass = atlasTools.FindSymbols("Service").Single(n =>
+    n.Kind == "Class");
+Check(atlasTools.GetRelationships(ownClass.Id).All(e =>
+    e.RelatedSymbolId != string.Empty),
+    "QA relationship results contain only known local symbol IDs");
+var excerpt = atlasTools.GetSourceExcerpt(ownClass.Id);
+Check(excerpt is not null && excerpt.Path == "Demo/Service.cs" &&
+    excerpt.Excerpt.Contains("class Service", StringComparison.Ordinal),
+    "QA source excerpt is bounded to the reviewed file");
+var privateId = CodeAtlasIndexer.Index(ownerRun,
+    overlayFiles.Concat(new[] { otherFile }).ToArray())
+    .Nodes.Single(n => n.Kind == "Class" && n.Name == "PrivateDetails").Id;
+Check(atlasTools.GetSourceExcerpt(privateId) is null &&
+    atlasTools.GetRelationships(privateId).Count == 0,
+    "other-file IDs cannot bypass the tool's own source boundary");
+Check(atlasTools.GetSourceExcerpt(ownClass.Id)!.Excerpt.Length <= 1200,
+    "QA source excerpt has a strict size limit");
+
 Console.WriteLine("CODE_ATLAS_SOURCE_GRAPH_PASS: " + checks + " assertions");
