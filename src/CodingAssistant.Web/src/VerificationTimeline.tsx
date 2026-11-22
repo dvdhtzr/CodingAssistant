@@ -216,7 +216,7 @@ export function VerificationTimelineView({ evidence }: {
       This is not evidence that execution or tests ran.</p>}
     <p className="verification-boundary">
       This is a read-only record of the latest MAF Software Engineer and QA static
-      review attempts, not the separate legacy C# pilot. No independent
+      review attempts, not unrelated qualification fixtures. No independent
       build, browser test, security qualification, repair, or VERIFIED result is
       recorded by these APIs. A source ZIP and a model's static QA assessment
       cannot establish a passing test.</p>
