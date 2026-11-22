@@ -345,7 +345,7 @@ public static class CodeAtlasJavaIndexer
         // directories are not necessarily the package root; use the
         // declared package and type, never a guessed folder mapping.
         var javaTypes = nodes.Values.Where(n =>
-                n.Kind is "Class" or "Interface" or "Enum" &&
+                (n.Kind is "Class" or "Interface" or "Enum") &&
                 n.Path is not null &&
                 n.Path.EndsWith(".java", StringComparison.OrdinalIgnoreCase) &&
                 n.QualifiedName.StartsWith(graph.RunId + "|" + n.Path + "|",
