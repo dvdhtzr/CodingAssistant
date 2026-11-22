@@ -106,6 +106,117 @@ Check(bad.Coverage == "MIXED_PARTIAL_CSHARP_ECMA_STRUCTURE",
 Check(!bad.Nodes.Any(n => n.Path == "../private.cs"),
     "unsafe source not represented");
 
+// M8.6: read-only Python declaration indexing without Python execution.
+var pythonFiles = new[]
+{
+    File("pkg/models.py", """"
+        # class Fake: pass
+        quoted = "def Phantom(): pass"
+        script = """
+        class FalsePositive:
+            def never(): pass
+        """
+        class Worker:
+            def __init__(self, value):
+                self.value = value
+            async def run(self, text):
+                def local():
+                    return "class Strange:"
+                return local()
+        def package_func(item):
+            return item
+        """"),
+    File("pkg/more.py", """
+        class Worker:
+            def run(self): pass
+        """)
+};
+var pythonGraph = CodeAtlasIndexer.Index("python-run", pythonFiles);
+Check(pythonGraph.Coverage == "PYTHON_STRUCTURE_ONLY" &&
+    pythonGraph.Diagnostics.Count == 0,
+    "valid Python produces explicit source-structure-only coverage");
+Check(pythonGraph.Nodes.Count(n => n.Kind == "Class" &&
+    n.Name == "Worker") == 2,
+    "same-named Python classes in separate files remain distinct");
+var pythonClass = pythonGraph.Nodes.Single(n =>
+    n.Kind == "Class" && n.Name == "Worker" &&
+    n.Path == "pkg/models.py");
+Check(pythonClass.Line == 7,
+    "Python declaration includes exact persisted source line");
+var pythonConstructor = pythonGraph.Nodes.Single(n =>
+    n.Kind == "Constructor" && n.Name == "__init__" &&
+    n.Path == "pkg/models.py");
+Check(pythonConstructor.ParentId == pythonClass.Id &&
+    pythonConstructor.Line == 8,
+    "Python __init__ is a class-owned source constructor");
+var pythonMethod = pythonGraph.Nodes.Single(n =>
+    n.Kind == "Method" && n.Name == "run" &&
+    n.Path == "pkg/models.py");
+Check(pythonMethod.ParentId == pythonClass.Id &&
+    pythonMethod.Line == 10,
+    "async Python methods are linked to the containing class");
+var pythonLocal = pythonGraph.Nodes.Single(n =>
+    n.Kind == "Function" && n.Name == "local");
+Check(pythonLocal.ParentId == pythonMethod.Id &&
+    pythonLocal.Line == 11,
+    "nested Python function scope is captured without invented calls");
+Check(pythonGraph.Nodes.Any(n =>
+    n.Kind == "Function" && n.Name == "package_func" &&
+    n.Path == "pkg/models.py") &&
+    !pythonGraph.Nodes.Any(n =>
+        n.Name is "Fake" or "Phantom" or "FalsePositive" or
+        "never" or "Strange"),
+    "Python comment, string and triple-quote decoys never become nodes");
+Check(!pythonGraph.Edges.Any(e => e.Kind is "Calls" or "Inherits" or
+    "Implements" or "ConstructorDependsOn"),
+    "Python syntax analysis never claims resolved runtime relationships");
+Check(pythonGraph.Edges.All(e =>
+    pythonGraph.Nodes.Any(n => n.Id == e.SourceId) &&
+    pythonGraph.Nodes.Any(n => n.Id == e.TargetId)),
+    "Python structure never creates dangling graph relationships");
+var pythonReordered = CodeAtlasIndexer.Index("python-run",
+    pythonFiles.Reverse().ToArray());
+Check(pythonGraph.SourceRevision == pythonReordered.SourceRevision &&
+    pythonGraph.Nodes.Select(n => n.Id).SequenceEqual(
+        pythonReordered.Nodes.Select(n => n.Id)),
+    "Python graph identities are deterministic across input order");
+var mixedPython = CodeAtlasIndexer.Index("mixed-python-run",
+    pythonFiles.Append(File("ui/app.ts", "export const app = () => 1;"))
+        .ToArray());
+Check(mixedPython.Coverage ==
+    "ECMA_STRUCTURE_ONLY+PYTHON_STRUCTURE_ONLY" &&
+    mixedPython.Nodes.Any(n => n.Kind == "Function" &&
+        n.Path == "ui/app.ts") &&
+    mixedPython.Nodes.Any(n => n.Kind == "Class" &&
+        n.Path == "pkg/models.py"),
+    "mixed JS/TS plus Python retains distinct coverage and both structures");
+var invalidPython = CodeAtlasIndexer.Index("python-run", new[]
+{
+    File("pkg/invalid.py", """"
+        class Complete:
+            pass
+        def unsupported(
+          arg):
+            pass
+        message = """
+        class Ghost:
+            pass
+        """"),
+    File("../escape.py", "class Escaped: pass")
+});
+Check(invalidPython.Coverage == "PARTIAL_PYTHON_STRUCTURE" &&
+    invalidPython.Diagnostics.Any(d =>
+        d.StartsWith("PYTHON_UNSUPPORTED_DEFINITION:",
+            StringComparison.Ordinal)) &&
+    invalidPython.Diagnostics.Any(d =>
+        d.StartsWith("PYTHON_UNCLOSED_TRIPLE_QUOTE:",
+            StringComparison.Ordinal)),
+    "incomplete Python source reports partial coverage, never success");
+Check(invalidPython.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
+    !invalidPython.Nodes.Any(n => n.Name == "Escaped" ||
+        n.Name == "Ghost"),
+    "Python unsafe paths and unterminated strings create no graph nodes");
+
 // M8.2: source-only JS/TS declarations are never runtime/semantic facts.
 var ecmaFiles = new[]
 {
