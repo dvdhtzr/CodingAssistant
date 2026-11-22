@@ -11,8 +11,9 @@ const noop = () => {};
 
 before(async () => {
   vite = await createServer({
-    configFile: false, root: process.cwd(),
-    server: { middlewareMode: true }, appType: 'custom',
+    configFile: false,
+    optimizeDeps: { noDiscovery: true, include: [] }, root: process.cwd(),
+    server: { middlewareMode: true, hmr: false }, appType: 'custom',
   });
   ({ InterviewAnswerComposer: Composer, formatInterviewAnswer: formatAnswer } =
     await vite.ssrLoadModule('/src/InterviewAnswerComposer.tsx'));
