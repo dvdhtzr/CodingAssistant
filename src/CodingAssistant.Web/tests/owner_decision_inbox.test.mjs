@@ -20,8 +20,9 @@ const baseline = {
 };
 before(async () => {
   vite = await createServer({
-    configFile: false, root: process.cwd(),
-    server: { middlewareMode: true }, appType: 'custom',
+    configFile: false,
+    optimizeDeps: { noDiscovery: true, include: [] }, root: process.cwd(),
+    server: { middlewareMode: true, hmr: false }, appType: 'custom',
   });
   ({ buildDecisionInbox, DecisionInboxView } =
     await vite.ssrLoadModule('/src/OwnerDecisionInbox.tsx'));
