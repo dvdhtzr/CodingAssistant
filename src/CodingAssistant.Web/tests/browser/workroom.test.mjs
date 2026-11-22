@@ -194,3 +194,36 @@ test('UX-6B source preflight exposes concrete defects without executable control
   assert.equal(await preflight.getByRole('button').count(), 0);
   assert.match(await preflight.textContent(), /runtime evaluator remains unqualified/);
 });
+
+
+test('M4.6 real Chromium shows candidate scope separately from unqualified execution', async () => {
+  const scope = page.getByRole('region',
+    { name: 'Generated source verification readiness' }).first();
+  assert.equal(await scope.isVisible(), true);
+  assert.match(await scope.textContent(), /Scope candidate/);
+  assert.match(await scope.textContent(), /Generated · not tested/);
+  assert.match(await scope.textContent(), /Execution DISABLED/);
+  assert.match(await scope.textContent(), /untrusted Static Web executor remains unqualified/);
+  assert.equal(await scope.locator('button').count(), 0);
+  const manifest = scope.locator('details.verification-scope-manifest');
+  assert.equal(await manifest.getAttribute('open'), null);
+  await manifest.locator('summary').click();
+  assert.match(await manifest.textContent(), /index\.html/);
+  assert.match(await manifest.textContent(), /app\.js/);
+  await manifest.locator('summary').click();
+  assert.equal(await manifest.getAttribute('open'), null);
+  const fingerprints=scope.locator('details.verification-scope-binding');
+  await fingerprints.locator('summary').click();
+  assert.match(await fingerprints.textContent(), /fingerprints, not authorization tokens/);
+});
+test('M4.6 real Chromium keeps rejected scope visible without any run action', async () => {
+  const scope = page.getByRole('region',
+    { name: 'Generated source verification readiness' }).nth(1);
+  assert.equal(await scope.isVisible(), true);
+  assert.match(await scope.textContent(), /Needs attention/);
+  assert.match(await scope.textContent(), /MISSING ROOT INDEX HTML/);
+  assert.match(await scope.textContent(), /SOURCE FILE HASH MISMATCH/);
+  assert.match(await scope.textContent(), /needs a root index\.html/);
+  assert.equal(await scope.getByRole('button').count(), 0);
+  assert.doesNotMatch(await scope.textContent(), /Scope candidate/);
+});
