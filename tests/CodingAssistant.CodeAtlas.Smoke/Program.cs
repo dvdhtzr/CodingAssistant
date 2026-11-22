@@ -148,19 +148,6 @@ Check(Link(orderService, storeContract, "ConstructorDependsOn"),
     "constructor dependency points to the declared interface");
 Check(Link(place, helper, "Calls"),
     "same-class invocation resolves its exact declared target");
-if (!Link(place, saveContract, "Calls"))
-{
-    // Only fixed, trusted fixture identities are printed for diagnosis.
-    Console.WriteLine("ATLAS_CALL_FIXTURE Nodes: " + string.Join("; ",
-        semantic.Nodes.Where(n => n.Kind is "Method" or "Constructor")
-            .Select(n => n.Name + "=" + n.Id)));
-    Console.WriteLine("ATLAS_CALL_FIXTURE Edges: " + string.Join("; ",
-        semantic.Edges.Where(e => e.Kind == "Calls")
-            .Select(e => e.SourceId + "=>" + e.TargetId +
-                "@" + e.EvidencePath + ":" + e.EvidenceLine)));
-    Console.WriteLine("ATLAS_CALL_FIXTURE Coverage: " +
-        semantic.Coverage + " / " + string.Join(", ", semantic.Diagnostics));
-}
 Check(Link(place, saveContract, "Calls"),
     "interface dispatch records compile-time target, not imagined implementation");
 Check(!semantic.Edges.Any(e => e.Kind == "Calls" &&
