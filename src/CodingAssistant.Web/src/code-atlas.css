@@ -34,6 +34,9 @@
 .atlas-node.atlas-connected .atlas-node-core{stroke:#62e4c5;stroke-width:2}
 @keyframes atlas-arrival{0%{fill-opacity:.65;stroke-opacity:1;stroke-width:7}100%{fill-opacity:.12;stroke-opacity:0;stroke-width:1}}
 .atlas-node.atlas-new .atlas-node-halo{fill:#48efc5;stroke:#48efc5;animation:atlas-arrival 1.5s ease-out both}
+.atlas-node.atlas-modified .atlas-node-core{stroke:#e7ba6f;stroke-width:2.5}
+.atlas-node.atlas-modified .atlas-node-halo{fill:#e7ba6f;fill-opacity:.18}
+.atlas-change-label{color:#edbe77!important;font-size:.69rem}
 .atlas-node-label{font-size:12px;font-family:system-ui,-apple-system,sans-serif;fill:#cee1ed;font-weight:600;paint-order:stroke;stroke:#101d2d;stroke-width:3px;stroke-linejoin:round;pointer-events:none}
 .atlas-zoom{position:absolute;right:.7rem;top:.65rem;display:flex;flex-direction:column;gap:.28rem}
 .atlas-zoom button{padding:0;width:29px;height:29px;color:#d7edfc;background:#1c3345;border:1px solid #547083;border-radius:7px;display:grid;place-items:center}
