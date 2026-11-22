@@ -103,6 +103,8 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             if (payload.Length > 130_000)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             using var decoded = JsonDocument.Parse(payload);
+            if (decoded.RootElement.ValueKind != JsonValueKind.Object)
+                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             if (purpose == MafAgentPurpose.SoftwareEngineer &&
                 decoded.RootElement.TryGetProperty("done_reason", out var done) &&
                 done.ValueKind == JsonValueKind.String &&
