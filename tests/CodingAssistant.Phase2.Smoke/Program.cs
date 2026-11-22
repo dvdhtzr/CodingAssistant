@@ -1312,6 +1312,111 @@ try
               body.RootElement.GetProperty("decisions").GetArrayLength() == 1,
             "triage decision is durably readable without source mutation");
 
+    // R2-R5 end-to-end fixture: explicit triage, authorized source-only
+    // repair, preservation of original files, and independent QA reassessment.
+    var latestRepairPath = "/api/tasks/" + taskBound.Id + "/repair-cycles";
+    var repairProposal = new RepairProposalStore(tasks);
+    var boundProposal = repairProposal.Latest(taskBound.Id)!;
+    using (var premature = await Post(client, latestRepairPath,
+        new StartRepairCycleRequest(boundProposal.Id,
+            "REPAIR " + boundProposal.SourceSha256,
+            [new RepairSelection("app.js", 0)])))
+        Check(premature.StatusCode == HttpStatusCode.Conflict,
+            "unconfirmed QA hypothesis cannot authorize Software Engineer repair");
+    using (var classified = await Post(client, triagePath,
+        new ClassifyRepairFindingRequest("app.js", 0,
+            "ImplementationDefect",
+            "Owner confirms this finding contradicts approved application behavior")))
+        Check(classified.StatusCode == HttpStatusCode.Conflict,
+            "existing append-only triage decision cannot silently be overwritten");
+
+    // This separate QA fixture needs a fresh review/triage decision because
+    // the first recorded decision was deliberately NeedsVerification.
+    using (var refreshedQa = await Post(client, qaPath,
+        new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
+    using (var body = await Body(refreshedQa))
+    {
+        Check(refreshedQa.StatusCode == HttpStatusCode.Accepted,
+            "owner can request a fresh independent QA review");
+    }
+    QaReviewSnapshot? currentQa = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        currentQa = reviewStore.Latest(taskBound.Id);
+        if (currentQa?.Job.State != "Running") break;
+        await Task.Delay(25);
+    }
+    Check(currentQa?.Job.State == "Reviewed",
+        "fresh independent QA report completed before repairs");
+    using (var createdProposal = await Post(client, proposalPath,
+        new CreateRepairProposalRequest(currentQa!.Job.Id)))
+        Check(createdProposal.StatusCode == HttpStatusCode.Created,
+            "fresh QA evidence can create a distinct repair proposal");
+    var newProposal = repairProposal.Latest(taskBound.Id)!;
+    var newTriagePath = proposalPath + "/" + newProposal.Id + "/triage";
+    using (var ownerConfirmed = await Post(client, newTriagePath,
+        new ClassifyRepairFindingRequest("app.js", 0, "ImplementationDefect",
+            "Owner explicitly confirms Start handler defect against specification")))
+        Check(ownerConfirmed.StatusCode == HttpStatusCode.OK,
+            "owner can confirm and classify one source-bound defect");
+
+    var authorized = new StartRepairCycleRequest(newProposal.Id,
+        "REPAIR " + newProposal.SourceSha256,
+        [new RepairSelection("app.js", 0)]);
+    string cycleId;
+    using (var started = await Post(client, latestRepairPath, authorized))
+    using (var body = await Body(started))
+    {
+        Check(started.StatusCode == HttpStatusCode.Accepted &&
+              body.RootElement.GetProperty("attempt").GetInt32() == 1 &&
+              body.RootElement.GetProperty("state").GetString() == "Running",
+            "explicitly classified finding starts bounded source-only repair");
+        cycleId = body.RootElement.GetProperty("id").GetString()!;
+    }
+    using (var replay = await Post(client, latestRepairPath, authorized))
+        Check(replay.StatusCode == HttpStatusCode.Conflict,
+            "same QA report cannot start a second overlapping repair");
+    RepairCycleSnapshot? repairOutcome = null;
+    for (var attempt = 0; attempt < 240; attempt++)
+    {
+        using var response = await client.GetAsync(latestRepairPath + "/" + cycleId);
+        using var body = await Body(response);
+        if (body.RootElement.GetProperty("cycle").GetProperty("state")
+            .GetString() is "Running" or "Generated" or "QaRunning")
+        {
+            await Task.Delay(25);
+            continue;
+        }
+        var cycleStore = new RepairCycleStore(tasks, engineeringStore,
+            reviewStore, repairProposal);
+        repairOutcome = cycleStore.Get(taskBound.Id, cycleId);
+        break;
+    }
+    Check(repairOutcome?.Cycle.State == "QaReviewed" &&
+          repairOutcome.Review?.Job.State == "Reviewed" &&
+          repairOutcome.Engineering.Job.State == "Generated" &&
+          repairOutcome.Cycle.BaseSourceSha256 ==
+              QaReviewStore.Fingerprint(engineeringResult!.Files) &&
+          repairOutcome.Engineering.Files.Single(f => f.Path == "index.html")
+              .Sha256 == engineeringResult.Files.Single(f => f.Path == "index.html")
+                  .Sha256 &&
+          repairOutcome.Engineering.Files.Single(f => f.Path == "app.js")
+              .Sha256 != engineeringResult.Files.Single(f => f.Path == "app.js")
+                  .Sha256 &&
+          repairOutcome.StaticPreflight.VerificationStatus ==
+              "GENERATED_NOT_TESTED",
+        "repaired source is distinct, original evidence immutable, QA independently reassessed and no fake PASS");
+    Check(engineeringStore.Get(taskBound.Id, engineeringRunId).Files
+              .Single(f => f.Path == "app.js").Sha256 ==
+          engineeringResult!.Files.Single(f => f.Path == "app.js").Sha256,
+        "prior engineering run is unchanged after source-only repair");
+    using (var cycleList = await client.GetAsync(latestRepairPath + "/latest"))
+    using (var body = await Body(cycleList))
+        Check(cycleList.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("snapshot")
+                  .GetProperty("cycle").GetProperty("id").GetString() == cycleId,
+            "repair cycle persists and appears in Mission Control status API");
+
     // Real FlowBoard failure: the first source file survives but a later
     // engineering task fails. Static QA must accept only the immutable saved
     // partial artifact, and the status must remain clearly incomplete.
@@ -1926,6 +2031,18 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
             input.Architecture.ArchitectureSha256 != input.Plan.ArchitectureSha256)
             throw new Exception("SoftwareEngineer was not given the current approved plan");
         AssignedIds.Add(input.WorkItem.Id);
+        if (input.Repair is { } repair)
+        {
+            if (repair.Findings.Count != 1 ||
+                repair.AllowedPaths.Single() != "app.js" ||
+                !input.ExistingFiles.Any(f => f.Path == "app.js"))
+                throw new Exception("Repair context was not bound to original QA source");
+            return Task.FromResult(new EngineeringChangeSet(
+                "Repaired the approved Start handler without modifying the browser entry.",
+                [new EngineeringFileChange("app.js", "Repaired timer interactions",
+                    "document.getElementById('start').addEventListener('click', () => { console.log('repaired start'); });")],
+                ["Independently check Start button behavior"]));
+        }
         if (input.WorkItem.Id == "timer-interface")
             return Task.FromResult(new EngineeringChangeSet(
                 "Created a real browser interface with accessible timer controls.",
