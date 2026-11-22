@@ -1442,10 +1442,10 @@ try
                 $"/api/tasks/{endingId}/interview"))
             using (var snapshot = await ReadJson(pending))
             {
-                var root = snapshot.RootElement;
-                Check(root.GetProperty("lastSequence").GetInt32() == 25 &&
-                    root.GetProperty("messages").GetArrayLength() == 25 &&
-                    root.GetProperty("messages")[24]
+                var pendingSnapshot = snapshot.RootElement;
+                Check(pendingSnapshot.GetProperty("lastSequence").GetInt32() == 25 &&
+                    pendingSnapshot.GetProperty("messages").GetArrayLength() == 25 &&
+                    pendingSnapshot.GetProperty("messages")[24]
                         .GetProperty("content").GetString()!.Contains('?'),
                     "twelfth answer leaves turn 25 as a real question");
             }
