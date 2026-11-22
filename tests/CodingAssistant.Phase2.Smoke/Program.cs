@@ -1228,6 +1228,90 @@ try
         Check(cross.StatusCode == HttpStatusCode.NotFound,
             "QA report cannot be read through another project's URL");
 
+    // R1 proposals are host-admitted evidence, never executable repair grants.
+    var proposalPath = "/api/tasks/" + taskBound.Id + "/repair-proposals";
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(proposalPath + "/latest"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "repair proposals remain private to the authenticated owner");
+    using (var invalid = await Post(client, proposalPath,
+        new CreateRepairProposalRequest("not-an-id")))
+        Check(invalid.StatusCode == HttpStatusCode.BadRequest,
+            "malformed QA reference cannot be admitted");
+    using (var wrongTask = await Post(client,
+        "/api/tasks/" + task.Id + "/repair-proposals",
+        new CreateRepairProposalRequest(qaReviewId)))
+        Check(wrongTask.StatusCode == HttpStatusCode.NotFound,
+            "QA evidence cannot be referenced from another task");
+    string repairProposalId;
+    using (var created = await Post(client, proposalPath,
+        new CreateRepairProposalRequest(qaReviewId)))
+    using (var body = await Body(created))
+    {
+        var repairJson = body.RootElement;
+        repairProposalId = repairJson.GetProperty("id").GetString()!;
+        var findings = repairJson.GetProperty("findings");
+        Check(created.StatusCode == HttpStatusCode.Created &&
+              repairJson.GetProperty("state").GetString() == "NeedsTriage" &&
+              repairJson.GetProperty("qaReviewId").GetString() == qaReviewId &&
+              repairJson.GetProperty("engineeringRunId").GetString() == engineeringRunId &&
+              repairJson.GetProperty("sourceSha256").GetString() ==
+                  qaResult!.Job.SourceSha256 &&
+              findings.GetArrayLength() == 1 &&
+              findings[0].GetProperty("classification").GetString() ==
+                  "NeedsVerification" &&
+              findings[0].GetProperty("path").GetString() == "app.js",
+            "R1 captures exact approved source-bound QA finding as unverified");
+    }
+    using (var duplicate = await Post(client, proposalPath,
+        new CreateRepairProposalRequest(qaReviewId)))
+    using (var body = await Body(duplicate))
+        Check(duplicate.StatusCode == HttpStatusCode.Created &&
+              body.RootElement.GetProperty("id").GetString() == repairProposalId,
+            "repeated proposal requests are idempotent");
+    using (var latestProposal = await client.GetAsync(proposalPath + "/latest"))
+    using (var body = await Body(latestProposal))
+        Check(latestProposal.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("proposal")
+                  .GetProperty("id").GetString() == repairProposalId,
+            "R1 proposal survives a new SQLite read");
+
+    // Host-owned classification is not authorization to repair or execute code.
+    var triagePath = proposalPath + "/" + repairProposalId + "/triage";
+    var classification = new ClassifyRepairFindingRequest(
+        "app.js", 0, "NeedsVerification",
+        "Static QA has not established a functional test failure");
+    using (var invalidTriage = await Post(client, triagePath,
+        new ClassifyRepairFindingRequest("not-a-file", 0,
+            "ImplementationDefect", "No verified evidence exists for that file")))
+        Check(invalidTriage.StatusCode == HttpStatusCode.BadRequest,
+            "triage rejects finding identities absent from the immutable QA record");
+    using (var unsafeTriage = await Post(client, triagePath,
+        new ClassifyRepairFindingRequest("app.js", 0,
+            "ExecuteAndRepair", "Attempt to authorize model execution directly")))
+        Check(unsafeTriage.StatusCode == HttpStatusCode.BadRequest,
+            "triage cannot become model execution authorization");
+    using (var triaged = await Post(client, triagePath, classification))
+    using (var body = await Body(triaged))
+        Check(triaged.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("classification").GetString() ==
+                  "NeedsVerification" &&
+              body.RootElement.GetProperty("proposalId").GetString() ==
+                  repairProposalId,
+            "classification records a non-executing owner triage decision");
+    using (var again = await Post(client, triagePath, classification))
+        Check(again.StatusCode == HttpStatusCode.OK,
+            "repeated identical owner classification is idempotent");
+    using (var conflict = await Post(client, triagePath,
+        classification with { Classification = "ImplementationDefect" }))
+        Check(conflict.StatusCode == HttpStatusCode.Conflict,
+            "append-only triage refuses conflicting reclassification");
+    using (var decisions = await client.GetAsync(triagePath))
+    using (var body = await Body(decisions))
+        Check(decisions.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("decisions").GetArrayLength() == 1,
+            "triage decision is durably readable without source mutation");
+
     // Real FlowBoard failure: the first source file survives but a later
     // engineering task fails. Static QA must accept only the immutable saved
     // partial artifact, and the status must remain clearly incomplete.
@@ -1352,6 +1436,16 @@ try
               qaModel.ReviewedFiles.Count == 4,
             "QA refuses superseded engineering source even under the same plan");
     engineeringStore.Interrupt(taskBound.Id, supersedingSource.Id);
+    using (var staleProposal = await Post(client, proposalPath,
+        new CreateRepairProposalRequest(qaReviewId)))
+        Check(staleProposal.StatusCode == HttpStatusCode.Conflict,
+            "repair proposal replay fails after a newer engineering source is saved");
+    using (var staleTriage = await Post(client, triagePath,
+        classification with { Classification = "ImplementationDefect" }))
+        Check(staleTriage.StatusCode == HttpStatusCode.Conflict,
+            "stale source cannot receive a new classification");
+
+
 
     using (var noHash = await Post(client, boundPath, approvedRequest))
         Check(noHash.StatusCode == HttpStatusCode.Conflict,
