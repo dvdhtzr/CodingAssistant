@@ -22,7 +22,7 @@ public static class CodeAtlasArchitectureDrift
 
     private static bool ArchitecturalEntity(AtlasNode node) =>
         node.Kind is "Project" or "Namespace" or "Class" or "Interface" or
-            "Struct" or "Enum" or "Method" or "Constructor";
+            "Struct" or "Enum" or "Function" or "Method" or "Constructor";
 
     private static bool ArchitecturalRelation(AtlasEdge edge) =>
         edge.Kind is not ("Contains" or "Declares");

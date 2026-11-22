@@ -588,6 +588,12 @@ public static class ApiHost
              CodeAtlasRepositoryImportStore db, CancellationToken cancellation) =>
                 SafeAsync(async () => Results.Ok(
                     await db.ImportAsync(id, request, cancellation))));
+        // Two already-saved, task-scoped, immutable GitHub commits.
+        app.MapGet("/api/tasks/{id}/atlas-imports/drift",
+            (string id, string from, string to,
+             CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(CodeAtlasImportedCommitDrift.Compare(
+                    db.Get(id, from), db.Get(id, to)))));
         app.MapGet("/api/tasks/{id}/atlas-imports/{importId}",
             (string id, string importId, CodeAtlasRepositoryImportStore db) =>
                 Safe(() => Results.Ok(db.Get(id, importId))));

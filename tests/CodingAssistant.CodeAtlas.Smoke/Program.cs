@@ -772,6 +772,64 @@ Check(limitedDrift.AddedEntities == 125 && limitedDrift.Truncated &&
     limitedDrift.Changes.Count == 100,
     "architecture drift caps detailed payload without hiding total changes");
 
+// M8.3: normalize import identity before diffing two saved commit graphs.
+var oldImportId = new string('1', 32);
+var newImportId = new string('2', 32);
+var oldCommitGraph = CodeAtlasIndexer.Index(oldImportId, new[]
+{
+    File("src/Order.cs", "namespace Demo; public class Order { public void Save() {} }"),
+    File("ui/View.ts", "export const View = () => 1;")
+});
+var newCommitGraph = CodeAtlasIndexer.Index(newImportId, new[]
+{
+    File("src/Order.cs", "namespace Demo; public class Order { public void Save() {} public void Load() { Save(); } }"),
+    File("ui/View.ts", "export const View = () => 1;")
+});
+AtlasImportedRepositoryGraph ImportFixture(string id, string commit,
+    AtlasSnapshot graph, string task = "task-one",
+    string url = "https://github.com/example/Project") =>
+    new(new AtlasImportedRepository(id, task, url, commit,
+        graph.SourceRevision, graph.Coverage, 2, 0, ""), graph);
+var oldImport = ImportFixture(oldImportId, new string('a',40), oldCommitGraph);
+var newImport = ImportFixture(newImportId, new string('b',40), newCommitGraph);
+var commitDrift = CodeAtlasImportedCommitDrift.Compare(oldImport, newImport);
+Check(commitDrift.AddedEntities == 1 && commitDrift.RemovedEntities == 0 &&
+    commitDrift.Changes.Any(c => c.Operation == "Added" &&
+        c.Kind == "Method" && c.Identity.Contains("Load()", StringComparison.Ordinal)),
+    "import commit drift sees new method, not unrelated import IDs");
+Check(commitDrift.AddedRelationships == 1 &&
+    commitDrift.Changes.Any(c => c.Kind == "Calls" &&
+        c.Resolution == "ResolvedStatic"),
+    "import commit drift retains source-backed C# resolved calls");
+var sameGraph = CodeAtlasIndexer.Index(newImportId, new[]
+{
+    File("src/Order.cs", "namespace Demo; public class Order { public void Save() {} }"),
+    File("ui/View.ts", "export const View = () => 1;")
+});
+var sameImport = ImportFixture(newImportId, new string('b',40), sameGraph);
+Check(CodeAtlasImportedCommitDrift.Compare(oldImport, sameImport)
+    .Changes.Count == 0,
+    "unchanged source under random import IDs creates zero false drift");
+var deniedComparison = false;
+try { _ = CodeAtlasImportedCommitDrift.Compare(oldImport,
+    newImport with { Repository = newImport.Repository with
+        { TaskId = "different" } }); }
+catch (StoreFailure e) when (e.Code == "ATLAS_IMPORT_DRIFT_INVALID")
+{ deniedComparison = true; }
+Check(deniedComparison, "import drift never crosses task boundaries");
+deniedComparison = false;
+try { _ = CodeAtlasImportedCommitDrift.Compare(oldImport,
+    newImport with { Repository = newImport.Repository with
+        { RepositoryUrl = "https://github.com/other/repo" } }); }
+catch (StoreFailure e) when (e.Code == "ATLAS_IMPORT_DRIFT_INVALID")
+{ deniedComparison = true; }
+Check(deniedComparison, "import drift never compares different repositories");
+deniedComparison = false;
+try { _ = CodeAtlasImportedCommitDrift.Compare(oldImport, oldImport); }
+catch (StoreFailure e) when (e.Code == "ATLAS_IMPORT_DRIFT_INVALID")
+{ deniedComparison = true; }
+Check(deniedComparison, "import drift rejects same-commit self-comparison");
+
 // M7: GitHub archive parsing and source persistence are offline-only tests.
 byte[] Archive(params (string Name, string Content, int Mode)[] entries)
 {
@@ -1012,8 +1070,39 @@ try
         "/api/tasks/" + taskA.Id + "/atlas-imports/" + importedId);
     Check(forbidden.StatusCode == HttpStatusCode.Unauthorized,
         "imported graph requires a real owner bearer token");
-    Check(apiFetcher.DownloadCount == 1,
-        "one exact GitHub commit archive was requested for the entire HTTP fixture");
+    // Compare two already-imported commits via owner-authenticated HTTP.
+    using var secondUpload = await client.PostAsJsonAsync(
+        "/api/tasks/" + taskA.Id + "/atlas-imports",
+        new AtlasImportGitHubRequest(
+            "https://github.com/example/Project", new string('b',40)));
+    Check(secondUpload.StatusCode == HttpStatusCode.OK,
+        "second exact commit can be imported for architecture comparison");
+    var secondImport = await secondUpload.Content
+        .ReadFromJsonAsync<AtlasImportedRepository>();
+    Check(secondImport is not null && secondImport.Id != importedId,
+        "saved commit snapshots retain independent identities");
+    var comparisonUrl = "/api/tasks/" + taskA.Id +
+        "/atlas-imports/drift?from=" + importedId +
+        "&to=" + secondImport!.Id;
+    using var comparisonResponse = await client.GetAsync(comparisonUrl);
+    Check(comparisonResponse.StatusCode == HttpStatusCode.OK,
+        "read-only imported comparison endpoint is available");
+    var comparison = await comparisonResponse.Content
+        .ReadFromJsonAsync<AtlasImportedCommitDriftReport>();
+    Check(comparison?.AddedEntities == 0 &&
+        comparison.RemovedEntities == 0 &&
+        comparison.AddedRelationships == 0,
+        "same archived code produces no phantom import architecture changes");
+    using var forbiddenComparison = await unauthenticated.GetAsync(comparisonUrl);
+    Check(forbiddenComparison.StatusCode == HttpStatusCode.Unauthorized,
+        "import architecture comparison requires an owner token");
+    using var otherTaskComparison = await client.GetAsync(
+        "/api/tasks/" + taskB.Id + "/atlas-imports/drift?from=" +
+        importedId + "&to=" + secondImport.Id);
+    Check(otherTaskComparison.StatusCode == HttpStatusCode.NotFound,
+        "other task cannot read imported source drift");
+    Check(apiFetcher.DownloadCount == 2,
+        "comparing saved commits never downloads a third archive");
 }
 finally
 {
