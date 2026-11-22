@@ -39,6 +39,14 @@ public sealed class CodeAtlasAgentReadOnlyTools
                 StringComparer.Ordinal);
     }
 
+    // The QA host may supply a short static symbol index as ordinary
+    // evidence context while preserving the agent's NO-TOOLS contract.
+    public IReadOnlyList<AtlasAgentSymbol> ListFileSymbols() =>
+        _nodes.Values.OrderBy(node => node.QualifiedName,
+            StringComparer.Ordinal).Take(16)
+        .Select(node => new AtlasAgentSymbol(node.Id, node.Kind,
+            node.Name, _file.Path, node.Line)).ToArray();
+
     [Description("Find up to 12 declared symbols in the current QA-reviewed file only. This is static source structure, not runtime verification.")]
     public IReadOnlyList<AtlasAgentSymbol> FindSymbols(string query)
     {
