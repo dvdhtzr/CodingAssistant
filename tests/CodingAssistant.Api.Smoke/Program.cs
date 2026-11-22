@@ -1393,6 +1393,125 @@ try
         }
     }
 
+    // The old twelve-answer cap left turn 25 as an unanswerable assistant
+    // question. A real authenticated SQLite session must accept that question's
+    // final answer, acknowledge without another Ollama call and survive restart.
+    {
+        var endingData = Path.Combine(root, "final-interview-private");
+        var endingSettings = new ApiSettings(
+            endingData, OwnerToken, "http://127.0.0.1:0");
+        var endingModel = new SmokeInterviewModel { AlwaysAskNextQuestion = true };
+        var endingCatalog = new SmokeOllamaModelCatalog();
+        WebApplication? endingApp = null;
+        HttpClient? endingClient = null;
+        try
+        {
+            endingClient = await Start(endingSettings,
+                app => endingApp = app,
+                interviewModel: endingModel, catalog: endingCatalog);
+            endingClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", OwnerToken);
+            string endingId;
+            using (var created = await Post(endingClient, "/api/tasks", new {
+                title = "Podcast demographic aggregation",
+                objective = "Build a podcast demographic aggregation tool",
+                requestId = Guid.NewGuid().ToString("N")
+            }))
+            using (var json = await ReadJson(created))
+            {
+                Check(created.StatusCode == HttpStatusCode.Created,
+                    "pending-question test task created");
+                endingId = json.RootElement.GetProperty("id").GetString()!;
+            }
+            var path = $"/api/tasks/{endingId}/interview/turn";
+            using (var start = await Post(endingClient, path, new {
+                expectedSequence = 0, model = "qwen3.5:4b"
+            }))
+                Check(start.StatusCode == HttpStatusCode.OK,
+                    "pending-question test interview starts");
+            for (var n = 1; n <= InterviewStore.ModelDrivenAnswerLimit; n++)
+            {
+                using var answer = await Post(endingClient, path, new {
+                    expectedSequence = n * 2 - 1,
+                    message = $"Requirement decision {n}: use podcast-platform data."
+                });
+                Check(answer.StatusCode == HttpStatusCode.OK,
+                    $"answer {n} saved before the final pending question");
+            }
+            using (var pending = await endingClient.GetAsync(
+                $"/api/tasks/{endingId}/interview"))
+            using (var snapshot = await ReadJson(pending))
+            {
+                var root = snapshot.RootElement;
+                Check(root.GetProperty("lastSequence").GetInt32() == 25 &&
+                    root.GetProperty("messages").GetArrayLength() == 25 &&
+                    root.GetProperty("messages")[24]
+                        .GetProperty("content").GetString()!.Contains('?'),
+                    "twelfth answer leaves turn 25 as a real question");
+            }
+            var inferenceCalls = endingModel.AskCount;
+            endingCatalog.Models.Clear(); // No model is necessary for final answer.
+            using (var final = await Post(endingClient, path, new {
+                expectedSequence = 25,
+                message = "Aggregate the platform-reported audience segments only."
+            }))
+            using (var json = await ReadJson(final))
+            {
+                var result = json.RootElement;
+                var saved = result.GetProperty("messages");
+                Check(final.StatusCode == HttpStatusCode.OK &&
+                    result.GetProperty("lastSequence").GetInt32() == 27 &&
+                    result.GetProperty("readyForSpecification").GetBoolean() &&
+                    saved.GetArrayLength() == 27 &&
+                    saved[25].GetProperty("role").GetString() == "owner" &&
+                    saved[25].GetProperty("content").GetString() ==
+                        "Aggregate the platform-reported audience segments only." &&
+                    saved[26].GetProperty("role").GetString() == "assistant" &&
+                    !saved[26].GetProperty("content").GetString()!.Contains('?') &&
+                    endingModel.AskCount == inferenceCalls,
+                    "final pending answer persisted and discovery closed without model");
+            }
+            using (var replay = await Post(endingClient, path, new {
+                expectedSequence = 25, message = "Replay"
+            }))
+                Check(replay.StatusCode == HttpStatusCode.Conflict,
+                    "final pending answer cannot be submitted twice");
+            using (var extra = await Post(endingClient, path, new {
+                expectedSequence = 27, message = "Unrequested extra answer"
+            }))
+                Check(extra.StatusCode == HttpStatusCode.Conflict,
+                    "completed interview rejects more turns");
+
+            await endingApp!.StopAsync();
+            await endingApp.DisposeAsync();
+            endingApp = null;
+            endingClient.Dispose();
+            endingClient = null;
+
+            endingClient = await Start(endingSettings,
+                app => endingApp = app,
+                interviewModel: endingModel, catalog: endingCatalog);
+            endingClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", OwnerToken);
+            using (var restored = await endingClient.GetAsync(
+                $"/api/tasks/{endingId}/interview"))
+            using (var json = await ReadJson(restored))
+                Check(restored.StatusCode == HttpStatusCode.OK &&
+                    json.RootElement.GetProperty("lastSequence").GetInt32() == 27 &&
+                    json.RootElement.GetProperty("readyForSpecification").GetBoolean(),
+                    "final owner answer survives authenticated API restart");
+        }
+        finally
+        {
+            endingClient?.Dispose();
+            if (endingApp is not null)
+            {
+                await endingApp.StopAsync();
+                await endingApp.DisposeAsync();
+            }
+        }
+    }
+
     // First conversation-first, real API + SQLite vertical slice:
     // an arbitrary task objective drives adaptive model-supplied questions,
     // the owner's answers, a versioned specification, and exact approval.
@@ -2452,6 +2571,7 @@ sealed class SmokeProjectDraftModel : IStreamingProjectDraftModel
 
 sealed class SmokeInterviewModel : IInterviewModel
 {
+    public bool AlwaysAskNextQuestion;
     public int AskCount;
     public int SpecCount;
     public string LastObjective = "";
@@ -2463,6 +2583,9 @@ sealed class SmokeInterviewModel : IInterviewModel
         LastObjective = objective;
         AskCount++;
         var answerCount = messages.Count(x => x.Role == "owner");
+        if (AlwaysAskNextQuestion)
+            return Task.FromResult(new InterviewReply(
+                $"Question {answerCount + 1}: Which podcast demographic metrics are required?", false));
         var message = answerCount switch
         {
             0 => "For your monthly budgets, who will use the application and " +
