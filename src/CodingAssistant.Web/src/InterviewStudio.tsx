@@ -198,8 +198,10 @@ export function InterviewStudio({ token, task }: {
           : code.includes('LOCAL_MODEL_UNAVAILABLE')
             ? 'The local model is unavailable or timed out. Your saved answers are unchanged; retry.'
             : code.includes('MODEL_OUTPUT_REJECTED')
-              ? 'The local model returned a response that was empty or could not be validated, even after recovery. No malformed AI response was saved. Your typed answer is still here; please retry.'
-              : 'Could not complete this step: ' + code);
+              ? 'The local model returned an incomplete or invalid response. No specification was saved; you can retry.'
+              : code.includes('INVALID_INPUT') && operation === 'draft'
+                ? 'The saved interview could not be processed. Your answers remain saved. Please report this error.'
+                : 'Could not complete this step: ' + code);
     } finally {
       setBusy('');
     }
@@ -405,12 +407,18 @@ export function InterviewStudio({ token, task }: {
         <h2>2. Review and approve the specification</h2>
         <p className="hint">The Product Owner's specification will reflect this conversation, not a hard-coded
           application template. You control when to draft and approve it.</p>
+        {error && <div className="alert" role="alert">{error}</div>}
+        {busy === 'draft' && <p className="hint" role="status">
+          The local Product Owner is drafting your specification. The saved
+          interview is unchanged until the complete draft is validated.
+        </p>}
         <button type="button" disabled={!!busy || ownerAnswers < 1}
           onClick={() => void submit('draft', () => api<InterviewSnapshot>(
             token, `/api/tasks/${task.id}/interview/specification`, {
               expectedSequence: snapshot.lastSequence,
             }))}>
-          {spec ? 'Revise specification from discussion' : 'Draft detailed specification'}
+          {busy === 'draft' ? 'Drafting specification…' :
+            spec ? 'Revise specification from discussion' : 'Draft detailed specification'}
         </button>
         {spec && <div className="spec-review">
           <div className="actions">
@@ -442,7 +450,10 @@ export function InterviewStudio({ token, task }: {
         </div>}
       </div>
 
-      : <p className="hint">Loading the saved specification…</p>}
+      : <div>
+        {error && <div className="alert" role="alert">{error}</div>}
+        {!error && <p className="hint">Loading the saved specification…</p>}
+      </div>}
     </JourneyStage>
 
     <ArchitectureStudio token={token} taskId={task.id} spec={spec ?? null}
