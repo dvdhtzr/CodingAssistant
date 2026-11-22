@@ -915,3 +915,44 @@ a { color: #91e2d8; }
     width: 100%;
   }
 }
+
+
+/* Mission Control / Work: the active stage is the workspace, not six dashboards. */
+.journey-shell--focused { gap:.85rem; }
+.journey-shell--focused > .journey-stage:not(.journey-open),
+.journey-shell--focused > :not(.journey-stage):not(.mc-work-focus):not(.mc-work-secondary):not(.activity) { display:none; }
+.mc-work-focus { background:var(--mc-panel);border:1px solid var(--mc-hairline-bright);
+  border-radius:12px;padding:clamp(1rem,2vw,1.5rem);display:grid;gap:.9rem; }
+.mc-work-focus-heading { display:flex;justify-content:space-between;align-items:flex-start;
+  gap:1rem;flex-wrap:wrap; }
+.mc-work-focus-heading h2 { margin:.25rem 0;font-size:clamp(1.4rem,2.5vw,1.85rem);
+  letter-spacing:-.025em; }
+.mc-work-focus-heading p { color:var(--mc-muted);margin:.2rem 0; }
+.mc-work-focus-actions { display:flex;align-items:end;gap:1rem;flex-wrap:wrap; }
+.mc-work-focus-actions label { display:grid;gap:.35rem;flex:1 1 280px;
+  font-size:.8rem;color:#bccdd5; }
+.mc-work-focus-actions select { width:100%;max-width:620px;min-height:42px;
+  padding:.55rem .8rem;border-radius:8px;background:#0e1c29;
+  border:1px solid #50707b;color:var(--mc-text); }
+.mc-work-focus-actions button { min-height:42px; }
+.mc-work-focus > .hint { margin:0;font-size:.78rem; }
+.mc-work-secondary,.mc-work-qa-details { border:1px solid var(--mc-hairline);
+  background:#131f2b;border-radius:10px;min-width:0; }
+.mc-work-secondary > summary,.mc-work-qa-details > summary {
+  cursor:pointer;padding:.85rem 1rem;color:#c6d7df;font-weight:650; }
+.mc-work-qa-details { margin:1rem 0; }
+.mc-work-qa-details > summary { display:flex;gap:.5rem;flex-wrap:wrap;align-items:center; }
+.mc-work-qa-details > summary span { font-weight:400;font-size:.75rem;color:#9fb5c1; }
+.mc-work-secondary-content { padding:0 1rem 1rem;display:grid;gap:.85rem; }
+.mc-work-qa-details > .engineering-workspace { padding:1rem;border-top:1px solid #334956; }
+.mc-work-secondary[open] > .source-explorer { margin:1rem; }
+.journey-shell--focused > .journey-stage.journey-open { border-left-width:3px; }
+.journey-shell--focused > .journey-stage.journey-open .journey-trigger { display:none; }
+.journey-shell--focused > .journey-stage.journey-open .journey-stage-body {
+  max-height:none;overflow:visible;scrollbar-gutter:auto;padding:1rem;
+}
+@media(max-width:650px) {
+  .mc-work-focus { padding:1rem; }
+  .mc-work-focus-actions { display:grid;grid-template-columns:1fr; }
+  .mc-work-focus-actions select { max-width:none; }
+}
