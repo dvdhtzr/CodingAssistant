@@ -9,7 +9,7 @@ export interface CommandEvidence {
   agents: AgentIdentity[];
   handoffs: TeamHandoff[];
   engineering: EngineerSnapshot | null;
-  qa: TeamQaSnapshot | null;
+  qa: (TeamQaSnapshot & { events?: { sequence: number; kind: string; detail: string; createdUtc: string }[] }) | null;
   decisions: DecisionInboxSnapshot;
 }
 export interface ActivityEntry {
@@ -100,7 +100,7 @@ export function commandAgents(evidence: CommandEvidence): AgentActivity[] {
 export function CommandActivityView({ task, evidence, onNavigate }: {
   task: TaskItem;
   evidence: CommandEvidence;
-  onNavigate: (destination: 'team' | 'work' | 'quality' | 'history') => void;
+  onNavigate: (destination: 'team' | 'work' | 'quality' | 'history' | 'diagnostics') => void;
 }) {
   const events = commandActivity(evidence);
   const agents = commandAgents(evidence);
@@ -187,6 +187,8 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
           'Engineering has not started.'} No activity is inferred from an idle browser.</p>}
       <small>Agent activity is derived from saved host records. Static QA and generated source
         do not establish a verified application. Opening a workspace never authorizes work.</small>
+      <button type="button" className="outline mc-legacy-link"
+        onClick={() => onNavigate('diagnostics')}>Legacy diagnostics</button>
     </section>
   </section>;
 }
