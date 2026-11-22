@@ -30,7 +30,9 @@ export function dockerArgs(imageId, name) {
     '--network=none', '--read-only', '--cap-drop=all',
     '--security-opt=no-new-privileges', '--user=1000:1000',
     '--pids-limit=96', '--memory=2g', '--cpus=2',
-    '--ipc=private', '--pid=private',
+    // Docker creates a private PID namespace by default; --pid=private is
+    // not a valid explicit PID mode and causes docker run to exit 125.
+    '--ipc=private',
     '--tmpfs=/tmp:rw,nosuid,nodev,mode=1777,size=256m',
     '--shm-size=256m', '--init',
     '--env=HOME=/tmp', '--env=XDG_CONFIG_HOME=/tmp/config',
@@ -98,6 +100,8 @@ export function classifyGuestFailure(response) {
     return 'NODE_EXECUTABLE_UNAVAILABLE';
   if (/permission denied|access is denied/i.test(message))
     return 'GUEST_PERMISSION_DENIED';
+  if (/invalid PID mode|--pid:\s*invalid|invalid PID namespace/i.test(message))
+    return 'INVALID_PID_NAMESPACE_MODE';
   if (/bad option|unknown flag|invalid argument|invalid option/i.test(message))
     return 'GUEST_ARGUMENT_REJECTED';
   if (/OCI runtime|containerd|failed to create task|failed to start/i.test(message))
