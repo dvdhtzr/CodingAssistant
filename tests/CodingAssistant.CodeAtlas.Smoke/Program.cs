@@ -1,4 +1,5 @@
 using CodingAssistant.Api;
+using System.IO.Compression;
 using Microsoft.Data.Sqlite;
 using System.Security.Cryptography;
 using System.Text;
@@ -640,4 +641,184 @@ Check(atlasTools.GetSourceExcerpt(privateId) is null &&
 Check(atlasTools.GetSourceExcerpt(ownClass.Id)!.Excerpt.Length <= 1200,
     "QA source excerpt has a strict size limit");
 
+
+// M7: GitHub archive parsing and source persistence are offline-only tests.
+byte[] Archive(params (string Name, string Content, int Mode)[] entries)
+{
+    using var output = new MemoryStream();
+    using (var zip = new ZipArchive(output, ZipArchiveMode.Create, true))
+    {
+        foreach (var (name, content, mode) in entries)
+        {
+            var entry = zip.CreateEntry(name, CompressionLevel.Optimal);
+            if (mode != 0) entry.ExternalAttributes = mode << 16;
+            using var writer = new StreamWriter(entry.Open(),
+                new System.Text.UTF8Encoding(false));
+            writer.Write(content);
+        }
+    }
+    return output.ToArray();
+}
+
+void RejectedArchive(byte[] payload, string code)
+{
+    var denied = false;
+    try { _ = CodeAtlasRepositoryArchive.Parse(payload); }
+    catch (StoreFailure failure) when (failure.Code == code)
+    { denied = true; }
+    Check(denied, code + " import must be rejected");
+}
+
+var archiveBytes = Archive(
+    ("Sample-root/Sample/App.csproj", "<Project/>", 0x81A4),
+    ("Sample-root/Sample/Order.cs", """
+        namespace Sample;
+        public class Order { public void Place() {} }
+        """, 0x81A4),
+    ("Sample-root/Sample/client.ts", "export const task = 7;", 0x81A4),
+    ("Sample-root/node_modules/dependency.js", "untrusted dependency", 0x81A4),
+    ("Sample-root/Assets/image.png", "not source", 0x81A4));
+var imported = CodeAtlasRepositoryArchive.Parse(archiveBytes);
+Check(imported.Files.Count == 3 &&
+    imported.ExcludedFiles == 2, "only source extensions are indexed");
+Check(imported.Files.Any(f => f.Path == "Sample/Order.cs"),
+    "repository root is stripped without changing source path");
+Check(imported.Files.All(f => f.Sha256.Length == 64),
+    "imported text hashes are available for exact identity");
+var importGraph = CodeAtlasIndexer.Index("import-1", imported.Files);
+Check(importGraph.Nodes.Any(n => n.Kind == "Class" && n.Name == "Order"),
+    "imported C# source enters the existing graph pipeline");
+Check(importGraph.Nodes.Any(n => n.Kind == "File" &&
+    n.Path == "Sample/client.ts"),
+    "unsupported semantic language still appears as a file");
+RejectedArchive(Archive(("Sample/../private.cs", "secret", 0x81A4)),
+    "ATLAS_ARCHIVE_PATH_INVALID");
+RejectedArchive(Archive(("Sample/unsafe.cs", "secret", 0xA1FF)),
+    "ATLAS_ARCHIVE_SYMLINK_REJECTED");
+RejectedArchive(Archive(
+    ("Sample/Same.cs", "class First {}", 0x81A4),
+    ("Sample/same.cs", "class Second {}", 0x81A4)),
+    "ATLAS_ARCHIVE_DUPLICATE_PATH");
+RejectedArchive(Archive(
+    ("Sample/Code.cs", "class A {}", 0x81A4),
+    ("Other/Other.cs", "class B {}", 0x81A4)),
+    "ATLAS_ARCHIVE_ROOT_MISMATCH");
+RejectedArchive(Archive(("Sample/../../oops.cs", "bad", 0x81A4)),
+    "ATLAS_ARCHIVE_PATH_INVALID");
+
+var commitHash = new string('a', 40);
+var validRepository = new AtlasImportGitHubRequest(
+    "https://github.com/example/Project.git", commitHash);
+var parsedGitHub = CodeAtlasRepositoryImportStore.ParseRequest(validRepository);
+Check(parsedGitHub.Owner == "example" && parsedGitHub.Repo == "Project" &&
+    parsedGitHub.Commit == commitHash,
+    "exact public GitHub repository and SHA are parsed");
+foreach (var candidate in new[] {
+    "https://example.com/owner/Project",
+    "http://github.com/owner/Project",
+    "https://github.com@evil.example/owner/Project",
+    "https://github.com/owner/Project?redirect=evil",
+    "https://github.com/owner/Project/tree/main",
+    "https://github.com/owner/../Project",
+    "https://github.com/owner/Project#fragment"
+})
+{
+    var denied = false;
+    try
+    {
+        _ = CodeAtlasRepositoryImportStore.ParseRequest(
+            new(candidate, commitHash));
+    }
+    catch (StoreFailure e) when (e.Code == "ATLAS_IMPORT_INPUT_INVALID")
+    { denied = true; }
+    Check(denied, "noncanonical user-supplied GitHub URL rejected: " + candidate);
+}
+var missingCommit = false;
+try
+{
+    _ = CodeAtlasRepositoryImportStore.ParseRequest(
+        new("https://github.com/example/Project", "main"));
+}
+catch (StoreFailure e) when (e.Code == "ATLAS_IMPORT_INPUT_INVALID")
+{ missingCommit = true; }
+Check(missingCommit, "unpinned GitHub branch is never accepted");
+
+var importDirectory = Path.Combine(Path.GetTempPath(),
+    "ca-atlas-import-" + Guid.NewGuid().ToString("N"));
+try
+{
+    var tasksForImport = new TaskStore(importDirectory);
+    var projectA = tasksForImport.CreateTask(new("Repository A",
+        "Inspect a public GitHub source graph", new string('1',32)));
+    var projectB = tasksForImport.CreateTask(new("Repository B",
+        "Inspect a different repository", new string('2',32)));
+    var fetcher = new AtlasFixtureDownloader(archiveBytes);
+    var store = new CodeAtlasRepositoryImportStore(tasksForImport, fetcher);
+    store.Initialize();
+    var result = await store.ImportAsync(projectA.Id,
+        new AtlasImportGitHubRequest(
+            "https://github.com/example/Project", commitHash),
+        CancellationToken.None);
+    Check(result.TaskId == projectA.Id && result.IndexedFiles == 3 &&
+        result.CommitSha == commitHash,
+        "import is pinned to exact owner, project, commit and file count");
+    Check(fetcher.DownloadCount == 1 && fetcher.Owner == "example" &&
+        fetcher.Repo == "Project" && fetcher.CommitSha == commitHash,
+        "only whitelisted repository segments reach the network boundary");
+    var repeat = await store.ImportAsync(projectA.Id,
+        new AtlasImportGitHubRequest(
+            "https://github.com/example/Project", commitHash),
+        CancellationToken.None);
+    Check(repeat.Id == result.Id && fetcher.DownloadCount == 1,
+        "duplicate pinned import is idempotent");
+    var saved = store.Get(projectA.Id, result.Id);
+    Check(saved.Graph.SourceRevision == result.SourceRevision &&
+        saved.Graph.Nodes.Any(n => n.Kind == "Class" && n.Name == "Order"),
+        "graph reload is bound to immutable commit and revision");
+    var savedFile = store.GetFile(projectA.Id, result.Id,
+        "Sample/Order.cs");
+    Check(savedFile.Content.Contains("void Place()", StringComparison.Ordinal) &&
+        savedFile.Sha256.Length == 64,
+        "imported file source is available via authenticated project scope");
+    bool denied = false;
+    try { _ = store.Get(projectB.Id, result.Id); }
+    catch (StoreFailure e) when (e.Code == "NOT_FOUND") { denied = true; }
+    Check(denied, "other project cannot see an imported graph");
+    denied = false;
+    try { _ = store.GetFile(projectB.Id, result.Id, "Sample/Order.cs"); }
+    catch (StoreFailure e) when (e.Code == "NOT_FOUND") { denied = true; }
+    Check(denied, "other project cannot read imported source");
+    denied = false;
+    try { _ = store.GetFile(projectA.Id, result.Id, "../private.cs"); }
+    catch (StoreFailure e) when (e.Code == "NOT_FOUND") { denied = true; }
+    Check(denied, "import file retrieval never escapes the saved source set");
+    Check(store.List(projectA.Id).Count == 1 &&
+        store.List(projectB.Id).Count == 0,
+        "import directory is project-scoped");
+}
+finally
+{
+    SqliteConnection.ClearAllPools();
+    if (Directory.Exists(importDirectory))
+        Directory.Delete(importDirectory, true);
+}
 Console.WriteLine("CODE_ATLAS_SOURCE_GRAPH_PASS: " + checks + " assertions");
+sealed class AtlasFixtureDownloader(byte[] archive)
+    : IAtlasCommitArchiveDownloader
+{
+    public int DownloadCount { get; private set; }
+    public string Owner { get; private set; } = "";
+    public string Repo { get; private set; } = "";
+    public string CommitSha { get; private set; } = "";
+
+    public Task<byte[]> DownloadAsync(string owner, string repo,
+        string commitSha, CancellationToken cancellation)
+    {
+        DownloadCount++;
+        Owner = owner;
+        Repo = repo;
+        CommitSha = commitSha;
+        return Task.FromResult(archive);
+    }
+}
+
