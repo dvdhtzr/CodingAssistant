@@ -1,4 +1,5 @@
 import { after, before, test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -102,4 +103,23 @@ test('Team, Quality, Skills and History expose honest destinations without autom
   assert.match(skills, /No installed registry or assignment controls/);
   assert.match(history, /Loading recorded activity/);
   assert.doesNotMatch(team + quality + skills + history, /Authorize this exact M1 plan/);
+});
+
+test('Work focuses on one stage and keeps approval and QA workflows available on demand', () => {
+  const work = readFileSync('src/InterviewStudio.tsx', 'utf8');
+  const delivery = readFileSync('src/ProjectDraftPanel.tsx', 'utf8');
+  const css = readFileSync('src/mission-control.css', 'utf8');
+  assert.match(work, /journey-shell--focused/);
+  assert.match(work, /WORK \/ CURRENT STEP/);
+  assert.match(work, /Choose a stage/);
+  assert.match(work, /Show all stages/);
+  assert.match(work, /Project progress & technical history/);
+  assert.match(work, /<OwnerDecisionInbox /);
+  assert.match(work, /<VerificationTimeline /);
+  assert.match(delivery, /QA review, findings & repair history/);
+  assert.match(delivery, /<QaReviewPanel /);
+  assert.match(delivery, /<EngineeringDeliveryPanel /);
+  assert.match(css, /journey-shell--focused > \.journey-stage:not\(\.journey-open\)/);
+  assert.match(css, /\.mc-work-qa-details/);
+  assert.doesNotMatch(work, /setExpanded\(null\)/);
 });
