@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import { SourceArtifactExplorer } from './SourceArtifactExplorer';
+import { EngineeringVerificationScope } from './VerificationScope';
 
 export interface EngineerRun {
   id: string;
@@ -164,7 +165,7 @@ export function useEngineeringRun(token: string, taskId: string) {
     } finally { setBusy(''); }
   }
 
-  return { snapshot, plan, busy, error, refresh, start, cancel, download };
+  return { token, snapshot, plan, busy, error, refresh, start, cancel, download };
 }
 
 export type EngineeringState = ReturnType<typeof useEngineeringRun>;
@@ -297,6 +298,8 @@ export function EngineeringDeliveryPanel({ engine }: {
             : 'Download PARTIAL source ZIP'}
       </button>
     </div>}
+    {job.state !== 'Running' && <EngineeringVerificationScope
+      key={job.id} token={engine.token} run={job} files={files}/>}
     {files.length > 0 && <SourceArtifactExplorer key={job.id}
       source="MAF Software Engineer" files={files} state={job.state}
       runId={job.id} isCurrent={!!engine.plan?.current &&
