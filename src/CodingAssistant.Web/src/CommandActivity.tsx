@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CommandDrawer, type DrawerSelection } from './CommandDrawer';
+import { buildCommandDecisionQueue, DecisionQueueView } from './DecisionQueue';
 import { api, type TaskItem } from './api';
-import { buildDecisionInbox, type DecisionInboxSnapshot } from './OwnerDecisionInbox';
+import type { DecisionInboxSnapshot } from './OwnerDecisionInbox';
 import type { AgentIdentity } from './AgentIdentityPanel';
 import type { EngineerSnapshot } from './EngineeringWorkspace';
 import type { TeamHandoff, TeamQaSnapshot } from './TeamWorkroom';
@@ -10,7 +11,11 @@ export interface CommandEvidence {
   agents: AgentIdentity[];
   handoffs: TeamHandoff[];
   engineering: EngineerSnapshot | null;
-  qa: (TeamQaSnapshot & { events?: { sequence: number; kind: string; detail: string; createdUtc: string }[] }) | null;
+  qa: (Omit<TeamQaSnapshot, 'reports'> & {
+    reports: Array<{ path: string; reviewedUtc: string;
+      assessment?: { findings?: Array<{ severity: string; requirement: string }> } }>;
+    events?: { sequence: number; kind: string; detail: string; createdUtc: string }[];
+  }) | null;
   decisions: DecisionInboxSnapshot;
 }
 export interface ActivityEntry {
@@ -119,12 +124,12 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
     if (prior?.isConnected) prior.focus();
     triggerRef.current = null;
   }, []);
-  const decisions = buildDecisionInbox(evidence.decisions);
-  const reviewCount = decisions.filter(item => item.kind === 'review').length;
+  const queue = buildCommandDecisionQueue(evidence);
+  const reviewCount = queue.filter(item => item.requiresApproval).length;
   const latestEngineering = evidence.engineering?.job;
   const latestQa = evidence.qa?.job;
-  const recommendation = decisions[0]
-    ? { title: decisions[0].title, detail: decisions[0].detail, to: 'work' as const }
+  const recommendation = queue[0]
+    ? { title: queue[0].title, detail: queue[0].detail, to: queue[0].destination }
     : latestEngineering?.state === 'Running'
       ? { title: 'Inspect ongoing engineering', detail:
           'A saved Software Engineer run is currently running.', to: 'work' as const }
@@ -156,6 +161,7 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
       <span className="mc-decision-count">{reviewCount} saved owner review
         {reviewCount === 1 ? '' : 's'} awaiting attention</span>
     </section>
+    <DecisionQueueView items={queue} onInspect={id => showDrawer({ kind: 'decision', id })} />
     <div className="mc-command-columns">
       <section className="mc-command-panel" aria-label="Agent Activity Board">
         <div className="mc-panel-heading"><div><span className="wb-kicker">TEAM STATUS</span>
@@ -208,7 +214,7 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
         onClick={() => onNavigate('diagnostics')}>Legacy diagnostics</button>
     </section>
     {selected && <CommandDrawer projectTitle={task.title} selection={selected}
-      agents={agents} events={events} evidence={evidence} onClose={closeDrawer}
+      agents={agents} events={events} decisions={queue} evidence={evidence} onClose={closeDrawer}
       onNavigate={onNavigate} />}
   </section>;
 }
