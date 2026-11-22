@@ -38,6 +38,72 @@ export function smokeMatchesScope(
        Object.values(result.checks).every(Boolean)));
 }
 
+export interface ProjectSourceReadinessReport {
+  runId: string;
+  sourceState: string;
+  sourceSha256: string | null;
+  projectKind: 'NODE_SERVER' | 'STATIC_WEB' | 'DOTNET_PROJECT' | 'UNKNOWN';
+  runtimeProfileId: string | null;
+  status: string;
+  verificationStatus: 'GENERATED_NOT_TESTED';
+  executionAvailable: false;
+  findings: Array<{
+    code: string;
+    severity: 'Error' | 'Warning';
+    path: string;
+    detail: string;
+  }>;
+}
+
+export function ProjectReadinessView({ report, error }: {
+  report: ProjectSourceReadinessReport | null;
+  error?: string;
+}) {
+  if (!report) return <section className="verification-smoke"
+    aria-label="Project source assessment">
+    <strong>Project source assessment</strong>
+    <p>{error || 'Inspecting the saved project files…'}</p>
+  </section>;
+  const kind = {
+    NODE_SERVER: 'Node.js server application',
+    STATIC_WEB: 'Static website',
+    DOTNET_PROJECT: '.NET application',
+    UNKNOWN: 'Unclassified project',
+  }[report.projectKind];
+  const incomplete = report.status === 'INCOMPLETE';
+  return <section className="verification-smoke"
+    aria-label="Project source assessment">
+    <div>
+      <span className="wb-kicker">PROJECT SOURCE ASSESSMENT</span>
+      <h4>{kind} · {incomplete ? 'Incomplete source'
+        : report.status === 'SOURCE_READY_FOR_REVIEW'
+          ? 'Source structure ready for review'
+          : report.status === 'PENDING_SOURCE' ? 'Generation underway'
+          : 'Review needed'}</h4>
+      <p>{incomplete
+        ? 'Essential project files are missing or invalid. Ask the Software Engineer to correct these before attempting a build.'
+        : report.status === 'SOURCE_READY_FOR_REVIEW'
+          ? 'No structural problems detected. This does not establish that the project builds or works.'
+          : 'Review the saved files and outstanding issues before proceeding.'}</p>
+    </div>
+    {report.findings.length > 0 && <ul aria-label="Source completeness findings">
+      {report.findings.slice(0, 5).map((finding, i) => <li key={finding.code + i}>
+        <strong>{finding.severity}: {finding.path || 'Project'}</strong>
+        {' — '}{finding.detail}
+      </li>)}
+      {report.findings.length > 5 && <li>
+        {report.findings.length - 5} additional findings in the source assessment.
+      </li>}
+    </ul>}
+    {report.projectKind === 'NODE_SERVER' && <p>
+      This project needs a qualified server-backed Node.js environment.
+      The Static Web browser profile cannot test its Express server or API integrations.
+    </p>}
+    <p><strong>Build and tests: not run.</strong> No executable runtime is
+      authorized by this source assessment.</p>
+  </section>;
+}
+
 export interface VerificationScopeFile {
   path: string;
   sha256: string;
@@ -192,6 +258,7 @@ export function EngineeringVerificationScope({ token, run, files }: {
   files: EngineerFile[];
 }) {
   const [scope, setScope] = useState<VerificationScope | null>(null);
+  const [readiness, setReadiness] = useState<ProjectSourceReadinessReport | null>(null);
   const [error, setError] = useState('');
   const [smoke, setSmoke] = useState<SourceSmokeResponse | null>(null);
   const [smokeBusy, setSmokeBusy] = useState(false);
@@ -202,6 +269,7 @@ export function EngineeringVerificationScope({ token, run, files }: {
     let closed = false;
     let pending = false;
     setScope(null);
+    setReadiness(null);
     setError('');
     setSmoke(null);
     setSmokeError('');
@@ -209,19 +277,36 @@ export function EngineeringVerificationScope({ token, run, files }: {
       if (pending) return;
       pending = true;
       try {
-        const value = await api<VerificationScope>(token,
-          '/api/tasks/' + run.taskId + '/engineering-runs/' +
-          run.id + '/verification-scope');
+        const [value, source] = await Promise.all([
+          api<VerificationScope>(token,
+            '/api/tasks/' + run.taskId + '/engineering-runs/' +
+            run.id + '/verification-scope'),
+          api<ProjectSourceReadinessReport>(token,
+            '/api/tasks/' + run.taskId + '/engineering-runs/' +
+            run.id + '/source-readiness'),
+        ]);
         if (!closed) {
           if (!scopeMatchesRun(value, run, files))
             throw new Error('Scope binding mismatch');
+          if (source.runId !== run.id ||
+              source.sourceState !== run.state ||
+              source.verificationStatus !== 'GENERATED_NOT_TESTED' ||
+              source.executionAvailable !== false ||
+              !Array.isArray(source.findings) ||
+              source.findings.length > 30 ||
+              (run.state === 'Generated' &&
+                source.sourceSha256 !== null &&
+                !hash(source.sourceSha256)))
+            throw new Error('Source readiness binding mismatch');
           setScope(value);
+          setReadiness(source);
           setError('');
         }
       } catch {
         if (!closed) {
           setScope(null);
-          setError('No valid current source-scope response');
+          setReadiness(null);
+          setError('Project source assessment is unavailable.');
         }
       } finally { pending = false; }
     }
@@ -254,6 +339,7 @@ export function EngineeringVerificationScope({ token, run, files }: {
     }
   }
   return <div className="verification-action-stack">
+    <ProjectReadinessView report={readiness} error={error}/>
     {scope?.status === 'SCOPE_CANDIDATE' && <section
       aria-label="Test generated project"
       className="verification-smoke">
