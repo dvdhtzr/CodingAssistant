@@ -131,6 +131,19 @@ public static class CodeAtlasSemanticIndexer
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
             var typeIds = new Dictionary<string, string>(StringComparer.Ordinal);
             var methodIds = new Dictionary<string, string>(StringComparer.Ordinal);
+            var declaredMethods = new List<(IMethodSymbol Symbol, string NodeId)>();
+
+            string? ResolveMethod(IMethodSymbol candidate)
+            {
+                var original = (candidate.ReducedFrom ?? candidate).OriginalDefinition;
+                if (methodIds.TryGetValue(SymbolKey(original), out var id))
+                    return id;
+                // Use Roslyn's identity when display text differs for a
+                // constructed, reduced or interface method.
+                return declaredMethods.FirstOrDefault(item =>
+                    SymbolEqualityComparer.Default.Equals(
+                        item.Symbol.OriginalDefinition, original)).NodeId;
+            }
 
             // Pass 1: register symbols across every source file in the scope.
             foreach (var tree in trees)
@@ -161,7 +174,10 @@ public static class CodeAtlasSemanticIndexer
                         NameOf(declared.ContainingType) + "." + Signature(method);
                     if (nodes.TryGetValue(qualifier, out var node) &&
                         node.Kind == kind)
+                    {
                         methodIds[SymbolKey(declared)] = node.Id;
+                        declaredMethods.Add((declared, node.Id));
+                    }
                 }
             }
 
@@ -211,14 +227,13 @@ public static class CodeAtlasSemanticIndexer
                         .OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
                     if (caller is null) continue;
                     var calling = model.GetDeclaredSymbol(caller) as IMethodSymbol;
-                    if (calling is null ||
-                        !methodIds.TryGetValue(SymbolKey(calling),
-                            out var from)) continue;
+                    if (calling is null) continue;
+                    var from = ResolveMethod(calling);
+                    if (from is null) continue;
                     var called = model.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
-                    if (called is null ||
-                        !methodIds.TryGetValue(SymbolKey(
-                            called.ReducedFrom ?? called), out var to))
-                        continue;
+                    if (called is null) continue;
+                    var to = ResolveMethod(called);
+                    if (to is null) continue;
                     Edge(from, to, "Calls", path,
                         invocation.GetLocation().GetLineSpan()
                             .StartLinePosition.Line + 1);
@@ -231,13 +246,13 @@ public static class CodeAtlasSemanticIndexer
                         .OfType<BaseMethodDeclarationSyntax>().FirstOrDefault();
                     if (caller is null) continue;
                     var calling = model.GetDeclaredSymbol(caller) as IMethodSymbol;
-                    if (calling is null ||
-                        !methodIds.TryGetValue(SymbolKey(calling),
-                            out var from)) continue;
+                    if (calling is null) continue;
+                    var from = ResolveMethod(calling);
+                    if (from is null) continue;
                     var ctor = model.GetSymbolInfo(creation).Symbol as IMethodSymbol;
-                    if (ctor is null ||
-                        !methodIds.TryGetValue(SymbolKey(ctor), out var to))
-                        continue;
+                    if (ctor is null) continue;
+                    var to = ResolveMethod(ctor);
+                    if (to is null) continue;
                     Edge(from, to, "Calls", path,
                         creation.GetLocation().GetLineSpan()
                             .StartLinePosition.Line + 1);
