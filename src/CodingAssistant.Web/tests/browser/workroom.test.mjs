@@ -6,6 +6,7 @@ import { createServer } from 'vite';
 let server;
 let browser;
 let page;
+let fixtureBaseUrl;
 
 before(async () => {
   server = await createServer({
@@ -20,7 +21,8 @@ before(async () => {
     throw new Error('Vite browser fixture failed to bind on IPv4 loopback.');
   browser = await chromium.launch({ headless: true });
   page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
-  await page.goto('http://127.0.0.1:' + address.port + '/tests/browser/fixture.html');
+  fixtureBaseUrl = 'http://127.0.0.1:' + address.port;
+  await page.goto(fixtureBaseUrl + '/tests/browser/fixture.html');
   await page.getByRole('heading', { name: 'Oddville browser fixture' }).waitFor();
 });
 
@@ -29,6 +31,86 @@ after(async () => {
   await browser?.close();
   await server?.close();
 });
+
+for (const outcome of ['success', 'failure']) {
+  test('completed 27-message interview specification button ' + outcome, async () => {
+    const acceptancePage = await browser.newPage({
+      viewport: { width: 1440, height: 900 },
+    });
+    let draftRequests = 0;
+    const now = '2026-11-22T17:00:00Z';
+    const messages = Array.from({ length: 27 }, (_, i) => ({
+      sequence: i + 1,
+      role: i % 2 ? 'owner' : 'assistant',
+      content: i === 26 ? 'Your final answer has been saved. Product discovery is complete.'
+        : i % 2 ? 'Owner decision ' + ((i + 1) / 2) + ': use podcast platform audience data.'
+          : 'Which podcast metrics do you need?',
+      createdUtc: now, choice: null,
+    }));
+    const snapshot = {
+      taskId: 'a'.repeat(32), model: 'qwen3:30b', lastSequence: 27,
+      readyForSpecification: true, messages, specification: null,
+    };
+    const respond = (route, status, body) => route.fulfill({
+      status, contentType: 'application/json', body: JSON.stringify(body),
+    });
+    try {
+      await acceptancePage.route('**/api/**', async route => {
+        const url = new URL(route.request().url()).pathname;
+        const method = route.request().method();
+        if (method === 'GET' && url.endsWith('/interview'))
+          return respond(route, 200, snapshot);
+        if (method === 'GET' && url === '/api/models')
+          return respond(route, 200, { models: ['qwen3:30b'] });
+        if (method === 'POST' && url.endsWith('/interview/specification')) {
+          draftRequests++;
+          if (outcome === 'failure')
+            return respond(route, 400, { error: 'INVALID_INPUT' });
+          return respond(route, 200, {
+            ...snapshot, specification: {
+              version: 1, model: 'qwen3:30b',
+              content: '# Podcast analytics specification\\n' +
+                'The owner requests aggregated demographic data from podcast ' +
+                'platforms for selected shows. Accept a set of shows, display ' +
+                'the combined audience results, and preserve the limits of ' +
+                'available data. Define transparent acceptance criteria.',
+              sha256: 'b'.repeat(64), status: 'Draft',
+              createdUtc: now, approvedUtc: null,
+            },
+          });
+        }
+        return respond(route, 404, { error: 'NOT_FOUND' });
+      });
+      await acceptancePage.goto(fixtureBaseUrl +
+        '/tests/browser/fixture.html?specification-acceptance');
+      const completion = acceptancePage.getByRole('button', {
+        name: 'Continue to specification',
+      });
+      await completion.waitFor();
+      await completion.click();
+      const active = acceptancePage.locator('#journey-panel-specification');
+      await active.getByRole('button', { name: 'Draft detailed specification' })
+        .click();
+      if (outcome === 'failure') {
+        const alert = active.getByRole('alert');
+        await alert.waitFor();
+        assert.match(await alert.textContent(), /saved interview could not be processed/);
+      } else {
+        await active.getByText('Specification v1').waitFor();
+        assert.equal(await active.getByRole('checkbox', {
+          name: /reviewed this specification/,
+        }).isChecked(), false);
+        assert.equal(await active.getByRole('button', {
+          name: 'Approve this specification',
+        }).isDisabled(), true);
+      }
+      assert.equal(draftRequests, 1,
+        'visible action must send exactly one specification request');
+    } finally {
+      await acceptancePage.close();
+    }
+  });
+}
 
 test('newest saved Product Owner question stays visible and the full prior history is accessible', async () => {
   const workroom = page.locator('.conversation-workroom');
