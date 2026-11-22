@@ -179,7 +179,7 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     Check(MafSoftwareEngineer.TryParse(goodSource, out var parsedSource,
         out var acceptedReason) && parsedSource!.Files.Count == 1 &&
         acceptedReason == "", "valid engineer output remains accepted");
-    Check(MafSoftwareEngineer.TryParse("```json\\n" + goodSource + "\\n```",
+    Check(MafSoftwareEngineer.TryParse("```json\n" + goodSource + "\n```",
         out var wrappedSource, out _) && wrappedSource!.Files.Count == 1,
         "complete JSON fenced output is recoverable without loosening validation");
     Check(!MafSoftwareEngineer.TryParse("SECRET_MODEL_CONTENT invalid",
