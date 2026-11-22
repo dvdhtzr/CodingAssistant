@@ -19,7 +19,7 @@ before(async () => {
   page = await browser.newPage({ viewport: { width: 1400, height: 980 } });
   await page.goto('http://127.0.0.1:' + addr.port +
     '/tests/browser/code_atlas.html');
-  await page.getByRole('region', { name: 'Code Atlas' }).waitFor();
+  await page.getByRole('region', { name: 'Code Atlas', exact: true }).waitFor();
 });
 after(async () => {
   await page?.close();
@@ -28,7 +28,7 @@ after(async () => {
 });
 
 test('Code Atlas graph renders real source types and reveals source evidence on click', async () => {
-  const atlas = page.getByRole('region', { name: 'Code Atlas' });
+  const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   const graph = atlas.getByRole('group', {
     name: 'Interactive Code Atlas graph of saved source',
   });
@@ -48,7 +48,7 @@ test('Code Atlas graph renders real source types and reveals source evidence on 
 });
 
 test('Code Atlas search and mouse zoom are functional, not inert decoration', async () => {
-  const atlas = page.getByRole('region', { name: 'Code Atlas' });
+  const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   await atlas.getByRole('searchbox', { name: 'Find a symbol' }).fill('Demo.TaskService');
   assert.equal(await atlas.getByRole('complementary',
     { name: 'Selected source entity' }).getByRole('heading',
@@ -62,7 +62,7 @@ test('Code Atlas search and mouse zoom are functional, not inert decoration', as
 });
 
 test('new persisted source creates method node and honest live indicator', async () => {
-  const atlas = page.getByRole('region', { name: 'Code Atlas' });
+  const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   await atlas.getByRole('button', { name: 'Overview' }).click();
   await atlas.getByRole('checkbox', { name: 'Methods' }).check();
   await atlas.getByRole('checkbox', { name: 'Follow build' }).check();
@@ -85,7 +85,7 @@ test('new persisted source creates method node and honest live indicator', async
 });
 
 test('manual graph exploration disables follow-build focus stealing', async () => {
-  const atlas = page.getByRole('region', { name: 'Code Atlas' });
+  const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   await atlas.getByRole('checkbox', { name: 'Follow build' }).check();
   await atlas.getByRole('group', {
     name: 'Interactive Code Atlas graph of saved source',
@@ -99,7 +99,7 @@ test('manual exploration retains the chosen node while later source appears', as
   const manual = await browser.newPage({ viewport: { width: 1340, height: 900 } });
   try {
     await manual.goto(page.url());
-    const atlas = manual.getByRole('region', { name: 'Code Atlas' });
+    const atlas = manual.getByRole('region', { name: 'Code Atlas', exact: true });
     const graph = atlas.getByRole('group', {
       name: 'Interactive Code Atlas graph of saved source',
     });
@@ -124,7 +124,7 @@ test('real browser traces a bounded path between two indexed symbols', async () 
   const tracePage = await browser.newPage({ viewport: { width: 1400, height: 900 } });
   try {
     await tracePage.goto(page.url());
-    const atlas = tracePage.getByRole('region', { name: 'Code Atlas' });
+    const atlas = tracePage.getByRole('region', { name: 'Code Atlas', exact: true });
     const graph = atlas.getByRole('group', {
       name: 'Interactive Code Atlas graph of saved source',
     });
@@ -158,7 +158,7 @@ test('Build Replay shows historical graph without substituting current source co
   const replayPage = await browser.newPage({ viewport: { width: 1420, height: 980 } });
   try {
     await replayPage.goto(page.url());
-    const atlas = replayPage.getByRole('region', { name: 'Code Atlas' });
+    const atlas = replayPage.getByRole('region', { name: 'Code Atlas', exact: true });
     const graph = atlas.getByRole('group', {
       name: 'Interactive Code Atlas graph of saved source',
     });
