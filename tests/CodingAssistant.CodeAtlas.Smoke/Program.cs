@@ -397,6 +397,104 @@ Check(brokenJava.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
     !brokenJava.Nodes.Any(n => n.Name is "Fake" or "Escaped"),
     "untrusted Java paths and text-block decoys cannot enter the graph");
 
+// M8.10: Java imports can point only to uniquely declared local types.
+var javaImportSources = new[]
+{
+    File("project/application/Main.java", """
+        package application;
+        import vendor.Widget;
+        import vendor.Contract;
+        import vendor.Ambiguous;
+        import java.util.ArrayList;
+        import vendor.*;
+        import static vendor.Widget.run;
+        // import vendor.Decoy;
+        public class Main {
+            public void start() {}
+        }
+        """),
+    File("project/library/Widget.java", """
+        package vendor;
+        public class Widget {
+            public void run() {}
+        }
+        """),
+    File("project/library/Contract.java", """
+        package vendor;
+        public interface Contract {
+            void work();
+        }
+        """),
+    File("project/one/Alternative.java", """
+        package vendor;
+        class Ambiguous {
+        }
+        """),
+    File("project/two/Alternative.java", """
+        package vendor;
+        class Ambiguous {
+        }
+        """),
+    File("project/library/Decoy.java", """
+        package vendor;
+        public class Decoy {
+        }
+        """)
+};
+var javaImports = CodeAtlasIndexer.Index("java-import-run",
+    javaImportSources);
+var javaImportFiles = javaImports.Nodes.Where(n => n.Kind == "File" &&
+    n.Path is not null).ToDictionary(n => n.Path!, n => n.Id);
+var javaLinks = javaImports.Edges.Where(e =>
+    e.Kind == "ModuleImports").ToArray();
+Check(javaLinks.Length == 2 &&
+    javaLinks.All(e => e.SourceId == javaImportFiles[
+        "project/application/Main.java"] &&
+        e.EvidencePath == "project/application/Main.java" &&
+        e.EvidenceLine is 2 or 3 &&
+        e.Resolution == "ExplicitJavaTypeSource"),
+    "Java import edges have exact source line and explicit type provenance");
+Check(new[] { "project/library/Widget.java",
+    "project/library/Contract.java" }.All(path =>
+    javaLinks.Any(e => e.TargetId == javaImportFiles[path])),
+    "Java imported type names match declared packages across folder layouts");
+Check(!javaLinks.Any(e =>
+    e.TargetId == javaImportFiles["project/library/Decoy.java"] ||
+    e.TargetId == javaImportFiles["project/one/Alternative.java"] ||
+    e.TargetId == javaImportFiles["project/two/Alternative.java"]),
+    "wildcard, static, comment decoy and ambiguous Java imports stay unlinked");
+Check(javaImports.Coverage == "PARTIAL_JAVA_STRUCTURE" &&
+    javaImports.Diagnostics.Any(d => d.StartsWith(
+        "JAVA_IMPORT_AMBIGUOUS:", StringComparison.Ordinal)),
+    "duplicate package/type declarations report partial Java import coverage");
+var javaTrace = CodeAtlasPathFinder.Trace(javaImports,
+    javaImportFiles["project/application/Main.java"],
+    javaImportFiles["project/library/Widget.java"]);
+Check(javaTrace.Found && javaTrace.Edges.Count == 1 &&
+    javaTrace.Edges[0].Kind == "ModuleImports",
+    "read-only dependency traversal follows exact Java type imports");
+var javaImportsReordered = CodeAtlasIndexer.Index("java-import-run",
+    javaImportSources.Reverse().ToArray());
+Check(javaImports.SourceRevision == javaImportsReordered.SourceRevision &&
+    javaImports.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(javaImportsReordered.Edges.Select(e =>
+            (e.Kind, e.SourceId, e.TargetId))),
+    "Java import relationships and identity are deterministic across source order");
+var javaExternalOnly = CodeAtlasIndexer.Index("java-external", new[]
+{
+    File("pkg/Main.java", """
+        package pkg;
+        import java.util.Map;
+        import third.party.Adapter;
+        import static java.lang.System.out;
+        public class Main {
+        }
+        """)
+});
+Check(javaExternalOnly.Coverage == "JAVA_STRUCTURE_ONLY" &&
+    !javaExternalOnly.Edges.Any(e => e.Kind == "ModuleImports"),
+    "standard-library and external Java imports are not guessed or marked verified");
+
 // M8.8: only literal HTML -> accepted JS/TS/CSS references are linked.
 var markupFiles = new[]
 {

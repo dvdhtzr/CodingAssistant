@@ -170,3 +170,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Each `ModuleImports` file-to-file edge has exact source path and line and the explicit `ExplicitPythonModuleSource` provenance. It is only an import statement with a matching indexed source file, not proof of successful runtime import or use of a specific symbol.
 - Standard-library/external names, dynamic imports, function-local imports, comments, strings, ambiguous module matches, and unresolved/escaping relative references produce no guessed edges. For ambiguous, missing or escaping **relative** modules, report partial indexing with bounded diagnostics.
 - Fully preserve task/commit isolation, owner authentication, deterministic graph revisions, existing caps, and the independent verification/approval boundary.
+
+## M8.10 — Explicit Java type-import source links
+
+- Recognize top-level `import package.Type;` declarations only when the qualified Java type is uniquely declared in another accepted Java file of the **same immutable source graph**. Resolve against parsed package/type declarations, not source-directory naming conventions or a classpath.
+- Emit directed file-to-file `ModuleImports` edges with actual source file, line and `ExplicitJavaTypeSource` evidence. Path-tracing, replay and imported-commit diff can reuse the existing graph contract.
+- Static imports, wildcard imports, external and standard-library types, comment/string decoys, missing types and multiple conflicting local declarations do not become guessed links. Duplicate matching package/type declarations are diagnosed as partial coverage.
+- This is **source-level dependency evidence, not javac-backed symbol resolution or proof that an import compiles**. No Java code, shell, package, build, classpath or project configuration is executed or trusted.

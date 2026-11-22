@@ -20,6 +20,11 @@ public static class CodeAtlasJavaIndexer
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private sealed record TypeScope(string Name, string Qualified,
         string Id, int Depth);
+    // Explicit non-static, non-wildcard imports only. The name is matched
+    // against packages/types actually declared in accepted Java files.
+    private static readonly Regex TypeImport = new(
+        @"^import\s+(?<type>[A-Za-z_$][A-Za-z_$0-9]*(?:\.[A-Za-z_$][A-Za-z_$0-9]*)+)\s*;\s*$",
+        RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
     private static int Closing(string line, int start)
     {
@@ -134,6 +139,7 @@ public static class CodeAtlasJavaIndexer
             StringComparer.Ordinal);
         var diagnostics = graph.Diagnostics.ToList();
         var partial = false;
+        var importStatements = new List<(string Path, string TypeName, int Line)>();
         var root = graph.Nodes.FirstOrDefault(n => n.Kind == "Repository")
             ?? throw new StoreFailure("ATLAS_SNAPSHOT_CORRUPT");
 
@@ -196,6 +202,13 @@ public static class CodeAtlasJavaIndexer
 
                 if (depth == 0)
                 {
+                    if (code.Length <= 400)
+                    {
+                        var imported = TypeImport.Match(code);
+                        if (imported.Success)
+                            importStatements.Add((file.Path,
+                                imported.Groups["type"].Value, n + 1));
+                    }
                     var pkg = Package.Match(code);
                     if (pkg.Success)
                     {
@@ -326,6 +339,47 @@ public static class CodeAtlasJavaIndexer
             if (depth != 0) Problem("UNBALANCED_BRACES", file.Path);
             if (blockComment) Problem("UNCLOSED_COMMENT", file.Path);
             if (textBlock) Problem("UNCLOSED_TEXT_BLOCK", file.Path);
+        }
+
+        // Build the lookup AFTER all declarations are indexed. Java source
+        // directories are not necessarily the package root; use the
+        // declared package and type, never a guessed folder mapping.
+        var javaTypes = nodes.Values.Where(n =>
+                n.Kind is "Class" or "Interface" or "Enum" &&
+                n.Path is not null &&
+                n.Path.EndsWith(".java", StringComparison.OrdinalIgnoreCase) &&
+                n.QualifiedName.StartsWith(graph.RunId + "|" + n.Path + "|",
+                    StringComparison.Ordinal))
+            .GroupBy(n => n.QualifiedName[
+                (graph.RunId.Length + n.Path!.Length + 2)..],
+                StringComparer.Ordinal)
+            .ToDictionary(g => g.Key,
+                g => g.Select(n => n.Path!)
+                    .Distinct(StringComparer.Ordinal).ToArray(),
+                StringComparer.Ordinal);
+
+        foreach (var reference in importStatements)
+        {
+            if (!javaTypes.TryGetValue(reference.TypeName, out var paths))
+                continue; // external dependency, not a saved-source link
+            if (paths.Length != 1)
+            {
+                Problem("IMPORT_AMBIGUOUS:" + reference.Line, reference.Path);
+                continue;
+            }
+            if (paths[0] == reference.Path) continue;
+            var from = indexedFiles[reference.Path].Id;
+            var to = indexedFiles[paths[0]].Id;
+            var key = "ModuleImports|" + from + "|" + to;
+            if (edges.ContainsKey(key)) continue;
+            if (edges.Count >= CodeAtlasIndexer.MaximumEdges)
+            {
+                Problem("EDGE_LIMIT", reference.Path);
+                continue;
+            }
+            edges.Add(key, new AtlasEdge(from, to, "ModuleImports",
+                reference.Path, reference.Line,
+                "ExplicitJavaTypeSource"));
         }
         var otherLanguages = source.Any(f =>
             indexedFiles.ContainsKey(f.Path) &&
