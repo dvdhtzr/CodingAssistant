@@ -171,6 +171,48 @@ var isolated = CodeAtlasIndexer.Index("run-scope", new[]
 Check(!isolated.Edges.Any(e => e.Kind == "Calls"),
     "no cross-project calls without declared project reference semantics");
 
+var projectGraph = CodeAtlasIndexer.Index("run-project", new[]
+{
+    File("One/One.csproj", """
+        <Project Sdk="Microsoft.NET.Sdk"><ItemGroup>
+        <ProjectReference Include="../Two/Two.csproj"/>
+        </ItemGroup></Project>
+        """),
+    File("Two/Two.csproj", "<Project Sdk=\"Microsoft.NET.Sdk\" />")
+});
+var sourceProject = projectGraph.Nodes.Single(n =>
+    n.Kind == "Project" && n.Path == "One/One.csproj");
+var targetProject = projectGraph.Nodes.Single(n =>
+    n.Kind == "Project" && n.Path == "Two/Two.csproj");
+Check(projectGraph.Edges.Any(e => e.Kind == "ProjectReferences" &&
+    e.SourceId == sourceProject.Id && e.TargetId == targetProject.Id &&
+    e.Resolution == "LiteralProjectReference" &&
+    e.EvidencePath == "One/One.csproj" && e.EvidenceLine > 0),
+    "literal in-repo project reference is grounded without evaluating MSBuild");
+var conditional = CodeAtlasIndexer.Index("run-project", new[]
+{
+    File("One/One.csproj", """
+        <Project><ItemGroup Condition="'$(Enable)' == 'true'">
+        <ProjectReference Include="../Two/Two.csproj"/>
+        </ItemGroup></Project>
+        """),
+    File("Two/Two.csproj", "<Project/>")
+});
+Check(!conditional.Edges.Any(e => e.Kind == "ProjectReferences") &&
+    conditional.Diagnostics.Any(d => d.StartsWith(
+        "CONDITIONAL_PROJECT_REFERENCE_UNRESOLVED:", StringComparison.Ordinal)),
+    "computed or conditional project dependency is not claimed as active");
+var externalXml = CodeAtlasIndexer.Index("run-project", new[]
+{
+    File("One/One.csproj", """
+        <!DOCTYPE Project [ <!ENTITY external SYSTEM "file:///etc/passwd"> ]>
+        <Project>&external;</Project>
+        """)
+});
+Check(externalXml.Diagnostics.Any(d => d.StartsWith(
+    "INVALID_PROJECT_XML:", StringComparison.Ordinal)),
+    "untrusted MSBuild XML DTD is rejected without reading external resources");
+
 // M3: exercise a real SQLite commit/rollback and immutable source-change
 // cursor without launching any untrusted project code or model.
 var database = Path.Combine(Path.GetTempPath(),
