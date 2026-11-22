@@ -1354,16 +1354,16 @@ try
         new CreateRepairProposalRequest(currentQa!.Job.Id)))
         Check(createdProposal.StatusCode == HttpStatusCode.Created,
             "fresh QA evidence can create a distinct repair proposal");
-    var newProposal = repairProposal.Latest(taskBound.Id)!;
-    var newTriagePath = proposalPath + "/" + newProposal.Id + "/triage";
+    var selectedRepairProposal = repairProposal.Latest(taskBound.Id)!;
+    var newTriagePath = proposalPath + "/" + selectedRepairProposal.Id + "/triage";
     using (var ownerConfirmed = await Post(client, newTriagePath,
         new ClassifyRepairFindingRequest("app.js", 0, "ImplementationDefect",
             "Owner explicitly confirms Start handler defect against specification")))
         Check(ownerConfirmed.StatusCode == HttpStatusCode.OK,
             "owner can confirm and classify one source-bound defect");
 
-    var authorized = new StartRepairCycleRequest(newProposal.Id,
-        "REPAIR " + newProposal.SourceSha256,
+    var authorized = new StartRepairCycleRequest(selectedRepairProposal.Id,
+        "REPAIR " + selectedRepairProposal.SourceSha256,
         [new RepairSelection("app.js", 0)]);
     string cycleId;
     using (var started = await Post(client, latestRepairPath, authorized))
