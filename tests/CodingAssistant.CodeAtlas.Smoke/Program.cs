@@ -250,4 +250,75 @@ finally
     if (System.IO.File.Exists(database)) System.IO.File.Delete(database);
 }
 
+
+// The cursor API must enforce run/project scope even for a guessed valid ID.
+var privateDirectory = Path.Combine(Path.GetTempPath(),
+    "ca-atlas-scope-" + Guid.NewGuid().ToString("N"));
+try
+{
+    var tasks = new TaskStore(privateDirectory);
+    var interviews = new InterviewStore(tasks);
+    var plans = new ImplementationPlanStore(tasks, interviews);
+    var engineering = new EngineeringRunStore(tasks, plans);
+    engineering.Initialize();
+    var ledger = new EngineeringAtlasLedger(tasks, engineering);
+    ledger.Initialize();
+    var firstTask = new string('a', 32);
+    var secondTask = new string('c', 32);
+    var firstRun = new string('b', 32);
+    var secondRun = new string('d', 32);
+    using (var db = new SqliteConnection(
+        "Data Source=" + Path.Combine(privateDirectory, "codingassistant.db") +
+        ";Pooling=False"))
+    {
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = $"""
+            INSERT INTO tasks(id,request_id,title,objective,status,created_utc)
+            VALUES('{firstTask}','fixture-one','First','Atlas scope','Draft','2026-11-22T00:00:00Z');
+            INSERT INTO tasks(id,request_id,title,objective,status,created_utc)
+            VALUES('{secondTask}','fixture-two','Second','Atlas scope','Draft','2026-11-22T00:00:00Z');
+            INSERT INTO engineering_runs(
+                id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
+                architecture_sha256,model,state,phase,created_utc,updated_utc)
+            VALUES('{firstRun}','{firstTask}',1,'{new string('a',64)}',1,
+                '{new string('a',64)}','{new string('a',64)}','local',
+                'Generated','SourceOnlyGenerated','2026-11-22T00:00:00Z',
+                '2026-11-22T00:00:00Z');
+            INSERT INTO engineering_runs(
+                id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
+                architecture_sha256,model,state,phase,created_utc,updated_utc)
+            VALUES('{secondRun}','{secondTask}',1,'{new string('a',64)}',1,
+                '{new string('a',64)}','{new string('a',64)}','local',
+                'Generated','SourceOnlyGenerated','2026-11-22T00:00:00Z',
+                '2026-11-22T00:00:00Z');
+            INSERT INTO engineering_atlas_events(
+                run_id,sequence,work_item_id,source_revision,changes_json,
+                created_utc)
+            VALUES('{secondRun}',1,'W1','{new string('b',64)}','[]',
+                '2026-11-22T00:00:00Z');
+            """;
+        cmd.ExecuteNonQuery();
+    }
+    var page = ledger.Read(secondTask, secondRun, 0);
+    Check(page.LastSequence == 1 && page.Events.Single().Sequence == 1,
+        "authorized project can replay a committed source cursor");
+    Check(ledger.Read(secondTask, secondRun, 1).Events.Count == 0,
+        "cursor page is idempotent and returns no duplicate events");
+    bool denied = false;
+    try { _ = ledger.Read(firstTask, secondRun, 0); }
+    catch (StoreFailure error) when (error.Code == "NOT_FOUND") { denied = true; }
+    Check(denied, "another project's run is not readable by guessed ID");
+    denied = false;
+    try { _ = ledger.Read(secondTask, secondRun, -1); }
+    catch (StoreFailure error) when (error.Code == "INVALID_INPUT") { denied = true; }
+    Check(denied, "negative replay cursors are rejected");
+}
+finally
+{
+    SqliteConnection.ClearAllPools();
+    if (Directory.Exists(privateDirectory))
+        Directory.Delete(privateDirectory, recursive: true);
+}
+
 Console.WriteLine("CODE_ATLAS_SOURCE_GRAPH_PASS: " + checks + " assertions");
