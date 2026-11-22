@@ -113,7 +113,7 @@ test('manual exploration retains the chosen node while later source appears', as
       { name: 'TaskService' }).isVisible(), true);
     assert.equal(await atlas.getByRole('checkbox', { name: 'Follow build' })
       .isChecked(), false);
-    assert.equal(await graph.locator('.atlas-node.atlas-modified').count() > 0, true);
+    await graph.locator('.atlas-node.atlas-modified').first().waitFor();
   } finally {
     await manual.close();
   }
