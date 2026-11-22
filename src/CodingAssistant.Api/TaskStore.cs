@@ -293,6 +293,7 @@ public sealed class TaskStore
             "DELETE FROM qa_review_files WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_review_events WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_reviews WHERE task_id=@id",
+            "DELETE FROM engineering_atlas_snapshots WHERE run_id IN (SELECT id FROM engineering_runs WHERE task_id=@id)",
             "DELETE FROM engineering_atlas_graph_deltas WHERE run_id IN (SELECT id FROM engineering_runs WHERE task_id=@id)",
             "DELETE FROM engineering_atlas_events WHERE run_id IN (SELECT id FROM engineering_runs WHERE task_id=@id)",
             "DELETE FROM engineering_run_files WHERE run_id IN (SELECT id FROM engineering_runs WHERE task_id=@id)",
