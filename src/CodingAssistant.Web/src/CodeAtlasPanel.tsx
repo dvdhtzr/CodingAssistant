@@ -880,6 +880,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
             displayGraph.coverage === 'PARTIAL_SYNTAX' ? 'Partial C# syntax' :
             displayGraph.coverage === 'ECMA_STRUCTURE_ONLY' ? 'JS/TS structure · literal local imports' :
             displayGraph.coverage === 'PARTIAL_ECMA_STRUCTURE' ? 'Partial JS/TS structure' :
+            displayGraph.coverage === 'PYTHON_STRUCTURE_ONLY' ?
+              'Python source declarations only' :
+            displayGraph.coverage === 'PARTIAL_PYTHON_STRUCTURE' ?
+              'Partial Python source structure' :
+            displayGraph.coverage.includes('PYTHON_STRUCTURE') ?
+              'Mixed source analysis · Python declarations only' :
             displayGraph.coverage === 'MIXED_CSHARP_STATIC_ECMA_STRUCTURE' ?
               'C# static relationships · JS/TS structure and local imports' :
             displayGraph.coverage === 'MIXED_PARTIAL_CSHARP_ECMA_STRUCTURE' ?

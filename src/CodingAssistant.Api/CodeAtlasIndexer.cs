@@ -257,17 +257,32 @@ public static class CodeAtlasIndexer
                     new[] { "SEMANTIC_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
+        AtlasSnapshot ecmaGraph;
         try
         {
-            return CodeAtlasEcmaIndexer.Enrich(semanticGraph, valid);
+            ecmaGraph = CodeAtlasEcmaIndexer.Enrich(semanticGraph, valid);
         }
         catch (Exception)
         {
-            // A failed JS/TS projection must not roll back accepted source.
-            return semanticGraph with
+            // Failed JS/TS projections must not roll back persisted source.
+            ecmaGraph = semanticGraph with
             {
                 Diagnostics = semanticGraph.Diagnostics.Concat(
                     new[] { "ECMA_STRUCTURE_ANALYSIS_UNAVAILABLE" }).ToArray()
+            };
+        }
+        try
+        {
+            return CodeAtlasPythonIndexer.Enrich(ecmaGraph, valid);
+        }
+        catch (Exception)
+        {
+            // Python source is inert input, and parsing failure cannot
+            // invalidate the saved graph or claim successful verification.
+            return ecmaGraph with
+            {
+                Diagnostics = ecmaGraph.Diagnostics.Concat(
+                    new[] { "PYTHON_STRUCTURE_ANALYSIS_UNAVAILABLE" }).ToArray()
             };
         }
     }

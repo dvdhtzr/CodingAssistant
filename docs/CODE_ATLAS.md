@@ -142,3 +142,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Clicking a result focuses the exact source-backed entity; selecting a method/function automatically reveals that abstraction level. Follow Build relinquishes focus only after explicit user exploration.
 - Search displays the total match count without rendering thousands of rows, adding nested card stacks, enabling new agent actions, or changing the graph's existing 50-visible-node cap.
 - Deterministic 4,000-node unit fixture and real Chromium keyboard/button navigation acceptance retain the existing source-only verification contract.
+
+## M8.6 — Python source declarations (initial bounded increment)
+
+- Python `.py` files now contribute read-only, line-numbered class, function, method, `__init__` constructor, and lexical nesting nodes to the same Code Atlas snapshot, alongside existing C# and JS/TS layers. Existing project/task identifiers, source revisions, and commit-pinned imported graphs remain authoritative.
+- The managed-code scanner masks comments, quoted text and multiline triple-quoted strings, tracks indentation scopes, avoids executing Python or importing modules, and caps per-file lines and graph nodes/edges.
+- This is **structural, not compiler-backed semantic resolution**. Calls, inheritance, decorators, type annotations, runtime dispatch, and dynamic module dependencies are NOT inferred. Unsupported multiline signatures, ambiguous tab indentation, truncated source, or unclosed literals yield explicit partial-coverage diagnostics.
+- Preserve independent QA verification and all existing owner-token, approval, source-execution, and cross-task boundaries. Full Python semantic analysis and Java language support remain future M8 increments.
