@@ -516,12 +516,12 @@ export default function App() {
         {taskView && view === 'skills' && <SkillsDestination token={token} />}
         {taskView && view === 'history' && <HistoryDestination token={token} taskId={taskId} />}
         {view === 'diagnostics' && taskView && <div className="wb-diagnostic-heading">
-          <h2>Legacy diagnostics</h2>
-          <p className="hint">Historical HTML and fixed C# qualification workflows.
+          <h2>Developer tools</h2>
+          <p className="hint">Optional HTML generation and isolated C# qualification tools.
             These are not execution steps for your current project.</p>
         </div>}
         {view === 'diagnostics' && <details className="advanced-gate" hidden={!taskView}>
-          <summary>Legacy single-file HTML preview (not the Product Owner workflow)</summary>
+          <summary>Single-file HTML utility (separate from project engineering)</summary>
         {taskView && <section className="panel html-preview-panel">
           <h2>Make your HTML page</h2>
           <p className="hint">This uses your task objective to generate a real <code>index.html</code>
