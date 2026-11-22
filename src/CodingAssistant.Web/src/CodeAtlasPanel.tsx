@@ -358,6 +358,11 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const links = node && snapshot ? relatedEdges(snapshot, node.id) : [];
   const names = new Map(snapshot?.nodes.map(n => [n.id, n.name]) ?? []);
   const excerpt = selectedExcerpt(node, files);
+  const currentChange = sourceEvents.at(-1)?.sourceRevision === snapshot?.sourceRevision
+    ? sourceEvents.at(-1) : null;
+  const modifiedPaths = new Set(currentChange?.changes
+    .filter(change => change.kind === 'Modified')
+    .map(change => change.path) ?? []);
 
   function reset() {
     setSelected(null); setFocus(null); setQuery('');
@@ -469,7 +474,9 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
                       current.kind.toLowerCase() +
                       (chosen ? ' atlas-selected' : '') +
                       (relevant ? ' atlas-connected' : '') +
-                      (recentIds.includes(current.id) ? ' atlas-new' : '')}
+                      (recentIds.includes(current.id) ? ' atlas-new' : '') +
+                      (current.path && modifiedPaths.has(current.path) &&
+                        !recentIds.includes(current.id) ? ' atlas-modified' : '')}
                     onClick={() => { setSelected(current.id); setFollowBuild(false); }}
                     onKeyDown={event => {
                       if (event.key === 'Enter' || event.key === ' ') {
@@ -510,6 +517,8 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
           <span className="wb-kicker">{node.kind.toUpperCase()}</span>
           <h4>{node.name}</h4>
           <p className="atlas-qualified">{node.qualifiedName}</p>
+          {node.path && modifiedPaths.has(node.path) &&
+            <p className="atlas-change-label">Updated in saved source revision</p>}
           <dl>
             <dt>Source</dt>
             <dd>{node.path ?? 'Logical group'}
