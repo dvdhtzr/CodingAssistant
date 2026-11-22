@@ -577,6 +577,14 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(CodeAtlasIndexer.Index(db.Get(id, runId)))));
+        // Immutable historical graph checkpoints; playback does not execute
+        // source or pretend the latest source text matches older revisions.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/replay",
+            (string id, string runId, EngineeringAtlasLedger ledger) =>
+                Safe(() => Results.Ok(ledger.Timeline(id, runId))));
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/replay/{sequence:int}",
+            (string id, string runId, int sequence, EngineeringAtlasLedger ledger) =>
+                Safe(() => Results.Ok(ledger.Replay(id, runId, sequence))));
         // Bounded directed traversal of source-backed relationships.
         // It neither executes a project nor invents dynamic call targets.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/path",
