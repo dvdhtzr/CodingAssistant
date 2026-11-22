@@ -226,7 +226,8 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
   const activeStage = stages.find(step => step.state === 'now')
     ?? stages.find(step => step.state === 'attention')
     ?? stages.find(step => step.state === 'todo');
-  const missionState = activeStage ? activeStage.label : 'Complete';
+  const missionState = blockedSource ? 'Engineering needs attention' :
+    activeStage ? activeStage.label : 'No pending stage';
   const tick = (step: JourneyTile) => step.state === 'done' ? '✓'
     : step.state === 'attention' ? '!' : '…';
   const stageSummary = 'Spec ' + tick(stages[1]) + ' · Arch ' + tick(stages[2]) +
