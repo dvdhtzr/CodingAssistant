@@ -223,14 +223,14 @@ Check(!CodeAtlasPathFinder.Trace(semantic, helper, place).Found,
 Check(CodeAtlasPathFinder.Trace(semantic, place, saveContract,
     maxHops: 1).Found,
     "single-hop method call tracing is available");
-var indirect = CodeAtlasPathFinder.Trace(semantic, orderService, helper,
+var indirect = CodeAtlasPathFinder.Trace(semantic, orderService, saveContract,
     maxHops: 3);
 Check(indirect.Found && indirect.NodeIds.First() == orderService &&
-    indirect.NodeIds.Last() == helper,
-    "type containment followed by a method call has bounded traversal");
-Check(!CodeAtlasPathFinder.Trace(semantic, orderService, helper,
+    indirect.NodeIds.Last() == saveContract && indirect.Edges.Count >= 2,
+    "constructor dependency plus interface declaration yields a bounded path");
+Check(!CodeAtlasPathFinder.Trace(semantic, orderService, saveContract,
     maxHops: 1).Found,
-    "hop limit rejects longer relationships");
+    "hop limit rejects multi-edge relationships");
 var pathRejected = false;
 try { _ = CodeAtlasPathFinder.Trace(semantic, place, helper, maxHops: 13); }
 catch (StoreFailure e) when (e.Code == "INVALID_INPUT") { pathRejected = true; }
