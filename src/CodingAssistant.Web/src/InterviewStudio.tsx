@@ -73,6 +73,7 @@ export function InterviewStudio({ token, task }: {
   const [approveChecked, setApproveChecked] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [expanded, setExpanded] = useState<JourneyId | null>('discovery');
+  const [showAllStages, setShowAllStages] = useState(false);
   const manuallySelected = useRef(false);
   const [architectureStep, setArchitectureStep] = useState<JourneyStep>(journeySteps[2]);
   const [planStep, setPlanStep] = useState<JourneyStep>(journeySteps[3]);
@@ -81,8 +82,8 @@ export function InterviewStudio({ token, task }: {
 
   const openStage = useCallback((id: JourneyId) => {
     manuallySelected.current = true;
-    setExpanded(current => toggleJourneyStage(current, id));
-  }, []);
+    setExpanded(current => showAllStages ? toggleJourneyStage(current, id) : id);
+  }, [showAllStages]);
   const navigateToStage = useCallback((id: JourneyId) => {
     // Direct navigation opens the requested panel; clicking its progress tile
     // again must not collapse it. Honor deliberate navigation over polling.
@@ -241,13 +242,50 @@ export function InterviewStudio({ token, task }: {
   }, [snapshot, spec?.status, architectureStep.tone, planStep.tone,
     generationStep.tone, deliveryStep.tone]);
 
-  return <div className="journey-shell">
-    <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded}
-      onNavigate={navigateToStage} />
-    <OwnerDecisionInbox token={token} taskId={task.id}
-      refreshSignal={inboxSignal} onNavigate={navigateToStage} />
-    <TeamWorkroom token={token} taskId={task.id} onNavigate={navigateToStage} />
-    <VerificationTimeline token={token} taskId={task.id} />
+  const currentStep = steps.find(step => step.id === expanded) ?? discoveryStep;
+  return <div className={'journey-shell' +
+    (showAllStages ? ' journey-shell--expanded' : ' journey-shell--focused')}>
+    <section className="mc-work-focus" aria-label="Focused project work">
+      <div className="mc-work-focus-heading">
+        <div><span className="wb-kicker">WORK / CURRENT STEP</span>
+          <h2>{currentStep.title}</h2>
+          <p>{currentStep.detail}</p></div>
+        <span className={'journey-strip-current journey-' + currentStep.tone}>
+          {currentStep.status}</span>
+      </div>
+      <div className="mc-work-focus-actions">
+        <label htmlFor="mc-work-stage">Choose a stage
+          <select id="mc-work-stage" value={expanded ?? ''}
+            onChange={event => {
+              const next = event.target.value as JourneyId;
+              if (next) navigateToStage(next);
+            }}>
+            {!expanded && <option value="">Choose a stage</option>}
+            {steps.map((step, index) => <option key={step.id} value={step.id}>
+              {index + 1}. {step.title} — {step.status}
+            </option>)}
+          </select>
+        </label>
+        <button type="button" className="outline"
+          aria-pressed={showAllStages}
+          onClick={() => setShowAllStages(value => !value)}>
+          {showAllStages ? 'Focus on current step' : 'Show all stages'}
+        </button>
+      </div>
+      <p className="hint">Only the selected step is shown. Use the stage selector to
+        review earlier decisions or continue work; no approvals happen automatically.</p>
+    </section>
+    <details className="mc-work-secondary">
+      <summary>Project progress & technical history</summary>
+      <div className="mc-work-secondary-content">
+        <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded}
+          onNavigate={navigateToStage} />
+        <OwnerDecisionInbox token={token} taskId={task.id}
+          refreshSignal={inboxSignal} onNavigate={navigateToStage} />
+        <TeamWorkroom token={token} taskId={task.id} onNavigate={navigateToStage} />
+        <VerificationTimeline token={token} taskId={task.id} />
+      </div>
+    </details>
     {!!busy && <div className="activity" role="status" aria-live="polite">
       <div className="activity-heading">
         <span className="activity-dot" aria-hidden="true" />
