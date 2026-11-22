@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
+import * as signalR from '@microsoft/signalr';
 import type { EngineerFile } from './EngineeringWorkspace';
 
 export interface AtlasNode {
@@ -23,6 +24,24 @@ export interface AtlasSnapshot {
   nodes: AtlasNode[];
   edges: AtlasEdge[];
   diagnostics: string[];
+}
+export interface AtlasSourceChange {
+  path: string;
+  kind: 'Added' | 'Modified' | 'Removed';
+  sha256: string;
+}
+export interface AtlasSourceEvent {
+  runId: string;
+  sequence: number;
+  workItemId: string;
+  sourceRevision: string;
+  changes: AtlasSourceChange[];
+  createdUtc: string;
+}
+export interface AtlasSourceEventPage {
+  runId: string;
+  lastSequence: number;
+  events: AtlasSourceEvent[];
 }
 export interface AtlasPosition { x: number; y: number; depth: number; }
 export interface AtlasView {
@@ -160,12 +179,14 @@ function selectedExcerpt(node: AtlasNode | undefined,
     String(start + i + 1).padStart(4, ' ') + '  ' + line).join('\n');
 }
 
-export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
+export function CodeAtlasPanel({ token, taskId, runId, files, running,
+  onSourceChanged }: {
   token: string;
   taskId: string;
   runId: string;
   files: readonly EngineerFile[];
   running: boolean;
+  onSourceChanged?: () => void;
 }) {
   const [snapshot, setSnapshot] = useState<AtlasSnapshot | null>(null);
   const [error, setError] = useState('');
@@ -175,6 +196,8 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
   const [showMethods, setShowMethods] = useState(false);
   const [followBuild, setFollowBuild] = useState(true);
   const [recentIds, setRecentIds] = useState<string[]>([]);
+  const [sourceEvents, setSourceEvents] = useState<AtlasSourceEvent[]>([]);
+  const [replayStatus, setReplayStatus] = useState('');
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const pointer = useRef<{ x: number; y: number } | null>(null);
@@ -190,6 +213,8 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
     revision.current = '';
     lastNodeIds.current = [];
     setRecentIds([]);
+    setSourceEvents([]);
+    setReplayStatus('');
   }, [runId]);
 
   useEffect(() => {
@@ -238,6 +263,93 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
     // A new persisted file signature drives this projection refresh.
     return () => { cancelled = true; };
   }, [token, taskId, runId, fileSignature, followBuild, showMethods]);
+
+
+  // Subscribe first, then replay durable events to close the subscribe/read
+  // race. Signals contain only revision metadata, never untrusted source.
+  // Polling remains a bounded fallback when SignalR is unavailable.
+  useEffect(() => {
+    let closed = false;
+    let lastSequence = 0;
+    let syncing = false;
+    let again = false;
+    const base = '/api/tasks/' + taskId + '/engineering-runs/' + runId;
+    async function reconcile() {
+      if (syncing) { again = true; return; }
+      syncing = true;
+      let changed = false;
+      try {
+        for (let page = 0; page < 20; page++) {
+          const result = await api<AtlasSourceEventPage>(
+            token, base + '/atlas-events?after=' + lastSequence);
+          if (closed) return;
+          if (result.runId !== runId)
+            throw new Error('Atlas source scope changed');
+          for (const event of result.events) {
+            if (event.sequence <= lastSequence) continue;
+            if (event.sequence !== lastSequence + 1) {
+              // Never silently misorder or invent a missing change.
+              throw new Error('Atlas source history has a sequence gap');
+            }
+            lastSequence = event.sequence;
+            changed = true;
+          }
+          if (result.events.length) {
+            setSourceEvents(previous => {
+              const known = new Set(previous.map(event => event.sequence));
+              return [...previous, ...result.events.filter(event =>
+                !known.has(event.sequence))].slice(-24);
+            });
+          }
+          if (lastSequence >= result.lastSequence) break;
+          if (result.events.length === 0)
+            throw new Error('Atlas source history could not advance');
+        }
+        setReplayStatus('');
+        if (changed) onSourceChanged?.();
+      } catch {
+        if (!closed) setReplayStatus(
+          'Atlas event connection is recovering; saved source remains available.');
+      } finally {
+        syncing = false;
+        if (again && !closed) {
+          again = false;
+          void reconcile();
+        }
+      }
+    }
+    const connection = new signalR.HubConnectionBuilder()
+      .withUrl('/api/progress', {
+        transport: signalR.HttpTransportType.LongPolling,
+        accessTokenFactory: () => token,
+      })
+      .withAutomaticReconnect([0, 2000, 10000])
+      .build();
+    connection.on('AtlasUpdated', (hint: { runId: string }) => {
+      if (hint.runId === runId) void reconcile();
+    });
+    connection.onreconnected(async () => {
+      try {
+        await connection.invoke('WatchAtlas', taskId, runId);
+        if (!closed) await reconcile();
+      } catch {
+        if (!closed) setReplayStatus('Atlas notifications unavailable; using replay.');
+      }
+    });
+    void connection.start().then(async () => {
+      if (closed) return;
+      await connection.invoke('WatchAtlas', taskId, runId);
+      await reconcile();
+    }).catch(() => {
+      if (!closed) void reconcile();
+    });
+    const timer = window.setInterval(() => void reconcile(), 3000);
+    return () => {
+      closed = true;
+      window.clearInterval(timer);
+      void connection.stop();
+    };
+  }, [token, taskId, runId, onSourceChanged]);
 
   const view = useMemo(() => snapshot ?
     projectAtlas(snapshot, focus, showMethods, query) : null,
@@ -432,6 +544,17 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
         </>}
       </aside>
     </div>}
+    {sourceEvents.length > 0 && <details className="atlas-source-history">
+      <summary>Recorded source changes ({sourceEvents.length})</summary>
+      <ol aria-label="Committed Code Atlas source events">
+        {sourceEvents.slice().reverse().slice(0, 8).map(event => <li key={event.sequence}>
+          <strong>#{event.sequence} · {event.workItemId}</strong>
+          <span>{event.changes.map(change =>
+            change.kind + ': ' + change.path).join(' · ')}</span>
+        </li>)}
+      </ol>
+    </details>}
+    {replayStatus && <p className="atlas-coverage-note" role="status">{replayStatus}</p>}
     {snapshot && snapshot.diagnostics.length > 0 &&
       <p className="atlas-coverage-note" role="status">
         Some source could not be completely indexed. The graph contains
