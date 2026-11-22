@@ -46,8 +46,10 @@ jobs:
           node --check tools/m4/windows_calculator_evaluator_qualification.mjs
           node --check tools/m4/windows_chromium_sandbox_guest.mjs
           node --check tools/m4/windows_chromium_sandbox_qualification.mjs
+          node --check tools/m4/generated_zip_smoke_guest.mjs
+          node --check tools/m4/smoke_generated_zip.mjs
       - name: Execute M1 ACP typed-error classifier security tests (no agent/model)
-        run: node --test tests/test_m1_safe_acp_failure.mjs tests/test_m1_task_contract.mjs tests/test_m4_windows_docker_qualification.mjs tests/test_m4_windows_scoped_workspace.mjs tests/test_m4_windows_calculator_evaluator.mjs tests/test_m4_windows_chromium_sandbox.mjs
+        run: node --test tests/test_m1_safe_acp_failure.mjs tests/test_m1_task_contract.mjs tests/test_m4_windows_docker_qualification.mjs tests/test_m4_windows_scoped_workspace.mjs tests/test_m4_windows_calculator_evaluator.mjs tests/test_m4_windows_chromium_sandbox.mjs tests/test_m4_generated_zip_smoke.mjs
       - name: Compile Python tools
         run: python -m compileall -q tools/m0 tools/m1 tools/m2 tools/m3 tools/m4 tools/mvp benchmarks/acceptance tests
       - name: Model-free tests
