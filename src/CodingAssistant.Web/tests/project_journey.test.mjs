@@ -152,12 +152,12 @@ test('Technical Lead stage has a mounted, accessible plan-review region', () => 
   assert.match(html, /aria-expanded="false"/);
 });
 
-test('at the 12-answer limit, discovery has an explicit action instead of a missing composer', () => {
+test('after the final 13th answer, discovery has an explicit specification action', () => {
   const html = renderToStaticMarkup(React.createElement(InterviewCompletionNotice, {
-    ownerAnswers: 12, hasSpecification: false, onContinue: () => {},
+    ownerAnswers: 13, hasSpecification: false, onContinue: () => {},
   }));
-  assert.match(html, /All 12 interview answers are saved/);
-  assert.match(html, /question limit/);
+  assert.match(html, /Your final interview answer is saved/);
+  assert.match(html, /No more questions will be asked/);
   assert.match(html, /Continue to specification/);
   assert.match(html, /type="button"/);
   assert.match(html, /role="status"/);
@@ -165,7 +165,7 @@ test('at the 12-answer limit, discovery has an explicit action instead of a miss
 
 test('an already-drafted interview offers review instead of drafting twice', () => {
   const html = renderToStaticMarkup(React.createElement(InterviewCompletionNotice, {
-    ownerAnswers: 12, hasSpecification: true, onContinue: () => {},
+    ownerAnswers: 13, hasSpecification: true, onContinue: () => {},
   }));
   assert.match(html, /Review specification/);
   assert.doesNotMatch(html, /Continue to specification/);
@@ -173,9 +173,18 @@ test('an already-drafted interview offers review instead of drafting twice', () 
 
 test('interviews below the answer limit retain their own composer', () => {
   const html = renderToStaticMarkup(React.createElement(InterviewCompletionNotice, {
-    ownerAnswers: 11, hasSpecification: false, onContinue: () => {},
+    ownerAnswers: 12, hasSpecification: false, onContinue: () => {},
   }));
   assert.equal(html, '');
+});
+
+test('turn 25 remains answerable while question 13 is pending', () => {
+  const source = readFileSync('src/InterviewStudio.tsx', 'utf8');
+  assert.match(source, /const MODEL_DRIVEN_ANSWER_LIMIT = 12;/);
+  assert.match(source, /hasPendingFinalQuestion/);
+  assert.ok(source.includes('const canAnswerInterview = ownerAnswers < MODEL_DRIVEN_ANSWER_LIMIT ||'));
+  assert.match(source, /\{canAnswerInterview && <InterviewAnswerComposer/);
+  assert.match(source, /This is the final Product Owner question/);
 });
 
 test('interview scroll is bounded to conversation history, not the composer or stage', () => {
@@ -238,6 +247,21 @@ test('workroom never fabricates an assistant question from a last saved owner re
   assert.match(html, /LAST SAVED OWNER ANSWER/);
   assert.doesNotMatch(html, /CURRENT PRODUCT OWNER QUESTION/);
   assert.doesNotMatch(html, /Earlier conversation/);
+});
+
+test('final Product Owner acknowledgement is a handoff, not an unanswered question', () => {
+  const html = renderToStaticMarkup(React.createElement(ConversationWorkroom, {
+    messages: [
+      { sequence: 26, role: 'owner', content: 'Only podcast platform data.',
+        createdUtc: '2026-11-22T17:00:00Z' },
+      { sequence: 27, role: 'assistant',
+        content: 'Your final answer has been saved. Product discovery is complete.',
+        createdUtc: '2026-11-22T17:00:01Z' },
+    ],
+  }));
+  assert.match(html, /PRODUCT OWNER HANDOFF/);
+  assert.doesNotMatch(html, /CURRENT PRODUCT OWNER QUESTION/);
+  assert.match(html, /Your final answer has been saved/);
 });
 
 test('UX-2 stylesheet keeps history bounded while composer stays outside it', () => {

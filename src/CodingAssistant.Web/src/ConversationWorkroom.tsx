@@ -31,14 +31,15 @@ export function ConversationWorkroom({ messages }: {
   if (!messages.length) return null;
   const latest = messages[messages.length - 1];
   const history = messages.slice(0, -1);
-  const hasQuestion = latest.role === 'assistant';
+  const hasQuestion = latest.role === 'assistant' && latest.content.includes('?');
 
   return <section className="conversation-workroom"
     aria-label="Product Owner conversation workroom">
     <div className="conversation-current" aria-live="polite">
       <div className="conversation-current-heading">
-        <span className="wb-kicker">{hasQuestion
-          ? 'CURRENT PRODUCT OWNER QUESTION' : 'LAST SAVED OWNER ANSWER'}</span>
+        <span className="wb-kicker">{hasQuestion ? 'CURRENT PRODUCT OWNER QUESTION'
+          : latest.role === 'assistant' ? 'PRODUCT OWNER HANDOFF'
+            : 'LAST SAVED OWNER ANSWER'}</span>
         <span className="conversation-current-number">
           Turn {latest.sequence}
         </span>

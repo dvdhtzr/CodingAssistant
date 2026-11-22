@@ -36,7 +36,8 @@ interface InterviewSnapshot {
   specification: InterviewSpecification | null;
 }
 type InterviewBusy = 'start' | 'answer' | 'draft' | 'approve' | '';
-const MAX_OWNER_ANSWERS = 12;
+const MODEL_DRIVEN_ANSWER_LIMIT = 12;
+const MAX_OWNER_ANSWERS = MODEL_DRIVEN_ANSWER_LIMIT + 1;
 
 /** A visible route forward when the backend's interview limit has been reached. */
 export function InterviewCompletionNotice({ ownerAnswers, hasSpecification, onContinue }: {
@@ -48,8 +49,7 @@ export function InterviewCompletionNotice({ ownerAnswers, hasSpecification, onCo
   return <div className="interview-completion-notice" role="status">
     <div>
       <strong>Product discovery is ready for your review</strong>
-      <p>All {MAX_OWNER_ANSWERS} interview answers are saved.
-        The interview has reached its question limit, so there is no more answer form.
+      <p>Your final interview answer is saved. No more questions will be asked.
         Your next step is to {hasSpecification ? 'review the saved' : 'draft a'} specification.</p>
     </div>
     <button type="button" className="primary" onClick={onContinue}>
@@ -208,6 +208,12 @@ export function InterviewStudio({ token, task }: {
 
   const spec = snapshot?.specification;
   const ownerAnswers = snapshot?.messages.filter(item => item.role === 'owner').length ?? 0;
+  const latestInterviewMessage = snapshot?.messages[snapshot.messages.length - 1];
+  const hasPendingFinalQuestion = ownerAnswers === MODEL_DRIVEN_ANSWER_LIMIT &&
+    latestInterviewMessage?.role === 'assistant' &&
+    latestInterviewMessage.content.includes('?');
+  const canAnswerInterview = ownerAnswers < MODEL_DRIVEN_ANSWER_LIMIT ||
+    hasPendingFinalQuestion;
   const discoveryReady = !!spec || !!snapshot?.readyForSpecification ||
     ownerAnswers >= MAX_OWNER_ANSWERS;
   const discoveryStep: JourneyStep = { ...journeySteps[0],
@@ -381,7 +387,11 @@ export function InterviewStudio({ token, task }: {
               Draft first specification →
             </button>
           </div>}
-        {ownerAnswers < MAX_OWNER_ANSWERS && <InterviewAnswerComposer
+        {hasPendingFinalQuestion && <p className="hint">
+          This is the final Product Owner question. Your answer will be saved,
+          and discovery will finish without asking another question.
+        </p>}
+        {canAnswerInterview && <InterviewAnswerComposer
           key={snapshot.lastSequence}
           choice={snapshot.messages[snapshot.messages.length - 1]?.choice ?? null}
           busy={!!busy}
