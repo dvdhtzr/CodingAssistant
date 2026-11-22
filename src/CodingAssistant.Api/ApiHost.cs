@@ -613,6 +613,14 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/replay/{sequence:int}",
             (string id, string runId, int sequence, EngineeringAtlasLedger ledger) =>
                 Safe(() => Results.Ok(ledger.Replay(id, runId, sequence))));
+        // M8: exact two-checkpoint architecture drift; existing run/task
+        // scoping and owner authentication apply to both historical reads.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/drift",
+            (string id, string runId, int from, int to,
+             EngineeringAtlasLedger ledger) =>
+                Safe(() => Results.Ok(CodeAtlasArchitectureDrift.Compare(
+                    ledger.Replay(id, runId, from),
+                    ledger.Replay(id, runId, to)))));
         // Bounded directed traversal of source-backed relationships.
         // It neither executes a project nor invents dynamic call targets.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/path",

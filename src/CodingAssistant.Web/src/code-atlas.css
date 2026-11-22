@@ -178,3 +178,20 @@
 @media(max-width:850px){
   .atlas-import-fields{grid-template-columns:1fr}
 }
+
+/* M8: progressive, keyboard-accessible historical drift readout. */
+.atlas-drift-trigger{margin-top:.65rem;padding:.42rem .7rem;
+  border:1px solid #517f8b;border-radius:7px;background:#1a3948;
+  color:#d8f4ed;font-size:.72rem;cursor:pointer}
+.atlas-drift-trigger:disabled{opacity:.45;cursor:not-allowed}
+.atlas-drift-trigger:focus-visible{outline:2px solid #75e4ce;outline-offset:2px}
+.atlas-drift-result{margin-top:.7rem;padding:.7rem .85rem;
+  border:1px solid #385d6a;border-radius:9px;background:#112a37;
+  color:#d4e9ed;overflow-wrap:anywhere}
+.atlas-drift-result>strong{font-size:.78rem}
+.atlas-drift-result p{font-size:.68rem;line-height:1.5;color:#abc5ce}
+.atlas-drift-result ul{margin:.45rem 0;padding-left:1.1rem;
+  max-height:14rem;overflow:auto}
+.atlas-drift-result li{font-size:.7rem;line-height:1.5;padding:.25rem 0}
+.atlas-drift-result li span{margin-left:.5rem}
+.atlas-drift-result li small{display:block;color:#a1bfcb}

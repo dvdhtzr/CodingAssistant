@@ -103,6 +103,28 @@ export interface AtlasReplayManifest {
 export interface AtlasReplayFrame extends AtlasReplaySummary {
   graph: AtlasSnapshot;
 }
+export interface AtlasArchitectureDriftChange {
+  operation: 'Added' | 'Removed';
+  category: 'Entity' | 'Relationship';
+  kind: string;
+  identity: string;
+  path: string | null;
+  line: number | null;
+  resolution: string;
+}
+export interface AtlasArchitectureDriftReport {
+  runId: string;
+  fromSequence: number;
+  toSequence: number;
+  fromRevision: string;
+  toRevision: string;
+  addedEntities: number;
+  removedEntities: number;
+  addedRelationships: number;
+  removedRelationships: number;
+  truncated: boolean;
+  changes: AtlasArchitectureDriftChange[];
+}
 export interface AtlasPathResult {
   fromId: string;
   toId: string;
@@ -281,6 +303,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const [replayBusy, setReplayBusy] = useState(false);
   const [replayError, setReplayError] = useState('');
   const replayRequest = useRef(0);
+  const [drift, setDrift] = useState<AtlasArchitectureDriftReport | null>(null);
+  const [driftBusy, setDriftBusy] = useState(false);
+  const [driftError, setDriftError] = useState('');
+  const driftRequest = useRef(0);
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const pointer = useRef<{ x: number; y: number } | null>(null);
@@ -308,6 +334,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     setReplayGraph(null);
     setReplayError('');
     replayRequest.current++;
+    driftRequest.current++;
+    setDrift(null);
+    setDriftError('');
+    setDriftBusy(false);
   }, [runId]);
 
   useEffect(() => {
@@ -497,6 +527,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
 
   async function selectReplay(sequence: number | null) {
     const request = ++replayRequest.current;
+    ++driftRequest.current;
+    setDrift(null);
+    setDriftError('');
+    setDriftBusy(false);
     setReplayError('');
     setTraceFrom(null);
     setTraceResult(null);
@@ -531,6 +565,36 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const replayIndex = replaySequence === null ? replayFrames.length :
     replayFrames.findIndex(frame => frame.sequence === replaySequence);
   const replayStep = replayIndex < 0 ? replayFrames.length : replayIndex;
+  const previousFrame = replaySequence !== null && replayStep > 0 &&
+    replayStep < replayFrames.length ? replayFrames[replayStep - 1] : null;
+
+  async function compareArchitecture() {
+    if (!previousFrame || replaySequence === null || !replayGraph || driftBusy) return;
+    const request = ++driftRequest.current;
+    const fromSequence = previousFrame.sequence;
+    const toSequence = replaySequence;
+    const toRevision = replayGraph.sourceRevision;
+    setDrift(null);
+    setDriftError('');
+    setDriftBusy(true);
+    try {
+      const report = await api<AtlasArchitectureDriftReport>(token,
+        '/api/tasks/' + taskId + '/engineering-runs/' + runId +
+        '/atlas/drift?from=' + fromSequence + '&to=' + toSequence);
+      if (request !== driftRequest.current) return;
+      if (report.runId !== runId || report.fromSequence !== fromSequence ||
+          report.toSequence !== toSequence ||
+          report.fromRevision !== previousFrame.sourceRevision ||
+          report.toRevision !== toRevision)
+        throw new Error('Historical source identity mismatch');
+      setDrift(report);
+    } catch {
+      if (request === driftRequest.current)
+        setDriftError('Architecture comparison could not be verified.');
+    } finally {
+      if (request === driftRequest.current) setDriftBusy(false);
+    }
+  }
 
   const view = useMemo(() => displayGraph ?
     projectAtlas(displayGraph, focus, showMethods, query) : null,
@@ -910,6 +974,32 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
           disabled={replayBusy || replaySequence === null}
           onClick={() => void selectReplay(null)}>Return live</button>
       </div>
+      {previousFrame && <button type="button"
+        className="atlas-drift-trigger" disabled={replayBusy || driftBusy}
+        onClick={() => void compareArchitecture()}>
+        {driftBusy ? 'Comparing saved graphs…' :
+          'Compare architecture with #' + previousFrame.sequence}
+      </button>}
+      {driftError && <p role="alert" className="atlas-error">{driftError}</p>}
+      {drift && drift.toSequence === replaySequence &&
+        <section className="atlas-drift-result" aria-label="Historical architecture drift">
+          <strong>Architecture drift · #{drift.fromSequence} → #{drift.toSequence}</strong>
+          <p>{drift.addedEntities} added / {drift.removedEntities} removed entities
+            {' · '}{drift.addedRelationships} added / {drift.removedRelationships} removed relationships</p>
+          <p>Static, saved-source differences only. Not build or runtime verification.</p>
+          {drift.changes.length ? <ul>
+            {drift.changes.map((change, index) => <li key={index}>
+              <strong>{change.operation} {change.kind}</strong>
+              <span>{change.identity}</span>
+              {change.path && <small>{change.path}
+                {change.line ? ':' + change.line : ''}</small>}
+              {change.category === 'Relationship' &&
+                <small>{change.resolution} evidence</small>}
+            </li>)}
+          </ul> : <p>No source-backed architecture changes between these checkpoints.</p>}
+          {drift.truncated && <p>Showing first {drift.changes.length} changes.
+            Totals include all differences.</p>}
+        </section>}
       {replayError && <p role="alert" className="atlas-error">{replayError}</p>}
       {replaySequence !== null && <p className="atlas-replay-caption">
         Snapshot recorded for {replayFrames.find(frame =>

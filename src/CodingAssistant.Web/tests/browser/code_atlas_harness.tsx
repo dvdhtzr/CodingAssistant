@@ -91,6 +91,24 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
       graph,
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
   }
+  if (url.includes('/atlas/drift?')) {
+    const query = new URL(url, window.location.href).searchParams;
+    const from = Number(query.get('from'));
+    const to = Number(query.get('to'));
+    return Promise.resolve(new Response(JSON.stringify({
+      runId, fromSequence: from, toSequence: to,
+      fromRevision: initial.sourceRevision,
+      toRevision: next.sourceRevision,
+      addedEntities: 1, removedEntities: 0,
+      addedRelationships: 0, removedRelationships: 0,
+      truncated: false,
+      changes: [{
+        operation: 'Added', category: 'Entity', kind: 'Method',
+        identity: 'Demo.TaskService.CreateTask()',
+        path: 'TaskService.cs', line: 3, resolution: 'SourceStructure',
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  }
   if (url.includes('/atlas/path?')) {
     const request = new URL(url, window.location.href);
     const from = request.searchParams.get('from');

@@ -106,3 +106,11 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 3. **EngineeringRunStore has a 12-file cap.** Keep bounded graph payload and warn about partial source; do not change generator limits under this feature.
 4. **Event streams are not interchangeable.** Use engineering-run identity and durable source hashes; avoid attaching graph data to unrelated RunStore event sequences.
 5. **This development environment may not run .NET.** Never claim local compilation/acceptance without evidence. Use existing CI and owner-host verification where needed; do not weaken verification criteria.
+
+## M8.1 — Historical architecture drift (incremental expansion)
+
+- A read-only owner-authenticated `GET /api/tasks/{id}/engineering-runs/{runId}/atlas/drift?from=N&to=M` compares two already-committed, run-scoped Build Replay checkpoints.
+- Reports added/removed projects, namespaces, types, methods, and confirmed static relationship edges. Structural membership alone is not build, test, or runtime verification.
+- Show the comparison on a selected historical checkpoint against its preceding saved checkpoint; do not substitute current source text or current QA evidence.
+- Output is deterministic, bounded to 100 detailed changes with full aggregate counts, and rejects cross-run, invalid-order, and revision-mismatched comparisons.
+- This is the first bounded M8 slice. TypeScript/JavaScript/Python/Java semantic indexing, cross-language edges, further large-graph optimization, and qualified runtime traces remain future work.

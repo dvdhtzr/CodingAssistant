@@ -212,6 +212,28 @@ test('Build Replay shows historical graph without substituting current source co
 });
 
 
+test('historical architecture drift compares pinned frames, without verification claims', async () => {
+  const driftPage = await browser.newPage({ viewport: { width: 1420, height: 980 } });
+  try {
+    await driftPage.goto(page.url());
+    const atlas = driftPage.getByRole('region', { name: 'Code Atlas', exact: true });
+    const replay = atlas.getByRole('region', { name: 'Code Atlas Build Replay' });
+    await replay.getByRole('button', { name: 'Previous' }).click();
+    await replay.getByText('Historical work item #2').waitFor();
+    await replay.getByRole('button', {
+      name: 'Compare architecture with #1',
+    }).click();
+    const result = replay.getByRole('region', { name: 'Historical architecture drift' });
+    await result.getByText(/1 added \/ 0 removed entities/).waitFor();
+    assert.match(await result.textContent(), /Added Method.*CreateTask/);
+    assert.match(await result.textContent(), /Not build or runtime verification/);
+    await replay.getByRole('button', { name: 'Return live' }).click();
+    assert.equal(await result.count(), 0);
+  } finally {
+    await driftPage.close();
+  }
+});
+
 test('QA overlays show only unverified source-file hypotheses and repair attempts', async () => {
   const qaPage = await browser.newPage({ viewport: { width: 1400, height: 950 } });
   try {

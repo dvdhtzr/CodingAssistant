@@ -647,6 +647,59 @@ Check(atlasTools.GetSourceExcerpt(ownClass.Id)!.Excerpt.Length <= 1200,
     "QA source excerpt has a strict size limit");
 
 
+// M8: architecture drift reads exact source revisions and never claims tests.
+var driftOldSource = CodeAtlasIndexer.Index("architecture-run", new[]
+{
+    File("Catalog.cs", "namespace Drift; public class Catalog { public void Existing() {} }")
+});
+var driftNewSource = CodeAtlasIndexer.Index("architecture-run", new[]
+{
+    File("Catalog.cs", "namespace Drift; public class Catalog { public void Existing() {} public void Added() { Existing(); } }")
+});
+var driftFrom = new AtlasReplayFrame(1, "W1", driftOldSource.SourceRevision,
+    "2026-11-22T00:00:00Z", driftOldSource);
+var driftTo = new AtlasReplayFrame(2, "W2", driftNewSource.SourceRevision,
+    "2026-11-22T00:00:01Z", driftNewSource);
+var report = CodeAtlasArchitectureDrift.Compare(driftFrom, driftTo);
+Check(report.RunId == "architecture-run" &&
+    report.FromRevision == driftOldSource.SourceRevision &&
+    report.ToRevision == driftNewSource.SourceRevision,
+    "architecture drift binds exact run and historical source revisions");
+Check(report.AddedEntities == 1 && report.RemovedEntities == 0 &&
+    report.Changes.Any(c => c.Operation == "Added" && c.Kind == "Method" &&
+        c.Identity.Contains("Added()", StringComparison.Ordinal)),
+    "architecture drift reports a newly persisted method, not source narration");
+Check(report.AddedRelationships == 1 &&
+    report.Changes.Any(c => c.Kind == "Calls" &&
+        c.Resolution == "ResolvedStatic"),
+    "architecture drift reports only resolved static method call evidence");
+var driftUnchanged = CodeAtlasArchitectureDrift.Compare(driftFrom,
+    driftTo with { Graph = driftOldSource,
+        SourceRevision = driftOldSource.SourceRevision });
+Check(driftUnchanged.Changes.Count == 0,
+    "identical checkpoints have no invented architecture drift");
+var rejectedDrift = false;
+try { _ = CodeAtlasArchitectureDrift.Compare(driftTo, driftFrom); }
+catch (StoreFailure e) when (e.Code == "INVALID_INPUT") { rejectedDrift = true; }
+Check(rejectedDrift, "reverse historical comparison is rejected");
+rejectedDrift = false;
+try { _ = CodeAtlasArchitectureDrift.Compare(driftFrom,
+    driftTo with { Graph = driftNewSource with { RunId = "other-run" } }); }
+catch (StoreFailure e) when (e.Code == "INVALID_INPUT") { rejectedDrift = true; }
+Check(rejectedDrift, "cross-run architecture comparison is rejected");
+var manyNodes = Enumerable.Range(0, 125)
+    .Select(i => new AtlasNode("class:" + i, "Class", "C" + i,
+        "Drift.C" + i, null, "Drift.cs", i + 1)).ToArray();
+var manyOld = new AtlasSnapshot("bounded-run", "old", "SYNTAX_ONLY",
+    Array.Empty<AtlasNode>(), Array.Empty<AtlasEdge>(), Array.Empty<string>());
+var manyNew = manyOld with { SourceRevision = "new", Nodes = manyNodes };
+var limitedDrift = CodeAtlasArchitectureDrift.Compare(
+    new AtlasReplayFrame(1, "W1", "old", "", manyOld),
+    new AtlasReplayFrame(2, "W2", "new", "", manyNew));
+Check(limitedDrift.AddedEntities == 125 && limitedDrift.Truncated &&
+    limitedDrift.Changes.Count == 100,
+    "architecture drift caps detailed payload without hiding total changes");
+
 // M7: GitHub archive parsing and source persistence are offline-only tests.
 byte[] Archive(params (string Name, string Content, int Mode)[] entries)
 {
