@@ -617,6 +617,9 @@ Check(atlasTools.FindSymbols("Service").Any(n => n.Kind == "Class" &&
     n.Name == "Service"), "QA tool finds declared local symbols");
 Check(atlasTools.FindSymbols("PrivateDetails").Count == 0,
     "QA tool cannot search another file's private source symbols");
+Check(atlasTools.ListFileSymbols().All(n => n.Path == "Demo/Service.cs") &&
+    atlasTools.ListFileSymbols().Count <= 16,
+    "host-provided QA graph context is bounded and file-scoped");
 Check(atlasTools.FindSymbols(new string('a',81)).Count == 0,
     "QA symbol queries are bounded");
 var ownClass = atlasTools.FindSymbols("Service").Single(n =>
