@@ -1513,7 +1513,8 @@ try
                 Check(specResponse.StatusCode == HttpStatusCode.OK &&
                     draft.GetProperty("status").GetString() == "Draft" &&
                     draft.GetProperty("content").GetString()!.Contains(
-                        "Requirement decision 13", StringComparison.Ordinal) &&
+                        "Aggregate the platform-reported audience segments only.",
+                        StringComparison.Ordinal) &&
                     endingModel.SpecCount == 1,
                     "finalized 27-message interview drafts a reviewable specification");
             }
