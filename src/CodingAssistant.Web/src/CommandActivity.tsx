@@ -5,12 +5,14 @@ import { api, type TaskItem } from './api';
 import type { DecisionInboxSnapshot } from './OwnerDecisionInbox';
 import type { AgentIdentity } from './AgentIdentityPanel';
 import type { EngineerSnapshot } from './EngineeringWorkspace';
+import type { ProjectSourceReadinessReport } from './VerificationScope';
 import type { TeamHandoff, TeamQaSnapshot } from './TeamWorkroom';
 
 export interface CommandEvidence {
   agents: AgentIdentity[];
   handoffs: TeamHandoff[];
   engineering: EngineerSnapshot | null;
+  sourceReadiness?: ProjectSourceReadinessReport | null;
   qa: (Omit<TeamQaSnapshot, 'reports'> & {
     reports: Array<{ path: string; reviewedUtc: string;
       assessment?: { findings?: Array<{ severity: string; requirement: string }> } }>;
@@ -70,17 +72,22 @@ export function commandJourney(evidence: CommandEvidence): JourneyTile[] {
     : spec?.status === 'Approved' ? 'now' : 'todo';
   const planning: JourneyTile['state'] = plan?.status === 'Approved' && plan.current ? 'done'
     : plan ? 'attention' : architecture === 'done' ? 'now' : 'todo';
+  // "Generated" is not a built application. Missing files are engineering
+  // work, and static QA is not functional verification.
+  const needsCompletion = evidence.sourceReadiness?.status === 'INCOMPLETE' &&
+    evidence.sourceReadiness.runId === eng?.id;
   const build: JourneyTile['state'] = eng?.state === 'Running' ? 'now'
-    : eng?.state === 'Generated' ? 'done'
-      : eng?.state === 'Failed' || eng?.state === 'Interrupted' ? 'attention'
-        : planning === 'done' ? 'now' : 'todo';
+    : needsCompletion || eng?.state === 'Failed' ||
+      eng?.state === 'Interrupted' ? 'attention'
+    : eng?.state === 'Generated' ? 'attention'
+    : planning === 'done' ? 'now' : 'todo';
   const findings = qa && evidence.engineering &&
     qa.job.engineeringRunId === evidence.engineering.job.id &&
     qa.job.planSha256 === evidence.engineering.job.planSha256
     ? qa.reports.reduce((n, r) => n + (r.assessment?.findings?.length ?? 0), 0) : 0;
-  const verify: JourneyTile['state'] = findings > 0 ? 'attention'
-    : qa?.job.state === 'Reviewed' ? 'done'
-      : build === 'done' ? 'now' : 'todo';
+  const verify: JourneyTile['state'] = findings > 0 ||
+    qa?.job.state === 'Reviewed' ? 'attention'
+    : eng?.state === 'Generated' && !needsCompletion ? 'now' : 'todo';
 
   return [
     { id: 'discovery', label: 'Discovery', agent: 'ProductOwner', state: discovery,
@@ -92,9 +99,14 @@ export function commandJourney(evidence: CommandEvidence): JourneyTile[] {
     { id: 'plan', label: 'Plan', agent: 'TechnicalLead', state: planning,
       hint: plan ? plan.status + ' · rev ' + plan.revision : 'Not started' },
     { id: 'build', label: 'Build', agent: 'SoftwareEngineer', state: build,
-      hint: eng ? 'Source run: ' + eng.state : 'Not started' },
+      hint: needsCompletion ? 'Missing project files' :
+        eng?.state === 'Generated' ? 'Source only · not built' :
+        eng ? 'Source run: ' + eng.state : 'Not started' },
     { id: 'verify', label: 'Verify', agent: 'QaEngineer', state: verify,
-      hint: findings > 0 ? findings + ' to triage' : qa ? 'Review saved' : 'Not started' },
+      hint: findings > 0 ? findings + ' to triage' :
+        qa?.job.state === 'Reviewed' ? 'Static review only' :
+        needsCompletion ? 'Waiting for complete source' :
+        qa ? 'Review pending' : 'Not independently tested' },
   ];
 }
 
@@ -185,8 +197,16 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
   const reviewCount = queue.filter(item => item.requiresApproval).length;
   const latestEngineering = evidence.engineering?.job;
   const latestQa = evidence.qa?.job;
-  const recommendation = queue[0]
+  const blockedSource = evidence.sourceReadiness?.status === 'INCOMPLETE' &&
+    evidence.sourceReadiness.runId === latestEngineering?.id &&
+    latestEngineering?.state === 'Generated';
+  const recommendation = queue[0]?.requiresApproval
     ? { title: queue[0].title, detail: queue[0].detail, to: queue[0].destination }
+    : blockedSource
+      ? { title: 'Open engineering work order', detail:
+          'Saved source has unresolved project completeness findings.', to: 'work' as const }
+    : queue[0]
+      ? { title: queue[0].title, detail: queue[0].detail, to: queue[0].destination }
     : latestEngineering?.state === 'Running'
       ? { title: 'Inspect ongoing engineering', detail:
           'A saved Software Engineer run is currently running.', to: 'work' as const }
@@ -234,6 +254,19 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
       </div>
     </div>
 
+    {blockedSource && <section className="ca-command-work-order"
+      aria-label="Engineering work requiring attention">
+      <div>
+        <span className="wb-kicker">NEXT HANDOFF · SOFTWARE ENGINEER → QA</span>
+        <h3>Project source is incomplete</h3>
+        <p>{evidence.sourceReadiness?.findings.filter(finding =>
+          finding.severity === 'Error').length} blocking source issue(s).
+          The Software Engineer must complete the project before independent
+          build and test verification can begin.</p>
+      </div>
+      <button type="button" className="outline"
+        onClick={() => onNavigate('work')}>Inspect source issues</button>
+    </section>}
     <div className="ca-section-head">
       <div><span className="wb-kicker">BUILD JOURNEY</span><h3>Where the work is</h3></div>
     </div>
@@ -335,9 +368,24 @@ export function CommandActivity({ token, task, onNavigate }: {
             api<{ plan: DecisionInboxSnapshot['plan'] }>(
               token, prefix + '/implementation-plan'),
           ]);
+        // An incomplete source snapshot becomes a Command work order.
+        // A failed optional readiness read never upgrades the project to READY.
+        let sourceReadiness: ProjectSourceReadinessReport | null = null;
+        if (engineering.snapshot?.job.id) {
+          try {
+            const result = await api<ProjectSourceReadinessReport>(token,
+              prefix + '/engineering-runs/' +
+              engineering.snapshot.job.id + '/source-readiness');
+            if (result.runId === engineering.snapshot.job.id &&
+                result.executionAvailable === false &&
+                result.verificationStatus === 'GENERATED_NOT_TESTED')
+              sourceReadiness = result;
+          } catch { /* Preserve saved agent evidence, not an inferred readiness pass. */ }
+        }
         if (!disposed) {
           setEvidence({
             agents: roster.agents,
+            sourceReadiness,
             handoffs: handoffs.events,
             engineering: engineering.snapshot,
             qa: qa.snapshot,
