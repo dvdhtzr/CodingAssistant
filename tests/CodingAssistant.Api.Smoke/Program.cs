@@ -2150,6 +2150,115 @@ try
                          UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) == 0,
             "SQLite DB owner-private");
     }
+    // M4.5: exact read-only preview from a real EngineeringRunSnapshot shape.
+    // No container, model, browser or source execution may be triggered here.
+    {
+        const string planSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const string specSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const string archSha = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        var id = Guid.NewGuid().ToString("N");
+        var runIdScope = Guid.NewGuid().ToString("N");
+        var nowScope = DateTimeOffset.UtcNow.ToString("O");
+        var modelScope = "qwen3.5:4b";
+        var entry = "<!doctype html><html><body><button id=\"go\">Go</button>" +
+            "<script src=\"app.js\"></script></body></html>";
+        var js = "document.getElementById('go').addEventListener('click',()=>{});\n";
+        string Sha256(string source) => Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(source))).ToLowerInvariant();
+        var sourceFiles = new[] {
+            new EngineeringSourceFile("index.html", "Browser entry", entry,
+                Sha256(entry), "task-1", nowScope),
+            new EngineeringSourceFile("app.js", "Button action", js,
+                Sha256(js), "task-1", nowScope)
+        };
+        var jobScope = new EngineeringRun(
+            runIdScope, id, 1, planSha, 1, specSha, archSha,
+            modelScope, "Generated", "Completed", null, nowScope, nowScope);
+        EngineeringRunSnapshot Snapshot(
+            EngineeringRun job, IReadOnlyList<EngineeringSourceFile> files) =>
+            new(job, Array.Empty<EngineeringAssignedTask>(),
+                Array.Empty<EngineeringRunEvent>(), files);
+        var outline = new ImplementationOutline("Develop a complete static web page",
+            Array.Empty<ImplementationWorkItem>(), Array.Empty<string>(),
+            Array.Empty<string>());
+        var planScope = new ImplementationPlan(
+            id, 1, 1, specSha, archSha, modelScope, outline,
+            planSha, "Approved", nowScope, nowScope, true, "Approved");
+        var specScope = new InterviewSpecification(
+            1, modelScope, "A standalone offline web page", specSha,
+            "Approved", nowScope, nowScope);
+        var choiceScope = new DraftArchitectureChoice(
+            "technology-stack", 1, planSha, "static-web",
+            "Static Web", "Offline", "No server-side code", "static-web");
+        var readiness = new DraftArchitectureReadiness(
+            "READY", true, archSha, Array.Empty<string>(), [choiceScope]);
+        StaticWebVerificationScopePreview Preview(
+            EngineeringRun job, IReadOnlyList<EngineeringSourceFile> files,
+            ImplementationPlan? plan = null, bool latest = true,
+            DraftArchitectureReadiness? arch = null) =>
+            StaticWebVerificationScope.Preview(
+                Snapshot(job, files), plan ?? planScope, specScope,
+                arch ?? readiness, latest);
+
+        var candidate = Preview(jobScope, sourceFiles);
+        Check(candidate.Status == "SCOPE_CANDIDATE" &&
+              candidate.Blockers.Count == 0 &&
+              candidate.ScopeSha256?.Length == 64 &&
+              candidate.SourceFingerprint?.Length == 64 &&
+              candidate.Files.Count == 2 &&
+              !candidate.ExecutionEnabled &&
+              candidate.VerificationStatus == "GENERATED_NOT_TESTED",
+            "M4.5 current approved Static Web run produces exact non-executable scope");
+        Check(candidate.ScopeSha256 == Preview(jobScope, sourceFiles).ScopeSha256,
+            "M4.5 same task/plan/source produces stable immutable scope digest");
+        Check(Preview(jobScope with { PlanSha256 = specSha },
+            sourceFiles).Blockers.Contains("APPROVED_PLAN_MISMATCH"),
+            "M4.5 stale plan digest blocks scope candidate");
+        Check(Preview(jobScope, sourceFiles, latest: false)
+                .Blockers.Contains("SOURCE_NOT_LATEST"),
+            "M4.5 previous Engineering run cannot become current scope");
+        Check(Preview(jobScope with { State = "Running" }, sourceFiles)
+                .Blockers.Contains("SOURCE_NOT_COMPLETE"),
+            "M4.5 running or unfinished source cannot enter evaluator");
+        Check(Preview(jobScope, sourceFiles,
+            planScope with { Status = "Superseded" })
+                .Blockers.Contains("APPROVED_PLAN_MISMATCH"),
+            "M4.5 superseded approval blocks scope candidate");
+        var mutatedHash = sourceFiles[1] with { Sha256 = planSha };
+        Check(Preview(jobScope, [sourceFiles[0], mutatedHash])
+                .Blockers.Contains("SOURCE_FILE_HASH_MISMATCH"),
+            "M4.5 altered source hash blocks scope candidate");
+        var duplicate = sourceFiles[1] with { Path = "INDEX.HTML" };
+        Check(Preview(jobScope, [sourceFiles[0], duplicate])
+                .Blockers.Contains("UNSAFE_OR_DUPLICATE_FILE_PATH"),
+            "M4.5 case-insensitive path collision denied");
+        var traversal = sourceFiles[1] with { Path = "../outside.js" };
+        Check(Preview(jobScope, [sourceFiles[0], traversal])
+                .Blockers.Contains("UNSAFE_OR_DUPLICATE_FILE_PATH"),
+            "M4.5 traversal path denied");
+        var script = sourceFiles[1] with { Path = "run.sh" };
+        Check(Preview(jobScope, [sourceFiles[0], script])
+                .Blockers.Contains("UNSAFE_OR_DUPLICATE_FILE_PATH"),
+            "M4.5 executable scripts outside Static Web profile denied");
+        Check(Preview(jobScope, [sourceFiles[1]])
+                .Blockers.Contains("MISSING_ROOT_INDEX_HTML"),
+            "M4.5 missing index.html denied");
+        var noLink = sourceFiles[0] with {
+            Content = "<!doctype html><html><body><button id=\"go\">Go</button></body></html>"
+        };
+        noLink = noLink with { Sha256 = Sha256(noLink.Content) };
+        Check(Preview(jobScope, [noLink, sourceFiles[1]])
+                .Blockers.Contains("STATIC_SOURCE_PREFLIGHT_HAS_FINDINGS"),
+            "M4.5 disconnected JS is flagged before executable admission");
+        var changedArch = readiness with {
+            ApprovedChoices = Array.Empty<DraftArchitectureChoice>()
+        };
+        Check(Preview(jobScope, sourceFiles, arch: changedArch)
+                .Blockers.Contains("NOT_STATIC_WEB_PROFILE"),
+            "M4.5 profile change blocks static-web-specific evaluator scope");
+    }
+
     Console.WriteLine($"M2 LOCAL_CONTROL_PLANE_SMOKE_PASS ({checks} assertions)");
 }
 finally

@@ -541,6 +541,22 @@ public static class ApiHost
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(
                     StaticWebSourcePreflight.Inspect(db.Get(id, runId)))));
+        // M4.5 exact, read-only verification-scope preview: task-bound source
+        // digests and current approvals only. This is NOT a runnable contract.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/verification-scope",
+            (string id, string runId, EngineeringRunStore db,
+             ImplementationPlanStore plans, InterviewStore interviews,
+             TaskStore tasks) => Safe(() => {
+                 var source = db.Get(id, runId);
+                 var current = db.Latest(id);
+                 var plan = plans.Read(id).Plan;
+                 var specification = interviews.Read(id).Specification;
+                 var architecture = DraftArchitecturePolicy.Readiness(
+                     tasks, interviews, id);
+                 return Results.Ok(StaticWebVerificationScope.Preview(
+                     source, plan, specification, architecture,
+                     current?.Job.Id == runId));
+             }));
         app.MapPost("/api/tasks/{id}/engineering-runs/{runId}/cancel",
             (string id, string runId, EngineeringRunCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, runId))));
