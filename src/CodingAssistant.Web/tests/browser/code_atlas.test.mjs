@@ -210,3 +210,57 @@ test('Build Replay shows historical graph without substituting current source co
     await replayPage.close();
   }
 });
+
+
+test('QA overlays show only unverified source-file hypotheses and repair attempts', async () => {
+  const qaPage = await browser.newPage({ viewport: { width: 1400, height: 950 } });
+  try {
+    await qaPage.goto(page.url());
+    const atlas = qaPage.getByRole('region', {
+      name: 'Code Atlas', exact: true,
+    });
+    const graph = atlas.getByRole('group', {
+      name: 'Interactive Code Atlas graph of saved source',
+    });
+    await graph.waitFor();
+    const fileNode = graph.getByRole('button', {
+      name: 'File: TaskService.cs',
+    });
+    await fileNode.click();
+    const inspector = atlas.getByRole('complementary', {
+      name: 'Selected source entity',
+    });
+    await inspector.getByRole('region', { name: 'Static QA findings' }).waitFor();
+    const findings = inspector.getByRole('region', {
+      name: 'Static QA findings',
+    });
+    assert.match(await findings.textContent(),
+      /hypotheses, not test failures/);
+    assert.match(await findings.textContent(),
+      /Major: Persistence/);
+    assert.match(await findings.textContent(),
+      /independently test storage writes/);
+    assert.match(await atlas.getByRole('status').allTextContents()
+      .then(items => items.join(' ')), /Runtime tests: NOT RUN/);
+    const repairs = inspector.getByRole('region', {
+      name: 'Related repair attempts',
+    });
+    assert.match(await repairs.textContent(), /Generated/);
+    assert.match(await repairs.textContent(), /unverified/);
+    assert.ok(await graph.locator('.atlas-node.atlas-qa-flag').count() > 0);
+
+    // A historical frame must not display current QA findings.
+    const replay = atlas.getByRole('region', { name: 'Code Atlas Build Replay' });
+    await replay.getByRole('button', { name: 'Previous' }).click();
+    await replay.getByText('Historical work item #2').waitFor();
+    await graph.getByRole('button', { name: 'File: TaskService.cs' }).click();
+    assert.equal(await inspector.getByRole('region', {
+      name: 'Static QA findings',
+    }).count(), 0);
+    assert.equal(await atlas.getByRole('status').filter({
+      hasText: 'Runtime tests: NOT RUN',
+    }).count(), 0);
+  } finally {
+    await qaPage.close();
+  }
+});
