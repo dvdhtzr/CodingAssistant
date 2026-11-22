@@ -1,0 +1,275 @@
+/* ===========================================================================
+   CodingAssistant — Design System foundation  (M-UX1)
+   "Operations Room + Journey Track" direction.
+
+   This file is imported LAST. It introduces the single token system (dark-first
+   with a complete light palette for later milestones) and re-skins the shared
+   application chrome through those tokens. It does not restructure the DOM, so
+   the existing component contracts and the workbench regression suite are
+   unchanged. Later milestones rebuild individual screens on top of these tokens.
+
+   Fonts are deliberately a local system stack — this is a local-first, offline,
+   no-cloud app, so no web fonts are fetched at runtime.
+   =========================================================================== */
+
+:root {
+  /* ---- surfaces (dark, default) ---- */
+  --ca-bg:#090d15;
+  --ca-panel:#111826;
+  --ca-raised:#16202f;
+  --ca-inset:#0c131f;
+  --ca-line:#1f2a3b;
+  --ca-line-soft:#182134;
+
+  /* ---- ink ---- */
+  --ca-fg:#e9eff7;
+  --ca-muted:#8f9fb4;
+  --ca-faint:#61718700;    /* reserved */
+  --ca-faint:#647284;
+
+  /* ---- brand + semantic ---- */
+  --ca-accent:#e7b55c;         /* signature "mission" gold (CTAs) */
+  --ca-accent-hi:#f0c877;
+  --ca-accent-ink:#2a1e07;
+  --ca-teal:#5fd6c6;           /* structural secondary / links / focus */
+  --ca-good:#3fcf98;           /* verified / running-positive */
+  --ca-warn:#e7b35a;           /* pending / approval required */
+  --ca-att:#e8926f;            /* attention */
+  --ca-bad:#ec6f8e;            /* blocked / error */
+  --ca-info:#5aa9e6;
+
+  /* ---- agent identities ---- */
+  --ca-po:#1fbcd1;  /* Product Owner — cyan */
+  --ca-sa:#8f80f2;  /* Solution Architect — violet */
+  --ca-tl:#e3a93e;  /* Technical Lead — amber */
+  --ca-se:#33c493;  /* Software Engineer — emerald */
+  --ca-qa:#ec6f8e;  /* QA Engineer — rose */
+
+  /* ---- type ---- */
+  --ca-display:"Segoe UI Variable Display","Segoe UI Variable","Segoe UI",system-ui,-apple-system,sans-serif;
+  --ca-sans:"Segoe UI Variable Text","Segoe UI Variable","Segoe UI",system-ui,-apple-system,sans-serif;
+  --ca-mono:"Cascadia Code","Cascadia Mono",ui-monospace,"Segoe UI Mono",Consolas,monospace;
+
+  /* ---- shape / elevation ---- */
+  --ca-r-sm:9px; --ca-r:13px; --ca-r-lg:18px; --ca-r-pill:999px;
+  --ca-shadow:0 18px 48px rgba(0,0,0,.42);
+  --ca-shadow-sm:0 4px 14px rgba(0,0,0,.28);
+
+  color-scheme:dark;
+}
+
+/* Complete light palette — used by migrated screens once a visible theme
+   toggle ships. Defined now so later milestones build light-correct markup. */
+:root[data-theme="light"] {
+  --ca-bg:#f3f3ef;
+  --ca-panel:#ffffff;
+  --ca-raised:#fbfaf7;
+  --ca-inset:#f0efe9;
+  --ca-line:#e4e1d7;
+  --ca-line-soft:#edeae1;
+  --ca-fg:#1b2027;
+  --ca-muted:#5e6774;
+  --ca-faint:#8a93a0;
+  --ca-accent:#b67a1e;
+  --ca-accent-hi:#a76d14;
+  --ca-accent-ink:#fff6e6;
+  --ca-teal:#1c8577;
+  --ca-good:#1c9c6e;
+  --ca-warn:#b2802a;
+  --ca-att:#c56a44;
+  --ca-bad:#c6456a;
+  --ca-info:#2f7fc4;
+  --ca-po:#0f8fa3; --ca-sa:#6a58d6; --ca-tl:#b9811f; --ca-se:#1aa06f; --ca-qa:#c6456a;
+  --ca-shadow:0 14px 36px rgba(40,40,30,.14);
+  --ca-shadow-sm:0 3px 12px rgba(40,40,30,.10);
+  color-scheme:light;
+}
+
+/* ---- global baseline --------------------------------------------------- */
+:root { font-family:var(--ca-sans); background:var(--ca-bg); color:var(--ca-fg); }
+body { background:
+    radial-gradient(130% 90% at 85% -12%, color-mix(in srgb, var(--ca-teal) 9%, transparent), transparent 55%),
+    var(--ca-bg);
+  color:var(--ca-fg); }
+h1,h2,h3,h4 { font-family:var(--ca-display); letter-spacing:-.015em; text-wrap:balance; }
+a { color:var(--ca-teal); }
+:focus-visible { outline:2px solid var(--ca-teal); outline-offset:2px; }
+
+/* ---- shared controls --------------------------------------------------- */
+button {
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r-sm);
+  background:var(--ca-raised);
+  color:var(--ca-fg);
+  font-weight:600;
+}
+button:hover:not(:disabled) { background:color-mix(in srgb,var(--ca-raised) 70%,var(--ca-fg)); border-color:var(--ca-line); }
+.primary {
+  background:linear-gradient(120deg,var(--ca-accent-hi),var(--ca-accent));
+  border:1px solid color-mix(in srgb,var(--ca-accent) 60%,#000);
+  color:var(--ca-accent-ink);
+  box-shadow:none;
+}
+.primary:hover:not(:disabled) { background:linear-gradient(120deg,var(--ca-accent-hi),var(--ca-accent-hi)); filter:brightness(1.03); }
+.outline { background:transparent; border:1px solid var(--ca-line); color:var(--ca-fg); }
+.outline:hover:not(:disabled) { background:var(--ca-raised); }
+.danger { background:color-mix(in srgb,var(--ca-bad) 24%,var(--ca-inset)); border:1px solid color-mix(in srgb,var(--ca-bad) 55%,var(--ca-line)); color:var(--ca-fg); }
+
+input, textarea, select {
+  background:var(--ca-inset);
+  border:1px solid var(--ca-line);
+  color:var(--ca-fg);
+  border-radius:var(--ca-r-sm);
+}
+input::placeholder, textarea::placeholder { color:var(--ca-faint); }
+
+/* ---- surfaces & text helpers ------------------------------------------ */
+.panel, .build-stage, .architect-stage, .spec-review {
+  background:var(--ca-panel);
+  border:1px solid var(--ca-line);
+  border-radius:var(--ca-r);
+  box-shadow:var(--ca-shadow-sm);
+}
+.pill {
+  background:var(--ca-inset);
+  border:1px solid var(--ca-line);
+  color:var(--ca-muted);
+  border-radius:var(--ca-r-pill);
+  font-weight:600;
+}
+.hint, .muted, .wb-muted, .secure { color:var(--ca-muted); }
+.alert {
+  background:color-mix(in srgb,var(--ca-bad) 16%,var(--ca-panel));
+  border:1px solid color-mix(in srgb,var(--ca-bad) 50%,var(--ca-line));
+  border-radius:var(--ca-r-sm);
+  color:var(--ca-fg);
+}
+.success { color:var(--ca-good); }
+.hash, .verified-patch, .specification-text, .draft-files pre {
+  background:var(--ca-inset);
+  border:1px solid var(--ca-line);
+  color:var(--ca-fg);
+  font-family:var(--ca-mono);
+}
+.task { background:var(--ca-raised); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.task.selected { border-color:var(--ca-teal); background:color-mix(in srgb,var(--ca-teal) 12%,var(--ca-raised)); }
+
+/* readable labels — was as small as .56rem */
+.wb-kicker {
+  color:var(--ca-muted);
+  font-size:.7rem;
+  font-weight:700;
+  letter-spacing:.14em;
+}
+
+/* ---- shell chrome ------------------------------------------------------ */
+.wb-header {
+  background:linear-gradient(90deg,var(--ca-panel),var(--ca-inset) 60%,var(--ca-panel));
+  border-bottom:1px solid var(--ca-line);
+  box-shadow:0 1px 0 var(--ca-line);
+}
+.wb-header h1 { color:var(--ca-fg); font-size:1.15rem; }
+.wb-header .wb-brand p { color:var(--ca-muted); }
+.wb-mark {
+  background:radial-gradient(circle at 28% 20%, color-mix(in srgb,var(--ca-teal) 42%,var(--ca-inset)), var(--ca-inset));
+  border:1px solid color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line));
+  color:var(--ca-teal);
+  box-shadow:none;
+}
+.wb-header-context { border-left:1px solid var(--ca-line); }
+.wb-header-context-label { color:var(--ca-muted); }
+.wb-local-pill { border-color:color-mix(in srgb,var(--ca-good) 45%,var(--ca-line)); color:color-mix(in srgb,var(--ca-good) 70%,var(--ca-fg)); }
+.wb-local-dot { background:var(--ca-good); box-shadow:0 0 9px color-mix(in srgb,var(--ca-good) 60%,transparent); }
+.wb-execution-pill { background:var(--ca-inset); border-color:var(--ca-line); color:var(--ca-warn); }
+
+.wb-sidebar { background:linear-gradient(180deg,var(--ca-panel),var(--ca-inset)); border-right:1px solid var(--ca-line); }
+.wb-sidebar-rail { background:linear-gradient(var(--ca-teal), color-mix(in srgb,var(--ca-teal) 30%,var(--ca-inset))); }
+.wb-new-project {
+  background:linear-gradient(120deg,var(--ca-accent-hi),var(--ca-accent));
+  border:1px solid color-mix(in srgb,var(--ca-accent) 55%,#000);
+  color:var(--ca-accent-ink);
+  box-shadow:none;
+  font-weight:650;
+}
+.wb-nav-item { color:var(--ca-muted); font-size:.86rem; border:1px solid transparent; }
+.wb-nav-item:hover { background:var(--ca-raised); color:var(--ca-fg); }
+.wb-nav-icon { background:var(--ca-inset); border:1px solid var(--ca-line); color:var(--ca-muted); }
+.wb-nav-item.wb-selected {
+  background:color-mix(in srgb,var(--ca-teal) 14%,var(--ca-panel));
+  border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line));
+  color:var(--ca-fg);
+  box-shadow:inset 3px 0 var(--ca-teal);
+}
+.wb-nav-item.wb-selected .wb-nav-icon { background:color-mix(in srgb,var(--ca-teal) 30%,var(--ca-inset)); border-color:color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line)); color:var(--ca-teal); }
+.wb-project-link.wb-project-active { background:color-mix(in srgb,var(--ca-teal) 12%,var(--ca-inset)); border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line)); }
+.wb-project-switcher-trigger { background:var(--ca-raised); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+
+/* calmer workspace: drop the grid-paper, keep a soft ambient wash */
+.wb-main {
+  background:
+    radial-gradient(120% 70% at 50% -12%, color-mix(in srgb,var(--ca-teal) 8%,transparent), transparent 46%),
+    var(--ca-bg);
+  background-size:auto,auto;
+}
+.wb-inspector { background:var(--ca-panel); border-left:1px solid var(--ca-line); }
+
+/* ---- status + journey color mapping ----------------------------------- */
+.wb-status-card { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.wb-status-card::before { background:var(--ca-line); }
+.wb-status-card[data-state="complete"]::before { background:var(--ca-good); }
+.wb-status-card[data-state="attention"]::before { background:var(--ca-warn); }
+.wb-status-card[data-state="active"]::before { background:var(--ca-teal); }
+.wb-status-card[data-state="blocked"]::before { background:var(--ca-bad); }
+
+.journey-stage { background:var(--ca-panel); border:1px solid var(--ca-line); border-left:3px solid var(--ca-line); border-radius:var(--ca-r); }
+.journey-stage.journey-open { border-color:color-mix(in srgb,var(--ca-teal) 45%,var(--ca-line)); border-left-color:var(--ca-teal); }
+.journey-stage.journey-complete { border-left-color:var(--ca-good); }
+.journey-stage.journey-attention { border-left-color:var(--ca-warn); }
+.journey-stage.journey-blocked { border-left-color:var(--ca-bad); }
+.journey-trigger { background:var(--ca-raised); }
+.journey-progress-segment { background:var(--ca-line); }
+.journey-progress-segment.journey-complete { background:var(--ca-good); }
+.journey-progress-segment.journey-active { background:var(--ca-teal); }
+.journey-progress-segment.journey-attention { background:var(--ca-warn); }
+.journey-progress-segment.journey-blocked { background:var(--ca-bad); }
+.mc-work-focus { background:var(--ca-panel); border:1px solid color-mix(in srgb,var(--ca-teal) 30%,var(--ca-line)); border-radius:var(--ca-r); }
+
+/* ---- Command surface (will be rebuilt in M-UX3, tokenized now) --------- */
+.mc-next-action { background:color-mix(in srgb,var(--ca-teal) 10%,var(--ca-panel)); border:1px solid color-mix(in srgb,var(--ca-teal) 32%,var(--ca-line)); border-radius:var(--ca-r); }
+.mc-command-panel, .mc-operation, .mc-decision-queue { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+
+/* ---- agent identity hues (shared mapping) ------------------------------ */
+.mc-agent-card[data-accent="visionary"]  { border-left:3px solid var(--ca-po); }
+.mc-agent-card[data-accent="designer"]    { border-left:3px solid var(--ca-sa); }
+.mc-agent-card[data-accent="strategist"]  { border-left:3px solid var(--ca-tl); }
+.mc-agent-card[data-accent="builder"]     { border-left:3px solid var(--ca-se); }
+.mc-agent-card[data-accent="guardian"]    { border-left:3px solid var(--ca-qa); }
+.mc-agent-card { background:var(--ca-raised); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.mc-agent-emblem { background:var(--ca-inset); color:var(--ca-fg); }
+.mc-agent-card[data-accent="visionary"]  .mc-agent-emblem { background:color-mix(in srgb,var(--ca-po) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-po) 70%,#fff); }
+.mc-agent-card[data-accent="designer"]   .mc-agent-emblem { background:color-mix(in srgb,var(--ca-sa) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-sa) 70%,#fff); }
+.mc-agent-card[data-accent="strategist"] .mc-agent-emblem { background:color-mix(in srgb,var(--ca-tl) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-tl) 72%,#fff); }
+.mc-agent-card[data-accent="builder"]    .mc-agent-emblem { background:color-mix(in srgb,var(--ca-se) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-se) 70%,#fff); }
+.mc-agent-card[data-accent="guardian"]   .mc-agent-emblem { background:color-mix(in srgb,var(--ca-qa) 26%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-qa) 72%,#fff); }
+.mc-agent-active { color:var(--ca-good); }
+
+/* sidebar team avatars → unified hue set */
+.wb-team-member:nth-of-type(1) .wb-avatar { background:color-mix(in srgb,var(--ca-po) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-po) 72%,#fff); }
+.wb-team-member:nth-of-type(2) .wb-avatar { background:color-mix(in srgb,var(--ca-sa) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-sa) 72%,#fff); }
+.wb-team-member:nth-of-type(3) .wb-avatar { background:color-mix(in srgb,var(--ca-tl) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-tl) 74%,#fff); }
+.wb-team-member:nth-of-type(4) .wb-avatar { background:color-mix(in srgb,var(--ca-se) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-se) 72%,#fff); }
+.wb-team-member:nth-of-type(5) .wb-avatar { background:color-mix(in srgb,var(--ca-qa) 30%,var(--ca-inset)); color:color-mix(in srgb,var(--ca-qa) 74%,#fff); }
+
+/* decision queue accents */
+.mc-queue-list li[data-kind="approval"] button { border-left:3px solid var(--ca-warn); }
+.mc-queue-list li[data-kind="qa-review"] button { border-left:3px solid var(--ca-qa); }
+.mc-queue-list li[data-kind="blocked"] button { border-left:3px solid var(--ca-att); }
+
+/* login / new-project hero */
+.login.panel, .new-project-panel {
+  background:radial-gradient(circle at 85% 0%, color-mix(in srgb,var(--ca-teal) 16%,transparent), transparent 42%), var(--ca-panel);
+  border:1px solid color-mix(in srgb,var(--ca-teal) 30%,var(--ca-line));
+}
+
+/* honor reduced motion for anything added here (no new motion in M-UX1) */
+@media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto; } }
