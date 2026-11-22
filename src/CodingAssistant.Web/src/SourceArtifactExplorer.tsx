@@ -106,13 +106,13 @@ function FolderTree({ folder, selectedPath, onSelect, depth, searching }: {
 }
 
 /**
- * Actual persisted MAF or legacy file content only. Never evaluates code,
+ * Actual persisted source file content only. Never evaluates code,
  * fetches arbitrary paths, grants a skill, or claims build/test verification.
  */
 export function SourceArtifactExplorer({ files, source, state, runId,
   isCurrent, assignments = [] }: {
   files: readonly SourceArtifactFile[];
-  source: 'MAF Software Engineer' | 'Classic generator';
+  source: 'MAF Software Engineer' | 'Saved draft';
   state: 'Running' | 'Generated' | 'Failed' | 'Interrupted';
   runId: string;
   isCurrent: boolean;
@@ -214,7 +214,7 @@ export function SourceArtifactExplorer({ files, source, state, runId,
               task ? 'Task ' + (task.ordinal + 1) + ': ' + task.title +
                 ' (' + selected.lastWorkItemId + ')' :
                 'Engineering task ' + selected.lastWorkItemId :
-              'Classic draft generator (per-file task not recorded)'}</dd></div>
+              'Saved source (per-file task not recorded)'}</dd></div>
             {(selected.updatedUtc ?? selected.createdUtc) && <div>
               <dt>Saved at</dt>
               <dd><time dateTime={selected.updatedUtc ?? selected.createdUtc}>
