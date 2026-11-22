@@ -105,6 +105,13 @@ public sealed class RepairCycleCoordinator(
         }
         catch (OperationCanceledException)
         {
+            try
+            {
+                var current = cycles.Get(cycle.TaskId, cycle.Id);
+                if (current.Review?.Job.State == "Running")
+                    qa.Cancel(cycle.TaskId, current.Review.Job.Id);
+            }
+            catch (StoreFailure) { }
             try { engineering.Interrupt(cycle.TaskId, cycle.EngineeringRunId); }
             catch (StoreFailure) { }
             try { cycles.SetState(cycle.TaskId, cycle.Id, "Interrupted",
