@@ -61,25 +61,30 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
         string model, CancellationToken cancellation)
     {
         var history = InterviewHistory(objective, messages);
-        var response = await InvokeAsync("ProductOwner", MafAgentPurpose.Interview,
-            LocalInterviewModel.InterviewPolicy, model, history, cancellation);
-        try
+        // Share the duplicate guard with the direct Ollama path; the MAF
+        // agent gets one corrective retry without mutating saved history.
+        for (var attempt = 0; attempt < 2; attempt++)
         {
-            return LocalInterviewModel.ParseInterviewReply(response);
-        }
-        catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
-        {
-            history.Add(new ChatMessage(ChatRole.User,
-                "The previous answer was unusable. Respond ONLY with a valid JSON " +
-                "object containing a nonempty 'message' with one relevant " +
-                "question and a boolean 'readyForSpecification'. " +
-                "For a guided answer include optional 'choice' with kind " +
-                "'single' or 'multiple' and 2-5 project-specific string options. " +
-                "For an open question omit choice. No reasoning or code fences."));
-            var retry = await InvokeAsync("ProductOwner", MafAgentPurpose.Interview,
+            var response = await InvokeAsync("ProductOwner", MafAgentPurpose.Interview,
                 LocalInterviewModel.InterviewPolicy, model, history, cancellation);
-            return LocalInterviewModel.ParseInterviewReply(retry);
+            try
+            {
+                var reply = LocalInterviewModel.ParseInterviewReply(response);
+                if (!InterviewQuestionQuality.RepeatsResolvedQuestion(reply, messages))
+                    return reply;
+                if (attempt == 1)
+                    return InterviewQuestionQuality.RepetitionFallback();
+            }
+            catch (StoreFailure error) when (
+                error.Code == "MODEL_OUTPUT_REJECTED" && attempt == 0)
+            {
+                // A malformed candidate may be corrected, not saved.
+            }
+            if (attempt == 0)
+                history.Add(new ChatMessage(ChatRole.User,
+                    InterviewQuestionQuality.Correction));
         }
+        throw new StoreFailure("MODEL_OUTPUT_REJECTED");
     }
 
     public async Task<string> DraftAsync(
