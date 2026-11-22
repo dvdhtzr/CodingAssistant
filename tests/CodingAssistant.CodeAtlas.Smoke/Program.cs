@@ -704,6 +704,94 @@ Check(moduleGraph.SourceRevision == moduleReordered.SourceRevision &&
             (e.Kind, e.SourceId, e.TargetId))),
     "module edges and revisions are stable across source-file order");
 
+// M8.11: local named imports may target only explicitly exported symbols.
+var symbolSources = new[]
+{
+    File("ui/entry.tsx", """
+        import { Widget, make as renamed, IWidget, arrow } from './lib';
+        import type { IWidget as AnInterface } from './lib';
+        import { Hidden } from './lib';
+        import { Foreign } from 'third-party';
+        import { Missing } from './absent';
+        import { Widget } from './ambiguous';
+        // import { Fake } from './lib';
+        const fake = "import { Trap } from './lib'";
+        const dynamic = import('./lib');
+        export { Widget } from './lib';
+        """),
+    File("ui/lib.ts", """
+        export class Widget { render() {} }
+        export interface IWidget { read(): void; }
+        export function make(value: number) { return value; }
+        export const arrow = (n: number) => n + 1;
+        class Hidden {}
+        // export class Fake {}
+        const fake = "export class Trap {}";
+        """),
+    File("ui/ambiguous.ts", "export class Widget {}"),
+    File("ui/ambiguous.js", "export class Widget {}")
+};
+var symbolGraph = CodeAtlasIndexer.Index("symbol-run", symbolSources);
+var symbolNodes = symbolGraph.Nodes.Where(n => n.Kind == "File" &&
+    n.Path is not null).ToDictionary(n => n.Path!, n => n.Id);
+var symbolLinks = symbolGraph.Edges.Where(e =>
+    e.Kind == "SymbolImports").ToArray();
+Check(symbolLinks.Length == 4 &&
+    symbolLinks.All(e =>
+        e.SourceId == symbolNodes["ui/entry.tsx"] &&
+        e.Resolution == "ExplicitLocalNamedExport" &&
+        e.EvidencePath == "ui/entry.tsx" && e.EvidenceLine > 0),
+    "only four explicit, uniquely declared exports produce source-backed links");
+Check(new[] { ("Class", "Widget"), ("Interface", "IWidget"),
+    ("Function", "make("), ("Function", "arrow(") }.All(symbol =>
+    symbolLinks.Any(edge => symbolGraph.Nodes.Any(n =>
+        n.Id == edge.TargetId && n.Kind == symbol.Item1 &&
+        n.Path == "ui/lib.ts" &&
+        n.Name.StartsWith(symbol.Item2, StringComparison.Ordinal)))),
+    "named exports resolve their actual class, interface or function declarations");
+Check(!symbolLinks.Any(edge => symbolGraph.Nodes.Any(n =>
+    n.Id == edge.TargetId && (n.Name.Contains("Hidden") ||
+        n.Name.Contains("Fake") || n.Name.Contains("Trap") ||
+        n.Path == "ui/ambiguous.ts" || n.Path == "ui/ambiguous.js"))),
+    "non-exported, comment/string, ambiguous and dynamic imports invent no links");
+Check(!symbolGraph.Edges.Any(e => e.Kind is "Calls" or "Inherits" or
+    "Implements" or "ConstructorDependsOn"),
+    "named exports are source references, never fabricated call or type semantics");
+var classNode = symbolGraph.Nodes.Single(n => n.Kind == "Class" &&
+    n.Path == "ui/lib.ts" && n.Name == "Widget");
+var symbolTrace = CodeAtlasPathFinder.Trace(symbolGraph,
+    symbolNodes["ui/entry.tsx"], classNode.Id);
+Check(symbolTrace.Found && symbolTrace.Edges.Count == 1 &&
+    symbolTrace.Edges[0].Kind == "SymbolImports",
+    "source-level symbol import is navigable through existing path tracing");
+var reorderedSymbols = CodeAtlasIndexer.Index("symbol-run",
+    symbolSources.Reverse().ToArray());
+Check(symbolGraph.SourceRevision == reorderedSymbols.SourceRevision &&
+    symbolGraph.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(reorderedSymbols.Edges.Select(e =>
+            (e.Kind, e.SourceId, e.TargetId))),
+    "symbol-level edges are deterministic across reordered input files");
+var unexported = CodeAtlasIndexer.Index("unexported", new[]
+{
+    File("main.js", "import { Secret } from './service';"),
+    File("service.js", "class Secret {}")
+});
+Check(!unexported.Edges.Any(e => e.Kind == "SymbolImports"),
+    "importing a private declaration does not confer a named export");
+var ambiguousExport = CodeAtlasIndexer.Index("ambiguous-export", new[]
+{
+    File("main.ts", "import { duplicate } from './library';"),
+    File("library.ts", """
+        export function duplicate(n: number) { return n; }
+        export function duplicate(value: string) { return value; }
+        """)
+});
+Check(ambiguousExport.Diagnostics.Any(d =>
+    d.StartsWith("ECMA_EXPORT_AMBIGUOUS:", StringComparison.Ordinal)) &&
+    ambiguousExport.Coverage == "PARTIAL_ECMA_STRUCTURE" &&
+    !ambiguousExport.Edges.Any(e => e.Kind == "SymbolImports"),
+    "ambiguous named exports fail closed with partial-coverage diagnostics");
+
 // M4: only Roslyn-resolved, source-backed relationships may become graph edges.
 var semanticFiles = new[]
 {

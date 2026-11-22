@@ -13,7 +13,8 @@ public static class CodeAtlasPathFinder
 {
     private static readonly HashSet<string> NavigableKinds = new(
         ["Calls", "Inherits", "Implements", "ConstructorDependsOn",
-         "ProjectReferences", "ModuleImports", "MarkupReferences",
+         "ProjectReferences", "ModuleImports", "SymbolImports",
+         "MarkupReferences",
          "Contains", "Declares"],
         StringComparer.Ordinal);
 

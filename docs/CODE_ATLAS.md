@@ -177,3 +177,11 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Emit directed file-to-file `ModuleImports` edges with actual source file, line and `ExplicitJavaTypeSource` evidence. Path-tracing, replay and imported-commit diff can reuse the existing graph contract.
 - Static imports, wildcard imports, external and standard-library types, comment/string decoys, missing types and multiple conflicting local declarations do not become guessed links. Duplicate matching package/type declarations are diagnosed as partial coverage.
 - This is **source-level dependency evidence, not javac-backed symbol resolution or proof that an import compiles**. No Java code, shell, package, build, classpath or project configuration is executed or trusted.
+
+## M8.11 — Named JavaScript/TypeScript import-to-symbol navigation
+
+- M8 now links `import { Symbol as Alias } from './local-module'` and `import type { Interface } from './local-module'` directly to an **indexed, uniquely named, directly exported** class, interface or function in the exact saved source snapshot. Named arrow-function declarations are included.
+- Each `SymbolImports` file-to-symbol edge has its importing path/line and `ExplicitLocalNamedExport` resolution. Existing bounded path tracing, replay and commit drift can navigate or compare the links.
+- Local module resolution reuses the original M8.4 safe literal path logic. Dynamic imports, package imports, missing or ambiguous local modules, implicit/default exports, namespace imports, re-exports and private/non-exported declarations never produce guessed symbol links. Duplicate ambiguous export declarations result in partial-coverage diagnostics.
+- This is **deeper source-backed symbol resolution**, not the TypeScript language service. Inheritance, arbitrary callers/callees, type inference, computed exports, dynamic bindings and runtime invocation remain unverified and are reserved for later qualified semantic work.
+- No untrusted JavaScript, dependency installation, build, network fetch or process execution is introduced. Existing graph caps, source revision identity, independent QA and owner approval/security boundaries remain intact.

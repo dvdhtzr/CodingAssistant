@@ -288,6 +288,86 @@ public static class CodeAtlasEcmaIndexer
         };
     }
 
+
+    private sealed record NamedImport(string Module, string Name, int Line);
+
+    /// <summary>
+    /// Only simple, top-level ES named imports with an ordinary literal
+    /// relative module. No default, namespace, dynamic, re-export, alias
+    /// resolution, type checking, package lookup, or executable JS.
+    /// </summary>
+    private static IReadOnlyList<NamedImport> NamedImports(
+        IReadOnlyList<Token> tokens)
+    {
+        var found = new List<NamedImport>();
+        for (var i = 0; i + 3 < tokens.Count; i++)
+        {
+            if (tokens[i].Depth != 0 || tokens[i].Text != "import" ||
+                (i > 0 && tokens[i - 1].Text == ".")) continue;
+            var start = i + 1;
+            if (tokens[start].Text == "type") start++;
+            if (start >= tokens.Count || tokens[start].Text != "{") continue;
+            var end = Closing(tokens, start, "{", "}", tokens.Count);
+            if (end < 0 || end + 2 >= tokens.Count ||
+                tokens[end + 1].Text != "from" ||
+                tokens[end + 2].Text != LiteralToken ||
+                tokens[end + 2].Literal is not { } module) continue;
+            var names = new List<string>();
+            var valid = true;
+            var j = start + 1;
+            while (j < end)
+            {
+                if (names.Count == 32) { valid = false; break; }
+                if (tokens[j].Text == "type") j++;
+                if (j >= end || !Word(tokens[j].Text) ||
+                    tokens[j].Text is "as" or "default")
+                { valid = false; break; }
+                var importedName = tokens[j++].Text;
+                if (j < end && tokens[j].Text == "as")
+                {
+                    j++;
+                    if (j >= end || !Word(tokens[j].Text))
+                    { valid = false; break; }
+                    j++;
+                }
+                names.Add(importedName);
+                if (j == end) break;
+                if (tokens[j].Text != ",") { valid = false; break; }
+                j++;
+            }
+            if (valid)
+                found.AddRange(names.Select(name =>
+                    new NamedImport(module, name, tokens[i].Line)));
+            i = end + 2;
+        }
+        return found;
+    }
+
+    private static IReadOnlyList<(string Name, string Kind)> DirectExports(
+        IReadOnlyList<Token> tokens)
+    {
+        var exports = new List<(string Name, string Kind)>();
+        for (var i = 0; i + 2 < tokens.Count; i++)
+        {
+            if (tokens[i].Depth != 0 || tokens[i].Text != "export")
+                continue;
+            var j = i + 1;
+            if (tokens[j].Text is "declare" or "async") j++;
+            if (j + 1 >= tokens.Count || !Word(tokens[j + 1].Text))
+                continue;
+            var kind = tokens[j].Text switch
+            {
+                "class" => "Class",
+                "interface" => "Interface",
+                "function" or "const" => "Function",
+                _ => ""
+            };
+            if (kind.Length > 0)
+                exports.Add((tokens[j + 1].Text, kind));
+        }
+        return exports;
+    }
+
     public static AtlasSnapshot Enrich(AtlasSnapshot graph,
         IReadOnlyList<EngineeringSourceFile> source)
     {
@@ -305,6 +385,8 @@ public static class CodeAtlasEcmaIndexer
             StringComparer.Ordinal);
         var diagnostics = graph.Diagnostics.ToList();
         var incomplete = false;
+        var tokenCache = new Dictionary<string, List<Token>>(
+            StringComparer.Ordinal);
 
         string Add(string kind, string identity, string label,
             string parent, string path, int line)
@@ -346,6 +428,7 @@ public static class CodeAtlasEcmaIndexer
             var fileNode = files[file.Path];
             var tokens = Lex(file.Content, file.Path, diagnostics,
                 out var lexIncomplete);
+            tokenCache[file.Path] = tokens;
             incomplete |= lexIncomplete;
             var identity = graph.RunId + "|" + file.Path + "|";
             foreach (var (literal, line) in Imports(tokens))
@@ -457,6 +540,53 @@ public static class CodeAtlasEcmaIndexer
                 var signature = binding + "(arrow)";
                 Declare("Function", signature, signature, fileNode.Id, token.Line);
                 i = arrow;
+            }
+        }
+
+        // M8.11: A named import can target only a DIRECT, uniquely indexed
+        // export in the same saved graph. This is a source-level symbol
+        // reference, not a call edge or compiler-backed semantic binding.
+        var exported = new Dictionary<string,
+            Dictionary<string, AtlasNode>>(StringComparer.Ordinal);
+        foreach (var file in candidates)
+        {
+            var exports = new Dictionary<string, AtlasNode>(
+                StringComparer.Ordinal);
+            var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (name, kind) in DirectExports(tokenCache[file.Path]))
+            {
+                var matches = nodes.Values.Where(n => n.Path == file.Path &&
+                    n.Kind == kind &&
+                    (kind == "Function"
+                        ? n.Name.StartsWith(name + "(", StringComparison.Ordinal)
+                        : n.Name == name)).ToArray();
+                if (matches.Length != 1 || !exports.TryAdd(name, matches[0]))
+                {
+                    ambiguous.Add(name);
+                    exports.Remove(name);
+                }
+            }
+            foreach (var name in ambiguous)
+            {
+                incomplete = true;
+                if (diagnostics.Count < 64)
+                    diagnostics.Add("ECMA_EXPORT_AMBIGUOUS:" + file.Path +
+                        ":" + name);
+            }
+            exported[file.Path] = exports;
+        }
+
+        foreach (var file in candidates)
+        {
+            foreach (var imported in NamedImports(tokenCache[file.Path]))
+            {
+                var (target, _) = Resolve(file.Path, imported.Module, files);
+                if (target is null || !exported.TryGetValue(target,
+                    out var declarations) ||
+                    !declarations.TryGetValue(imported.Name, out var symbol))
+                    continue;
+                Link(files[file.Path].Id, symbol.Id, "SymbolImports",
+                    file.Path, imported.Line, "ExplicitLocalNamedExport");
             }
         }
         var hasCSharp = source.Any(f => files.ContainsKey(f.Path) &&
