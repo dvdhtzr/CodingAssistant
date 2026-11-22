@@ -110,6 +110,7 @@ public sealed class RepairTriageStore(TaskStore tasks)
                 ORDER BY created_utc DESC,id DESC LIMIT 1
                 """, ("@task", taskId)) != qaId)
             throw new StoreFailure("SOURCE_CHANGED");
+        EngineeringRun source;
         using (var binding = TaskStore.Command(db, tx, """
             SELECT id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
                 architecture_sha256,model,state,phase,error_code,created_utc,
@@ -118,14 +119,14 @@ public sealed class RepairTriageStore(TaskStore tasks)
         using (var reader = binding.ExecuteReader())
         {
             if (!reader.Read()) throw new StoreFailure("SOURCE_CHANGED");
-            var source = new EngineeringRun(reader.GetString(0), reader.GetString(1),
+            source = new EngineeringRun(reader.GetString(0), reader.GetString(1),
                 reader.GetInt32(2), reader.GetString(3), reader.GetInt32(4),
                 reader.GetString(5), reader.GetString(6), reader.GetString(7),
                 reader.GetString(8), reader.GetString(9),
                 reader.IsDBNull(10) ? null : reader.GetString(10),
                 reader.GetString(11), reader.GetString(12));
-            EngineeringRunStore.RequireBinding(db, tx, source);
         }
+        EngineeringRunStore.RequireBinding(db, tx, source);
 
         // Bind triage to the full immutable source, not just a model's path.
         var files = new List<EngineeringSourceFile>();
