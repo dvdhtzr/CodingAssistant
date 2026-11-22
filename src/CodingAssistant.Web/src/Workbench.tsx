@@ -184,10 +184,10 @@ export function WorkbenchInspector({ token, view, taskView, run, status, onConti
       <div className="wb-inspector-row"><span>Project</span><strong>{taskView.task.title}</strong></div>
       <div className="wb-inspector-row"><span>Project record</span><strong>{taskView.task.status}</strong></div>
       <div className="wb-inspector-row"><span>Current view</span><strong>{
-        view === 'diagnostics' ? 'Legacy diagnostics' :
+        view === 'diagnostics' ? 'Developer tools' :
           view[0].toUpperCase() + view.slice(1)
       }</strong></div>
-      {run && <div className="wb-inspector-row"><span>Legacy run state</span>
+      {run && <div className="wb-inspector-row"><span>Saved run state</span>
         <strong>{run.state}</strong></div>}
       {view !== 'work' && <button type="button" className="wb-inspector-action"
         onClick={onContinue}>Open Engineering Studio</button>}
@@ -247,7 +247,7 @@ export function ProjectOverview({ token, task, onContinue, onDiagnostics }: {
       if (loading) return;
       loading = true;
       try {
-        const [interview, architecture, legacy, plans, engineering] = await Promise.all([
+        const [interview, architecture, archive, plans, engineering] = await Promise.all([
           api<{ specification: OverviewSnapshot['specification'] }>(token,
             '/api/tasks/' + task.id + '/interview'),
           api<NonNullable<OverviewSnapshot['architecture']>>(token,
@@ -262,7 +262,7 @@ export function ProjectOverview({ token, task, onContinue, onDiagnostics }: {
         if (!closed) {
           setData({
             specification: interview.specification,
-            architecture, draft: legacy.snapshot, plan: plans.plan,
+            architecture, draft: archive.snapshot, plan: plans.plan,
             engineering: engineering.snapshot,
           });
           setError('');
@@ -312,7 +312,7 @@ export function ProjectOverview({ token, task, onContinue, onDiagnostics }: {
       <button type="button" className="primary" onClick={onContinue}>
         {data ? nextAction : 'Continue in Engineering Studio'} <span aria-hidden="true">→</span>
       </button>
-      <button type="button" className="outline" onClick={onDiagnostics}>Legacy diagnostics</button>
+      <button type="button" className="outline" onClick={onDiagnostics}>Developer tools</button>
     </div>
     {error && <div className="alert" role="alert">{error}</div>}
     {!data && !error && <p className="hint" role="status">Loading saved project state…</p>}
@@ -391,9 +391,7 @@ export function ProjectOverview({ token, task, onContinue, onDiagnostics }: {
             {run.files.slice(0, 4).map(file => <li key={file.path}>{file.path}</li>)}
             {run.files.length > 4 && <li>+ {run.files.length - 4} additional files</li>}
           </ul>}
-          <div className="wb-legacy-state"><span>LEGACY GENERATION · SEPARATE WORKFLOW</span>
-            <strong>{data.draft?.job.state ?? 'Not generated'}</strong>
-            <small>{data.draft?.job.phase ?? 'No saved legacy artifacts'}</small></div>
+
         </section>
       </div>
     </>}

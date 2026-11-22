@@ -93,7 +93,7 @@ test('Command gives a next action but no permission or fabricated verification',
   assert.match(html, /Inspect ongoing engineering/);
   assert.match(html, /Recorded running/);
   assert.match(html, /Work item W1/);
-  assert.match(html, /Legacy diagnostics/);
+  assert.doesNotMatch(html, /Legacy diagnostics|Classic generator|Developer tools/);
   assert.doesNotMatch(html, /Authorize this exact M1 plan|Approval granted|Verified build/);
 });
 test('draft specification takes precedence over generating-source suggestion', () => {

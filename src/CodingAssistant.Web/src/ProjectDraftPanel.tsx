@@ -282,8 +282,12 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
       <section className="build-stage" aria-label="Task-specific project draft generation">
         <EngineeringGenerationPanel engine={engineer}
           legacyRunning={running} />
-        <div className="wb-inspector-divider" />
-        <h3>Classic source generator (fallback)</h3>
+        <details className="mc-work-secondary" open={running || !!job?.errorCode}>
+          <summary>Additional source-generation options</summary>
+          <div className="mc-work-secondary-content">
+          <p className="hint">Use the Software Engineer workflow above for new projects.
+            This separate source-drafting option remains available to inspect or
+            continue previously saved work; its output is not built or tested.</p>
         <p className="hint">With an approved Product Owner specification and both
           Solution Architect decisions, your local model writes source files one by one.
           This does not execute, compile, test, or install anything. Files are unverified drafts.</p>
@@ -365,7 +369,7 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
               Architecture decisions have changed since this draft began.</p>}
           </>}
           {!result?.architecture && <p className="hint">
-            Legacy specification-only draft (not bound to architecture decisions).</p>}
+            This saved draft has no architecture binding and cannot establish current approval.</p>}
           <h3>Saved generation activity</h3>
           <ol className="events" aria-label="Saved generation activity">
             {(result?.events ?? []).map(event => <li key={event.sequence}>
@@ -378,6 +382,8 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
             </li>)}
           </ol>
         </div>}
+          </div>
+        </details>
       </section>
     </JourneyStage>
 
@@ -405,26 +411,28 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
             {busy === 'download' ? 'Preparing ZIP…' : 'Download project ZIP'}
           </button>}
           {job?.state === 'Generated' && spec?.status === 'Approved' &&
-            <button type="button" disabled={!!busy}
-              onClick={() => void downloadAgentContract()}>
-              {busy === 'contract' ? 'Preparing…' : 'Download agent pilot contract'}
-            </button>}
+            <details className="mc-work-secondary">
+              <summary>Additional engineering export</summary>
+              <button type="button" disabled={!!busy}
+                onClick={() => void downloadAgentContract()}>
+                {busy === 'contract' ? 'Preparing…' : 'Download agent contract'}
+              </button>
+            </details>}
         </div>
         {!job && <p className="hint">No generated files yet. Start with Source Generation.</p>}
         {!!result?.files.length && job && <details className="mc-work-secondary">
-          <summary>Inspect classic-generator source files ({result.files.length})</summary>
+          <summary>Inspect additional saved source files ({result.files.length})</summary>
           <SourceArtifactExplorer key={job.id}
-            source="Classic generator" files={result.files} state={job.state}
+            source="Saved draft" files={result.files} state={job.state}
             runId={job.id} isCurrent={currentSpec && currentArchitecture}/>
         </details>}
         {job?.state === 'Generated' && spec?.status === 'Approved' &&
           currentSpec &&
           <TaskBuildPanel token={token} taskId={taskId}
             specificationSha256={spec.sha256} />}
-        <p className="hint">Source-only generation and task-specific scope review
-          are separate from independently verified coding. The restricted
-          OpenCode pilot remains a separate qualification path, and security
-          issue #76 must be cleared before executable coding can be enabled.</p>
+        <p className="hint">Generated source and static reviews are not
+          independent compilation, browser testing or runtime verification.
+          Executable coding remains subject to host qualification and explicit authorization.</p>
       </section>
     </JourneyStage>
   </>;

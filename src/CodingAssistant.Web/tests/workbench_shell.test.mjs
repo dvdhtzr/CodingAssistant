@@ -123,3 +123,19 @@ test('Work focuses on one stage and keeps approval and QA workflows available on
   assert.match(css, /\.mc-work-qa-details/);
   assert.doesNotMatch(work, /setExpanded\(null\)/);
 });
+
+test('current Mission Control surfaces omit obsolete generation and diagnostics labels', () => {
+  const command = readFileSync('src/CommandActivity.tsx', 'utf8');
+  const work = readFileSync('src/ProjectDraftPanel.tsx', 'utf8');
+  const source = readFileSync('src/SourceArtifactExplorer.tsx', 'utf8');
+  const timeline = readFileSync('src/VerificationTimeline.tsx', 'utf8');
+  const app = readFileSync('src/App.tsx', 'utf8');
+  assert.doesNotMatch(command, /Legacy diagnostics|Classic generator/);
+  assert.match(work, /<summary>Additional source-generation options<\/summary>/);
+  assert.match(work, /open=\{running \|\| !!job\?\.errorCode\}/);
+  assert.match(work, /source="Saved draft"/);
+  assert.doesNotMatch(work, /Classic source generator|Legacy specification-only draft|agent pilot contract/);
+  assert.match(source, /Saved source \(per-file task not recorded\)/);
+  assert.doesNotMatch(timeline, /legacy C# pilot/i);
+  assert.doesNotMatch(app, /Legacy diagnostics|Legacy single-file HTML preview/);
+});
