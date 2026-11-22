@@ -97,6 +97,8 @@ public static class ApiHost
         var qaReviews = new QaReviewStore(store, implementationPlans);
         qaReviews.Initialize();
         qaReviews.MarkInterruptedOnStartup();
+        var repairProposals = new RepairProposalStore(store);
+        repairProposals.Initialize();
         var qaEngineer = qaReviewerOverride ?? new MafQaEngineer();
         var sourceSmokeRunner = sourceSmokeOverride ??
             new WindowsDockerSourceSmokeRunner(settings.RepositoryRoot);
@@ -165,6 +167,7 @@ public static class ApiHost
         builder.Services.AddSingleton<IEngineeringTaskModel>(softwareEngineer);
         builder.Services.AddSingleton<EngineeringRunCoordinator>();
         builder.Services.AddSingleton(qaReviews);
+        builder.Services.AddSingleton(repairProposals);
         builder.Services.AddSingleton<IQaSourceReviewer>(qaEngineer);
         builder.Services.AddSingleton<QaReviewCoordinator>();
         builder.Services.AddSingleton<ILocalSourceSmokeRunner>(sourceSmokeRunner);
@@ -587,6 +590,16 @@ public static class ApiHost
         // Phase 5: independent, read-only MAF QA. Owner must initiate a
         // completed, current-plan engineering run. Static review is NOT a
         // build, execution, test run, security qualification or PASS.
+        // R1: a persisted, immutable triage proposal, not a repair or test run.
+        app.MapGet("/api/tasks/{id}/repair-proposals/latest",
+            (string id, RepairProposalStore db) =>
+                Safe(() => Results.Ok(new { proposal = db.Latest(id) })));
+        app.MapPost("/api/tasks/{id}/repair-proposals",
+            (string id, CreateRepairProposalRequest request,
+             RepairProposalStore db) =>
+                Safe(() => Results.Created(
+                    $"/api/tasks/{id}/repair-proposals/latest",
+                    db.Propose(id, request))));
         app.MapGet("/api/tasks/{id}/qa-reviews/latest",
             (string id, QaReviewStore db) =>
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
