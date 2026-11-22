@@ -123,6 +123,44 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "MAF repetition loop ends with owner-controlled specification review");
 }
 
+// Regression for the live interview: thirteen owner answers, thirteen Product
+// Owner questions, plus the deterministic completion handoff are 27 messages.
+// All saved decisions must reach the model when drafting a specification.
+{
+    Check(InterviewStore.MaxTranscriptMessages == 27,
+        "transcript limit includes the last answer and completion handoff");
+    var completeHistory = Enumerable.Range(1, InterviewStore.MaxTranscriptMessages)
+        .Select(index => new InterviewMessage(index,
+            index % 2 == 0 ? "owner" : "assistant",
+            index % 2 == 0
+                ? $"Owner requirement decision {index / 2}: platform data only."
+                : index == InterviewStore.MaxTranscriptMessages
+                    ? "Your final answer has been saved. Product discovery is complete."
+                    : $"Product Owner clarification question {(index + 1) / 2}?",
+            "2026-11-22T17:00:00Z")).ToArray();
+    var factory = new Phase3FakeMafFactory();
+    var draft = await new MafAgentTeam(factory).DraftAsync(
+        "Build a podcast audience analytics dashboard", completeHistory,
+        "qwen3.5:4b", CancellationToken.None);
+    Check(draft.Length >= 180 &&
+          factory.Purposes.SequenceEqual([MafAgentPurpose.Specification]) &&
+          factory.AllowedToolsSeen == 0,
+        "MAF drafts from all 27 saved messages without tool execution");
+    try
+    {
+        _ = await new MafAgentTeam(new Phase3FakeMafFactory()).DraftAsync(
+            "Build podcast analytics", [.. completeHistory,
+                new InterviewMessage(28, "owner", "Unexpected extra turn",
+                    "2026-11-22T17:01:00Z")],
+            "qwen3.5:4b", CancellationToken.None);
+        Check(false, "unbounded interviews must still be rejected");
+    }
+    catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+    {
+        Check(true, "messages beyond the documented limit still fail closed");
+    }
+}
+
 // Actual MAF invocation path using an injected no-network IChatClient.
 // No direct LocalInterviewModel/LocalArchitectureAdvisor legacy path is used.
 {
