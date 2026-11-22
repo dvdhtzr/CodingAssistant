@@ -255,6 +255,18 @@ export function InterviewStudio({ token, task }: {
         <span className={'journey-strip-current journey-' + currentStep.tone}>
           {currentStep.status}</span>
       </div>
+      <ol className="ca-work-track" aria-label="Build journey">
+        {steps.map((step, index) => <li key={step.id}>
+          <button type="button"
+            className={'ca-wt ca-wt-' + step.tone + (expanded === step.id ? ' ca-wt-current' : '')}
+            aria-current={expanded === step.id ? 'step' : undefined}
+            onClick={() => navigateToStage(step.id)}>
+            <span className="ca-wt-n">{String(index + 1).padStart(2, '0')}</span>
+            <span className="ca-wt-nm">{step.title}</span>
+            <span className="ca-wt-sp">{step.status}</span>
+          </button>
+        </li>)}
+      </ol>
       <div className="mc-work-focus-actions">
         <label htmlFor="mc-work-stage">Choose a stage
           <select id="mc-work-stage" value={expanded ?? ''}

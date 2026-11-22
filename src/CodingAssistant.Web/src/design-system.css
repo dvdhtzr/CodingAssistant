@@ -549,3 +549,141 @@ input::placeholder, textarea::placeholder { color:var(--ca-faint); }
   .ca-stage-live, .ca-node.ca-running .ca-orb::before { animation:none; }
   .ca-stage.ca-now { transform:none; }
 }
+
+/* ========================================================================
+   M-UX4 — Work: focused build flow (journey track, interview, approvals)
+   Re-skin through tokens only; component structure and copy are unchanged.
+   ======================================================================== */
+/* alias legacy mission-control vars onto the new palette so var()-based
+   rules (journey-quick-tone, focus rings, etc.) follow the design system */
+:root {
+  --mc-void:var(--ca-bg); --mc-base:var(--ca-bg); --mc-panel:var(--ca-panel);
+  --mc-panel-raised:var(--ca-raised); --mc-hairline:var(--ca-line);
+  --mc-hairline-bright:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line));
+  --mc-text:var(--ca-fg); --mc-muted:var(--ca-muted);
+  --mc-accent:var(--ca-teal); --mc-accent-strong:var(--ca-teal);
+  --mc-good:var(--ca-good); --mc-warning:var(--ca-warn); --mc-error:var(--ca-bad);
+  --mc-copper:var(--ca-accent);
+}
+
+/* tone → semantic colour, shared by the Work journey surfaces */
+.journey-complete { --tone:var(--ca-good); }
+.journey-active   { --tone:var(--ca-teal); }
+.journey-attention{ --tone:var(--ca-warn); }
+.journey-blocked  { --tone:var(--ca-bad); }
+.journey-pending  { --tone:var(--ca-line); }
+
+/* compact clickable journey track at the top of Work */
+.ca-work-track { display:flex; gap:.4rem; list-style:none; margin:.3rem 0 .2rem; padding:0 0 .3rem; overflow-x:auto; }
+.ca-work-track li { flex:1 1 0; min-width:120px; display:flex; }
+.ca-wt {
+  position:relative; flex:1; min-width:0; text-align:left;
+  display:grid; gap:.1rem; padding:.55rem .65rem;
+  border:1px solid var(--ca-line); border-radius:var(--ca-r-sm);
+  background:var(--ca-panel); color:var(--ca-fg);
+  border-top:3px solid var(--tone,var(--ca-line));
+}
+.ca-wt:hover { border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line)); }
+.ca-wt-n { font-family:var(--ca-mono); font-size:.56rem; letter-spacing:.1em; color:var(--ca-faint); }
+.ca-wt-nm { font-weight:650; font-size:.78rem; line-height:1.2; }
+.ca-wt-sp { font-size:.64rem; color:var(--ca-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ca-wt-current { box-shadow:inset 0 0 0 1px var(--ca-teal); border-color:var(--ca-teal); }
+.ca-wt.journey-pending { opacity:.72; }
+
+/* project journey strip (inside the technical-history disclosure) */
+.journey-status-strip { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); box-shadow:var(--ca-shadow-sm); }
+.journey-strip-top p { color:var(--ca-muted); }
+.journey-strip-current { border:1px solid var(--tone,var(--ca-line)); color:color-mix(in srgb,var(--tone,var(--ca-fg)) 75%,var(--ca-fg)); border-radius:7px; }
+.journey-progress-segment { background:var(--ca-line); }
+.journey-progress-segment.journey-complete { background:var(--ca-good); }
+.journey-progress-segment.journey-active { background:var(--ca-teal); }
+.journey-progress-segment.journey-attention { background:var(--ca-warn); }
+.journey-progress-segment.journey-blocked { background:var(--ca-bad); }
+.journey-strip-summary { color:var(--ca-muted); }
+
+/* journey quick-nav */
+.journey-quick-step { background:var(--ca-panel); border:1px solid var(--ca-line); color:var(--ca-muted); border-radius:var(--ca-r-sm); }
+.journey-quick-step:hover:not(:disabled) { background:var(--ca-raised); border-color:color-mix(in srgb,var(--ca-teal) 40%,var(--ca-line)); }
+.journey-quick-step.journey-quick-current { border-color:var(--ca-teal); background:color-mix(in srgb,var(--ca-teal) 12%,var(--ca-panel)); color:var(--ca-fg); }
+.journey-quick-index { color:var(--ca-muted); }
+.journey-quick-tone { background:var(--tone,var(--ca-line)); }
+
+/* journey stages (accordion) */
+.journey-stage { background:var(--ca-panel); border:1px solid var(--ca-line); border-left:3px solid var(--tone,var(--ca-line)); border-radius:var(--ca-r); }
+.journey-trigger { background:var(--ca-raised); color:var(--ca-fg); }
+.journey-trigger:hover:not(:disabled) { background:color-mix(in srgb,var(--ca-raised) 70%,var(--ca-fg)); }
+.journey-complete .journey-trigger { background:color-mix(in srgb,var(--ca-good) 8%,var(--ca-raised)); }
+.journey-active .journey-trigger { background:color-mix(in srgb,var(--ca-teal) 10%,var(--ca-raised)); }
+.journey-attention .journey-trigger { background:color-mix(in srgb,var(--ca-warn) 10%,var(--ca-raised)); }
+.journey-blocked .journey-trigger { background:color-mix(in srgb,var(--ca-bad) 10%,var(--ca-raised)); }
+.journey-index { color:var(--ca-muted); }
+.journey-heading-copy strong { color:var(--ca-fg); }
+.journey-heading-copy small { color:var(--ca-muted); }
+.journey-heading-state { color:var(--ca-fg); }
+.journey-state-symbol { border:1px solid var(--tone,var(--ca-line)); color:color-mix(in srgb,var(--tone,var(--ca-fg)) 75%,var(--ca-fg)); }
+.journey-chevron { color:var(--ca-muted); }
+.journey-stage-body { background:var(--ca-panel); border-top:1px solid var(--ca-line); }
+.journey-discovery .journey-stage-body form { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); box-shadow:none; }
+
+/* discovery = Product Owner: cyan accent ties it to the crew identity */
+.journey-discovery.journey-stage { border-left-color:var(--ca-po); }
+.conversation-current {
+  border:1px solid color-mix(in srgb,var(--ca-po) 45%,var(--ca-line));
+  border-left:4px solid var(--ca-po);
+  border-radius:var(--ca-r);
+  background:
+    radial-gradient(circle at 95% 0%, color-mix(in srgb,var(--ca-po) 14%,transparent), transparent 46%),
+    linear-gradient(125deg, color-mix(in srgb,var(--ca-po) 10%,var(--ca-panel)), var(--ca-panel));
+  box-shadow:var(--ca-shadow-sm);
+}
+.conversation-current-heading .wb-kicker { color:color-mix(in srgb,var(--ca-po) 70%,var(--ca-fg)); }
+.conversation-current-number { color:var(--ca-muted); border:1px solid var(--ca-line); background:var(--ca-inset); }
+.conversation-current-content { color:var(--ca-fg); }
+.conversation-current .interview-speaker { color:color-mix(in srgb,var(--ca-po) 60%,var(--ca-fg)); }
+.conversation-history { border:1px solid var(--ca-line); background:var(--ca-panel); border-radius:var(--ca-r-sm); }
+.conversation-history > summary { color:var(--ca-fg); }
+.conversation-history > summary:hover { background:var(--ca-raised); }
+.conversation-history-icon { color:var(--ca-po); }
+
+/* interview transcript bubbles */
+.interview-studio { border:1px solid color-mix(in srgb,var(--ca-po) 35%,var(--ca-line)); box-shadow:none; }
+.interview-transcript .assistant-message { background:color-mix(in srgb,var(--ca-po) 10%,var(--ca-panel)); border:1px solid color-mix(in srgb,var(--ca-po) 32%,var(--ca-line)); }
+.interview-transcript .owner-message { background:var(--ca-raised); border:1px solid var(--ca-line); }
+.interview-speaker { color:var(--ca-fg); }
+.interview-start { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.interview-start select { background:var(--ca-inset); color:var(--ca-fg); border:1px solid var(--ca-line); }
+
+/* answer composer (multiple-choice first, free text always available) */
+.journey-discovery .interview-answer-composer,
+.interview-answer-composer { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.interview-choice-fieldset legend { color:var(--ca-fg); }
+.interview-choice-option { background:var(--ca-inset); color:var(--ca-fg); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.interview-choice-option:hover, .interview-choice-option:focus-within { border-color:var(--ca-teal); background:color-mix(in srgb,var(--ca-teal) 8%,var(--ca-inset)); }
+.interview-choice-option.interview-choice-selected { background:color-mix(in srgb,var(--ca-teal) 12%,var(--ca-inset)); border-color:var(--ca-teal); box-shadow:inset 0 0 0 1px var(--ca-teal); }
+.interview-choice-option input { accent-color:var(--ca-teal); }
+.interview-choice-letter { background:var(--ca-panel); color:var(--ca-teal); }
+.interview-choice-selected .interview-choice-letter { background:var(--ca-teal); color:var(--ca-accent-ink); }
+.interview-other-label, .interview-freeform-label, .interview-other-label small { color:var(--ca-fg); }
+.interview-composer-hint { color:var(--ca-muted); }
+.interview-completion-notice { border:1px solid color-mix(in srgb,var(--ca-good) 45%,var(--ca-line)); border-left:4px solid var(--ca-good); border-radius:var(--ca-r); background:color-mix(in srgb,var(--ca-good) 8%,var(--ca-panel)); }
+.interview-completion-notice strong { color:var(--ca-fg); }
+.interview-completion-notice p { color:var(--ca-muted); }
+
+/* specification review + exact-hash approval */
+.spec-review { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.specification-text { background:var(--ca-inset); border:1px solid var(--ca-line); color:var(--ca-fg); font-family:var(--ca-mono); }
+.spec-consent { color:var(--ca-fg); }
+.interview-objective { border:1px solid var(--ca-line); background:var(--ca-inset); border-radius:var(--ca-r-sm); }
+
+/* architecture + technical-lead + draft studios */
+.architect-stage { background:var(--ca-panel); border:1px solid var(--ca-line); border-left:3px solid var(--ca-sa); border-radius:var(--ca-r); }
+.architect-options { border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.architect-option { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.technical-plan-tasks > li { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+.technical-plan-tasks code { color:color-mix(in srgb,var(--ca-teal) 70%,var(--ca-fg)); }
+.build-stage { background:var(--ca-panel); border:1px solid var(--ca-line); border-left:3px solid var(--ca-se); border-radius:var(--ca-r); }
+.draft-files > details { background:var(--ca-inset); border:1px solid var(--ca-line); border-radius:var(--ca-r-sm); }
+
+/* work shell surfaces */
+.mc-work-secondary, .mc-work-qa-details { background:var(--ca-panel); border:1px solid var(--ca-line); border-radius:var(--ca-r); }
+.mc-work-focus { background:var(--ca-panel); border:1px solid color-mix(in srgb,var(--ca-teal) 28%,var(--ca-line)); border-radius:var(--ca-r-lg); }
