@@ -30,6 +30,13 @@ export interface AtlasSourceChange {
   kind: 'Added' | 'Modified' | 'Removed';
   sha256: string;
 }
+export interface AtlasGraphDelta {
+  addedNodeIds: string[];
+  updatedNodeIds: string[];
+  removedNodeIds: string[];
+  addedEdgeKeys: string[];
+  removedEdgeKeys: string[];
+}
 export interface AtlasSourceEvent {
   runId: string;
   sequence: number;
@@ -37,6 +44,7 @@ export interface AtlasSourceEvent {
   sourceRevision: string;
   changes: AtlasSourceChange[];
   createdUtc: string;
+  graphDelta?: AtlasGraphDelta | null;
 }
 export interface AtlasSourceEventPage {
   runId: string;
@@ -560,6 +568,11 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
           <strong>#{event.sequence} · {event.workItemId}</strong>
           <span>{event.changes.map(change =>
             change.kind + ': ' + change.path).join(' · ')}</span>
+          {event.graphDelta && <span className="atlas-event-symbols">
+            {' · '}{event.graphDelta.addedNodeIds.length} new symbols
+            {' · '}{event.graphDelta.updatedNodeIds.length} updated
+            {' · '}{event.graphDelta.removedNodeIds.length} removed
+          </span>}
         </li>)}
       </ol>
     </details>}
