@@ -44,7 +44,17 @@ public sealed class InterviewStore(TaskStore tasks)
         "^[0-9a-f]{32}$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
     private static readonly Regex HashPattern = new(
         "^[0-9a-f]{64}$", RegexOptions.CultureInvariant | RegexOptions.Compiled);
-    public const int MaxOwnerAnswers = 12;
+    // The model may pose a last question after the twelfth owner answer.
+    // Allow its answer to be saved before ending discovery, but do not ask
+    // the model another question (the interview context is capped at 25 turns).
+    public const int ModelDrivenAnswerLimit = 12;
+    public const int MaxOwnerAnswers = ModelDrivenAnswerLimit + 1;
+
+    public static InterviewReply FinalAnswerAcknowledgement() => new(
+        "Your final answer has been saved. Product discovery is complete. " +
+        "You can now draft a first specification and review all requirements, " +
+        "assumptions, and remaining open questions before approving anything.",
+        true);
 
     public void Initialize()
     {
