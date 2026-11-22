@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
+import { CommandActivity } from './CommandActivity';
 import { TeamDestination, QualityDestination, SkillsDestination, HistoryDestination } from './MissionDestinations';
-import { ProjectOverview, WorkbenchInspector, WorkbenchSidebar,
+import { WorkbenchInspector, WorkbenchSidebar,
   type WorkbenchView } from './Workbench';
 import * as signalR from '@microsoft/signalr';
 import {
@@ -491,10 +492,8 @@ export default function App() {
           <h2>Opening your project…</h2>
           <p className="hint">Loading the selected project's saved Product Owner conversation and history.</p>
         </section>}
-        {view === 'command' && taskView && <ProjectOverview
-          token={token} task={taskView.task}
-          onContinue={() => setView('work')}
-          onDiagnostics={() => setView('diagnostics')} />}
+        {view === 'command' && taskView && <CommandActivity
+          token={token} task={taskView.task} onNavigate={setView} />}
         {taskView && <div hidden={view !== 'work'}>
           <InterviewStudio key={taskView.task.id}
             token={token} task={taskView.task} />
