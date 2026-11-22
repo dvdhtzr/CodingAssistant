@@ -12,7 +12,8 @@ namespace CodingAssistant.Api;
 public sealed record AtlasSourceChange(string Path, string Kind, string Sha256);
 public sealed record AtlasSourceEvent(
     string RunId, int Sequence, string WorkItemId, string SourceRevision,
-    IReadOnlyList<AtlasSourceChange> Changes, string CreatedUtc);
+    IReadOnlyList<AtlasSourceChange> Changes, string CreatedUtc,
+    AtlasGraphDelta? GraphDelta = null);
 public sealed record AtlasSourceEventPage(
     string RunId, int LastSequence, IReadOnlyList<AtlasSourceEvent> Events);
 
@@ -45,6 +46,14 @@ public sealed class EngineeringAtlasLedger(TaskStore tasks, EngineeringRunStore 
                 created_utc TEXT NOT NULL,
                 PRIMARY KEY(run_id,sequence)
             );
+            CREATE TABLE IF NOT EXISTS engineering_atlas_graph_deltas (
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                delta_json TEXT NOT NULL,
+                PRIMARY KEY(run_id,sequence),
+                FOREIGN KEY(run_id,sequence)
+                  REFERENCES engineering_atlas_events(run_id,sequence)
+            );
             """);
     }
 
@@ -66,9 +75,30 @@ public sealed class EngineeringAtlasLedger(TaskStore tasks, EngineeringRunStore 
         return hashes;
     }
 
+    // Index the exact database snapshot inside the caller's transaction.
+    // The current 12-file / 120k-character source limits bound this parsing.
+    // Parse only; this cannot run a project or resolve MSBuild targets.
+    public static AtlasSnapshot CaptureGraph(
+        SqliteConnection db, SqliteTransaction tx, string runId)
+    {
+        var files = new List<EngineeringSourceFile>();
+        using var cmd = TaskStore.Command(db, tx, """
+            SELECT path,purpose,content,sha256,work_item_id,updated_utc
+            FROM engineering_run_files WHERE run_id=@run ORDER BY path
+            """, ("@run", runId));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            files.Add(new(reader.GetString(0), reader.GetString(1),
+                reader.GetString(2), reader.GetString(3),
+                reader.GetString(4), reader.GetString(5)));
+        return CodeAtlasIndexer.Index(runId, files);
+    }
+
     public static AtlasSourceEvent? Append(
         SqliteConnection db, SqliteTransaction tx, string runId,
-        string workItemId, Dictionary<string, string> before)
+        string workItemId, Dictionary<string, string> before,
+        AtlasSnapshot? previousGraph = null,
+        AtlasSnapshot? currentGraph = null)
     {
         var after = CaptureHashes(db, tx, runId);
         var changes = new List<AtlasSourceChange>();
@@ -103,8 +133,21 @@ public sealed class EngineeringAtlasLedger(TaskStore tasks, EngineeringRunStore 
             """, ("@run", runId), ("@sequence", sequence),
             ("@item", workItemId), ("@revision", revision),
             ("@changes", JsonSerializer.Serialize(changes)), ("@now", now));
+        AtlasGraphDelta? delta = null;
+        if (previousGraph is not null && currentGraph is not null &&
+            currentGraph.SourceRevision == revision)
+        {
+            delta = CodeAtlasDiff.Between(previousGraph, currentGraph,
+                changes.Where(c => c.Kind == "Modified").Select(c => c.Path));
+            TaskStore.Execute(db, tx, """
+                INSERT INTO engineering_atlas_graph_deltas(
+                    run_id,sequence,delta_json)
+                VALUES(@run,@sequence,@delta)
+                """, ("@run", runId), ("@sequence", sequence),
+                ("@delta", JsonSerializer.Serialize(delta)));
+        }
         return new(runId, sequence, workItemId, revision,
-            changes.AsReadOnly(), now);
+            changes.AsReadOnly(), now, delta);
     }
 
     public AtlasSourceEventPage Read(string taskId, string runId, int after)
@@ -118,17 +161,22 @@ public sealed class EngineeringAtlasLedger(TaskStore tasks, EngineeringRunStore 
             """, ("@run", runId))!);
         var events = new List<AtlasSourceEvent>();
         using var cmd = TaskStore.Command(db, null, """
-            SELECT sequence,work_item_id,source_revision,changes_json,created_utc
-            FROM engineering_atlas_events WHERE run_id=@run AND sequence>@after
-            ORDER BY sequence LIMIT @limit
+            SELECT e.sequence,e.work_item_id,e.source_revision,e.changes_json,
+                   e.created_utc,d.delta_json
+            FROM engineering_atlas_events e LEFT JOIN engineering_atlas_graph_deltas d
+              ON d.run_id=e.run_id AND d.sequence=e.sequence
+            WHERE e.run_id=@run AND e.sequence>@after
+            ORDER BY e.sequence LIMIT @limit
             """, ("@run", runId), ("@after", after), ("@limit", PageSize));
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
         {
             var changes = JsonSerializer.Deserialize<AtlasSourceChange[]>(
                 reader.GetString(3)) ?? [];
+            var delta = reader.IsDBNull(5) ? null :
+                JsonSerializer.Deserialize<AtlasGraphDelta>(reader.GetString(5));
             events.Add(new(runId, reader.GetInt32(0), reader.GetString(1),
-                reader.GetString(2), changes, reader.GetString(4)));
+                reader.GetString(2), changes, reader.GetString(4), delta));
         }
         return new(runId, last, events.AsReadOnly());
     }
