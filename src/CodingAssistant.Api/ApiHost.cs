@@ -51,7 +51,8 @@ public static class ApiHost
         IImplementationPlanner? implementationPlannerOverride = null,
         IEngineeringTaskModel? engineeringModelOverride = null,
         IQaSourceReviewer? qaReviewerOverride = null,
-        ILocalSourceSmokeRunner? sourceSmokeOverride = null)
+        ILocalSourceSmokeRunner? sourceSmokeOverride = null,
+        IAtlasCommitArchiveDownloader? atlasArchiveOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -96,7 +97,7 @@ public static class ApiHost
         var atlasLedger = new EngineeringAtlasLedger(store, engineeringRuns);
         atlasLedger.Initialize();
         var atlasImports = new CodeAtlasRepositoryImportStore(store,
-            new PublicGitHubCommitArchiveDownloader());
+            atlasArchiveOverride ?? new PublicGitHubCommitArchiveDownloader());
         atlasImports.Initialize();
         engineeringRuns.MarkInterruptedOnStartup();
         var qaReviews = new QaReviewStore(store, implementationPlans);
