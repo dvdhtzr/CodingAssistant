@@ -174,11 +174,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
   const [query, setQuery] = useState('');
   const [showMethods, setShowMethods] = useState(false);
   const [followBuild, setFollowBuild] = useState(true);
+  const [recentIds, setRecentIds] = useState<string[]>([]);
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const pointer = useRef<{ x: number; y: number } | null>(null);
   const revision = useRef('');
-  const lastFileSet = useRef('');
+  const lastNodeIds = useRef<string[]>([]);
   const fileSignature = files.map(f => f.path + ':' + f.sha256).sort().join('|');
 
   useEffect(() => {
@@ -187,7 +188,8 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
     setSelected(null);
     setFocus(null);
     revision.current = '';
-    lastFileSet.current = '';
+    lastNodeIds.current = [];
+    setRecentIds([]);
   }, [runId]);
 
   useEffect(() => {
@@ -198,20 +200,27 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
           '/api/tasks/' + taskId + '/engineering-runs/' + runId + '/atlas');
         if (cancelled) return;
         const existing = revision.current;
-        const previousSet = lastFileSet.current;
-        const nextSet = value.nodes.filter(n => n.kind === 'File')
-          .map(n => n.path).sort().join('|');
+        const previousIds = new Set(lastNodeIds.current);
+        const added = existing && existing !== value.sourceRevision
+          ? value.nodes.filter(n => !previousIds.has(n.id))
+          : [];
         revision.current = value.sourceRevision;
-        lastFileSet.current = nextSet;
+        lastNodeIds.current = value.nodes.map(n => n.id);
         setSnapshot(value);
         setError('');
-        if (followBuild && existing && existing !== value.sourceRevision &&
-          previousSet !== nextSet) {
-          // A newly persisted file is real evidence of progress. Don't shift
-          // the viewport in manual exploration mode.
-          const lastAdded = value.nodes.find(n => n.kind === 'File' &&
-            !!n.path && !previousSet.split('|').includes(n.path));
-          if (lastAdded) { setSelected(lastAdded.id); setFocus(lastAdded.id); }
+        if (existing && existing !== value.sourceRevision) {
+          setRecentIds(added.map(n => n.id));
+          if (followBuild && added.length) {
+            // Prioritize a new code entity over its containing file.
+            const ranked = [...added].sort((a, b) => {
+              const importance = (kind: string) =>
+                kind === 'Method' || kind === 'Constructor' ? 0 :
+                kind === 'Class' || kind === 'Interface' ? 1 : 2;
+              return importance(a.kind) - importance(b.kind);
+            });
+            setSelected(ranked[0].id);
+            setFocus(ranked[0].id);
+          }
         }
       } catch {
         if (!cancelled) setError('Code Atlas could not load this saved source graph.');
@@ -251,7 +260,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
     <div className="atlas-controls">
       <label className="atlas-search">Find a symbol
         <input type="search" value={query}
-          onChange={event => { setQuery(event.target.value); setFocus(null); }}
+          onChange={event => { setQuery(event.target.value); setFocus(null); setFollowBuild(false); }}
           placeholder="Class, method, namespace…" />
       </label>
       <label className="atlas-toggle"><input type="checkbox"
@@ -325,12 +334,14 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
                     aria-pressed={chosen} className={'atlas-node atlas-kind-' +
                       current.kind.toLowerCase() +
                       (chosen ? ' atlas-selected' : '') +
-                      (relevant ? ' atlas-connected' : '')}
-                    onClick={() => setSelected(current.id)}
+                      (relevant ? ' atlas-connected' : '') +
+                      (recentIds.includes(current.id) ? ' atlas-new' : '')}
+                    onClick={() => { setSelected(current.id); setFollowBuild(false); }}
                     onKeyDown={event => {
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault();
                         setSelected(current.id);
+                        setFollowBuild(false);
                       }
                     }} transform={'translate(' + at.x + ' ' + at.y + ')'}>
                     <circle r={radius + (chosen ? 8 : 5)}
@@ -353,7 +364,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
             </div>
           </>}
         <div className="atlas-graph-footer">
-          <span>{view.nodes.length} of {view.total} symbols
+          <span>{recentIds.length ? recentIds.length + ' newly discovered · ' : ''}{view.nodes.length} of {view.total} symbols
             {' · '}{view.edges.length} visible links</span>
           <span>{snapshot.coverage === 'SYNTAX_ONLY' ? 'Syntax indexed' :
             snapshot.coverage === 'PARTIAL_SYNTAX' ? 'Partial C# syntax' :
@@ -373,7 +384,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
             <dd>{links.length}</dd>
           </dl>
           <button type="button" className="outline"
-            onClick={() => { setFocus(node.id); setQuery(''); }}>
+            onClick={() => { setFocus(node.id); setQuery(''); setFollowBuild(false); }}>
             Focus relationships
           </button>
           <div className="atlas-relationships">
@@ -381,7 +392,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
               const other = edge.sourceId === node.id ?
                 edge.targetId : edge.sourceId;
               return <button type="button" key={edge.kind + ':' + edge.sourceId +
-                ':' + edge.targetId} onClick={() => setSelected(other)}>
+                ':' + edge.targetId} onClick={() => { setSelected(other); setFollowBuild(false); }}>
                 <span>{edge.kind}</span> {names.get(other) ?? 'Unknown symbol'}
               </button>;
             })}
