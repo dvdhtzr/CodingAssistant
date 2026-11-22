@@ -8,6 +8,10 @@ let vite;
 let WorkbenchSidebar;
 let WorkbenchInspector;
 let ProjectOverview;
+let TeamDestination;
+let QualityDestination;
+let SkillsDestination;
+let HistoryDestination;
 
 const task = {
   id: 'a'.repeat(32),
@@ -28,6 +32,8 @@ before(async () => {
   });
   ({ WorkbenchSidebar, WorkbenchInspector, ProjectOverview } =
     await vite.ssrLoadModule('/src/Workbench.tsx'));
+  ({ TeamDestination, QualityDestination, SkillsDestination, HistoryDestination } =
+    await vite.ssrLoadModule('/src/MissionDestinations.tsx'));
 });
 
 after(async () => { if (vite) await vite.close(); });
@@ -81,4 +87,18 @@ test('Project overview renders its source objective as escaped text, not HTML', 
   assert.doesNotMatch(html, /<unsafe markup>/);
   assert.match(html, /Loading saved project state/);
   assert.match(html, /Continue in Engineering Studio/);
+});
+
+test('Team, Quality, Skills and History expose honest destinations without automatic authorization', () => {
+  const common = { token: 'f'.repeat(64), taskId: task.id, onWork: noop };
+  const team = renderToStaticMarkup(React.createElement(TeamDestination, common));
+  const quality = renderToStaticMarkup(React.createElement(QualityDestination, common));
+  const skills = renderToStaticMarkup(React.createElement(SkillsDestination, common));
+  const history = renderToStaticMarkup(React.createElement(HistoryDestination, common));
+  assert.match(team, /Engineering team/);
+  assert.match(quality, /Loading saved QA evidence/);
+  assert.match(quality, /static inspection never verifies compilation or execution/);
+  assert.match(skills, /No installed registry or assignment controls/);
+  assert.match(history, /Loading recorded activity/);
+  assert.doesNotMatch(team + quality + skills + history, /Authorize this exact M1 plan/);
 });
