@@ -367,6 +367,18 @@ public static class ApiHost
                     throw new StoreFailure("INVALID_MODEL");
                 if (snapshot.LastSequence == 0 && input.Message is not null)
                     throw new StoreFailure("INVALID_INPUT");
+                // The previous model response may still contain a question
+                // after the original twelve-answer cap. Save the owner's
+                // response, then end discovery without generating another
+                // unanswerable question or requiring an Ollama round trip.
+                if (snapshot.Messages.Count(x => x.Role == "owner") ==
+                    InterviewStore.ModelDrivenAnswerLimit)
+                {
+                    _ = InterviewStore.ValidOwnerMessage(input.Message);
+                    return Results.Ok(db.CommitTurn(
+                        id, input with { Model = selected },
+                        InterviewStore.FinalAnswerAcknowledgement()));
+                }
                 var localNames = await catalog.ListAsync(cancellation);
                 if (!localNames.Contains(selected, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
