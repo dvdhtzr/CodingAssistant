@@ -69,7 +69,8 @@ public static class CodeAtlasIndexer
         Index(run.Job.Id, run.Files);
 
     public static AtlasSnapshot Index(string runId,
-        IReadOnlyList<EngineeringSourceFile> files)
+        IReadOnlyList<EngineeringSourceFile> files,
+        string rootLabel = "Generated source")
     {
         ArgumentNullException.ThrowIfNull(files);
         var nodes = new Dictionary<string, AtlasNode>(StringComparer.Ordinal);
@@ -111,7 +112,7 @@ public static class CodeAtlasIndexer
             diagnostics.Add("UNSAFE_PATH_EXCLUDED");
         var revision = Hash(string.Join("\n",
             valid.Select(f => f.Path + "|" + Hash(f.Content))));
-        var root = Node("Repository", runId, "Generated source");
+        var root = Node("Repository", runId, rootLabel);
 
         var projects = valid.Where(f => f.Path.EndsWith(".csproj",
             StringComparison.OrdinalIgnoreCase)).Select(f => f.Path).ToArray();
