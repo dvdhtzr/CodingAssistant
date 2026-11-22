@@ -17,7 +17,38 @@ const SOURCE=fs.readFileSync(
   new URL('./windows_chromium_sandbox_guest.mjs',import.meta.url),'utf8');
 const NAME=/^ca-win-m47-[0-9a-f]{12}$/;
 const IMAGE_ID=/^sha256:[0-9a-f]{64}$/;
+// Vendored unchanged from microsoft/playwright/utils/docker/seccomp_profile.json
+// at upstream Git blob fddc05fb520affb145404e6f6f647ca96af8087d.
+export const OFFICIAL_SECCOMP_GIT_BLOB='fddc05fb520affb145404e6f6f647ca96af8087d';
+const SECCOMP_LOCATION=fileURLToPath(new URL(
+  './profiles/playwright-chromium-seccomp.json',import.meta.url));
 function fail(message){throw Error(message);}
+export function validateChromiumSeccompBytes(bytes){
+  if(!Buffer.isBuffer(bytes)||bytes.length<1000||bytes.length>18000)
+    fail('Chromium seccomp profile bytes outside approved bounds');
+  const canonical=Buffer.from(bytes.toString('utf8').replace(/\r\n/g,'\n'));
+  const blob=createHash('sha1').update(
+    'blob '+canonical.length+'\0').update(canonical).digest('hex');
+  if(blob!==OFFICIAL_SECCOMP_GIT_BLOB)
+    fail('Chromium seccomp profile differs from approved upstream bytes');
+  const policy=JSON.parse(canonical.toString('utf8'));
+  if(policy.defaultAction!=='SCMP_ACT_ERRNO'||
+     !Array.isArray(policy.syscalls)||
+     !policy.syscalls.some(rule=>rule.action==='SCMP_ACT_ALLOW' &&
+       rule.comment==='Allow create user namespaces' &&
+       JSON.stringify(rule.names)==='["clone","setns","unshare"]') ||
+     policy.syscalls.some(rule=>rule.action!=='SCMP_ACT_ALLOW'))
+    fail('Chromium seccomp policy invalid');
+  return {sha256:createHash('sha256').update(canonical).digest('hex'),
+    upstreamGitBlob:blob};
+}
+export function checkedChromiumSeccomp(){
+  const stat=fs.lstatSync(SECCOMP_LOCATION);
+  if(!stat.isFile()||stat.isSymbolicLink()||stat.size>18000)
+    fail('Official seccomp profile absent or not a regular file');
+  const verified=validateChromiumSeccompBytes(fs.readFileSync(SECCOMP_LOCATION));
+  return {...verified,path:fs.realpathSync(SECCOMP_LOCATION)};
+}
 function json(docker,args,what){
   const r=docker(args,8000);
   if(r.status!==0||typeof r.stdout!=='string'||!r.stdout.trim())
@@ -25,20 +56,21 @@ function json(docker,args,what){
   try{return JSON.parse(r.stdout.trim());}
   catch{fail(what+' malformed');}
 }
-// Retain Docker's default seccomp filter. No seccomp=unconfined and no
-// special browser sandbox bypass. Docker user namespace capability will be
-// discovered on the owner's host instead of presumed from CI.
+// Use official Playwright profile, pinned and default-deny; keep all Docker
+// restrictions and do NOT turn off the Chromium renderer sandbox.
 export function sandboxDockerArgs(id,name){
   if(!IMAGE_ID.test(id)||!NAME.test(name))
     fail('Invalid pinned image or disposable guest name');
   if(BROWSER_ARGS.some(arg=>
     /(?:no-sandbox|disable-setuid-sandbox|single-process|no-zygote|disable-seccomp-filter-sandbox)/.test(arg)))
     fail('Browser sandbox bypass is forbidden');
+  const seccomp=checkedChromiumSeccomp();
   return [
     'run','--rm','-i','--pull=never','--name',name,
     '--label','codingassistant.m47='+name,
     '--network=none','--read-only','--cap-drop=all',
-    '--security-opt=no-new-privileges','--user=1000:1000',
+    '--security-opt=no-new-privileges',
+    '--security-opt=seccomp='+seccomp.path,'--user=1000:1000',
     '--pids-limit=96','--memory=2g','--cpus=2',
     '--ipc=private','--shm-size=256m',
     '--tmpfs=/tmp:rw,nosuid,nodev,mode=1777,size=256m',
@@ -82,6 +114,7 @@ export function runSandboxCompatibility({
     status:'BLOCKED',recordedAtUtc:new Date().toISOString(),
     imageTag:IMAGE_TAG,imageId:null,registryDigest:null,
     fixedGuestSha256:createHash('sha256').update(SOURCE).digest('hex'),
+    seccompSha256:null,seccompUpstreamGitBlob:null,
     checks:null,passedChecks:0,requiredChecks:CASES.length,
     browser:null,containerRemoved:false,
     modelInvoked:false,generatedSourceExecuted:false,sourceMounted:false,
@@ -107,6 +140,9 @@ export function runSandboxCompatibility({
     const pin=validatePinnedImage(meta);
     report.imageId=pin.imageId;
     report.registryDigest=pin.registryDigest;
+    const checkedProfile=checkedChromiumSeccomp();
+    report.seccompSha256=checkedProfile.sha256;
+    report.seccompUpstreamGitBlob=checkedProfile.upstreamGitBlob;
     const collision=docker(['ps','-a','--filter','name=^/'+name+'$',
       '--format','{{.ID}}'],8000);
     if(collision.status!==0||collision.stdout.trim())

@@ -20,8 +20,10 @@ remain: local Windows Docker Desktop Linux engine only, immutable image
 ID and trusted registry digest, no image downloads/builds, network
 disabled, read-only root, no host mounts/ports/secrets/sockets,
 non-root 1000:1000, all capabilities dropped, no-new-privileges,
-Docker default seccomp, finite CPU/PID/memory/runtime limits, private
-IPC, disposable /tmp and shared-memory limits.
+the **byte-pinned official Playwright seccomp profile** (default-deny
+with its documented clone/setns/unshare namespace exceptions), finite
+CPU/PID/memory/runtime limits, private IPC, disposable /tmp and
+shared-memory limits.
 
 One reviewed and SHA-256-recorded Node guest source is streamed over
 stdin. It uses only a frozen local HTML file with a static DOM change
@@ -66,6 +68,39 @@ host IPC, or disable browser sandboxing to force the check green.
 
 Reference: https://playwright.dev/docs/docker
 
+## Windows result and targeted resolution
+
+The owner ran real Windows M4.7 and reported **9/11** with confirmed
+container cleanup. Both remaining failures were
+`CHROMIUM_SANDBOX_REJECTED` (fixed DOM and internal sandbox status).
+The other nine checks passed. This is not browser acceptance PASS.
+
+Playwright's **official recommended Docker seccomp profile** is now
+vendored unchanged from
+`microsoft/playwright/utils/docker/seccomp_profile.json` at upstream
+Git blob `fddc05fb520affb145404e6f6f647ca96af8087d`.
+The host verifies exact pinned bytes (allowing only LF/CRLF checkout
+normalization), checks default-deny and the namespace allowance,
+records SHA-256 evidence and supplies the checked file to Docker as
+`--security-opt=seccomp=<checked local file path>`.
+
+This is Playwright's documented mechanism for a non-root Chromium to
+create namespaces. It does NOT use `seccomp=unconfined`, privileged
+containers, extra Linux capabilities or browser sandbox bypass flags.
+The scoped permissions are applied to the disposable container, with
+all the other existing security limits still enforced.
+
+The owner reuses the **same M4.7 command**, not another new milestone.
+If the host kernel forbids namespace creation independently of the
+seccomp profile, we retain BLOCKED rather than silently bypassing it.
+
+After the compatibility blocker is resolved, prioritize actual
+task-specific generated-source browser acceptance and bounded repair.
+Do not add ceremonial fixed-fixture phases absent a concrete new
+security finding. Complete #76/#92/#111 using integrated cases tied
+to that actual workflow, with actionable application-specific evidence.
+
+Reference: https://playwright.dev/docs/docker
 ## One command on Windows after GitHub CI green and PR merge
 
 From the existing CodingAssistant checkout, with Docker Desktop
