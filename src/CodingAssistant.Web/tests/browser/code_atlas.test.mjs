@@ -73,6 +73,11 @@ test('new persisted source creates method node and honest live indicator', async
     name: 'Method: Demo.TaskService.CreateTask()',
   }).waitFor();
   assert.match(await atlas.textContent(), /1 newly discovered/);
+  await atlas.getByText('Recorded source changes (1)').waitFor();
+  await atlas.locator('details.atlas-source-history summary').click();
+  assert.match(await atlas.getByRole('list', {
+    name: 'Committed Code Atlas source events',
+  }).textContent(), /#1.*W2.*Modified: TaskService.cs/s);
   assert.match(await atlas.getByRole('complementary',
     { name: 'Selected source entity' }).textContent(), /CreateTask/);
   assert.match(await atlas.textContent(), /Saved snapshot/);
