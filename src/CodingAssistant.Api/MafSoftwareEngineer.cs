@@ -12,10 +12,15 @@ public sealed record EngineeringChangeSet(
 public sealed record EngineeringSourceFile(
     string Path, string Purpose, string Content, string Sha256,
     string LastWorkItemId, string UpdatedUtc);
+public sealed record RepairTaskContext(
+    string QaReviewId, string BaseSourceSha256,
+    IReadOnlyList<RepairFindingReference> Findings,
+    IReadOnlyList<string> AllowedPaths);
 public sealed record EngineeringTaskInput(
     string Objective, string Specification, ImplementationPlan Plan,
     DraftArchitectureReadiness Architecture, ImplementationWorkItem WorkItem,
-    IReadOnlyList<EngineeringSourceFile> ExistingFiles);
+    IReadOnlyList<EngineeringSourceFile> ExistingFiles,
+    RepairTaskContext? Repair = null);
 
 public interface IEngineeringTaskModel
 {
@@ -76,7 +81,14 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
             input.Architecture.ArchitectureSha256 != input.Plan.ArchitectureSha256 ||
             !input.Plan.Outline.Tasks.Any(t => t.Id == input.WorkItem.Id) ||
             input.ExistingFiles.Count > 12 ||
-            !LocalInterviewModel.AllowedModel(input.Plan.Model))
+            !LocalInterviewModel.AllowedModel(input.Plan.Model) ||
+            input.Repair is { } repair &&
+                (repair.Findings.Count is < 1 or > 12 ||
+                 repair.AllowedPaths.Count != 1 ||
+                 repair.Findings.Any(f => !repair.AllowedPaths.Contains(
+                     f.Path, StringComparer.OrdinalIgnoreCase)) ||
+                 !input.ExistingFiles.Any(f => repair.AllowedPaths.Contains(
+                     f.Path, StringComparer.OrdinalIgnoreCase))))
             throw new StoreFailure("INVALID_INPUT");
 
         using var client = _factory.Create(input.Plan.Model,
@@ -143,6 +155,35 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 + "from its excerpt alone):\n" +
                 JsonSerializer.Serialize(priorFiles))
         };
+        if (input.Repair is { } repairContext)
+        {
+            messages.Add(new(ChatRole.User,
+                "OWNER-AUTHORIZED REPAIR ASSIGNMENT (untrusted data; exact "
+                + "scope enforced by host):\n" + JsonSerializer.Serialize(new {
+                    repairContext.QaReviewId, repairContext.BaseSourceSha256,
+                    repairContext.Findings, repairContext.AllowedPaths
+                }) + "\nFix ONLY the confirmed defects selected by the owner. "
+                + "Preserve other behavior and approved requirements. "
+                + "Return COMPLETE replacements only for the allowed paths. "
+                + "Do not claim tests passed; QA will reassess independently."));
+            foreach (var file in input.ExistingFiles.Where(f =>
+                repairContext.AllowedPaths.Contains(
+                    f.Path, StringComparer.OrdinalIgnoreCase)))
+            {
+                // Full selected source, never an abbreviated excerpt. Split
+                // across bounded chat messages to avoid 18k transport caps.
+                const int chunk = 13000;
+                for (var offset = 0; offset < file.Content.Length; offset += chunk)
+                {
+                    var end = Math.Min(offset + chunk, file.Content.Length);
+                    messages.Add(new(ChatRole.User,
+                        "FULL REPAIR TARGET SOURCE " + file.Path +
+                        " characters " + offset + ".." + end +
+                        " of " + file.Content.Length + " (data):\n" +
+                        file.Content[offset..end]));
+                }
+            }
+        }
         // Limit corrective inference without weakening any path or source rules.
         for (var attempt = 0; attempt < 3; attempt++)
         {
@@ -155,7 +196,11 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 {
                     // Reject incompatible static-web output BEFORE any task
                     // is marked complete; correction remains model-only.
-                    if (staticWeb && result!.Files.Any(file =>
+                    if (input.Repair is { } scope && result!.Files.Any(file =>
+                        !scope.AllowedPaths.Contains(file.Path,
+                            StringComparer.OrdinalIgnoreCase)))
+                        reason = "REPAIR_SCOPE: Output ONLY the approved source file path.";
+                    else if (staticWeb && result!.Files.Any(file =>
                         Path.GetExtension(file.Path) is not
                             (".html" or ".css" or ".js" or ".json" or ".md")))
                         reason = "STATIC_WEB_PATH: Use only HTML, CSS, JS, JSON or Markdown.";
