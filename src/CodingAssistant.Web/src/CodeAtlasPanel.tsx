@@ -594,7 +594,8 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
       const path = await api<AtlasPathResult>(token,
         '/api/tasks/' + taskId +
         (importedGraph ? '/atlas-imports/' : '/engineering-runs/') +
-        runId + '/path?from=' + encodeURIComponent(traceFrom) +
+        runId + (importedGraph ? '/path?from=' : '/atlas/path?from=') +
+        encodeURIComponent(traceFrom) +
         '&to=' + encodeURIComponent(to) + '&maxHops=6');
       if (path.fromId !== traceFrom || path.toId !== to)
         throw new Error('Path identity mismatch');
