@@ -54,6 +54,36 @@ export interface AtlasSourceEventPage {
   lastSequence: number;
   events: AtlasSourceEvent[];
 }
+export interface AtlasQaFindingMarker {
+  id: string;
+  fileNodeId: string;
+  path: string;
+  index: number;
+  severity: string;
+  requirement: string;
+  evidence: string;
+  recommendation: string;
+  classification: string;
+  qaReviewId: string;
+}
+export interface AtlasRepairMarker {
+  cycleId: string;
+  baseRunId: string;
+  repairRunId: string;
+  state: string;
+  qaReviewId: string | null;
+  fileNodeIds: string[];
+}
+export interface AtlasEvidenceOverlay {
+  runId: string;
+  sourceRevision: string;
+  verificationStatus: string;
+  qaReviewStatus: string;
+  qaReviewId: string | null;
+  findings: AtlasQaFindingMarker[];
+  repairs: AtlasRepairMarker[];
+  diagnostics: string[];
+}
 export interface AtlasPosition { x: number; y: number; depth: number; }
 export interface AtlasReplaySummary {
   sequence: number;
@@ -237,6 +267,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const [traceBusy, setTraceBusy] = useState(false);
   const [sourceEvents, setSourceEvents] = useState<AtlasSourceEvent[]>([]);
   const [replayStatus, setReplayStatus] = useState('');
+  const [evidence, setEvidence] = useState<AtlasEvidenceOverlay | null>(null);
   const [replayFrames, setReplayFrames] = useState<AtlasReplaySummary[]>([]);
   const [replaySequence, setReplaySequence] = useState<number | null>(null);
   const [replayGraph, setReplayGraph] = useState<AtlasSnapshot | null>(null);
@@ -263,6 +294,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     setTraceError('');
     setSourceEvents([]);
     setReplayStatus('');
+    setEvidence(null);
     setReplayFrames([]);
     setReplaySequence(null);
     setReplayGraph(null);
@@ -424,6 +456,29 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     return () => { cancelled = true; };
   }, [token, taskId, runId, fileSignature]);
 
+  // QA can complete after source generation. Poll the existing owner-private,
+  // project-bound evidence projection without altering agent permissions.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadEvidence() {
+      try {
+        const result = await api<AtlasEvidenceOverlay>(token,
+          '/api/tasks/' + taskId + '/engineering-runs/' + runId +
+          '/atlas/evidence');
+        if (!cancelled && result.runId === runId) setEvidence(result);
+      } catch {
+        // Atlas itself remains usable if an earlier version lacks overlays.
+        if (!cancelled) setEvidence(null);
+      }
+    }
+    void loadEvidence();
+    const timer = window.setInterval(() => void loadEvidence(), 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [token, taskId, runId, fileSignature]);
+
   async function selectReplay(sequence: number | null) {
     const request = ++replayRequest.current;
     setReplayError('');
@@ -473,6 +528,16 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const names = new Map(displayGraph?.nodes.map(n => [n.id, n.name]) ?? []);
   // Current source text must NEVER be mislabeled as an old revision's content.
   const excerpt = replaySequence === null ? selectedExcerpt(node, files) : '';
+  const currentEvidence = replaySequence === null && evidence?.runId === runId &&
+    evidence?.sourceRevision === snapshot?.sourceRevision ? evidence : null;
+  // These are FILE-level QA hypotheses, never claims about a particular method.
+  const nodeFindings = node?.path && currentEvidence ? currentEvidence.findings
+    .filter(item => item.path === node.path) : [];
+  const nodeRepairs = node?.path && currentEvidence ? currentEvidence.repairs
+    .filter(repair => repair.fileNodeIds.some(id =>
+      displayGraph?.nodes.find(file => file.id === id)?.path === node.path)) : [];
+  const findingNodeIds = new Set(currentEvidence?.findings.map(f =>
+    f.fileNodeId) ?? []);
   const currentChange = replaySequence === null &&
     sourceEvents.at(-1)?.sourceRevision === snapshot?.sourceRevision
     ? sourceEvents.at(-1) : null;
@@ -614,6 +679,8 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
                     aria-pressed={chosen} className={'atlas-node atlas-kind-' +
                       current.kind.toLowerCase() +
                       (chosen ? ' atlas-selected' : '') +
+                      (current.kind === 'File' && findingNodeIds.has(current.id)
+                        ? ' atlas-qa-flag' : '') +
                       (relevant ? ' atlas-connected' : '') +
                       (replaySequence === null &&
                         recentIds.includes(current.id) ? ' atlas-new' : '') +
@@ -705,6 +772,24 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
                 {edge.evidencePath && <small> {edge.evidencePath}:{edge.evidenceLine}</small>}
               </li>)}</ol>}
           </section>}
+          {replaySequence === null && nodeFindings.length > 0 &&
+            <section className="atlas-qa-evidence" aria-label="Static QA findings">
+              <strong>Static QA · hypotheses, not test failures</strong>
+              <p>Findings refer to this source file, not necessarily the selected symbol.</p>
+              {nodeFindings.slice(0, 6).map(finding =>
+                <article key={finding.id}>
+                  <b>{finding.severity}: {finding.requirement}</b>
+                  <p>{finding.evidence}</p>
+                  <small>Suggested check: {finding.recommendation}</small>
+                </article>)}
+            </section>}
+          {replaySequence === null && nodeRepairs.length > 0 &&
+            <section className="atlas-repair-evidence" aria-label="Related repair attempts">
+              <strong>Related repair attempts · unverified</strong>
+              {nodeRepairs.slice(0, 3).map(repair =>
+                <p key={repair.cycleId}>Repair {repair.cycleId.slice(0, 8)}:
+                  {' '}{repair.state}. Independent QA is separate.</p>)}
+            </section>}
           <div className="atlas-relation-filters" role="group"
             aria-label="Relationship direction">
             {(['all', 'outgoing', 'incoming'] as const).map(direction =>
@@ -743,6 +828,14 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
         </>}
       </aside>
     </div>}
+    {currentEvidence && (currentEvidence.qaReviewStatus !== 'NOT_REVIEWED' ||
+      currentEvidence.repairs.length > 0) &&
+      <div className="atlas-qa-summary" role="status">
+        <strong>QA evidence</strong>
+        <span>{currentEvidence.findings.length} static finding(s)</span>
+        <span>{currentEvidence.repairs.length} related repair(s)</span>
+        <span>Runtime tests: NOT RUN</span>
+      </div>}
     {replayFrames.length > 0 && <section className="atlas-replay"
       aria-label="Code Atlas Build Replay">
       <div className="atlas-replay-heading">
