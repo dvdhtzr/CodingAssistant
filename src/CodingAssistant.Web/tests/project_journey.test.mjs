@@ -13,6 +13,7 @@ let toggleJourneyStage;
 let steps;
 let InterviewStudio;
 let InterviewCompletionNotice;
+let SpecificationDraftFeedback;
 let ConversationWorkroom;
 
 const task = {
@@ -35,7 +36,7 @@ before(async () => {
   const journey = await vite.ssrLoadModule('/src/ProjectJourney.tsx');
   ({ JourneyStage, JourneyStatusStrip, restoreJourneyStage, toggleJourneyStage } = journey);
   steps = journey.journeySteps;
-  ({ InterviewStudio, InterviewCompletionNotice } =
+  ({ InterviewStudio, InterviewCompletionNotice, SpecificationDraftFeedback } =
     await vite.ssrLoadModule('/src/InterviewStudio.tsx'));
   ({ ConversationWorkroom } = await vite.ssrLoadModule('/src/ConversationWorkroom.tsx'));
 });
@@ -167,6 +168,28 @@ test('active specification work is before technical history and navigation targe
     'opening an existing stage must not scroll to the stage picker');
   const css = readFileSync('src/mission-control.css', 'utf8');
   assert.match(css, /scroll-margin-top:5\.5rem/);
+});
+
+test('specification action always exposes failed requests and in-progress work', () => {
+  const failing = renderToStaticMarkup(React.createElement(
+    SpecificationDraftFeedback, {
+      error: 'Could not complete this step: HTTP 400: INVALID_INPUT',
+      drafting: false,
+    }));
+  assert.match(failing, /role="alert"/);
+  assert.match(failing, /INVALID_INPUT/);
+  const busy = renderToStaticMarkup(React.createElement(
+    SpecificationDraftFeedback, { error: '', drafting: true }));
+  assert.match(busy, /role="status"/);
+  assert.match(busy, /drafting your specification/);
+  const idle = renderToStaticMarkup(React.createElement(
+    SpecificationDraftFeedback, { error: '', drafting: false }));
+  assert.equal(idle, '');
+
+  const source = readFileSync('src/InterviewStudio.tsx', 'utf8');
+  const stage = source.slice(source.indexOf('<JourneyStage step={specificationStep}'));
+  assert.match(stage, /<SpecificationDraftFeedback error=\{error\} drafting=\{busy === 'draft'\} \/>/);
+  assert.match(stage, /busy === 'draft' \? 'Drafting specification/);
 });
 
 test('after the final 13th answer, discovery has an explicit specification action', () => {
