@@ -53,8 +53,9 @@ const evidence = () => ({
   },
 });
 before(async () => {
-  vite = await createServer({ configFile: false, root: process.cwd(),
-    server: { middlewareMode: true }, appType: 'custom' });
+  vite = await createServer({ configFile: false,
+    optimizeDeps: { noDiscovery: true, include: [] }, root: process.cwd(),
+    server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   ({ commandActivity, commandAgents, CommandActivityView } =
     await vite.ssrLoadModule('/src/CommandActivity.tsx'));
   ({ CommandDrawer } = await vite.ssrLoadModule('/src/CommandDrawer.tsx'));
