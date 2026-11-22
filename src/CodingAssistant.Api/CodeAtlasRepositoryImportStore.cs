@@ -233,7 +233,8 @@ public sealed class CodeAtlasRepositoryImportStore(
             commit, cancellation);
         var parsed = CodeAtlasRepositoryArchive.Parse(bytes);
         var id = Guid.NewGuid().ToString("N");
-        var graph = CodeAtlasIndexer.Index(id, parsed.Files);
+        var graph = CodeAtlasIndexer.Index(id, parsed.Files,
+            owner + "/" + repo);
         if (parsed.Diagnostics.Count > 0)
         {
             graph = graph with
