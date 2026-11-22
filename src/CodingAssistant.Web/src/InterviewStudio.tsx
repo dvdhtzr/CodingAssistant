@@ -58,6 +58,20 @@ export function InterviewCompletionNotice({ ownerAnswers, hasSpecification, onCo
   </div>;
 }
 
+/** Feedback stays beside the specification action, not in the hidden
+ * Product Discovery panel. A failed request must never appear inert. */
+export function SpecificationDraftFeedback({ error, drafting }: {
+  error: string; drafting: boolean;
+}) {
+  return <>
+    {error && <div className="alert" role="alert">{error}</div>}
+    {drafting && <p className="hint" role="status">
+      The local Product Owner is drafting your specification. The saved
+      interview is unchanged until the complete draft is validated.
+    </p>}
+  </>;
+}
+
 export function InterviewStudio({ token, task }: {
   token: string;
   task: TaskItem;
@@ -407,11 +421,7 @@ export function InterviewStudio({ token, task }: {
         <h2>2. Review and approve the specification</h2>
         <p className="hint">The Product Owner's specification will reflect this conversation, not a hard-coded
           application template. You control when to draft and approve it.</p>
-        {error && <div className="alert" role="alert">{error}</div>}
-        {busy === 'draft' && <p className="hint" role="status">
-          The local Product Owner is drafting your specification. The saved
-          interview is unchanged until the complete draft is validated.
-        </p>}
+        <SpecificationDraftFeedback error={error} drafting={busy === 'draft'} />
         <button type="button" disabled={!!busy || ownerAnswers < 1}
           onClick={() => void submit('draft', () => api<InterviewSnapshot>(
             token, `/api/tasks/${task.id}/interview/specification`, {
