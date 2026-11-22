@@ -956,3 +956,19 @@ a { color: #91e2d8; }
   .mc-work-focus-actions { display:grid;grid-template-columns:1fr; }
   .mc-work-focus-actions select { max-width:none; }
 }
+
+/* Readable default scale in the active work surface. Dense data is opt-in. */
+.journey-shell--focused > .journey-stage.journey-open .journey-stage-body,
+.journey-shell--focused > .journey-stage.journey-open .journey-stage-body p,
+.journey-shell--focused > .journey-stage.journey-open .journey-stage-body label {
+  line-height:1.55;
+}
+.journey-shell--focused > .journey-stage.journey-open .hint {
+  font-size:.86rem;
+}
+.journey-shell--focused > .journey-stage.journey-open button {
+  min-height:38px;
+}
+.mc-work-secondary > summary:focus-visible,.mc-work-qa-details > summary:focus-visible {
+  outline:3px solid var(--mc-accent);outline-offset:2px;
+}
