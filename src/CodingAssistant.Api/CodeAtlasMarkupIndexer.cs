@@ -191,8 +191,9 @@ public static class CodeAtlasMarkupIndexer
                 var isStyleLink = name == "link";
                 if (isScript || isStyleLink)
                 {
+                    var duplicateRel = false;
                     var rel = isStyleLink ? Attribute(tag, "rel",
-                        out var duplicateRel) : null;
+                        out duplicateRel) : null;
                     if (isStyleLink && duplicateRel)
                     {
                         Problem("DUPLICATE_ATTRIBUTE", file.Path, lineAt[open]);
