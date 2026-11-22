@@ -3,6 +3,11 @@ import { api } from './api';
 import * as signalR from '@microsoft/signalr';
 import type { EngineerFile } from './EngineeringWorkspace';
 
+export interface AtlasImportedFile {
+  path: string;
+  sha256: string;
+  content: string;
+}
 export interface AtlasNode {
   id: string;
   kind: string;
@@ -243,16 +248,18 @@ function selectedExcerpt(node: AtlasNode | undefined,
 }
 
 export function CodeAtlasPanel({ token, taskId, runId, files, running,
-  onSourceChanged }: {
+  onSourceChanged, importedGraph }: {
   token: string;
   taskId: string;
   runId: string;
   files: readonly EngineerFile[];
   running: boolean;
   onSourceChanged?: () => void;
+  importedGraph?: AtlasSnapshot;
 }) {
   const [snapshot, setSnapshot] = useState<AtlasSnapshot | null>(null);
   const [error, setError] = useState('');
+  const [importedFile, setImportedFile] = useState<AtlasImportedFile | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [focus, setFocus] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -284,6 +291,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   useEffect(() => {
     setSnapshot(null);
     setError('');
+    setImportedFile(null);
     setSelected(null);
     setFocus(null);
     revision.current = '';
@@ -303,6 +311,11 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   }, [runId]);
 
   useEffect(() => {
+    if (importedGraph) {
+      setSnapshot(importedGraph);
+      setError('');
+      return;
+    }
     let cancelled = false;
     async function load() {
       try {
@@ -349,13 +362,14 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     // EngineeringWorkspace already polls accepted source every 3 seconds.
     // A new persisted file signature drives this projection refresh.
     return () => { cancelled = true; };
-  }, [token, taskId, runId, fileSignature, followBuild, showMethods]);
+  }, [token, taskId, runId, fileSignature, followBuild, showMethods, importedGraph]);
 
 
   // Subscribe first, then replay durable events to close the subscribe/read
   // race. Signals contain only revision metadata, never untrusted source.
   // Polling remains a bounded fallback when SignalR is unavailable.
   useEffect(() => {
+    if (importedGraph) return;
     let closed = false;
     let lastSequence = 0;
     let syncing = false;
@@ -436,9 +450,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
       window.clearInterval(timer);
       void connection.stop();
     };
-  }, [token, taskId, runId, onSourceChanged]);
+  }, [token, taskId, runId, onSourceChanged, importedGraph]);
 
   useEffect(() => {
+    if (importedGraph) return;
     let cancelled = false;
     async function loadFrames() {
       try {
@@ -454,11 +469,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     }
     void loadFrames();
     return () => { cancelled = true; };
-  }, [token, taskId, runId, fileSignature]);
+  }, [token, taskId, runId, fileSignature, importedGraph]);
 
   // QA can complete after source generation. Poll the existing owner-private,
   // project-bound evidence projection without altering agent permissions.
   useEffect(() => {
+    if (importedGraph) return;
     let cancelled = false;
     async function loadEvidence() {
       try {
@@ -477,7 +493,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [token, taskId, runId, fileSignature]);
+  }, [token, taskId, runId, fileSignature, importedGraph]);
 
   async function selectReplay(sequence: number | null) {
     const request = ++replayRequest.current;
@@ -527,7 +543,30 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
       edge.sourceId === node?.id));
   const names = new Map(displayGraph?.nodes.map(n => [n.id, n.name]) ?? []);
   // Current source text must NEVER be mislabeled as an old revision's content.
-  const excerpt = replaySequence === null ? selectedExcerpt(node, files) : '';
+  const excerpt = replaySequence === null
+    ? selectedExcerpt(node, importedFile && importedFile.path === node?.path
+      ? [{ ...importedFile, purpose: 'Imported source',
+           lastWorkItemId: '', updatedUtc: '' }] : files)
+    : '';
+  // Large imported source texts are never bulk-delivered with the graph.
+  // Fetch only the selected file, scoped to this exact imported commit.
+  useEffect(() => {
+    if (!importedGraph || !node?.path) {
+      setImportedFile(null);
+      return;
+    }
+    let cancelled = false;
+    setImportedFile(null);
+    void api<AtlasImportedFile>(token,
+      '/api/tasks/' + taskId + '/atlas-imports/' + runId +
+      '/file?path=' + encodeURIComponent(node.path)).then(file => {
+        if (!cancelled && file.path === node.path)
+          setImportedFile(file);
+      }).catch(() => {
+        if (!cancelled) setImportedFile(null);
+      });
+    return () => { cancelled = true; };
+  }, [token, taskId, runId, importedGraph, node?.path]);
   const currentEvidence = replaySequence === null && evidence?.runId === runId &&
     evidence?.sourceRevision === snapshot?.sourceRevision ? evidence : null;
   // These are FILE-level QA hypotheses, never claims about a particular method.
@@ -553,8 +592,9 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     setTraceResult(null);
     try {
       const path = await api<AtlasPathResult>(token,
-        '/api/tasks/' + taskId + '/engineering-runs/' + runId +
-        '/atlas/path?from=' + encodeURIComponent(traceFrom) +
+        '/api/tasks/' + taskId +
+        (importedGraph ? '/atlas-imports/' : '/engineering-runs/') +
+        runId + '/path?from=' + encodeURIComponent(traceFrom) +
         '&to=' + encodeURIComponent(to) + '&maxHops=6');
       if (path.fromId !== traceFrom || path.toId !== to)
         throw new Error('Path identity mismatch');
@@ -575,12 +615,15 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     <header className="atlas-heading">
       <div>
         <span className="wb-kicker">CODE ATLAS / SOURCE CONSTELLATION</span>
-        <h3>Watch the architecture take shape</h3>
-        <p>Source-derived structure from saved Software Engineer files.
-          Not compiled, executed, or verified.</p>
+        <h3>{importedGraph ? 'Explore the imported architecture' :
+          'Watch the architecture take shape'}</h3>
+        <p>{importedGraph ?
+          'Commit-pinned GitHub source, indexed read-only. Not built, executed, or verified.' :
+          'Source-derived structure from saved Software Engineer files. Not compiled, executed, or verified.'}</p>
       </div>
-      <span className="atlas-live-indicator" data-running={running}>
-        <span aria-hidden="true" />{running ? 'Observing source' : 'Saved snapshot'}
+      <span className="atlas-live-indicator" data-running={running && !importedGraph}>
+        <span aria-hidden="true" />{importedGraph ? 'Imported commit' :
+          running ? 'Observing source' : 'Saved snapshot'}
       </span>
     </header>
     <div className="atlas-controls">
@@ -600,15 +643,16 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
         checked={showMethods} onChange={e => setShowMethods(e.target.checked)} />
         Methods
       </label>
-      <label className="atlas-toggle"><input type="checkbox"
+      {!importedGraph && <label className="atlas-toggle"><input type="checkbox"
         checked={followBuild} onChange={e => setFollowBuild(e.target.checked)} />
         Follow build
-      </label>
+      </label>}
       <button type="button" className="outline" onClick={reset}>Overview</button>
     </div>
     {error && <p role="alert" className="atlas-error">{error}</p>}
     {!snapshot && !error && <p role="status" className="atlas-empty">
-      Reading saved source structure…</p>}
+      {importedGraph ? 'Reading imported source structure…' :
+        'Reading saved source structure…'}</p>}
     {displayGraph && view && <div className="atlas-workspace">
       <div className="atlas-canvas-wrap">
         {view.nodes.length === 1 && displayGraph.nodes.length === 1
