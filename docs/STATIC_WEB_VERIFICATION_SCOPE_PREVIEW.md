@@ -77,3 +77,40 @@ Before enabling any model-generated source in a browser:
 
 M4.5 requires **no new owner-side terminal command**. Its endpoint is
 available in the Windows application after GitHub merge and app restart.
+
+
+## M4.6 — Mission Control readiness display (presentation only)
+
+Mission Control displays the authenticated M4.5 preview in **two** places:
+beside the Software Engineer's saved source artifacts and inside the
+expandable Execution & Verification Timeline. After an Engineering run
+reaches a terminal state, the browser performs a same-origin,
+bearer-authenticated read of the run's verification-scope endpoint.
+Reads repeat at a bounded interval while the panel is mounted.
+
+The view enforces consistency with the displayed Engineering run,
+approved plan/spec/architecture/model identifiers, and (for a candidate)
+the saved file paths and SHA-256 digests. Mismatched or unavailable
+responses are shown as **Not assessed**, never as a candidate.
+
+- **Scope candidate**: current approved plan and all Static Web source
+  files match the host's read-only checks. Exact source fingerprint, scope
+  digest and file manifest are available in expandable disclosures.
+  Digests are NOT authorization tokens.
+- **Needs attention**: fixed blocker codes and plain-English explanations
+  (missing index.html, unsafe path, changed plan/hash or disconnected JS).
+- **Not assessed**: source pending, report unavailable or binding failure.
+
+Every presentation labels source **Generated · not tested** and execution
+DISABLED, with no run/test/approve action. The Static Web runtime registry
+remains UNQUALIFIED; M4.2–M4.4 trusted fixture acceptance does not qualify
+AI-generated code. A non-executable scope candidate cannot be promoted
+to VERIFIED.
+
+Windows and Ubuntu CI run scope identity/security/render tests,
+the existing React build, and real Chromium browser regressions
+for candidate and blocked disclosures. No additional Docker owner-host
+acceptance is required for this UI-only phase. Outstanding gates remain
+secure untrusted Chromium isolation, separately approved executable
+scope (#92), integrated adversarial/cancel-recovery (#76), and
+independent generated-source verification and bounded repair (#111).
