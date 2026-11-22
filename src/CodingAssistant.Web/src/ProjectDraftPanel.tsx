@@ -411,10 +411,13 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
             {busy === 'download' ? 'Preparing ZIP…' : 'Download project ZIP'}
           </button>}
           {job?.state === 'Generated' && spec?.status === 'Approved' &&
-            <button type="button" disabled={!!busy}
-              onClick={() => void downloadAgentContract()}>
-              {busy === 'contract' ? 'Preparing…' : 'Download agent pilot contract'}
-            </button>}
+            <details className="mc-work-secondary">
+              <summary>Additional engineering export</summary>
+              <button type="button" disabled={!!busy}
+                onClick={() => void downloadAgentContract()}>
+                {busy === 'contract' ? 'Preparing…' : 'Download agent contract'}
+              </button>
+            </details>}
         </div>
         {!job && <p className="hint">No generated files yet. Start with Source Generation.</p>}
         {!!result?.files.length && job && <details className="mc-work-secondary">
@@ -427,10 +430,9 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
           currentSpec &&
           <TaskBuildPanel token={token} taskId={taskId}
             specificationSha256={spec.sha256} />}
-        <p className="hint">Source-only generation and task-specific scope review
-          are separate from independently verified coding. The restricted
-          OpenCode pilot remains a separate qualification path, and security
-          issue #76 must be cleared before executable coding can be enabled.</p>
+        <p className="hint">Generated source and static reviews are not
+          independent compilation, browser testing or runtime verification.
+          Executable coding remains subject to host qualification and explicit authorization.</p>
       </section>
     </JourneyStage>
   </>;
