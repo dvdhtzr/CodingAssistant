@@ -430,6 +430,11 @@ try
     var secondTask = new string('c', 32);
     var firstRun = new string('b', 32);
     var secondRun = new string('d', 32);
+    // Build the historical fixture from its own independently scoped source.
+    // The event revision MUST match the persisted graph at this checkpoint.
+    const string replaySource = "namespace Demo; public class Example { }";
+    var checkpoint = CodeAtlasIndexer.Index(secondRun,
+        new[] { File("Example.cs", replaySource) });
     using (var db = new SqliteConnection(
         "Data Source=" + Path.Combine(privateDirectory, "codingassistant.db") +
         ";Pooling=False"))
@@ -458,13 +463,11 @@ try
             INSERT INTO engineering_atlas_events(
                 run_id,sequence,work_item_id,source_revision,changes_json,
                 created_utc)
-            VALUES('{secondRun}',1,'W1','{new string('b',64)}','[]',
+            VALUES('{secondRun}',1,'W1','{checkpoint.SourceRevision}','[]',
                 '2026-11-22T00:00:00Z');
             """;
         cmd.ExecuteNonQuery();
     }
-    var checkpoint = CodeAtlasIndexer.Index(secondRun,
-        new[] { File("Example.cs", original) });
     using (var db = new SqliteConnection("Data Source=" +
         Path.Combine(privateDirectory, "codingassistant.db") + ";Pooling=False"))
     {
