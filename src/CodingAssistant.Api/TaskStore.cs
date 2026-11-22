@@ -287,6 +287,7 @@ public sealed class TaskStore
             "DELETE FROM run_intents WHERE task_id=@id",
             "DELETE FROM plans WHERE task_id=@id",
             "DELETE FROM html_artifacts WHERE task_id=@id",
+            "DELETE FROM repair_proposals WHERE task_id=@id",
             "DELETE FROM qa_review_files WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_review_events WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_reviews WHERE task_id=@id",
