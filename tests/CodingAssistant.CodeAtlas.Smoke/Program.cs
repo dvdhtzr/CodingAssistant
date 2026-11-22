@@ -213,6 +213,33 @@ Check(externalXml.Diagnostics.Any(d => d.StartsWith(
     "INVALID_PROJECT_XML:", StringComparison.Ordinal)),
     "untrusted MSBuild XML DTD is rejected without reading external resources");
 
+// M4 path tracing: honor edge direction, bounded hops and actual evidence.
+var route = CodeAtlasPathFinder.Trace(semantic, place, helper);
+Check(route.Found && route.NodeIds.SequenceEqual(new[] { place, helper }) &&
+    route.Edges.Single().Kind == "Calls",
+    "method call trace identifies the real direct edge");
+Check(!CodeAtlasPathFinder.Trace(semantic, helper, place).Found,
+    "reverse call direction does not fabricate a caller relationship");
+Check(CodeAtlasPathFinder.Trace(semantic, place, saveContract,
+    maxHops: 1).Found,
+    "single-hop method call tracing is available");
+var indirect = CodeAtlasPathFinder.Trace(semantic, orderService, helper,
+    maxHops: 3);
+Check(indirect.Found && indirect.NodeIds.First() == orderService &&
+    indirect.NodeIds.Last() == helper,
+    "type containment followed by a method call has bounded traversal");
+Check(!CodeAtlasPathFinder.Trace(semantic, orderService, helper,
+    maxHops: 1).Found,
+    "hop limit rejects longer relationships");
+var pathRejected = false;
+try { _ = CodeAtlasPathFinder.Trace(semantic, place, helper, maxHops: 13); }
+catch (StoreFailure e) when (e.Code == "INVALID_INPUT") { pathRejected = true; }
+Check(pathRejected, "unbounded graph path request is rejected");
+pathRejected = false;
+try { _ = CodeAtlasPathFinder.Trace(semantic, "unknown", helper); }
+catch (StoreFailure e) when (e.Code == "NOT_FOUND") { pathRejected = true; }
+Check(pathRejected, "unknown symbol identity is rejected");
+
 // M3: exercise a real SQLite commit/rollback and immutable source-change
 // cursor without launching any untrusted project code or model.
 var database = Path.Combine(Path.GetTempPath(),
