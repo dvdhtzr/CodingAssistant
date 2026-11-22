@@ -85,7 +85,12 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
             id === 'studio' ? '⌘' : '⌁'}</span>{label}
         </button>)}
     </nav>}
-    <div className="wb-projects">
+    <details className="wb-projects wb-project-switcher">
+      <summary className="wb-project-switcher-trigger">
+        <span className="wb-kicker">PROJECT SWITCHER</span>
+        <strong>{tasks.find(task => task.id === selectedId)?.title ?? 'Choose a project'}</strong>
+        <small>{tasks.length} saved project{tasks.length === 1 ? '' : 's'} · Search, switch or manage</small>
+      </summary>
       <div className="wb-section-title">
         <span className="wb-kicker">SAVED PROJECTS <span className="wb-project-count">{tasks.length}</span></span>
         <button type="button" className="wb-refresh" disabled={disabled}
@@ -132,8 +137,8 @@ export function WorkbenchSidebar({ tasks, selectedId, view, disabled, onSelectTa
           </div>
         </div>}
       </div>)}
-    </div>
-    <details className="wb-team" open>
+    </details>
+    <details className="wb-team">
       <summary className="wb-kicker">ENGINEERING TEAM <span>
         {roster ? roster.length + ' specialists' : initialTeam.length + ' roles'}
       </span></summary>

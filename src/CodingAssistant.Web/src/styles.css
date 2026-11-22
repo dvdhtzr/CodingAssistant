@@ -97,3 +97,22 @@
 .qa-repair-choice span{min-width:0;overflow-wrap:anywhere}
 .qa-repair-choice small{color:#b8c8df}
 .qa-repair-history{margin:1rem 0;padding:.6rem;border:1px solid #32495f;border-radius:8px}
+
+/* Mission Control 2.0: project list and agent identities are opt-in surfaces,
+   not permanent scrolling columns. Details remain keyboard accessible. */
+.wb-project-switcher { min-width:0; }
+.wb-project-switcher-trigger { display:flex;flex-direction:column;gap:.25rem;
+  padding:.75rem .85rem;cursor:pointer;list-style:none;border:1px solid #415575;
+  border-radius:10px;background:#1b2b42; }
+.wb-project-switcher-trigger::-webkit-details-marker { display:none; }
+.wb-project-switcher-trigger::after { content:"⌄";margin-left:auto;
+  position:absolute;right:1rem;top:1rem;color:#a6d8e1; }
+.wb-project-switcher { position:relative; }
+.wb-project-switcher[open] .wb-project-switcher-trigger::after { content:"⌃"; }
+.wb-project-switcher-trigger strong { font-size:.94rem;overflow-wrap:anywhere; }
+.wb-project-switcher-trigger small { color:#aebed3;font-size:.75rem; }
+.wb-project-switcher-trigger:focus-visible,
+.wb-team > summary:focus-visible { outline:3px solid #75d1d5;outline-offset:3px; }
+.wb-project-switcher[open] { padding-bottom:.5rem; }
+.wb-project-switcher[open] > :not(summary) { margin-left:.35rem;margin-right:.35rem; }
+.wb-team:not([open]) { padding-bottom:.4rem; }
