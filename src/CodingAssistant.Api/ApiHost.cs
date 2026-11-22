@@ -577,6 +577,14 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(CodeAtlasIndexer.Index(db.Get(id, runId)))));
+        // Bounded directed traversal of source-backed relationships.
+        // It neither executes a project nor invents dynamic call targets.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/path",
+            (string id, string runId, string from, string to,
+             int? maxHops, EngineeringRunStore db) =>
+                Safe(() => Results.Ok(CodeAtlasPathFinder.Trace(
+                    CodeAtlasIndexer.Index(db.Get(id, runId)),
+                    from, to, maxHops ?? 6))));
         // Durable source-change cursor; no source contents cross the event wire.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas-events",
             (string id, string runId, int? after, EngineeringAtlasLedger ledger) =>
