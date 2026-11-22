@@ -68,6 +68,27 @@ independent container cleanup have not been relaxed.
 Node stdin/argument round-trip. The next real owner-host run is still
 necessary; do not mark Windows QUALIFIED based on CI.
 
+## M4.2b — Docker PID mode compatibility fix
+
+On the owner's real Windows Docker Desktop host, M4.2a returned
+`docker exit=125; category=UNCLASSIFIED_GUEST_FAILURE` with
+`0/18` and confirmed cleanup. This indicates Docker rejected the
+container launch before the guest returned evidence.
+
+Inspection found an invalid explicit Docker argument:
+`--pid=private`. Docker's CLI documents only
+`--pid=host` and `--pid=container:...` overrides. The default
+Docker PID namespace is already private, so the runner **removes**
+`--pid=private` and retains the default private PID isolation,
+`--ipc=private`, `--pids-limit=96` and all other restrictions.
+Cross-platform model-free tests now reject **any explicit PID mode**
+and check classification of `invalid PID mode` daemon errors.
+
+This is a likely root cause, not a confirmed fix until another real
+Windows Docker Desktop attempt. The result must remain BLOCKED if
+the host still cannot launch the guest. See official
+[Docker PID namespace documentation](https://docs.docker.com/reference/cli/docker/container/run/#pid-settings---pid).
+
 ## Still required before model-generated source may execute
 
 - Independently pinned Node/Playwright/Chromium evaluator and reviewed dependencies with browser sandbox suitable for untrusted source

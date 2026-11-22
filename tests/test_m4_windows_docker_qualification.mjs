@@ -93,7 +93,7 @@ test('Docker argv permits exactly one pinned no-network no-mount guest', () => {
     '--pull=never', '--network=none', '--read-only', '--cap-drop=all',
     '--security-opt=no-new-privileges', '--user=1000:1000',
     '--pids-limit=96', '--memory=2g', '--cpus=2', '--ipc=private',
-    '--pid=private', '--init', '-i', '--entrypoint=node',
+    '--init', '-i', '--entrypoint=node',
     '--input-type=module', '--run-fixed-guest',
   ]) assert.ok(args.includes(must), 'Missing Docker guard ' + must);
   for (const mustNot of [
@@ -104,6 +104,9 @@ test('Docker argv permits exactly one pinned no-network no-mount guest', () => {
   assert.equal(args.filter(x => x === '--run-fixed-guest').length, 1);
   assert.equal(args[args.indexOf('--entrypoint=node') + 1], IMAGE_ID);
   assert.ok(args.includes('--tmpfs=/tmp:rw,nosuid,nodev,mode=1777,size=256m'));
+  assert.ok(!args.some(arg => arg.startsWith('--pid=')),
+    'Docker default is a private PID namespace; explicit --pid=private is invalid');
+  assert.ok(!args.includes('--pid=host'), 'Never share host PID namespace');
   assert.ok(!args.includes('-e'), 'Source must not be passed as command argument');
   assert.ok(!args.includes('--'), 'Extra Node CLI terminator is unnecessary');
   assert.equal(args.at(-2), '-', 'Node must evaluate trusted stdin script');
@@ -290,6 +293,8 @@ test('guest failures are classified without printing Docker stderr or credential
     ['failed to create task: OCI runtime create failed', 'CONTAINER_START_FAILED'],
     ['exec: "node": executable file not found', 'NODE_EXECUTABLE_UNAVAILABLE'],
     ['invalid argument: image', 'GUEST_ARGUMENT_REJECTED'],
+    ['docker: Error response from daemon: invalid PID mode: private',
+      'INVALID_PID_NAMESPACE_MODE'],
     ['no space left on device', 'GUEST_STORAGE_EXHAUSTED'],
     ['permission denied', 'GUEST_PERMISSION_DENIED'],
     ['Cannot connect to the Docker daemon', 'DOCKER_ENGINE_UNAVAILABLE'],
