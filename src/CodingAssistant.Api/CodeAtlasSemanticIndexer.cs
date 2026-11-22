@@ -12,9 +12,6 @@ namespace CodingAssistant.Api;
 /// </summary>
 public static class CodeAtlasSemanticIndexer
 {
-    private static readonly SymbolDisplayFormat SymbolFormat =
-        SymbolDisplayFormat.FullyQualifiedFormat;
-
     private static string Scope(string path, IReadOnlyList<string> projects,
         string runId)
     {
@@ -27,9 +24,6 @@ public static class CodeAtlasSemanticIndexer
           .ThenBy(p => p, StringComparer.Ordinal).FirstOrDefault();
         return project ?? runId;
     }
-
-    private static string SymbolKey(ISymbol symbol) =>
-        symbol.OriginalDefinition.ToDisplayString(SymbolFormat);
 
     private static string NameOf(INamedTypeSymbol symbol)
     {
@@ -129,21 +123,16 @@ public static class CodeAtlasSemanticIndexer
             var compilation = CSharpCompilation.Create("CodeAtlasStatic",
                 trees, references,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-            var typeIds = new Dictionary<string, string>(StringComparer.Ordinal);
-            var methodIds = new Dictionary<string, string>(StringComparer.Ordinal);
-            var declaredMethods = new List<(IMethodSymbol Symbol, string NodeId)>();
+            // Display names can collide (IStore.Save and SqlStore.Save).
+            // Only the compiler's original symbol identity is authoritative.
+            var typeIds = new Dictionary<ISymbol, string>(
+                SymbolEqualityComparer.Default);
+            var methodIds = new Dictionary<ISymbol, string>(
+                SymbolEqualityComparer.Default);
 
-            string? ResolveMethod(IMethodSymbol candidate)
-            {
-                var original = (candidate.ReducedFrom ?? candidate).OriginalDefinition;
-                if (methodIds.TryGetValue(SymbolKey(original), out var id))
-                    return id;
-                // Use Roslyn's identity when display text differs for a
-                // constructed, reduced or interface method.
-                return declaredMethods.FirstOrDefault(item =>
-                    SymbolEqualityComparer.Default.Equals(
-                        item.Symbol.OriginalDefinition, original)).NodeId;
-            }
+            string? ResolveMethod(IMethodSymbol candidate) =>
+                methodIds.TryGetValue((candidate.ReducedFrom ?? candidate)
+                    .OriginalDefinition, out var id) ? id : null;
 
             // Pass 1: register symbols across every source file in the scope.
             foreach (var tree in trees)
@@ -158,7 +147,7 @@ public static class CodeAtlasSemanticIndexer
                     var qualifier = group.Key + "|" + NameOf(symbol);
                     if (nodes.TryGetValue(qualifier, out var node) &&
                         node.Kind is "Class" or "Interface" or "Struct" or "Enum")
-                        typeIds[SymbolKey(symbol)] = node.Id;
+                        typeIds[symbol.OriginalDefinition] = node.Id;
                 }
 
                 foreach (var method in tree.GetRoot().DescendantNodes()
@@ -175,8 +164,7 @@ public static class CodeAtlasSemanticIndexer
                     if (nodes.TryGetValue(qualifier, out var node) &&
                         node.Kind == kind)
                     {
-                        methodIds[SymbolKey(declared)] = node.Id;
-                        declaredMethods.Add((declared, node.Id));
+                        methodIds[declared.OriginalDefinition] = node.Id;
                     }
                 }
             }
@@ -192,15 +180,15 @@ public static class CodeAtlasSemanticIndexer
                 {
                     var symbol = model.GetDeclaredSymbol(type) as INamedTypeSymbol;
                     if (symbol is null ||
-                        !typeIds.TryGetValue(SymbolKey(symbol), out var from))
+                        !typeIds.TryGetValue(symbol.OriginalDefinition, out var from))
                         continue;
                     var line = type.GetLocation().GetLineSpan()
                         .StartLinePosition.Line + 1;
                     if (symbol.BaseType is { } baseType &&
-                        typeIds.TryGetValue(SymbolKey(baseType), out var ancestor))
+                        typeIds.TryGetValue(baseType.OriginalDefinition, out var ancestor))
                         Edge(from, ancestor, "Inherits", path, line);
                     foreach (var iface in symbol.Interfaces)
-                        if (typeIds.TryGetValue(SymbolKey(iface), out var implemented))
+                        if (typeIds.TryGetValue(iface.OriginalDefinition, out var implemented))
                             Edge(from, implemented, "Implements", path, line);
                 }
 
@@ -209,12 +197,12 @@ public static class CodeAtlasSemanticIndexer
                 {
                     var symbol = model.GetDeclaredSymbol(ctor) as IMethodSymbol;
                     if (symbol is null ||
-                        !typeIds.TryGetValue(SymbolKey(symbol.ContainingType),
+                        !typeIds.TryGetValue(symbol.ContainingType.OriginalDefinition,
                             out var from)) continue;
                     var line = ctor.GetLocation().GetLineSpan()
                         .StartLinePosition.Line + 1;
                     foreach (var parameter in symbol.Parameters)
-                        if (typeIds.TryGetValue(SymbolKey(parameter.Type),
+                        if (typeIds.TryGetValue(parameter.Type.OriginalDefinition,
                             out var dependency))
                             Edge(from, dependency,
                                 "ConstructorDependsOn", path, line);
