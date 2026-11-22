@@ -49,7 +49,9 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         var maxTokens = purpose switch
         {
             MafAgentPurpose.Interview => 750,
-            MafAgentPurpose.Specification => 3500,
+            // Long, completed interviews need room for the final answer.
+            // This caps generation; Ollama can stop earlier.
+            MafAgentPurpose.Specification => 4800,
             MafAgentPurpose.TechnicalLead => 3500,
             MafAgentPurpose.SoftwareEngineer => 8000,
             MafAgentPurpose.QaEngineer => 2200,
@@ -70,7 +72,8 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             {
                 temperature = purpose == MafAgentPurpose.Architecture ? 0.15 : 0.2,
                 num_predict = maxTokens,
-                num_ctx = purpose == MafAgentPurpose.SoftwareEngineer ? 16384 : 8192
+                num_ctx = purpose is MafAgentPurpose.SoftwareEngineer or
+                    MafAgentPurpose.Specification ? 12288 : 8192
             }
         };
 
@@ -102,23 +105,8 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             var payload = await response.Content.ReadAsStringAsync(cancellationToken);
             if (payload.Length > 130_000)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-            using var decoded = JsonDocument.Parse(payload);
-            if (decoded.RootElement.ValueKind != JsonValueKind.Object)
-                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-            if (purpose == MafAgentPurpose.SoftwareEngineer &&
-                decoded.RootElement.TryGetProperty("done_reason", out var done) &&
-                done.ValueKind == JsonValueKind.String &&
-                done.GetString() == "length")
-                throw new StoreFailure("MODEL_OUTPUT_TRUNCATED");
-            if (decoded.RootElement.ValueKind != JsonValueKind.Object ||
-                !decoded.RootElement.TryGetProperty("message", out var message) ||
-                message.ValueKind != JsonValueKind.Object ||
-                !message.TryGetProperty("content", out var content) ||
-                content.ValueKind != JsonValueKind.String ||
-                string.IsNullOrWhiteSpace(content.GetString()))
-                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             return new ChatResponse(new ChatMessage(
-                ChatRole.Assistant, content.GetString()));
+                ChatRole.Assistant, ReadAssistantContent(payload, purpose)));
         }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException)
         {
@@ -130,6 +118,34 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         {
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
         }
+    }
+
+    /// <summary>
+    /// Pure Ollama response validator. Never turn message.thinking into a
+    /// specification or persist partial generation. The completion reason is
+    /// authoritative when Ollama exhausts the generation budget.
+    /// </summary>
+    public static string ReadAssistantContent(string payload, MafAgentPurpose purpose)
+    {
+        using var decoded = JsonDocument.Parse(payload);
+        var response = decoded.RootElement;
+        if (response.ValueKind != JsonValueKind.Object)
+            throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+
+        if (purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer &&
+            response.TryGetProperty("done_reason", out var reason) &&
+            reason.ValueKind == JsonValueKind.String &&
+            reason.GetString() == "length")
+            throw new StoreFailure("MODEL_OUTPUT_TRUNCATED");
+
+        if (!response.TryGetProperty("message", out var message) ||
+            message.ValueKind != JsonValueKind.Object ||
+            !message.TryGetProperty("content", out var content) ||
+            content.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(content.GetString()))
+            throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+
+        return content.GetString()!;
     }
 
     // Public for model-free contract regression checks; no credentials/tools
