@@ -2,35 +2,57 @@ import { before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { createServer } from 'vite';
+import { createServer as createHttpServer } from 'node:http';
 
+let vite;
 let server;
 let browser;
 let page;
 let href;
 before(async () => {
-  server = await createServer({
-    configFile: false,
+  // Node's listen(0) owns a real ephemeral loopback port. Vite's port: 0
+  // can fall back to 5173 and collide with parallel Chromium fixtures.
+  vite = await createServer({
+    configFile: false, optimizeDeps: { noDiscovery: true, include: [] },
     root: process.cwd(),
-    server: { host: '127.0.0.1', port: 0, strictPort: false },
+    server: { middlewareMode: true, hmr: false },
     appType: 'spa',
   });
-  await server.listen();
-  const address = server.httpServer?.address();
+  server = createHttpServer(vite.middlewares);
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
   if (!address || typeof address === 'string')
     throw new Error('Missing trusted browser fixture');
   href = 'http://127.0.0.1:' + address.port +
     '/tests/browser/code_atlas_import.html';
   browser = await chromium.launch({ headless: true });
   page = await browser.newPage({ viewport: { width: 1420, height: 980 } });
-  await page.goto(href);
-  await page.getByRole('region', {
-    name: 'Code Atlas GitHub repository import',
-  }).waitFor();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('console', message => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  const response = await page.goto(href);
+  assert.equal(response?.status(), 200, 'trusted import fixture loads over loopback');
+  try {
+    await page.getByRole('region', {
+      name: 'Code Atlas GitHub repository import',
+    }).waitFor({ timeout: 10000 });
+  } catch {
+    throw new Error('Import fixture did not mount: ' +
+      errors.slice(0, 5).join(' | ') +
+      ' ; page=' + (await page.locator('body').innerText()).slice(0, 500));
+  }
 });
 after(async () => {
   await page?.close();
   await browser?.close();
-  await server?.close();
+  if (server) await new Promise((resolve, reject) =>
+    server.close(error => error ? reject(error) : resolve()));
+  await vite?.close();
 });
 
 test('only a commit-pinned public GitHub source is accepted by import UI', async () => {
