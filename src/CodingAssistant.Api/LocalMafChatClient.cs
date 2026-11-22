@@ -184,6 +184,12 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             (opening != 0 || closing <= opening + open.Length)))
             throw new StoreFailure("MODEL_THINKING_ONLY");
 
+        // Do not attempt to interpret nested or restarted reasoning blocks.
+        if (opening == 0 &&
+            value[..closing].IndexOf(open, open.Length,
+                StringComparison.OrdinalIgnoreCase) >= 0)
+            throw new StoreFailure("MODEL_THINKING_ONLY");
+
         var answer = value[(closing + close.Length)..].Trim();
         if (answer.Length == 0 ||
             answer.Contains(open, StringComparison.OrdinalIgnoreCase) ||
