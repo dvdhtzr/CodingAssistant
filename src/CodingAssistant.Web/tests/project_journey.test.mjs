@@ -182,7 +182,7 @@ test('turn 25 remains answerable while question 13 is pending', () => {
   const source = readFileSync('src/InterviewStudio.tsx', 'utf8');
   assert.match(source, /const MODEL_DRIVEN_ANSWER_LIMIT = 12;/);
   assert.match(source, /hasPendingFinalQuestion/);
-  assert.match(source, /const canAnswerInterview = ownerAnswers < MODEL_DRIVEN_ANSWER_LIMIT \\|\\|/);
+  assert.ok(source.includes('const canAnswerInterview = ownerAnswers < MODEL_DRIVEN_ANSWER_LIMIT ||'));
   assert.match(source, /\{canAnswerInterview && <InterviewAnswerComposer/);
   assert.match(source, /This is the final Product Owner question/);
 });
