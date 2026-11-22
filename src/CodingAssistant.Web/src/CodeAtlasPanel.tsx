@@ -55,6 +55,19 @@ export interface AtlasSourceEventPage {
   events: AtlasSourceEvent[];
 }
 export interface AtlasPosition { x: number; y: number; depth: number; }
+export interface AtlasReplaySummary {
+  sequence: number;
+  workItemId: string;
+  sourceRevision: string;
+  createdUtc: string;
+}
+export interface AtlasReplayManifest {
+  runId: string;
+  frames: AtlasReplaySummary[];
+}
+export interface AtlasReplayFrame extends AtlasReplaySummary {
+  graph: AtlasSnapshot;
+}
 export interface AtlasPathResult {
   fromId: string;
   toId: string;
@@ -224,6 +237,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const [traceBusy, setTraceBusy] = useState(false);
   const [sourceEvents, setSourceEvents] = useState<AtlasSourceEvent[]>([]);
   const [replayStatus, setReplayStatus] = useState('');
+  const [replayFrames, setReplayFrames] = useState<AtlasReplaySummary[]>([]);
+  const [replaySequence, setReplaySequence] = useState<number | null>(null);
+  const [replayGraph, setReplayGraph] = useState<AtlasSnapshot | null>(null);
+  const [replayBusy, setReplayBusy] = useState(false);
+  const [replayError, setReplayError] = useState('');
+  const replayRequest = useRef(0);
   const [zoom, setZoom] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const pointer = useRef<{ x: number; y: number } | null>(null);
@@ -244,6 +263,11 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     setTraceError('');
     setSourceEvents([]);
     setReplayStatus('');
+    setReplayFrames([]);
+    setReplaySequence(null);
+    setReplayGraph(null);
+    setReplayError('');
+    replayRequest.current++;
   }, [runId]);
 
   useEffect(() => {
@@ -382,17 +406,75 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     };
   }, [token, taskId, runId, onSourceChanged]);
 
-  const view = useMemo(() => snapshot ?
-    projectAtlas(snapshot, focus, showMethods, query) : null,
-    [snapshot, focus, showMethods, query]);
-  const node = snapshot?.nodes.find(n => n.id === selected);
-  const allLinks = node && snapshot ? relatedEdges(snapshot, node.id) : [];
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFrames() {
+      try {
+        const manifest = await api<AtlasReplayManifest>(token,
+          '/api/tasks/' + taskId + '/engineering-runs/' + runId +
+          '/atlas/replay');
+        if (!cancelled && manifest.runId === runId)
+          setReplayFrames(manifest.frames.slice(-64));
+      } catch {
+        if (!cancelled) setReplayError(
+          'Historical graph checkpoints could not be loaded.');
+      }
+    }
+    void loadFrames();
+    return () => { cancelled = true; };
+  }, [token, taskId, runId, fileSignature]);
+
+  async function selectReplay(sequence: number | null) {
+    const request = ++replayRequest.current;
+    setReplayError('');
+    setTraceFrom(null);
+    setTraceResult(null);
+    setSelected(null);
+    setFocus(null);
+    setQuery('');
+    if (sequence === null) {
+      setReplaySequence(null);
+      setReplayGraph(null);
+      setReplayBusy(false);
+      return;
+    }
+    setReplayBusy(true);
+    try {
+      const frame = await api<AtlasReplayFrame>(token,
+        '/api/tasks/' + taskId + '/engineering-runs/' + runId +
+        '/atlas/replay/' + sequence);
+      if (request !== replayRequest.current) return;
+      if (frame.sequence !== sequence || frame.graph.runId !== runId ||
+          frame.graph.sourceRevision !== frame.sourceRevision)
+        throw new Error('Historical source revision mismatch');
+      setReplaySequence(sequence);
+      setReplayGraph(frame.graph);
+    } catch {
+      if (request === replayRequest.current)
+        setReplayError('This historical graph checkpoint is unavailable.');
+    } finally {
+      if (request === replayRequest.current) setReplayBusy(false);
+    }
+  }
+  const displayGraph = replayGraph ?? snapshot;
+  const replayIndex = replaySequence === null ? replayFrames.length :
+    replayFrames.findIndex(frame => frame.sequence === replaySequence);
+  const replayStep = replayIndex < 0 ? replayFrames.length : replayIndex;
+
+  const view = useMemo(() => displayGraph ?
+    projectAtlas(displayGraph, focus, showMethods, query) : null,
+    [displayGraph, focus, showMethods, query]);
+  const node = displayGraph?.nodes.find(n => n.id === selected);
+  const allLinks = node && displayGraph ?
+    relatedEdges(displayGraph, node.id) : [];
   const links = allLinks.filter(edge => relationshipDirection === 'all' ||
     (relationshipDirection === 'incoming' ? edge.targetId === node?.id :
       edge.sourceId === node?.id));
-  const names = new Map(snapshot?.nodes.map(n => [n.id, n.name]) ?? []);
-  const excerpt = selectedExcerpt(node, files);
-  const currentChange = sourceEvents.at(-1)?.sourceRevision === snapshot?.sourceRevision
+  const names = new Map(displayGraph?.nodes.map(n => [n.id, n.name]) ?? []);
+  // Current source text must NEVER be mislabeled as an old revision's content.
+  const excerpt = replaySequence === null ? selectedExcerpt(node, files) : '';
+  const currentChange = replaySequence === null &&
+    sourceEvents.at(-1)?.sourceRevision === snapshot?.sourceRevision
     ? sourceEvents.at(-1) : null;
   const modifiedPaths = new Set(currentChange?.changes
     .filter(change => change.kind === 'Modified')
@@ -419,6 +501,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   function reset() {
     setSelected(null); setFocus(null); setQuery('');
     setTraceFrom(null); setTraceResult(null); setTraceError('');
+    void selectReplay(null);
     setZoom(1); setOffset({ x: 0, y: 0 });
   }
 
@@ -440,7 +523,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
           onChange={event => {
             const search = event.target.value;
             setQuery(search); setFocus(null); setFollowBuild(false);
-            const found = search.trim() ? snapshot?.nodes.find(item =>
+            const found = search.trim() ? displayGraph?.nodes.find(item =>
               (item.qualifiedName + ' ' + item.name).toLowerCase()
                 .includes(search.trim().toLowerCase())) : null;
             setSelected(found?.id ?? null);
@@ -460,9 +543,9 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
     {error && <p role="alert" className="atlas-error">{error}</p>}
     {!snapshot && !error && <p role="status" className="atlas-empty">
       Reading saved source structure…</p>}
-    {snapshot && view && <div className="atlas-workspace">
+    {displayGraph && view && <div className="atlas-workspace">
       <div className="atlas-canvas-wrap">
-        {view.nodes.length === 1 && snapshot.nodes.length === 1
+        {view.nodes.length === 1 && displayGraph.nodes.length === 1
           ? <p className="atlas-empty">No source files have been saved yet.
               The graph will grow after each completed engineering assignment.</p>
           : <>
@@ -532,8 +615,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
                       current.kind.toLowerCase() +
                       (chosen ? ' atlas-selected' : '') +
                       (relevant ? ' atlas-connected' : '') +
-                      (recentIds.includes(current.id) ? ' atlas-new' : '') +
-                      (current.path && modifiedPaths.has(current.path) &&
+                      (replaySequence === null &&
+                        recentIds.includes(current.id) ? ' atlas-new' : '') +
+                      (replaySequence === null && current.path &&
+                        modifiedPaths.has(current.path) &&
                         !recentIds.includes(current.id) ? ' atlas-modified' : '')}
                     onClick={() => { setSelected(current.id); setFollowBuild(false); }}
                     onKeyDown={event => {
@@ -565,11 +650,12 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
         <div className="atlas-graph-footer">
           <span>{recentIds.length ? recentIds.length + ' newly discovered · ' : ''}{view.nodes.length} of {view.total} symbols
             {' · '}{view.edges.length} visible links</span>
-          <span>{snapshot.coverage === 'STATIC_SEMANTIC' ? 'Static C# relationships' :
-            snapshot.coverage === 'PARTIAL_SEMANTIC' ? 'Partial static relationships' :
-            snapshot.coverage === 'SYNTAX_ONLY' ? 'Syntax indexed' :
-            snapshot.coverage === 'PARTIAL_SYNTAX' ? 'Partial C# syntax' :
-              snapshot.coverage}</span>
+          <span>{replaySequence !== null ? 'Historical frame · ' : ''}
+            {displayGraph.coverage === 'STATIC_SEMANTIC' ? 'Static C# relationships' :
+            displayGraph.coverage === 'PARTIAL_SEMANTIC' ? 'Partial static relationships' :
+            displayGraph.coverage === 'SYNTAX_ONLY' ? 'Syntax indexed' :
+            displayGraph.coverage === 'PARTIAL_SYNTAX' ? 'Partial C# syntax' :
+              displayGraph.coverage}</span>
         </div>
       </div>
       <aside className="atlas-details" aria-label="Selected source entity">
@@ -590,7 +676,10 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
             onClick={() => { setFocus(node.id); setQuery(''); setFollowBuild(false); }}>
             Focus relationships
           </button>
-          <div className="atlas-path-actions">
+          {replaySequence !== null && <p className="atlas-path-hint">
+            Historical graph only. Current source excerpts and live path
+            tracing are disabled for this older revision.</p>}
+          {replaySequence === null && <div className="atlas-path-actions">
             <button type="button" className="outline"
               aria-pressed={traceFrom === node.id}
               onClick={() => { setTraceFrom(node.id); setTraceResult(null); setTraceError(''); }}>
@@ -601,8 +690,9 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
               onClick={() => void tracePath(node.id)}>
               {traceBusy ? 'Tracing…' : 'Trace path to this node'}
             </button>}
-          </div>
-          {traceFrom && <p className="atlas-path-hint">Path start: {
+          </div>}
+          {traceFrom && replaySequence === null &&
+            <p className="atlas-path-hint">Path start: {
             names.get(traceFrom) ?? 'Selected source'}</p>}
           {traceError && <p role="alert" className="atlas-error">{traceError}</p>}
           {traceResult && <section className="atlas-path-result"
@@ -653,6 +743,42 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
         </>}
       </aside>
     </div>}
+    {replayFrames.length > 0 && <section className="atlas-replay"
+      aria-label="Code Atlas Build Replay">
+      <div className="atlas-replay-heading">
+        <strong>Build Replay</strong>
+        <span>{replaySequence === null ? 'Live saved source' :
+          'Historical work item #' + replaySequence}</span>
+      </div>
+      <div className="atlas-replay-controls">
+        <button type="button" disabled={replayBusy || replayStep <= 0}
+          onClick={() => void selectReplay(
+            replayFrames[replayStep - 1].sequence)}>Previous</button>
+        <input type="range" min={0} max={replayFrames.length} step={1}
+          aria-label="Build Replay timeline"
+          value={replayStep} disabled={replayBusy}
+          onChange={event => {
+            const index = Number(event.target.value);
+            void selectReplay(index === replayFrames.length ?
+              null : replayFrames[index].sequence);
+          }}/>
+        <button type="button" disabled={replayBusy ||
+            replayStep >= replayFrames.length}
+          onClick={() => void selectReplay(
+            replayStep + 1 === replayFrames.length ? null :
+            replayFrames[replayStep + 1].sequence)}>Next</button>
+        <button type="button" className="outline"
+          disabled={replayBusy || replaySequence === null}
+          onClick={() => void selectReplay(null)}>Return live</button>
+      </div>
+      {replayError && <p role="alert" className="atlas-error">{replayError}</p>}
+      {replaySequence !== null && <p className="atlas-replay-caption">
+        Snapshot recorded for {replayFrames.find(frame =>
+          frame.sequence === replaySequence)?.workItemId ?? 'saved work'}.
+        Historical node identities and source locations are preserved.
+        Source contents are not replayed.
+      </p>}
+    </section>}
     {sourceEvents.length > 0 && <details className="atlas-source-history">
       <summary>Recorded source changes ({sourceEvents.length})</summary>
       <ol aria-label="Committed Code Atlas source events">
