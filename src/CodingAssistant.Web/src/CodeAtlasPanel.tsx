@@ -211,15 +211,22 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
         if (existing && existing !== value.sourceRevision) {
           setRecentIds(added.map(n => n.id));
           if (followBuild && added.length) {
-            // Prioritize a new code entity over its containing file.
-            const ranked = [...added].sort((a, b) => {
+            // Follow a node that the current abstraction level can actually
+            // display. Otherwise, focus its known containing type.
+            const eligible = added.filter(n =>
+              showMethods || !SKIP_METHODS.has(n.kind));
+            const ranked = [...eligible].sort((a, b) => {
               const importance = (kind: string) =>
                 kind === 'Method' || kind === 'Constructor' ? 0 :
                 kind === 'Class' || kind === 'Interface' ? 1 : 2;
               return importance(a.kind) - importance(b.kind);
             });
-            setSelected(ranked[0].id);
-            setFocus(ranked[0].id);
+            const next = ranked[0] ?? value.nodes.find(n =>
+              n.id === added[0].parentId) ?? null;
+            if (next) {
+              setSelected(next.id);
+              setFocus(next.id);
+            }
           }
         }
       } catch {
@@ -230,7 +237,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
     // EngineeringWorkspace already polls accepted source every 3 seconds.
     // A new persisted file signature drives this projection refresh.
     return () => { cancelled = true; };
-  }, [token, taskId, runId, fileSignature, followBuild]);
+  }, [token, taskId, runId, fileSignature, followBuild, showMethods]);
 
   const view = useMemo(() => snapshot ?
     projectAtlas(snapshot, focus, showMethods, query) : null,
