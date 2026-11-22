@@ -99,6 +99,21 @@ public sealed class RepairCycleStore(
         return cycle is null ? null : Snapshot(cycle);
     }
 
+    public IReadOnlyList<RepairCycle> History(string taskId)
+    {
+        CheckId(taskId);
+        using var db = tasks.Open();
+        _ = TaskStore.FindTask(db, null, taskId) ??
+            throw new StoreFailure("NOT_FOUND");
+        var cycles = new List<RepairCycle>();
+        using var cmd = TaskStore.Command(db, null,
+            Columns + " WHERE task_id=@task ORDER BY created_utc DESC,id DESC",
+            ("@task", taskId));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) cycles.Add(Decode(reader));
+        return cycles.AsReadOnly();
+    }
+
     public RepairCycleSnapshot Get(string taskId, string id)
     {
         CheckId(taskId);
