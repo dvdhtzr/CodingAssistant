@@ -205,3 +205,29 @@
 @media(max-width:760px){
   .verification-action-stack .verification-smoke{padding:.7rem}
 }
+
+
+/* Mission Control work order: concise by default; source diagnostics on demand. */
+.ca-source-brief{
+  display:grid;gap:.65rem;padding:.85rem 1rem;min-width:0;
+  border:1px solid #476674;border-radius:10px;background:#192a36;
+}
+.ca-source-brief[data-state="needs-work"]{border-left:3px solid #e5b77c}
+.ca-source-brief-header{display:flex;justify-content:space-between;align-items:center;
+  flex-wrap:wrap;gap:.6rem}
+.ca-source-brief-header h4{margin:.2rem 0 0;font-size:1rem;line-height:1.4}
+.ca-source-brief-status{font-size:.76rem;font-weight:700;color:#f2d4a8}
+.ca-source-brief p{margin:0;font-size:.84rem;line-height:1.5}
+.ca-source-brief-next{color:#dff1ee}
+.ca-source-runtime{color:#b9d0d8;font-size:.8rem!important}
+.ca-source-brief-foot{color:#aebfcb;font-size:.75rem;line-height:1.4}
+.ca-source-findings{border-top:1px solid #3b5663;padding-top:.5rem}
+.ca-source-findings>summary{cursor:pointer;color:#cbe8e5;font-size:.83rem;
+  font-weight:650;width:max-content;max-width:100%}
+.ca-source-findings ul{list-style:none;display:grid;gap:.5rem;margin:.65rem 0 0;
+  padding:0}
+.ca-source-findings li{display:grid;gap:.2rem;border-left:2px solid #9f8467;
+  padding:.35rem .6rem;background:#1c303a;border-radius:4px;
+  overflow-wrap:anywhere;font-size:.8rem}
+.ca-source-findings li span{color:#c7d7df}
+.ca-source-findings summary:focus-visible{outline:2px solid #a4dfd2;outline-offset:3px}
