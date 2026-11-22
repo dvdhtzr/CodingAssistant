@@ -405,12 +405,12 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
             <p>Review the saved code, then decide whether an authorized repair is
               possible. No code will run when you open this review.</p></div>
           <button type="button" className="primary" onClick={showQaOptions}>
-            Open QA review &amp; repair options
+            Open QA review & repair options
           </button>
         </div>}
         <details ref={qaRef} className="mc-work-qa-details"
           open={qaOpen} onToggle={event => setQaOpen(event.currentTarget.open)}>
-          <summary tabIndex={0}><strong>QA review, findings &amp; repair history</strong>
+          <summary tabIndex={0}><strong>QA review, findings & repair history</strong>
             <span>Static inspection, triage and explicitly authorized repairs</span>
           </summary>
           <QaReviewPanel token={token} taskId={taskId} engineering={engineer} />
