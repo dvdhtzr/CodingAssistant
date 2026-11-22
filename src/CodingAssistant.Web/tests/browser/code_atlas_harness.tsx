@@ -47,6 +47,20 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     return Promise.resolve(new Response(JSON.stringify(response), {
       status: 200, headers: { 'content-type': 'application/json' },
     }));
+  if (url.includes('/atlas-events?')) {
+    const after = Number(new URL(url, window.location.href).searchParams.get('after') ?? 0);
+    const committed = response === next;
+    const event = {
+      runId, sequence: 1, workItemId: 'W2',
+      sourceRevision: next.sourceRevision,
+      changes: [{ path: 'TaskService.cs', kind: 'Modified', sha256: '2'.repeat(64) }],
+      createdUtc: '2026-11-22T14:00:01Z',
+    };
+    return Promise.resolve(new Response(JSON.stringify({
+      runId, lastSequence: committed ? 1 : 0,
+      events: committed && after === 0 ? [event] : [],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+  }
   return original(input, init);
 };
 function Demo() {
