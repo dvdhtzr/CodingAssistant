@@ -210,8 +210,6 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
           'Engineering has not started.'} No activity is inferred from an idle browser.</p>}
       <small>Agent activity is derived from saved host records. Static QA and generated source
         do not establish a verified application. Opening a workspace never authorizes work.</small>
-      <button type="button" className="outline mc-legacy-link"
-        onClick={() => onNavigate('diagnostics')}>Legacy diagnostics</button>
     </section>
     {selected && <CommandDrawer projectTitle={task.title} selection={selected}
       agents={agents} events={events} decisions={queue} evidence={evidence} onClose={closeDrawer}
