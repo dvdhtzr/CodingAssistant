@@ -128,6 +128,11 @@ try
                 sequence INTEGER NOT NULL, work_item_id TEXT NOT NULL,
                 source_revision TEXT NOT NULL, changes_json TEXT NOT NULL,
                 created_utc TEXT NOT NULL, PRIMARY KEY(run_id,sequence));
+            CREATE TABLE engineering_atlas_graph_deltas (
+                run_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+                delta_json TEXT NOT NULL, PRIMARY KEY(run_id,sequence),
+                FOREIGN KEY(run_id,sequence)
+                  REFERENCES engineering_atlas_events(run_id,sequence));
             INSERT INTO engineering_runs(id)
             VALUES('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
             """);
@@ -147,13 +152,20 @@ try
                 cmd.Parameters.AddWithValue("$hash", Hash(original));
                 cmd.ExecuteNonQuery();
             }
-            var evt = EngineeringAtlasLedger.Append(db, tx, run, "W1", before);
+            var beforeGraph = CodeAtlasIndexer.Index(run,
+                Array.Empty<EngineeringSourceFile>());
+            var afterGraph = CodeAtlasIndexer.Index(run,
+                new[] { File("Example.cs", original) });
+            var evt = EngineeringAtlasLedger.Append(db, tx, run, "W1", before,
+                beforeGraph, afterGraph);
             Check(evt?.Sequence == 1 && evt.Changes.Count == 1 &&
                 evt.Changes[0].Kind == "Added",
                 "new persisted source creates source-change event");
-            Check(evt!.SourceRevision == CodeAtlasIndexer.Index(run,
-                new[] { File("Example.cs", original) }).SourceRevision,
+            Check(evt!.SourceRevision == afterGraph.SourceRevision,
                 "event revision agrees exactly with source graph");
+            Check(evt.GraphDelta?.AddedNodeIds.Contains(afterGraph.Nodes.Single(n =>
+                n.Kind == "Class").Id) == true,
+                "new source records an actual added class node");
             tx.Commit();
         }
         using (var tx = db.BeginTransaction())
@@ -177,12 +189,22 @@ try
                 cmd.Parameters.AddWithValue("$run", run);
                 cmd.ExecuteNonQuery();
             }
-            var evt = EngineeringAtlasLedger.Append(db, tx, run, "W3", before);
+            var beforeGraph = CodeAtlasIndexer.Index(run,
+                new[] { File("Example.cs", original) });
+            var afterGraph = CodeAtlasIndexer.Index(run,
+                new[] { File("Example.cs", updated) });
+            var evt = EngineeringAtlasLedger.Append(db, tx, run, "W3", before,
+                beforeGraph, afterGraph);
             Check(evt?.Sequence == 2 && evt.Changes.Single().Kind == "Modified",
                 "changed source is versioned once and marked Modified");
-            Check(evt!.SourceRevision == CodeAtlasIndexer.Index(run,
-                new[] { File("Example.cs", updated) }).SourceRevision,
+            Check(evt!.SourceRevision == afterGraph.SourceRevision,
                 "replacement revision matches independently indexed source");
+            Check(evt.GraphDelta?.AddedNodeIds.Contains(afterGraph.Nodes.Single(n =>
+                n.Kind == "Method").Id) == true,
+                "new method is recorded in the persisted graph delta");
+            Check(evt.GraphDelta?.UpdatedNodeIds.Contains(afterGraph.Nodes.Single(n =>
+                n.Kind == "Class").Id) == true,
+                "modified source records its retained class as updated");
             tx.Commit();
         }
         using (var tx = db.BeginTransaction())
@@ -208,6 +230,9 @@ try
             """;
         Check(Convert.ToInt32(cmd.ExecuteScalar()) == 2,
             "SQLite restart retains two committed revisions, not rollback");
+        cmd.CommandText = "SELECT COUNT(*) FROM engineering_atlas_graph_deltas";
+        Check(Convert.ToInt32(cmd.ExecuteScalar()) == 2,
+            "graph deltas survive restart and rolled-back updates do not");
         cmd.CommandText = """
             SELECT changes_json FROM engineering_atlas_events
             WHERE run_id='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
