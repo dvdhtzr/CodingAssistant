@@ -267,6 +267,18 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var existing = new List<EngineeringSourceFile>();
     for (var n = 1; n <= fiveTasks.Length; n++)
     {
+        var html = "<!doctype html><html><body><input id='ingredients'>" +
+            string.Concat(Enumerable.Range(1, n).Select(step =>
+                "<section data-recipe-step='" + step + "'>Recipe feature " +
+                step + "</section>")) + "</body></html>";
+        recipeFactory.Responses.Enqueue(JsonSerializer.Serialize(new {
+            summary = "Implemented recipe comparison milestone " + n,
+            files = new[] { new {
+                path = "index.html", purpose = "Complete recipe comparison interface",
+                content = html
+            } },
+            verificationNotes = new[] { "Check the ingredient flow in browser" }
+        }));
         var next = await new MafSoftwareEngineer(recipeFactory).ImplementAsync(
             assignment with { Plan = recipePlan, WorkItem = fiveTasks[n - 1],
                 ExistingFiles = existing }, CancellationToken.None);
@@ -279,8 +291,10 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
                 "2026-11-22T00:00:00Z"));
         }
     }
-    Check(recipeFactory.Attempts == 5 && existing.Count == 1,
-        "five sequential recipe assignments produce host-validated source");
+    Check(recipeFactory.Attempts == 5 && existing.Count == 1 &&
+          Enumerable.Range(1, 5).All(step => existing[0].Content.Contains(
+              "data-recipe-step='" + step + "'", StringComparison.Ordinal)),
+        "five sequential recipe assignments preserve the cumulative source");
 
 }
 
