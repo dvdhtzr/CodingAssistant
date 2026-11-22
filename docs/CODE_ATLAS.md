@@ -163,3 +163,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - The parser skips HTML comments and script/style/textarea/template raw-text bodies; it never runs JavaScript, loads web resources, uses a browser/URL resolver, executes npm tools or infers module bundling output. Remote/protocol-relative URLs, credentials, query strings, unsupported file types, unquoted/dynamic attributes, or missing targets never become edges.
 - Path escapes, missing local targets, duplicate attributes, malformed HTML, and bounded node/edge/tag limits produce partial-coverage diagnostics instead of imagined links.
 - Explicit HTML references are source facts, not proof that scripts load at runtime or that a CSS or JS dependency will build. Existing approval, sandbox, independent QA and identity boundaries are unchanged.
+
+## M8.9 — Explicit Python module source links
+
+- Index top-level, single-line `import package.module` and `from .module import Symbol` / `from package.module import Symbol` references only when the module maps uniquely to an **already saved** `.py` or `__init__.py` file. No Python interpreter, import loader, package installation, sys.path assumption or filesystem access is permitted.
+- Each `ModuleImports` file-to-file edge has exact source path and line and the explicit `ExplicitPythonModuleSource` provenance. It is only an import statement with a matching indexed source file, not proof of successful runtime import or use of a specific symbol.
+- Standard-library/external names, dynamic imports, function-local imports, comments, strings, ambiguous module matches, and unresolved/escaping relative references produce no guessed edges. For ambiguous, missing or escaping **relative** modules, report partial indexing with bounded diagnostics.
+- Fully preserve task/commit isolation, owner authentication, deterministic graph revisions, existing caps, and the independent verification/approval boundary.

@@ -217,6 +217,79 @@ Check(invalidPython.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
         n.Name == "Ghost"),
     "Python unsafe paths and unterminated strings create no graph nodes");
 
+// M8.9: explicit Python imports may link ONLY to saved local module files.
+var pythonModuleSources = new[]
+{
+    File("src/pkg/api/main.py", """"
+        import src.pkg.api.service as service
+        from .helpers import assist
+        from ..common.formatter import Format
+        import json
+        from .missing import Missing
+        from .....escape import Nope
+        from .duplicate import Value
+        # from .decoy import Hidden
+        literal = "import src.pkg.api.decoy"
+        sample = """
+        from .decoy import Hidden
+        """
+        def dynamic():
+            import src.pkg.api.decoy
+        """),
+    File("src/pkg/api/service.py", "class Service: pass"),
+    File("src/pkg/api/helpers.py", "def assist(): pass"),
+    File("src/pkg/common/formatter.py", "class Format: pass"),
+    File("src/pkg/api/duplicate.py", "class One: pass"),
+    File("src/pkg/api/duplicate/__init__.py", "class Two: pass"),
+    File("src/pkg/api/decoy.py", "class Hidden: pass")
+};
+var pythonModules = CodeAtlasIndexer.Index("python-import-run",
+    pythonModuleSources);
+var pythonFileIds = pythonModules.Nodes.Where(n => n.Kind == "File" &&
+    n.Path is not null).ToDictionary(n => n.Path!, n => n.Id);
+var pythonLinks = pythonModules.Edges.Where(e =>
+    e.Kind == "ModuleImports").ToArray();
+Check(pythonLinks.Length == 3 && pythonLinks.All(e =>
+    e.SourceId == pythonFileIds["src/pkg/api/main.py"] &&
+    e.EvidencePath == "src/pkg/api/main.py" &&
+    e.EvidenceLine > 0 &&
+    e.Resolution == "ExplicitPythonModuleSource"),
+    "Python module links carry actual source path and precise line evidence");
+Check(new[] { "src/pkg/api/service.py", "src/pkg/api/helpers.py",
+    "src/pkg/common/formatter.py" }.All(path =>
+    pythonLinks.Any(e => e.TargetId == pythonFileIds[path])),
+    "absolute and relative Python imports reference exact saved modules");
+Check(!pythonLinks.Any(e =>
+    e.TargetId == pythonFileIds["src/pkg/api/decoy.py"] ||
+    e.TargetId == pythonFileIds["src/pkg/api/duplicate.py"] ||
+    e.TargetId == pythonFileIds["src/pkg/api/duplicate/__init__.py"]),
+    "comments, quoted text, nested imports and ambiguous modules make no links");
+Check(pythonModules.Diagnostics.Any(d =>
+    d.StartsWith("PYTHON_LOCAL_IMPORT_UNRESOLVED:",
+        StringComparison.Ordinal)) &&
+    pythonModules.Diagnostics.Any(d =>
+    d.StartsWith("PYTHON_LOCAL_IMPORT_OUTSIDE_ROOT:",
+        StringComparison.Ordinal)) &&
+    pythonModules.Diagnostics.Any(d =>
+    d.StartsWith("PYTHON_LOCAL_IMPORT_AMBIGUOUS:",
+        StringComparison.Ordinal)) &&
+    pythonModules.Coverage == "PARTIAL_PYTHON_STRUCTURE",
+    "missing, escaping and ambiguous relative imports are explicitly partial");
+var pythonImportTrace = CodeAtlasPathFinder.Trace(pythonModules,
+    pythonFileIds["src/pkg/api/main.py"],
+    pythonFileIds["src/pkg/common/formatter.py"]);
+Check(pythonImportTrace.Found &&
+    pythonImportTrace.Edges.Count == 1 &&
+    pythonImportTrace.Edges[0].Kind == "ModuleImports",
+    "Python source module links are navigable in bounded path tracing");
+var pythonSourcesReordered = CodeAtlasIndexer.Index("python-import-run",
+    pythonModuleSources.Reverse().ToArray());
+Check(pythonModules.SourceRevision == pythonSourcesReordered.SourceRevision &&
+    pythonModules.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(pythonSourcesReordered.Edges.Select(e =>
+        (e.Kind, e.SourceId, e.TargetId))),
+    "Python module relationships remain deterministic across source order");
+
 // M8.7: Java source declarations are source evidence, not compiled code.
 var javaFiles = new[]
 {

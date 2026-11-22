@@ -15,6 +15,45 @@ public static class CodeAtlasPythonIndexer
 
     private sealed record Scope(int Indent, string Qualified, string Id,
         string Kind);
+    // Only complete, single-line, literal module specifiers. A qualified
+    // import is a source reference, NOT evidence of a successful import.
+    private static readonly Regex PlainImport = new(
+        @"^import +(?<module>[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*)(?: +as +[A-Za-z_][A-Za-z_0-9]*)?$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex FromImport = new(
+        @"^from +(?<module>\.*[A-Za-z_][A-Za-z_0-9]*(?:\.[A-Za-z_][A-Za-z_0-9]*)*) +import +[A-Za-z_][A-Za-z_0-9]*(?: +as +[A-Za-z_][A-Za-z_0-9]*)?$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    // Exact, in-memory Python module file lookup only; neither namespace
+    // package inference nor a guessed sys.path/installation is performed.
+    private static (string? Target, string? Problem) ResolveModule(
+        string importingFile, string module,
+        IReadOnlyDictionary<string, AtlasNode> indexedFiles)
+    {
+        var baseParts = new List<string>();
+        var dotCount = 0;
+        while (dotCount < module.Length && module[dotCount] == '.')
+            dotCount++;
+        if (dotCount > 0)
+        {
+            baseParts = importingFile.Split('/').SkipLast(1).ToList();
+            var ascend = dotCount - 1;
+            if (ascend >= baseParts.Count)
+                return (null, "OUTSIDE_ROOT");
+            baseParts.RemoveRange(baseParts.Count - ascend, ascend);
+            module = module[dotCount..];
+        }
+        baseParts.AddRange(module.Split('.'));
+        var basePath = string.Join("/", baseParts);
+        var choices = new[] { basePath + ".py", basePath + "/__init__.py" };
+        var found = choices.Where(indexedFiles.ContainsKey).ToArray();
+        return found.Length switch
+        {
+            1 => (found[0], null),
+            > 1 => (null, "AMBIGUOUS"),
+            _ => (null, dotCount > 0 ? "UNRESOLVED" : null)
+        };
+    }
 
     // Replace strings and comments with spaces while preserving column
     // positions. Triple-quoted strings may span lines. No Python execution.
@@ -170,7 +209,8 @@ public static class CodeAtlasPythonIndexer
         }
 
         void Link(string from, string to, string kind,
-            string path)
+            string path, int? evidenceLine = null,
+            string resolution = "Syntax")
         {
             if (from.Length == 0 || to.Length == 0) return;
             var key = kind + "|" + from + "|" + to;
@@ -180,7 +220,8 @@ public static class CodeAtlasPythonIndexer
                 Diagnostic("EDGE_LIMIT", path);
                 return;
             }
-            edges.Add(key, new AtlasEdge(from, to, kind));
+            edges.Add(key, new AtlasEdge(from, to, kind,
+                evidenceLine is null ? null : path, evidenceLine, resolution));
         }
 
         foreach (var file in python)
@@ -221,6 +262,29 @@ public static class CodeAtlasPythonIndexer
                 }
                 while (scopes.Count > 0 && lead <= scopes.Peek().Indent)
                     scopes.Pop();
+
+                // Module linking is restricted to syntactically unambiguous,
+                // top-level imports. A local module may be absent from the
+                // saved source or shadowed at runtime; no runtime claim.
+                if (lead == 0 && content.Length <= 400)
+                {
+                    var simple = PlainImport.Match(content);
+                    var from = simple.Success ? null : FromImport.Match(content);
+                    var matchImport = simple.Success ? simple : from;
+                    if (matchImport is { Success: true })
+                    {
+                        var module = matchImport.Groups["module"].Value;
+                        var (target, issue) = ResolveModule(
+                            file.Path, module, files);
+                        if (target is not null)
+                            Link(fileId, files[target].Id, "ModuleImports",
+                                file.Path, n + 1,
+                                "ExplicitPythonModuleSource");
+                        else if (issue is not null)
+                            Diagnostic("LOCAL_IMPORT_" + issue +
+                                ":" + (n + 1), file.Path);
+                    }
+                }
 
                 var match = Declaration.Match(content);
                 if (!match.Success) continue;
