@@ -265,11 +265,18 @@ export function main(argv=process.argv.slice(2),options={}){
     process.stdout.write('Use --zip <path> to test an owner-selected source ZIP.\n');
     return 0;
   }
-  if(argv.length!==2||argv[0]!=='--zip'){
-    process.stderr.write('Usage: node tools/m4/smoke_generated_zip.mjs --zip <file.zip>\n');
+  const jsonMode=argv.length===3&&argv[2]==='--json';
+  if((argv.length!==2&&!jsonMode)||argv[0]!=='--zip'){
+    process.stderr.write('Usage: node tools/m4/smoke_generated_zip.mjs --zip <file.zip> [--json]\n');
     return 2;
   }
   const result=smokeZip({...options,zip:argv[1]});
+  if(jsonMode){
+    // Authenticated local API consumes this bounded machine-readable report.
+    // No path, source text, Docker log, or VERIFIED claim is returned.
+    process.stdout.write(JSON.stringify(result)+'\n');
+    return result.status==='SMOKE_PASS_NOT_VERIFIED'&&result.containerRemoved?0:2;
+  }
   const evidence=writePrivateEvidence(result,options.evidenceFolder);
   process.stdout.write('STATIC WEB '+result.status+'\n');
   process.stdout.write('  container-only Chromium sandbox: DISABLED (Docker isolation)\n');
