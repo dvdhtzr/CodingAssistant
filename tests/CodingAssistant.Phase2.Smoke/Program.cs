@@ -210,6 +210,21 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
             "MAF retries one blank or truncated specification with same local model");
     }
 
+    var thinkingOnly = new Phase3FakeMafFactory();
+    thinkingOnly.SpecificationFailures.Enqueue("MODEL_THINKING_ONLY");
+    try
+    {
+        _ = await new MafAgentTeam(thinkingOnly).DraftAsync(
+            "Build podcast analytics", [], "qwen3:30b", CancellationToken.None);
+        Check(false, "thinking-only output cannot become a specification");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_THINKING_ONLY")
+    {
+        Check(thinkingOnly.Purposes.SequenceEqual([
+            MafAgentPurpose.Specification]),
+            "thinking-only model fails with actionable code without futile retry");
+    }
+
     var failsTwice = new Phase3FakeMafFactory();
     failsTwice.SpecificationFailures.Enqueue("MODEL_OUTPUT_REJECTED");
     failsTwice.SpecificationFailures.Enqueue("MODEL_OUTPUT_TRUNCATED");
