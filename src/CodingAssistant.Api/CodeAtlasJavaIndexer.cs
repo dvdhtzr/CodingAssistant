@@ -257,7 +257,6 @@ public static class CodeAtlasJavaIndexer
 
                 if (!foundType && owningType is not null &&
                     depth == owningType.Depth &&
-                    !code.Contains('=') &&
                     !code.Contains("->", StringComparison.Ordinal))
                 {
                     var open = code.IndexOf('(');
@@ -283,7 +282,8 @@ public static class CodeAtlasJavaIndexer
                                     (tail.StartsWith("throws ", StringComparison.Ordinal) &&
                                      (tail.Contains('{') || tail.Contains(';')));
                                 var constructor = name == owningType.Name;
-                                var callable = !modifiersOrType.EndsWith('.') &&
+                                var callable = !prefix.Contains('=') &&
+                                    !modifiersOrType.EndsWith('.') &&
                                     modifiersOrType != "return" &&
                                     modifiersOrType != "new" &&
                                     modifiersOrType != "throw" &&
