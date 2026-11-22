@@ -110,16 +110,27 @@ public static class CodeAtlasSemanticIndexer
                 continue;
             }
 
-            // Never load assemblies from the source repository. These paths
-            // refer only to already installed, host-trusted .NET runtime files.
-            var references = new[]
+            // Assembly.Location is invalid under PublishSingleFile (IL3000).
+            // The host supplies a trusted platform assembly list; never
+            // resolve metadata from user source or repository project files.
+            var platformAssemblies = AppContext.GetData(
+                "TRUSTED_PLATFORM_ASSEMBLIES") as string ?? "";
+            var referenceNames = new HashSet<string>(
+                ["System.Private.CoreLib.dll", "System.Runtime.dll",
+                 "System.Linq.dll", "netstandard.dll"],
+                StringComparer.OrdinalIgnoreCase);
+            var references = platformAssemblies
+                .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+                .Where(path => referenceNames.Contains(Path.GetFileName(path)) &&
+                    File.Exists(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(path => MetadataReference.CreateFromFile(path))
+                .ToArray();
+            if (references.Length == 0)
             {
-                typeof(object).Assembly.Location,
-                typeof(Enumerable).Assembly.Location,
-                typeof(System.Runtime.GCSettings).Assembly.Location
-            }.Distinct(StringComparer.Ordinal)
-             .Where(path => !string.IsNullOrWhiteSpace(path))
-             .Select(path => MetadataReference.CreateFromFile(path)).ToArray();
+                incomplete = true;
+                diagnostics.Add("TRUSTED_RUNTIME_METADATA_UNAVAILABLE:" + group.Key);
+            }
             var compilation = CSharpCompilation.Create("CodeAtlasStatic",
                 trees, references,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
