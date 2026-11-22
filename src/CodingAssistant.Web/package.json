@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "test:workbench": "node --test --test-concurrency=1 tests/workbench_shell.test.mjs tests/project_journey.test.mjs tests/mission_control_foundation.test.mjs tests/interview_choices.test.mjs tests/owner_decision_inbox.test.mjs tests/source_artifact_explorer.test.mjs tests/team_workroom.test.mjs tests/verification_timeline.test.mjs tests/command_activity.test.mjs tests/code_atlas.test.mjs",
-    "test:browser": "node --test tests/browser/workroom.test.mjs tests/browser/calculation_journal.test.mjs tests/browser/code_atlas.test.mjs"
+    "test:browser": "node --test tests/browser/workroom.test.mjs tests/browser/calculation_journal.test.mjs tests/browser/code_atlas.test.mjs tests/browser/code_atlas_import.test.mjs"
   },
   "dependencies": {
     "@microsoft/signalr": "10.0.11",
