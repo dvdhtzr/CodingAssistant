@@ -6,11 +6,6 @@ using System.Text.RegularExpressions;
 namespace CodingAssistant.Api;
 
 /// <summary>
-/// Local-only conversational requirements gathering; explicitly no tools,
-/// agent, code execution or filesystem access. The LLM chooses the next
-/// clarifying question based on the objective and prior answers.
-/// </summary>
-/// <summary>
 /// Model-independent guard against saving the same resolved question again.
 /// This is intentionally conservative: related follow-ups with new decisions
 /// are allowed, and uncertain semantic matches are left to the model.
@@ -80,6 +75,11 @@ public static class InterviewQuestionQuality
         true);
 }
 
+/// <summary>
+/// Local-only conversational requirements gathering; explicitly no tools,
+/// agent, code execution or filesystem access. The LLM chooses the next
+/// clarifying question based on the objective and prior answers.
+/// </summary>
 public sealed class LocalInterviewModel : IInterviewModel
 {
     public const string DefaultModel = "qwen3.5:4b";
