@@ -182,7 +182,6 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running }: {
   const fileSignature = files.map(f => f.path + ':' + f.sha256).sort().join('|');
 
   useEffect(() => {
-    let active = true;
     setSnapshot(null);
     setError('');
     setSelected(null);
