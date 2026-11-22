@@ -336,6 +336,24 @@ public sealed class EngineeringRunStore(
             """, ("@run", runId), ("@item", workItemId)) is null)
             throw new StoreFailure("INVALID_STATE");
 
+        // Repair runs are allowed to replace only the exact owner-triaged
+        // source paths. Enforce this INSIDE the same SQLite transaction that
+        // persists source, independently of the agent and coordinator.
+        var repairScopeJson = TaskStore.Scalar(db, tx, """
+            SELECT findings_json FROM repair_cycles
+            WHERE engineering_run_id=@run AND task_id=@task
+            """, ("@run", runId), ("@task", taskId));
+        if (repairScopeJson is not null)
+        {
+            var repairFindings =
+                JsonSerializer.Deserialize<RepairFindingReference[]>(repairScopeJson)
+                ?? throw new StoreFailure("INVALID_STATE");
+            var allowedPaths = repairFindings.Select(f => f.Path)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            if (allowedPaths.Length != 1 || safe.Files.Any(f =>
+                !allowedPaths.Contains(f.Path, StringComparer.OrdinalIgnoreCase)))
+                throw new StoreFailure("REPAIR_SCOPE_VIOLATION");
+        }
         var arch = DraftArchitecturePolicy.Capture(db, tx, taskId,
             job.SpecificationVersion, job.SpecificationSha256);
         var existing = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);

@@ -87,3 +87,13 @@
 .architect-option strong{display:inline-block;margin-right:.6rem}
 .architect-option small{display:block;margin-top:.4rem;color:#b9c9de;line-height:1.4}
 .architect-stage .alert{max-width:none}
+
+/* R5: compact, accessible real QA repair workflow. */
+.repair-action,.qa-repair-progress{margin:1rem 0;padding:1rem;border:1px solid #39536d;border-radius:10px;background:#132136}
+.repair-action>p,.qa-repair-progress>p{margin:.2rem 0 .75rem}
+.qa-repair-selection{margin-top:.8rem;padding:.8rem;border:1px solid #425776;border-radius:8px;background:#101e30}
+.qa-repair-choice{display:flex;align-items:flex-start;gap:.7rem;padding:.7rem;margin:.4rem 0;border:1px solid #324c65;border-radius:8px;line-height:1.45;cursor:pointer}
+.qa-repair-choice input{flex:none;width:auto;margin:.2rem 0 0}
+.qa-repair-choice span{min-width:0;overflow-wrap:anywhere}
+.qa-repair-choice small{color:#b8c8df}
+.qa-repair-history{margin:1rem 0;padding:.6rem;border:1px solid #32495f;border-radius:8px}

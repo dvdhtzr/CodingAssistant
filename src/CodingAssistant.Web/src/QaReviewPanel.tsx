@@ -42,6 +42,26 @@ interface QaReviewSnapshot {
   }[];
 }
 
+interface RepairFindingReference {
+  path: string; index: number; severity: string; requirement: string;
+  evidence: string; recommendation: string; classification: string;
+}
+interface RepairProposal {
+  id: string; taskId: string; qaReviewId: string; engineeringRunId: string;
+  sourceSha256: string; findings: RepairFindingReference[];
+}
+interface RepairCycleView {
+  cycle: {
+    id: string; state: 'Running' | 'Generated' | 'QaRunning' |
+      'QaReviewed' | 'Failed' | 'Interrupted';
+    attempt: number; errorCode: string | null;
+    engineeringRunId: string; qaReviewId: string | null;
+  };
+  engineering: { job: { state: string; errorCode: string | null }; files: unknown[] };
+  review: { job: { state: string }; reports: QaFileReport[] } | null;
+  staticPreflight: { status: string; verificationStatus: string; findings: unknown[] };
+}
+
 export function QaReviewPanel({ token, taskId, engineering }: {
   token: string;
   taskId: string;
@@ -51,6 +71,11 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  const [repair, setRepair] = useState<RepairCycleView | null>(null);
+  const [repairHistory, setRepairHistory] = useState<RepairCycleView['cycle'][]>([]);
+  const [repairOpen, setRepairOpen] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [confirmed, setConfirmed] = useState(false);
 
   useEffect(() => {
     let closed = false;
@@ -68,6 +93,31 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         if (!closed) setError('Could not load saved QA review history.');
       }
     };
+    void sync();
+    const timer = window.setInterval(() => void sync(), 3000);
+    return () => { closed = true; window.clearInterval(timer); };
+  }, [token, taskId, reload]);
+
+  useEffect(() => {
+    let closed = false;
+    async function sync() {
+      try {
+        const [value, history] = await Promise.all([
+          api<{ snapshot: RepairCycleView | null }>(token,
+            '/api/tasks/' + taskId + '/repair-cycles/latest'),
+          api<{ cycles: RepairCycleView['cycle'][] }>(token,
+            '/api/tasks/' + taskId + '/repair-cycles'),
+        ]);
+        if (!closed) {
+          setRepair(value.snapshot);
+          setRepairHistory(history.cycles);
+        }
+      } catch {
+        // QA itself remains usable if repair history cannot be loaded.
+      }
+    }
+    setRepair(null);
+    setRepairHistory([]);
     void sync();
     const timer = window.setInterval(() => void sync(), 3000);
     return () => { closed = true; window.clearInterval(timer); };
@@ -125,6 +175,69 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const potentialIssues = result?.reports.reduce((total, report) =>
     total + report.assessment.findings.length, 0) ?? 0;
 
+  const repairRunning = repair?.cycle.state === 'Running' ||
+    repair?.cycle.state === 'QaRunning';
+  const availableFindings = result?.reports.flatMap(report =>
+    report.assessment.findings.map((finding, index) => ({
+      path: report.path, index, finding,
+      key: report.path + ':' + index,
+    }))) ?? [];
+  const selectedFindings = availableFindings.filter(f => selected.includes(f.key));
+  const selectedFiles = new Set(selectedFindings.map(f => f.path.toLowerCase()));
+  const canRequestRepair = currentReport && result?.job.state === 'Reviewed' &&
+    result.sourceState === 'Generated' && potentialIssues > 0 &&
+    !repairRunning && (repair?.cycle.attempt ?? 0) < 3;
+  async function requestRepairs() {
+    if (!canRequestRepair || busy || !confirmed ||
+        selectedFindings.length === 0 || selectedFiles.size !== 1 ||
+        !result) return;
+    setBusy('repair');
+    setError('');
+    try {
+      const proposal = await api<RepairProposal>(token,
+        '/api/tasks/' + taskId + '/repair-proposals', {
+          qaReviewId: result.job.id,
+        });
+      for (const selected of selectedFindings) {
+        await api(token, '/api/tasks/' + taskId +
+          '/repair-proposals/' + proposal.id + '/triage', {
+          path: selected.path, index: selected.index,
+          classification: 'ImplementationDefect',
+          rationale: 'Owner confirms this finding contradicts the approved application requirements.',
+        });
+      }
+      const admitted = await api(token,
+        '/api/tasks/' + taskId + '/repair-cycles', {
+          proposalId: proposal.id,
+          confirmation: 'REPAIR ' + proposal.sourceSha256,
+          findings: selectedFindings.map(f => ({
+            path: f.path, index: f.index,
+          })),
+        });
+      void admitted;
+      setRepairOpen(false);
+      setSelected([]);
+      setConfirmed(false);
+      setReload(x => x + 1);
+      engineering.refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Repair could not start');
+    } finally { setBusy(''); }
+  }
+  async function cancelRepair() {
+    if (!repairRunning || !repair || busy) return;
+    setBusy('stopRepair');
+    setError('');
+    try {
+      await api(token, '/api/tasks/' + taskId +
+        '/repair-cycles/' + repair.cycle.id + '/cancel', {});
+      setReload(x => x + 1);
+      engineering.refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not stop repair');
+    } finally { setBusy(''); }
+  }
+
   return <section className="engineering-workspace" aria-label="Independent QA static source review">
     <div className="technical-plan-heading">
       <strong>QA Engineer · independent source review</strong>
@@ -172,6 +285,73 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         Refresh QA findings
       </button>
     </div>
+    {canRequestRepair && <div className="repair-action" aria-label="Software Engineer repair workflow">
+      <p><strong>{potentialIssues} potential QA issue(s)</strong> — select
+        only findings that really contradict your approved specification.
+        Ambiguous recommendations should be checked before applying repairs.</p>
+      <button type="button" className="primary"
+        disabled={!!busy} onClick={() => setRepairOpen(value => !value)}>
+        {repairOpen ? 'Close repair selection' : 'Request Repairs'}
+      </button>
+      {repairOpen && <div className="qa-repair-selection">
+        <p className="hint">Select findings in <strong>one source file</strong>
+          per repair cycle. Up to three source-bound cycles are permitted.</p>
+        {availableFindings.map(({ path, index, finding, key }) =>
+          <label key={key} className="qa-repair-choice">
+            <input type="checkbox" checked={selected.includes(key)}
+              onChange={event => {
+                setSelected(items => event.target.checked
+                  ? [...items, key] : items.filter(item => item !== key));
+                setConfirmed(false);
+              }}/>
+            <span><strong>{finding.severity}:</strong>{' '}
+              {finding.requirement} <small>({path})</small></span>
+          </label>)}
+        <label className="qa-repair-choice">
+          <input type="checkbox" checked={confirmed}
+            onChange={event => setConfirmed(event.target.checked)}/>
+          <span>I confirm these selected findings require changes under the
+            approved specification, and authorize a bounded source-only repair.</span>
+        </label>
+        {selectedFiles.size > 1 && <p className="activity-warning">
+          Select findings from only one source file for this cycle.</p>}
+        <div className="actions">
+          <button type="button" className="primary"
+            disabled={!!busy || !confirmed || selectedFindings.length === 0 ||
+              selectedFiles.size !== 1}
+            onClick={() => void requestRepairs()}>
+            {busy === 'repair' ? 'Admitting repair…' :
+              'Repair selected findings'}
+          </button>
+        </div>
+      </div>}
+    </div>}
+    {repair && <div className="qa-repair-progress" role="status">
+      <p><strong>Repair cycle {repair.cycle.attempt} of 3</strong>
+        {' · '}{repair.cycle.state}</p>
+      <p className="hint">Software Engineer source: {repair.engineering.job.state}
+        {' · '}Static inspection: {repair.staticPreflight.status}
+        {' · '}Independent QA: {repair.review?.job.state ?? 'Not started'}
+        {' · '}Functional verification: NOT VERIFIED
+      </p>
+      {repair.cycle.errorCode && <p className="activity-warning">
+        Repair stopped: {repair.cycle.errorCode}</p>}
+      {repairRunning && <button type="button" className="danger"
+        disabled={!!busy} onClick={() => void cancelRepair()}>
+        Stop repair cycle
+      </button>}
+    </div>}
+    {repairHistory.length > 0 && <details className="qa-repair-history">
+      <summary>Repair history ({repairHistory.length})</summary>
+      <ol className="events" aria-label="Saved Software Engineer repair cycles">
+        {repairHistory.map(cycle => <li key={cycle.id}>
+          <strong>Cycle {cycle.attempt}: {cycle.state}</strong>
+          {' · '}{cycle.engineeringRunId.slice(0, 12)}
+          {cycle.qaReviewId ? ' · Independent QA recorded' : ' · No completed QA yet'}
+          {cycle.errorCode ? ' · ' + cycle.errorCode : ''}
+        </li>)}
+      </ol>
+    </details>}
     {error && <p className="activity-warning" role="alert">{error}</p>}
     {result && <>
       <p className="hint" role="status">
