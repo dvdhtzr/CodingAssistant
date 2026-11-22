@@ -1808,7 +1808,7 @@ try
     using (var blockedQa = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
         Check(blockedQa.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 4,
+              qaModel.ReviewedFiles.Count == 8,
             "stale architecture cannot initiate new QA review of old source");
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
