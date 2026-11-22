@@ -197,8 +197,7 @@ test('UX-6B source preflight exposes concrete defects without executable control
 
 
 test('M4.6 real Chromium shows candidate scope separately from unqualified execution', async () => {
-  const scope = page.getByRole('region',
-    { name: 'Generated source verification readiness' }).first();
+  const scope = page.locator('.verification-scope[data-state="candidate"]');
   assert.equal(await scope.isVisible(), true);
   assert.match(await scope.textContent(), /Scope candidate/);
   assert.match(await scope.textContent(), /Generated · not tested/);
@@ -217,8 +216,7 @@ test('M4.6 real Chromium shows candidate scope separately from unqualified execu
   assert.match(await fingerprints.textContent(), /fingerprints, not authorization tokens/);
 });
 test('M4.6 real Chromium keeps rejected scope visible without any run action', async () => {
-  const scope = page.getByRole('region',
-    { name: 'Generated source verification readiness' }).nth(1);
+  const scope = page.locator('.verification-scope[data-state="blocked"]');
   assert.equal(await scope.isVisible(), true);
   assert.match(await scope.textContent(), /Needs attention/);
   assert.match(await scope.textContent(), /MISSING ROOT INDEX HTML/);
