@@ -152,6 +152,23 @@ test('Technical Lead stage has a mounted, accessible plan-review region', () => 
   assert.match(html, /aria-expanded="false"/);
 });
 
+test('active specification work is before technical history and navigation targets the editor', () => {
+  const html = renderToStaticMarkup(React.createElement(InterviewStudio, {
+    token: 'f'.repeat(64), task,
+  }));
+  const editor = html.indexOf('id="journey-panel-specification"');
+  const history = html.indexOf('class="mc-work-secondary"');
+  assert.ok(editor >= 0 && history > editor,
+    'technical history must not push the current editor below the fold');
+
+  const source = readFileSync('src/InterviewStudio.tsx', 'utf8');
+  assert.match(source, /document\.getElementById\('journey-panel-' \+ id\)\?\.scrollIntoView/);
+  assert.doesNotMatch(source, /document\.querySelector\('\.mc-work-focus'\)/,
+    'opening an existing stage must not scroll to the stage picker');
+  const css = readFileSync('src/mission-control.css', 'utf8');
+  assert.match(css, /scroll-margin-top:5\.5rem/);
+});
+
 test('after the final 13th answer, discovery has an explicit specification action', () => {
   const html = renderToStaticMarkup(React.createElement(InterviewCompletionNotice, {
     ownerAnswers: 13, hasSpecification: false, onContinue: () => {},
