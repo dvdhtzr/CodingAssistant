@@ -594,6 +594,11 @@ public static class ApiHost
             (string id, string importId, string path,
              CodeAtlasRepositoryImportStore db) =>
                 Safe(() => Results.Ok(db.GetFile(id, importId, path))));
+        app.MapGet("/api/tasks/{id}/atlas-imports/{importId}/path",
+            (string id, string importId, string from, string to,
+             int? maxHops, CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(CodeAtlasPathFinder.Trace(
+                    db.Get(id, importId).Graph, from, to, maxHops ?? 6))));
         // Atlas is a read-only projection of persisted source. It performs
         // syntax parsing only; it does not compile or execute user code.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas",
