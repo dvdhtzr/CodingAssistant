@@ -40,6 +40,34 @@ M4.2 WINDOWS_DOCKER_FIXED_FIXTURE_GUEST_PASS
 
 Passing model-free Windows/Ubuntu CI only verifies the Docker command builder, admission rules, strict result parser and fail-closed cleanup with **simulated** Docker responses. CI never starts a Docker guest.
 
+## M4.2a — Windows guest input and bounded diagnostics
+
+An owner-host run on November 21, 2026 reached the cached Playwright
+image, but reported `0/18`, `Guest observations absent or oversized`
+and confirmed guest removal. This means the checks did not produce
+auditable observations; it is **not** an 18-case security failure or PASS.
+
+The Windows host now sends the unchanged, checked-in Node guest script
+through Docker standard input (`docker run -i` and
+`node --input-type=module - --run-fixed-guest`) instead of embedding
+the entire multi-line program in a Windows command-line argument.
+The input is always the same trusted source whose SHA-256 is recorded
+in the report; it cannot be supplied by a model or task. The disposable
+`/tmp` mount explicitly uses writable mode 1777 for UID 1000.
+
+If Docker still cannot launch Node, the runner records the bounded
+Docker exit code plus an **allowlisted error category** (for example,
+`NODE_EXECUTABLE_UNAVAILABLE`, `CONTAINER_START_FAILED`,
+`GUEST_PERMISSION_DENIED` or `GUEST_ARGUMENT_REJECTED`) rather
+than persisting or printing Docker's potentially sensitive raw stderr.
+When a valid fixed guest reports a failed case, the report names only
+the failed Boolean check identifiers. The 18 exact checks and required
+independent container cleanup have not been relaxed.
+
+**CI is a simulated Docker contract test**, plus a real, harmless local
+Node stdin/argument round-trip. The next real owner-host run is still
+necessary; do not mark Windows QUALIFIED based on CI.
+
 ## Still required before model-generated source may execute
 
 - Independently pinned Node/Playwright/Chromium evaluator and reviewed dependencies with browser sandbox suitable for untrusted source

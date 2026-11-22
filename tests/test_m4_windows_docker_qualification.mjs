@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  IMAGE_TAG, dockerArgs, parseObservations, validateDockerContext,
+  IMAGE_TAG, dockerArgs, parseObservations, classifyGuestFailure, validateDockerContext,
   validatePinnedImage, runFixture, writePrivateEvidence, main,
 } from '../tools/m4/windows_docker_qualification.mjs';
 import { CASES } from '../tools/m4/windows_docker_guest.mjs';
@@ -24,9 +24,11 @@ const goodCases = Object.fromEntries(CASES.map(name => [name, true]));
 function result(status, stdout = '') { return { status, stdout }; }
 function fakeDocker(overrides = {}) {
   const calls = [];
+  const streamedInputs = [];
   let psCalls = 0;
-  function docker(args) {
+  function docker(args, _timeout, input) {
     calls.push(args);
+    if (args[0] === 'run') streamedInputs.push(input);
     if (args[0] === 'context' && args[1] === 'show')
       return result(0, overrides.contextName ?? 'desktop-linux');
     if (args[0] === 'context' && args[1] === 'inspect')
@@ -43,6 +45,8 @@ function fakeDocker(overrides = {}) {
         overrides.guestOutput ??
         JSON.stringify(overrides.cases ?? goodCases)),
       timedOut: overrides.timeout ?? false,
+      stderr: overrides.guestStderr ?? '',
+      errorCode: overrides.guestErrorCode ?? null,
     };
     if (args[0] === 'container' && args[1] === 'inspect')
       return result(overrides.ownerMissing ? 1 : 0,
@@ -56,7 +60,7 @@ function fakeDocker(overrides = {}) {
     }
     throw new Error('Unexpected fake Docker operation: ' + args.join(' '));
   }
-  return { docker, calls };
+  return { docker, calls, streamedInputs };
 }
 
 test('fixed guest is pure Node syntax and never runs on import', () => {
@@ -89,7 +93,7 @@ test('Docker argv permits exactly one pinned no-network no-mount guest', () => {
     '--pull=never', '--network=none', '--read-only', '--cap-drop=all',
     '--security-opt=no-new-privileges', '--user=1000:1000',
     '--pids-limit=96', '--memory=2g', '--cpus=2', '--ipc=private',
-    '--pid=private', '--init', '--entrypoint=node',
+    '--pid=private', '--init', '-i', '--entrypoint=node',
     '--input-type=module', '--run-fixed-guest',
   ]) assert.ok(args.includes(must), 'Missing Docker guard ' + must);
   for (const mustNot of [
@@ -99,7 +103,10 @@ test('Docker argv permits exactly one pinned no-network no-mount guest', () => {
   ]) assert.ok(!args.includes(mustNot), 'Unauthorized Docker flag ' + mustNot);
   assert.equal(args.filter(x => x === '--run-fixed-guest').length, 1);
   assert.equal(args[args.indexOf('--entrypoint=node') + 1], IMAGE_ID);
-  assert.ok(args.includes('--tmpfs=/tmp:rw,nosuid,nodev,size=256m'));
+  assert.ok(args.includes('--tmpfs=/tmp:rw,nosuid,nodev,mode=1777,size=256m'));
+  assert.ok(!args.includes('-e'), 'Source must not be passed as command argument');
+  assert.ok(!args.includes('--'), 'Extra Node CLI terminator is unnecessary');
+  assert.equal(args.at(-2), '-', 'Node must evaluate trusted stdin script');
   for (const [badID, badName] of [
     ['alpine:latest', NAME],
     ['sha256:' + 'F'.repeat(64), NAME],
@@ -169,7 +176,12 @@ test('passing simulated Windows guest remains explicitly NOT product-qualified',
   assert.equal(mock.calls.filter(a => a[0] === 'rm').length, 1);
   assert.equal(mock.calls.filter(a => a[0] === 'ps').length, 2);
   const run = mock.calls.find(a => a[0] === 'run');
-  assert.equal(run.at(-2), '--', 'Guest entrypoint must not have extra executable calls');
+  assert.equal(run.at(-2), '-', 'Guest entrypoint must read source via stdin');
+  assert.equal(mock.streamedInputs.length, 1);
+  const trustedSource = readFileSync(
+    new URL('../tools/m4/windows_docker_guest.mjs', import.meta.url), 'utf8');
+  assert.equal(mock.streamedInputs[0], trustedSource);
+  assert.ok(!run.includes(trustedSource), 'No source text may appear in Windows Docker argv');
   assert.ok(mock.calls.every(a => !a.includes('pull')));
   assert.ok(mock.calls.every(a => !a.includes('build')));
 });
@@ -180,6 +192,10 @@ test('malformed guest outputs, failed constraints and cleanup fail closed', () =
     ['unparseable', { guestOutput: 'anything' }],
     ['missing-case', { cases: { ...goodCases, git_remote_unavailable: undefined } }],
     ['guest-nonzero', { guestStatus: 2 }],
+    ['docker-no-stdout', { guestStatus: 125, guestOutput: '',
+      guestStderr: 'Error response from daemon: OCI runtime create failed' }],
+    ['docker-spawn-failed', { guestStatus: null, guestOutput: '',
+      guestErrorCode: 'ENOENT' }],
     ['guest-timeout', { timeout: true }],
     ['cleanup-unconfirmed', { cleanupOutput: 'leftover-id' }],
     ['cleanup-api-failed', { cleanupStatus: 1 }],
@@ -257,4 +273,52 @@ test('no argument starts no Docker process; private evidence is bounded', () => 
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }
+});
+
+test('streaming a small trusted source file through Node stdin preserves CLI arguments', () => {
+  const smallScript = "process.stdout.write(JSON.stringify({seen:process.argv.includes('--run-fixed-guest')}))";
+  const result = spawnSync(process.execPath,
+    ['--input-type=module', '-', '--run-fixed-guest'], {
+      input: smallScript, encoding: 'utf8', timeout: 5000, maxBuffer: 4096,
+    });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { seen: true });
+});
+
+test('guest failures are classified without printing Docker stderr or credentials', () => {
+  const scenarios = [
+    ['failed to create task: OCI runtime create failed', 'CONTAINER_START_FAILED'],
+    ['exec: "node": executable file not found', 'NODE_EXECUTABLE_UNAVAILABLE'],
+    ['invalid argument: image', 'GUEST_ARGUMENT_REJECTED'],
+    ['no space left on device', 'GUEST_STORAGE_EXHAUSTED'],
+    ['permission denied', 'GUEST_PERMISSION_DENIED'],
+    ['Cannot connect to the Docker daemon', 'DOCKER_ENGINE_UNAVAILABLE'],
+    ['Error [ERR_MODULE_NOT_FOUND]', 'GUEST_NODE_ERROR'],
+  ];
+  for (const [stderr, expected] of scenarios) {
+    assert.equal(classifyGuestFailure({stderr}), expected);
+    const mock = fakeDocker({guestStatus:125, guestOutput:'',
+      guestStderr:stderr + ' SECRET_SHOULD_NEVER_APPEAR'});
+    const report = runFixture({platform:'win32', docker:mock.docker,
+      name:NAME, env:{}});
+    assert.equal(report.status, 'BLOCKED');
+    assert.equal(report.guestRemoved, true);
+    assert.match(report.reason, /docker exit=125/);
+    assert.ok(report.reason.includes(expected));
+    assert.ok(!report.reason.includes('SECRET_SHOULD_NEVER_APPEAR'));
+  }
+  assert.equal(classifyGuestFailure({errorCode:'ENOENT'}), 'DOCKER_CLI_NOT_FOUND');
+  assert.equal(classifyGuestFailure({timedOut:true}), 'GUEST_TIMEOUT');
+});
+
+test('a failed fixed security observation names the failing case, without qualifying execution', () => {
+  const mock = fakeDocker({cases:{...goodCases, child_system_write_denied:false},
+    guestStatus:2});
+  const report = runFixture({platform:'win32', docker:mock.docker,
+    name:NAME, env:{}});
+  assert.equal(report.status,'BLOCKED');
+  assert.match(report.reason,/child_system_write_denied/);
+  assert.equal(report.passedCases,CASES.length-1);
+  assert.equal(report.guestRemoved,true);
+  assert.equal(report.generatedCodeExecutionEnabled,false);
 });

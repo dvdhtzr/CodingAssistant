@@ -25,19 +25,18 @@ export function dockerArgs(imageId, name) {
   if (!SHA.test(imageId) || !NAME.test(name))
     fail('Invalid pinned image ID or disposable guest name');
   return [
-    'run', '--rm', '--pull=never', '--name', name,
+    'run', '--rm', '-i', '--pull=never', '--name', name,
     '--label', 'codingassistant.m4=' + name,
     '--network=none', '--read-only', '--cap-drop=all',
     '--security-opt=no-new-privileges', '--user=1000:1000',
     '--pids-limit=96', '--memory=2g', '--cpus=2',
     '--ipc=private', '--pid=private',
-    '--tmpfs=/tmp:rw,nosuid,nodev,size=256m',
+    '--tmpfs=/tmp:rw,nosuid,nodev,mode=1777,size=256m',
     '--shm-size=256m', '--init',
     '--env=HOME=/tmp', '--env=XDG_CONFIG_HOME=/tmp/config',
     '--env=XDG_CACHE_HOME=/tmp/cache',
     '--entrypoint=node', imageId,
-    '--input-type=module', '-e', GUEST_SOURCE,
-    '--', '--run-fixed-guest',
+    '--input-type=module', '-', '--run-fixed-guest',
   ];
 }
 
@@ -86,14 +85,39 @@ export function validatePinnedImage(metadata) {
   };
 }
 
-export function shellDocker(args, timeout = 8000) {
+// Do not persist or echo raw Docker stderr (which may contain host details).
+// Emit a bounded, allowlisted category and numeric exit code instead.
+export function classifyGuestFailure(response) {
+  if (response?.timedOut) return 'GUEST_TIMEOUT';
+  if (response?.errorCode === 'ENOENT') return 'DOCKER_CLI_NOT_FOUND';
+  const message = String(response?.stderr || '').slice(0, 8192);
+  if (/no such image|unable to find image|image.*not found/i.test(message))
+    return 'CACHED_IMAGE_UNAVAILABLE';
+  if (/no space left on device/i.test(message)) return 'GUEST_STORAGE_EXHAUSTED';
+  if (/executable file not found|exec:.*node.*not found/i.test(message))
+    return 'NODE_EXECUTABLE_UNAVAILABLE';
+  if (/permission denied|access is denied/i.test(message))
+    return 'GUEST_PERMISSION_DENIED';
+  if (/bad option|unknown flag|invalid argument|invalid option/i.test(message))
+    return 'GUEST_ARGUMENT_REJECTED';
+  if (/OCI runtime|containerd|failed to create task|failed to start/i.test(message))
+    return 'CONTAINER_START_FAILED';
+  if (/failed to connect|docker daemon|dockerDesktopLinuxEngine/i.test(message))
+    return 'DOCKER_ENGINE_UNAVAILABLE';
+  if (/SyntaxError|ERR_\w+/i.test(message)) return 'GUEST_NODE_ERROR';
+  return 'UNCLASSIFIED_GUEST_FAILURE';
+}
+
+export function shellDocker(args, timeout = 8000, input = undefined) {
   const result = spawnSync('docker', args, {
     encoding: 'utf8', timeout, maxBuffer: 64 * 1024,
-    windowsHide: true, shell: false,
+    windowsHide: true, shell: false, input,
   });
   return {
     status: result.status,
     stdout: result.stdout || '',
+    stderr: result.stderr || '',
+    errorCode: result.error?.code ?? null,
     timedOut: result.error?.code === 'ETIMEDOUT',
   };
 }
@@ -156,13 +180,24 @@ export function runFixture({
 
     // No remote pull; the observed immutable local image ID is required.
     attempted = true;
-    const guest = docker(dockerArgs(pin.imageId, name), 95000);
+    // Stream only our checked-in, SHA-recorded trusted payload to Node via
+    // Docker stdin. Windows CLI no longer has to quote 8 KB of JS as -e.
+    const guest = docker(dockerArgs(pin.imageId, name), 95000, GUEST_SOURCE);
     if (guest.timedOut) fail('Disposable guest timed out');
+    const guestExit = Number.isInteger(guest.status) ? guest.status : 'unavailable';
+    if (!guest.stdout || !guest.stdout.trim()) {
+      fail('No guest observations; docker exit=' + guestExit +
+        '; category=' + classifyGuestFailure(guest));
+    }
     const observations = parseObservations(guest.stdout);
     report.cases = observations;
     report.passedCases = CASES.filter(key => observations[key]).length;
-    if (guest.status !== 0 || report.passedCases !== CASES.length)
-      fail('Guest failed one or more exact fixed-fixture/security observations');
+    if (report.passedCases !== CASES.length)
+      fail('Guest checks failed: ' +
+        CASES.filter(key => !observations[key]).join(', '));
+    if (guest.status !== 0)
+      fail('Guest returned all-true observations but exited nonzero; category=' +
+        classifyGuestFailure(guest));
     report.status = 'FIXED_FIXTURE_GUEST_PASS';
   } catch (error) {
     report.reason = String(error.message || error).slice(0, 240);
