@@ -152,7 +152,21 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 var answer = await agent.RunAsync(messages,
                     cancellationToken: cancellation);
                 if (TryParse(answer.Text, out var result, out reason))
-                    return result!;
+                {
+                    // Reject incompatible static-web output BEFORE any task
+                    // is marked complete; correction remains model-only.
+                    if (staticWeb && result!.Files.Any(file =>
+                        Path.GetExtension(file.Path) is not
+                            (".html" or ".css" or ".js" or ".json" or ".md")))
+                        reason = "STATIC_WEB_PATH: Use only HTML, CSS, JS, JSON or Markdown.";
+                    else if (staticWeb && taskIndex == 0 &&
+                        !result!.Files.Any(file =>
+                            file.Path.Equals("index.html",
+                                StringComparison.OrdinalIgnoreCase)))
+                        reason = "STATIC_WEB_ENTRY: The first task must create root index.html.";
+                    else
+                        return result!;
+                }
             }
             catch (StoreFailure error) when (error.Code is
                 "MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED")
