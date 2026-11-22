@@ -317,3 +317,18 @@ test('one-click UI posts scope binding and explicit sandbox consent, no ZIP down
   assert.doesNotMatch(code,/href=.*zip|new Blob\(/);
   assert.match(code,/not full functional verification/);
 });
+
+test('delivery keeps one prominent Test Project action and collapses technical evidence',()=>{
+  const scopeCode=readFileSync('src/VerificationScope.tsx','utf8');
+  const deliveryCode=readFileSync('src/EngineeringWorkspace.tsx','utf8');
+  const css=readFileSync('src/verification-timeline.css','utf8');
+  assert.match(scopeCode, /className="verification-action-stack"/);
+  assert.match(scopeCode, /className="verification-compact-details"/);
+  assert.match(scopeCode, /<summary>Source verification details/);
+  assert.match(scopeCode, /<VerificationScopeView scope={scope} error={error}\/>/);
+  assert.equal((scopeCode.match(/onClick={\(\) => void runSmoke\(\)}/g) ?? []).length, 1);
+  assert.match(deliveryCode, /className="engineering-source-details"/);
+  assert.match(deliveryCode, /<summary>Inspect saved source/);
+  assert.match(css, /verification-compact-details > summary:focus-visible/);
+  assert.match(css, /engineering-source-details > summary:focus-visible/);
+});
