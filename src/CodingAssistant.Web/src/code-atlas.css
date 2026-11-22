@@ -67,3 +67,9 @@
 .atlas-source-history li{font-size:.72rem;margin:.4rem 0;line-height:1.5}
 .atlas-source-history li strong{color:#84dbcb;margin-right:.5rem}
 .atlas-source-history li span{overflow-wrap:anywhere}
+
+.atlas-relation-filters{display:flex;gap:.3rem;margin:.45rem 0 .8rem;flex-wrap:wrap}
+.atlas-relation-filters button{border:1px solid #38556a;border-radius:7px;background:#213649;color:#adc7d5;padding:.36rem .55rem;font-size:.67rem}
+.atlas-relation-filters button[aria-pressed="true"]{background:#285d5b;border-color:#61d4b9;color:#d9fff2}
+.atlas-relation-filters button:focus-visible{outline:2px solid #6ce2c9;outline-offset:2px}
+.atlas-relationships button .atlas-evidence{display:block;margin:.25rem 0 0;font-size:.61rem;color:#a9c3d1;overflow-wrap:anywhere}
