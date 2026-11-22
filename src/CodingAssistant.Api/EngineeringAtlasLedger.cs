@@ -16,6 +16,13 @@ public sealed record AtlasSourceEvent(
     AtlasGraphDelta? GraphDelta = null);
 public sealed record AtlasSourceEventPage(
     string RunId, int LastSequence, IReadOnlyList<AtlasSourceEvent> Events);
+public sealed record AtlasReplaySummary(
+    int Sequence, string WorkItemId, string SourceRevision, string CreatedUtc);
+public sealed record AtlasReplayManifest(
+    string RunId, IReadOnlyList<AtlasReplaySummary> Frames);
+public sealed record AtlasReplayFrame(
+    int Sequence, string WorkItemId, string SourceRevision, string CreatedUtc,
+    AtlasSnapshot Graph);
 
 /// <summary>
 /// The immutable source-change ledger is written inside EngineeringRunStore's
@@ -50,6 +57,15 @@ public sealed class EngineeringAtlasLedger(TaskStore tasks, EngineeringRunStore 
                 run_id TEXT NOT NULL,
                 sequence INTEGER NOT NULL,
                 delta_json TEXT NOT NULL,
+                PRIMARY KEY(run_id,sequence),
+                FOREIGN KEY(run_id,sequence)
+                  REFERENCES engineering_atlas_events(run_id,sequence)
+            );
+            CREATE TABLE IF NOT EXISTS engineering_atlas_snapshots (
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                source_revision TEXT NOT NULL,
+                graph_json TEXT NOT NULL CHECK(LENGTH(graph_json) <= 4000000),
                 PRIMARY KEY(run_id,sequence),
                 FOREIGN KEY(run_id,sequence)
                   REFERENCES engineering_atlas_events(run_id,sequence)
@@ -146,8 +162,85 @@ public sealed class EngineeringAtlasLedger(TaskStore tasks, EngineeringRunStore 
                 """, ("@run", runId), ("@sequence", sequence),
                 ("@delta", JsonSerializer.Serialize(delta)));
         }
+        if (currentGraph is not null && currentGraph.SourceRevision == revision)
+        {
+            // Snapshot only at a committed work-item boundary, never per model
+            // token. Bound storage and retain the most recent 64 frames.
+            var serialized = JsonSerializer.Serialize(currentGraph);
+            if (Encoding.UTF8.GetByteCount(serialized) <= 4000000)
+            {
+                TaskStore.Execute(db, tx, """
+                    INSERT INTO engineering_atlas_snapshots(
+                        run_id,sequence,source_revision,graph_json)
+                    VALUES(@run,@sequence,@revision,@graph)
+                    """, ("@run", runId), ("@sequence", sequence),
+                    ("@revision", revision), ("@graph", serialized));
+                TaskStore.Execute(db, tx, """
+                    DELETE FROM engineering_atlas_snapshots
+                    WHERE run_id=@run AND sequence < @oldest
+                    """, ("@run", runId),
+                    ("@oldest", Math.Max(1, sequence - 63)));
+            }
+        }
         return new(runId, sequence, workItemId, revision,
             changes.AsReadOnly(), now, delta);
+    }
+
+    /// <summary>
+    /// Enumerates retained, immutable graph checkpoints. Historical graph
+    /// source positions are valid only for the recorded revision; source text
+    /// is deliberately absent from playback frames.
+    /// </summary>
+    public AtlasReplayManifest Timeline(string taskId, string runId)
+    {
+        _ = engineering.Get(taskId, runId);
+        using var db = tasks.Open();
+        var items = new List<AtlasReplaySummary>();
+        using var cmd = TaskStore.Command(db, null, """
+            SELECT s.sequence,e.work_item_id,s.source_revision,e.created_utc
+            FROM engineering_atlas_snapshots s
+            JOIN engineering_atlas_events e
+              ON e.run_id=s.run_id AND e.sequence=s.sequence
+            WHERE s.run_id=@run ORDER BY s.sequence
+            LIMIT 64
+            """, ("@run", runId));
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+            items.Add(new(reader.GetInt32(0), reader.GetString(1),
+                reader.GetString(2), reader.GetString(3)));
+        return new(runId, items.AsReadOnly());
+    }
+
+    public AtlasReplayFrame Replay(string taskId, string runId, int sequence)
+    {
+        if (sequence < 1) throw new StoreFailure("INVALID_INPUT");
+        _ = engineering.Get(taskId, runId);
+        using var db = tasks.Open();
+        using var cmd = TaskStore.Command(db, null, """
+            SELECT s.graph_json,e.work_item_id,s.source_revision,e.created_utc
+            FROM engineering_atlas_snapshots s
+            JOIN engineering_atlas_events e
+              ON e.run_id=s.run_id AND e.sequence=s.sequence
+            WHERE s.run_id=@run AND s.sequence=@sequence
+            """, ("@run", runId), ("@sequence", sequence));
+        using var reader = cmd.ExecuteReader();
+        if (!reader.Read()) throw new StoreFailure("NOT_FOUND");
+        AtlasSnapshot? graph;
+        try
+        {
+            graph = JsonSerializer.Deserialize<AtlasSnapshot>(
+                reader.GetString(0));
+        }
+        catch (JsonException)
+        {
+            throw new StoreFailure("ATLAS_SNAPSHOT_CORRUPT");
+        }
+        var sourceRevision = reader.GetString(2);
+        if (graph is null || graph.RunId != runId ||
+            graph.SourceRevision != sourceRevision)
+            throw new StoreFailure("ATLAS_SNAPSHOT_CORRUPT");
+        return new(sequence, reader.GetString(1),
+            sourceRevision, reader.GetString(3), graph);
     }
 
     public AtlasSourceEventPage Read(string taskId, string runId, int after)
