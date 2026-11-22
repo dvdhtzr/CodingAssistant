@@ -84,3 +84,32 @@
 .atlas-path-result ol{margin:.5rem 0 0;padding-left:1.2rem}
 .atlas-path-result li{overflow-wrap:anywhere;margin:.2rem 0;color:#c1ddcf}
 .atlas-path-result small{display:block;color:#91b5a6}
+
+
+/* M5: replay controls are intentionally compact; graph remains the hero. */
+.atlas-replay{margin:.85rem 0 .5rem;padding:.9rem 1rem;
+  border:1px solid #386374;border-radius:11px;
+  background:linear-gradient(105deg,#112939,#1a2938);color:#d9ebf5}
+.atlas-replay-heading{display:flex;align-items:center;justify-content:space-between;
+  flex-wrap:wrap;gap:.45rem;margin-bottom:.6rem}
+.atlas-replay-heading strong{font-size:.82rem;letter-spacing:.015em;color:#e9f7fa}
+.atlas-replay-heading span{font-size:.67rem;color:#9ccbbb}
+.atlas-replay-controls{display:flex;align-items:center;gap:.45rem;min-width:0}
+.atlas-replay-controls input[type=range]{flex:1;min-width:60px;
+  accent-color:#63d8bf;cursor:pointer}
+.atlas-replay-controls button{border:1px solid #456778;border-radius:7px;
+  padding:.42rem .58rem;background:#1e3747;color:#e0f3fa;font-size:.7rem;
+  cursor:pointer}
+.atlas-replay-controls button:hover:not(:disabled){background:#2c5263}
+.atlas-replay-controls button:disabled{opacity:.45;cursor:not-allowed}
+.atlas-replay-controls button:focus-visible,
+.atlas-replay-controls input:focus-visible{outline:2px solid #75e4ce;outline-offset:2px}
+.atlas-replay-caption{margin:.65rem 0 .1rem;font-size:.68rem;
+  color:#a9c6d3;line-height:1.5}
+@media(max-width:620px){
+  .atlas-replay-controls{flex-wrap:wrap}
+  .atlas-replay-controls input[type=range]{order:-1;flex-basis:100%}
+}
+@media(prefers-reduced-motion:reduce){
+  .atlas-replay *{transition:none;animation:none}
+}
