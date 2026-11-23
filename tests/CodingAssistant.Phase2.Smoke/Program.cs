@@ -2445,6 +2445,79 @@ try
         "unsafe paths remain forbidden after the single correction attempt");
     boundModel.InvalidPath = false;
 
+    // Failure recovery: the owner explicitly resumes the same immutable
+    // approved plan from saved tasks, without replaying earlier model work.
+    var resumeSource = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, resumeSource.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, resumeSource.Id, "timer-interface",
+        new EngineeringChangeSet("Saved the entry point before model failure.",
+            [new EngineeringFileChange("index.html", "Offline browser entry point",
+                "<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
+            ["Test source remains unverified"]));
+    engineeringStore.StartTask(taskBound.Id, resumeSource.Id, "timer-state");
+    engineeringStore.Finish(taskBound.Id, resumeSource.Id, false,
+        "MODEL_OUTPUT_REJECTED");
+    var sourceCheckpoint = engineeringStore.Get(taskBound.Id, resumeSource.Id);
+    Check(sourceCheckpoint.Job.State == "Failed" &&
+          sourceCheckpoint.Job.ErrorCode == "MODEL_OUTPUT_REJECTED" &&
+          sourceCheckpoint.Tasks[0].State == "Completed" &&
+          sourceCheckpoint.Tasks[1].State == "Failed" &&
+          sourceCheckpoint.Files.Count == 1,
+        "failed run retains a valid one-file resume checkpoint");
+
+    using (var deniedResume = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, new string('f', 64), resumeSource.Id)))
+        Check(deniedResume.StatusCode == HttpStatusCode.Conflict,
+            "resume does not bypass current approved plan digest");
+    using (var deniedResume = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, secondPlanHash,
+            new string('f', 32))))
+        Check(deniedResume.StatusCode != HttpStatusCode.Accepted,
+            "resume rejects foreign or nonexistent source run");
+    string resumedRunId;
+    using (var resumed = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, secondPlanHash, resumeSource.Id)))
+    using (var body = await Body(resumed))
+    {
+        Check(resumed.StatusCode == HttpStatusCode.Accepted,
+            "owner explicitly starts a fresh resume run for the exact failed source");
+        resumedRunId = body.RootElement.GetProperty("id").GetString()!;
+    }
+    EngineeringRunSnapshot? resumedDone = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        var saved = engineeringStore.Get(taskBound.Id, resumedRunId);
+        if (saved.Job.State != "Running")
+        {
+            resumedDone = saved;
+            break;
+        }
+        await Task.Delay(25);
+    }
+    Check(resumedDone?.Job.State == "Generated" &&
+          resumedDone.Tasks.Count == 2 &&
+          resumedDone.Tasks.All(item => item.State == "Completed") &&
+          resumedDone.Files.Count == 2 &&
+          resumedDone.Files.Any(file => file.Path == "index.html" &&
+              file.LastWorkItemId == "timer-interface" &&
+              file.Sha256 == sourceCheckpoint.Files.Single().Sha256) &&
+          resumedDone.Files.Any(file => file.Path == "app.js" &&
+              file.LastWorkItemId == "timer-state") &&
+          resumedDone.Events.First().Kind == "EngineeringRunResumed" &&
+          resumedDone.Events.Count(e => e.Kind == "EngineeringTaskStarted") == 1 &&
+          resumedDone.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 1 &&
+          softwareModel.AssignedIds.Skip(2).SequenceEqual(["timer-state"]),
+        "resume carries completed work and asks MAF to implement only failed assignment");
+    var unchangedCheckpoint = engineeringStore.Get(taskBound.Id, resumeSource.Id);
+    Check(unchangedCheckpoint.Job.State == "Failed" &&
+          unchangedCheckpoint.Events.Count == sourceCheckpoint.Events.Count &&
+          unchangedCheckpoint.Files.Single().Sha256 == sourceCheckpoint.Files.Single().Sha256,
+        "resume never mutates original failed source or its failure event");
+    using (var staleResume = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, secondPlanHash, resumeSource.Id)))
+        Check(staleResume.StatusCode == HttpStatusCode.Conflict,
+            "cannot resume superseded failure checkpoint after a newer run exists");
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var boundStore = new ProjectDraftStore(tasks);
