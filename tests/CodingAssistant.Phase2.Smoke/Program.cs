@@ -453,8 +453,8 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     // Qwen may include a closed reasoning prefix even with think:false.
     // Never turn the private reasoning into source; only parse final JSON.
     foreach (var answer in new[] {
-        "<think>PRIVATE reasoning not source</think>\\n" + goodSource,
-        "</think>\\n" + goodSource,
+        "<think>PRIVATE reasoning not source</think>\n" + goodSource,
+        "</think>\n" + goodSource,
         goodSource
     })
     {
@@ -468,7 +468,7 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
             "Software Engineer accepts only JSON after CLOSED Qwen thinking prefix");
     }
     foreach (var response in new[] {
-        "<think>never closed\\n" + goodSource,
+        "<think>never closed\n" + goodSource,
         "<think>private</think><think>restarted</think>" + goodSource
     })
     {
