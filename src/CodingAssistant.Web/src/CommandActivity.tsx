@@ -228,113 +228,158 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
     ?? stages.find(step => step.state === 'todo');
   const missionState = blockedSource ? 'Engineering needs attention' :
     activeStage ? activeStage.label : 'No pending stage';
-  const tick = (step: JourneyTile) => step.state === 'done' ? '✓'
-    : step.state === 'attention' ? '!' : '…';
-  const stageSummary = 'Spec ' + tick(stages[1]) + ' · Arch ' + tick(stages[2]) +
-    ' · Plan ' + tick(stages[3]);
+  const handoffs = [...evidence.handoffs].sort((a, b) =>
+    b.createdUtc.localeCompare(a.createdUtc)).slice(0, 3);
+  const recentEvents = events.slice(0, 5);
 
-  return <section className="mc-command ca-command" aria-label="Mission Control command">
-    <div className="ca-hero">
-      <div className="ca-hero-top">
-        <div className="ca-hero-mission">
-          <span className="wb-kicker ca-hero-eye">ACTIVE MISSION · LOCAL</span>
-          <h2>{task.title}</h2>
-          <p>{task.objective}</p>
-        </div>
-        <div className="ca-statecap">
-          <span className="l">MISSION STATE</span>
-          <strong>{missionState}</strong>
-          <small>{stageSummary}</small>
-        </div>
+  return <section className="mc-command ca-command ca-console" aria-label="Team Console">
+    <header className="ca-console-header">
+      <div className="ca-console-project">
+        <span className="wb-kicker">TEAM CONSOLE · {task.status}</span>
+        <h2>{task.title}</h2>
+        <p title={task.objective}>{task.objective}</p>
       </div>
-      <div className="ca-cta-row">
+      <div className="ca-console-focus">
+        <span className="wb-kicker">CURRENT STAGE</span>
+        <strong>{missionState}</strong>
         <button type="button" className="primary"
-          onClick={() => onNavigate(recommendation.to)}>{recommendation.title} →</button>
-        <span className="ca-cta-meta">{reviewCount} decision{reviewCount === 1 ? '' : 's'} awaiting you
-          {' · '}{running.length} agent{running.length === 1 ? '' : 's'} running</span>
+          onClick={() => onNavigate(recommendation.to)}>
+          {recommendation.title}
+        </button>
       </div>
+    </header>
+
+    <div className="ca-console-stats" aria-label="Saved project status">
+      <span><strong>{running.length}</strong> recorded active agent{running.length === 1 ? '' : 's'}</span>
+      <span><strong>{reviewCount}</strong> approval{reviewCount === 1 ? '' : 's'} to review</span>
+      <span><strong>{evidence.engineering?.tasks.filter(t => t.state === 'Completed').length ?? 0}</strong>
+        {' / '}{evidence.engineering?.tasks.length ?? 0} engineering assignments</span>
+      <span>Source: <strong>{latestEngineering?.state ?? 'Not started'}</strong> · unverified</span>
     </div>
 
-    {blockedSource && <section className="ca-command-work-order"
-      aria-label="Engineering work requiring attention">
-      <div>
-        <span className="wb-kicker">NEXT HANDOFF · SOFTWARE ENGINEER → QA</span>
-        <h3>Project source is incomplete</h3>
-        <p>{evidence.sourceReadiness?.findings.filter(finding =>
-          finding.severity === 'Error').length} blocking source issue(s).
-          The Software Engineer must complete the project before independent
-          build and test verification can begin.</p>
-      </div>
-      <button type="button" className="outline"
-        onClick={() => onNavigate('work')}>Inspect source issues</button>
-    </section>}
-    <div className="ca-section-head">
-      <div><span className="wb-kicker">BUILD JOURNEY</span><h3>Where the work is</h3></div>
-    </div>
-    <ol className="ca-track" aria-label="Build journey">
-      {stages.map((stage, index) => <li key={stage.id}
-        className={'ca-stage ca-' + stage.state + ' ' + (HUE_CLASS[stage.agent] ?? '')}>
-        {stage.state === 'now' && <span className="ca-stage-live" aria-hidden="true" />}
-        <span className="ca-stage-n">{String(index + 1).padStart(2, '0')}</span>
-        <span className="ca-stage-nm">{stage.label}</span>
-        <span className="ca-stage-sp">{stage.hint}</span>
-      </li>)}
-    </ol>
-
-    <div className="ca-section-head">
-      <div><span className="wb-kicker">THE CREW · HANDOFF PIPELINE</span>
-        <h3>Agent Activity Board</h3></div>
-      <button type="button" className="link" onClick={() => onNavigate('team')}>Open Team →</button>
-    </div>
-    <div className="ca-crew">
-      {agents.map(item => <button type="button" key={item.agent.id}
-        className={'ca-node ' + (HUE_CLASS[item.agent.id] ?? '') +
-          (item.active ? ' ca-running' : ' ca-idle')}
-        onClick={() => showDrawer({ kind: 'agent', id: item.agent.id })}
-        aria-haspopup="dialog"
-        aria-label={'Inspect ' + item.agent.role + ': ' + item.status}>
-        <span className="ca-wire" aria-hidden="true" />
-        <span className="ca-orb" aria-hidden="true">
-          {item.agent.role.split(' ').map(word => word[0]).join('').slice(0, 2)}</span>
-        <span className="ca-node-role">{item.agent.role}</span>
-        <span className="ca-node-stat">{item.detail}</span>
-        {item.active && <span className="ca-node-flag">Recorded running</span>}
-      </button>)}
-      {!agents.length && <p className="hint">No host-defined agent identities returned.</p>}
-    </div>
-
-    <div className="ca-lower">
-      <DecisionQueueView items={queue} onInspect={id => showDrawer({ kind: 'decision', id })} />
-      <section className="mc-command-panel ca-activity" aria-label="Recent Activity Stream">
-        <div className="mc-panel-heading"><div><span className="wb-kicker">SAVED EVIDENCE</span>
-          <h3>Recent activity</h3></div>
-          <button type="button" className="outline"
-            onClick={() => onNavigate('history')}>View all</button></div>
-        {events.length ? <ol className="mc-recent-events ca-ticker">
-          {events.slice(0, 6).map(event => <li key={event.id}>
-            <button type="button" aria-haspopup="dialog"
-              onClick={() => showDrawer({ kind: 'event', id: event.id })}>
-              <span className="mc-event-top"><strong>{event.source}</strong>
-                <time dateTime={event.at}>{new Date(event.at).toLocaleTimeString()}</time></span>
-              <span>{event.label}</span><small>{event.detail}</small>
+    <div className="ca-console-grid">
+      <section className="ca-console-floor" aria-label="Agent collaboration board">
+        <div className="ca-console-section-head">
+          <div><span className="wb-kicker">COLLABORATING SPECIALISTS</span>
+            <h3>Agent Activity Board</h3></div>
+          <button type="button" className="link" onClick={() => onNavigate('team')}>
+            Team details
+          </button>
+        </div>
+        <div className="ca-crew ca-console-crew" aria-label="Agent responsibilities and recorded states">
+          {agents.map(item => <button type="button" key={item.agent.id}
+            className={'ca-node ' + (HUE_CLASS[item.agent.id] ?? '') +
+              (item.active ? ' ca-running' : ' ca-idle')}
+            onClick={() => showDrawer({ kind: 'agent', id: item.agent.id })}
+            aria-haspopup="dialog"
+            aria-label={'Inspect ' + item.agent.role + ': ' + item.status}>
+            <span className="ca-wire" aria-hidden="true" />
+            <span className="ca-orb" aria-hidden="true">
+              {item.agent.role.split(' ').map(word => word[0]).join('').slice(0, 2)}
+            </span>
+            <span className="ca-node-role">{item.agent.role}</span>
+            <span className="ca-node-stat" title={item.detail}>{item.detail}</span>
+            <span className="ca-console-agent-state">
+              {item.active ? 'Recorded running' : item.status}
+            </span>
+          </button>)}
+          {!agents.length && <p className="hint">No registered agent identities returned.</p>}
+        </div>
+        <div className="ca-console-handoffs">
+          <div className="ca-console-section-head">
+            <div><span className="wb-kicker">SAVED DELEGATION RECORDS</span>
+              <h3>Handoffs</h3></div>
+            <button type="button" className="link" onClick={() => onNavigate('history')}>
+              Full history
             </button>
-          </li>)}
-        </ol> : <p className="hint">No saved agent, engineering, or QA events yet.</p>}
+          </div>
+          {handoffs.length ? <ol className="ca-console-handoff-list">
+            {handoffs.map((handoff, index) => <li key={
+              handoff.createdUtc + handoff.kind + handoff.fromAgent + index}>
+              <span className="ca-console-handoff-route">
+                <strong>{handoff.fromAgent}</strong>
+                <span aria-label="handed off to">→</span>
+                <strong>{handoff.toAgent}</strong>
+              </span>
+              <span className="ca-console-handoff-kind" title={handoff.kind}>
+                {handoff.kind}{handoff.workItemId ? ' · ' + handoff.workItemId : ''}
+              </span>
+              <time dateTime={handoff.createdUtc}>
+                {new Date(handoff.createdUtc).toLocaleTimeString()}
+              </time>
+            </li>)}
+          </ol> : <p className="hint">No handoff has been saved for this project yet.</p>}
+        </div>
+        <div className="ca-console-current" aria-label="Current recorded operation">
+          <span className="wb-kicker">NOW</span>
+          <strong>{running.length
+            ? running.map(item => item.agent.role).join(' · ')
+            : 'No active agent run recorded'}</strong>
+          <span title={running.map(item => item.detail).join(' · ')}>
+            {running.length ? running.map(item => item.detail).join(' · ') :
+              latestEngineering
+                ? 'Most recent source run: ' + latestEngineering.state
+                : 'Awaiting an approved project step'}
+          </span>
+        </div>
+        {blockedSource && <p className="ca-console-blocked">
+          <strong>Source needs attention:</strong>{' '}
+          {evidence.sourceReadiness?.findings.filter(f => f.severity === 'Error').length}
+          {' '}blocking completeness issue(s).
+          <button type="button" className="link" onClick={() => onNavigate('work')}>
+            Inspect source
+          </button>
+        </p>}
       </section>
+
+      <aside className="ca-console-side" aria-label="Owner attention and activity">
+        <DecisionQueueView items={queue} maxVisible={2}
+          onInspect={id => showDrawer({ kind: 'decision', id })}
+          onViewAll={() => onNavigate('work')} />
+        <section className="mc-command-panel ca-activity ca-console-activity"
+          aria-label="Recent Activity Stream">
+          <div className="ca-console-section-head">
+            <div><span className="wb-kicker">PERSISTED EVENTS</span>
+              <h3>Recent activity</h3></div>
+            <button type="button" className="link"
+              onClick={() => onNavigate('history')}>All events</button>
+          </div>
+          {recentEvents.length ? <ol className="mc-recent-events ca-ticker">
+            {recentEvents.map(event => <li key={event.id}>
+              <button type="button" aria-haspopup="dialog"
+                onClick={() => showDrawer({ kind: 'event', id: event.id })}>
+                <span className="mc-event-top"><strong>{event.source}</strong>
+                  <time dateTime={event.at}>
+                    {new Date(event.at).toLocaleTimeString()}
+                  </time></span>
+                <span>{event.label}</span>
+                <small title={event.detail}>{event.detail}</small>
+              </button>
+            </li>)}
+          </ol> : <p className="hint">No agent activity has been recorded yet.</p>}
+        </section>
+      </aside>
     </div>
 
-    <section className="ca-operation" aria-label="Current engineering operation">
-      <strong>{running.length ? 'Recorded active operation' : 'No active agent run recorded'}</strong>
-      {running.length ? <p>{running.map(item => item.agent.role + ': ' + item.detail).join(' · ')}</p>
-        : <p>{latestEngineering ? 'Latest source run: ' + latestEngineering.state :
-          'Engineering has not started.'} No activity is inferred from an idle browser.</p>}
-      <small>Agent activity is derived from saved host records. Static QA and generated source
-        do not establish a verified application. Opening a workspace never authorizes work.</small>
-    </section>
+    <footer className="ca-console-journey" aria-label="Project stage overview">
+      <span className="wb-kicker">PROGRESS</span>
+      <ol className="ca-console-steps">
+        {stages.map(stage => <li key={stage.id}
+          className={'ca-console-step ca-' + stage.state}
+          title={stage.hint}>
+          <span aria-hidden="true">{stage.state === 'done' ? '✓' :
+            stage.state === 'attention' ? '!' :
+              stage.state === 'now' ? '●' : '○'}</span>
+          {stage.label}
+        </li>)}
+      </ol>
+      <small>Saved source and static QA are not verified builds or executed tests.</small>
+    </footer>
     {selected && <CommandDrawer projectTitle={task.title} selection={selected}
-      agents={agents} events={events} decisions={queue} evidence={evidence} onClose={closeDrawer}
-      onNavigate={onNavigate} />}
+      agents={agents} events={events} decisions={queue} evidence={evidence}
+      onClose={closeDrawer} onNavigate={onNavigate} />}
   </section>;
+
 }
 
 export function CommandActivity({ token, task, onNavigate }: {
