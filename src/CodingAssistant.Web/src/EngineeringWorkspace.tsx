@@ -66,11 +66,17 @@ export function useEngineeringRun(token: string, taskId: string) {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(() => setRefreshKey(value => value + 1), []);
+  // Clear the displayed run only when the owner/task scope changes.
+  // Clearing on every refresh unmounts Code Atlas, which replays events,
+  // requests another refresh, and creates an endless flash/remount cycle.
   useEffect(() => {
-    let closed = false;
     setSnapshot(null);
     setPlan(null);
     setError('');
+  }, [token, taskId]);
+
+  useEffect(() => {
+    let closed = false;
     async function load() {
       try {
         const [result, currentPlan] = await Promise.all([
