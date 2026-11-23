@@ -13,6 +13,7 @@ import './code-atlas.css';
 import './team-workroom.css';
 import './verification-timeline.css';
 import './design-system.css';
+import './engineering-studio.css';
 
 // Theme foundation: dark-first, with an opt-in light palette honored once a
 // stored preference exists. A visible toggle ships after screens are migrated.
