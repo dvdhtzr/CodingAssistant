@@ -936,6 +936,18 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           fakeFactory.InspectionContextSeen &&
           fakeFactory.NoTools,
         "independent QA receives bounded host-logged engineering investigation context without gaining tools");
+    var focusedReview = await new MafQaEngineer(fakeFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file], [investigation], null,
+            [new RepairFindingReference("index.html", 0, "Major",
+                "Save button is not connected to persistent storage",
+                "Current source declares button without working save logic",
+                "Recheck Save behavior after source edit", "ImplementationDefect")]),
+        CancellationToken.None);
+    Check(focusedReview.Findings.Count == 1 &&
+          fakeFactory.RepairFocusSeen &&
+          fakeFactory.NoTools,
+        "post-repair independent QA receives owner-confirmed target as a recheck, not proof of repair");
 }
 
 // M8.18: independent MAF QA selects bounded source inspections, receives
@@ -2107,8 +2119,9 @@ try
               .Sha256 != engineeringResult.Files.Single(f => f.Path == "app.js")
                   .Sha256 &&
           repairOutcome.StaticPreflight.VerificationStatus ==
-              "GENERATED_NOT_TESTED",
-        "repaired source is distinct, original evidence immutable, QA independently reassessed and no fake PASS");
+              "GENERATED_NOT_TESTED" &&
+          qaModel.RepairFocusPaths.SequenceEqual(["app.js"]),
+        "repaired source is distinct, original evidence immutable, QA independently rechecks owner-confirmed defect and no fake PASS");
     Check(engineeringStore.Get(taskBound.Id, engineeringRunId).Files
               .Single(f => f.Path == "app.js").Sha256 ==
           engineeringResult!.Files.Single(f => f.Path == "app.js").Sha256,
@@ -3250,6 +3263,7 @@ sealed class Phase5QaModel : IQaSourceReviewer
 {
     public List<string> ReviewedFiles { get; } = [];
     public List<string> ReviewedSourceStates { get; } = [];
+    public List<string> RepairFocusPaths { get; } = [];
 
     public Task<QaFileAssessment> ReviewAsync(
         QaReviewInput input, CancellationToken cancellation)
@@ -3267,6 +3281,14 @@ sealed class Phase5QaModel : IQaSourceReviewer
             throw new Exception("Independent QA received wrong source or stale approval");
         ReviewedFiles.Add(input.File.Path);
         ReviewedSourceStates.Add(input.SourceRun.State);
+        if (input.RepairFocus is { Count: > 0 } focus)
+        {
+            if (input.File.Path != "app.js" ||
+                focus.Any(f => f.Path != input.File.Path ||
+                    f.Classification != "ImplementationDefect"))
+                throw new Exception("Repair QA got foreign file scope or unconfirmed finding");
+            RepairFocusPaths.Add(input.File.Path);
+        }
         return Task.FromResult(input.File.Path == "app.js"
             ? new QaFileAssessment(
                 "The timer code registers a button listener but lacks a persistent timer.",
@@ -3288,6 +3310,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool QaRoleSeen { get; private set; }
     public bool SourceSeen { get; private set; }
     public bool InspectionContextSeen { get; private set; }
+    public bool RepairFocusSeen { get; private set; }
     public bool NoTools { get; private set; }
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
@@ -3319,6 +3342,11 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                 m.Text?.Contains("EngineerAtlasInspected",
                     StringComparison.Ordinal) == true &&
                 m.Text.Contains("0123456789ab", StringComparison.Ordinal));
+            parent.RepairFocusSeen |= history.Any(m =>
+                m.Role.Value == "user" &&
+                m.Text?.Contains("OWNER-CONFIRMED DEFECTS", StringComparison.Ordinal) == true &&
+                m.Text.Contains("NOT proof of a fix", StringComparison.Ordinal) &&
+                m.Text.Contains("Save button is not connected", StringComparison.Ordinal));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
             parent.HostObservationSeen |= history.Any(m =>
                 m.Role.Value == "user" &&
