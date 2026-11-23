@@ -3138,11 +3138,24 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
                 repair.AllowedPaths.Single() != "app.js" ||
                 !input.ExistingFiles.Any(f => f.Path == "app.js"))
                 throw new Exception("Repair context was not bound to original QA source");
-            return Task.FromResult(new EngineeringChangeSet(
-                "Repaired the approved Start handler without modifying the browser entry.",
-                [new EngineeringFileChange("app.js", "Repaired timer interactions",
-                    "document.getElementById('start').addEventListener('click', () => { console.log('repaired start'); });")],
-                ["Independently check Start button behavior"]));
+            // End-to-end acceptance uses the same exact-edit materialization
+            // as the actual MAF agent, then persists its COMPLETE validated
+            // replacement through the existing SQLite/QA coordinator.
+            var source = input.ExistingFiles.Single(f => f.Path == "app.js");
+            var before = source.Content.TrimEnd('\r', '\n');
+            var after = before.Replace("console.log('start')",
+                "console.log('repaired start')", StringComparison.Ordinal);
+            if (after == before)
+                throw new Exception("Fixture repair did not find exact source");
+            var edits = JsonSerializer.Serialize(new {
+                summary = "Repaired the approved Start handler without modifying browser entry.",
+                edits = new[] { new {
+                    path = source.Path, oldText = before, newText = after
+                } },
+                verificationNotes = new[] { "Independently check Start button behavior" }
+            });
+            return Task.FromResult(MafSoftwareEngineer.ApplyRepairEdits(
+                edits, repair, input.ExistingFiles));
         }
         if (input.WorkItem.Id == "timer-interface")
             return Task.FromResult(new EngineeringChangeSet(
