@@ -316,6 +316,9 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
         {assignments.map(item => {
           const changedFiles = engine.snapshot?.files.filter(file =>
             file.lastWorkItemId === item.id).length ?? 0;
+          const lastRejection = engine.snapshot?.events.filter(event =>
+            event.kind === 'EngineerOutputRejected' &&
+            event.detail.startsWith(item.id + ':')).slice(-1)[0];
           return <li key={item.id} data-task-state={item.state}>
             <div className="engineering-task-heading">
               <span className="engineering-task-number" aria-hidden="true">
@@ -337,6 +340,9 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
                 'Assignment interrupted before completion.' :
                 'Source generation failed on this assignment.'}</strong>
               {' '}Reason code: <code>{job.errorCode ?? 'NOT_RECORDED'}</code>.
+              {lastRejection && <span className="engineering-rejection-reason">
+                {' '}Last model-output diagnostic: {lastRejection.detail}.
+              </span>}
               Earlier completed source remains saved. Open
               {' '}<strong>Saved engineering activity</strong> for the event history.
               No build or runtime testing was performed by this agent.
