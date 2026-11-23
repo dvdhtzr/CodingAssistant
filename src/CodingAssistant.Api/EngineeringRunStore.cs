@@ -318,6 +318,45 @@ public sealed class EngineeringRunStore(
         tx.Commit();
     }
 
+    /// <summary>
+    /// Admit a read-only Code Atlas observation only for the exact currently
+    /// running approved work item. Persist host-verified metadata without
+    /// leaking a model query, source excerpt or arbitrary model narrative.
+    /// </summary>
+    public void RecordAtlasInspection(string taskId, string runId,
+        string workItemId, AtlasInspectionObservation observation)
+    {
+        ValidId(taskId); ValidId(runId);
+        ArgumentNullException.ThrowIfNull(observation);
+        if (observation.Name is not ("atlas.find_symbols" or
+                "atlas.get_relationships" or "atlas.source_excerpt") ||
+            observation.ResultCount is < 0 or > 16 ||
+            observation.SourceRevision is null ||
+            observation.SourceRevision.Length != 64 ||
+            !observation.SourceRevision.All(ch =>
+                ch is >= '0' and <= '9' or >= 'a' and <= 'f'))
+            throw new StoreFailure("INVALID_INPUT");
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var job = Find(db, tx, runId);
+        if (job is null || job.TaskId != taskId)
+            throw new StoreFailure("NOT_FOUND");
+        if (job.State != "Running")
+            throw new StoreFailure("INVALID_STATE");
+        RequireBinding(db, tx, job);
+        if (TaskStore.Scalar(db, tx, """
+            SELECT 1 FROM engineering_run_tasks
+            WHERE run_id=@run AND work_item_id=@item AND state='Running'
+            """, ("@run", runId), ("@item", workItemId)) is null)
+            throw new StoreFailure("INVALID_STATE");
+        Event(db, tx, runId, "EngineerAtlasInspected",
+            "SoftwareEngineer used " + observation.Name +
+            " on accepted source revision " +
+            observation.SourceRevision[..12] + " (" +
+            observation.ResultCount + " results)");
+        tx.Commit();
+    }
+
     public AtlasSourceEvent? CompleteTask(string taskId, string runId, string workItemId,
         EngineeringChangeSet changes)
     {

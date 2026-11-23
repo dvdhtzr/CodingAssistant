@@ -59,7 +59,10 @@ public sealed class EngineeringRunCoordinator(
                 var prior = store.Get(job.TaskId, job.Id).Files;
                 var result = await engineer.ImplementAsync(
                     new EngineeringTaskInput(objective, spec, plan,
-                        architecture, item, prior), token);
+                        architecture, item, prior,
+                        OnAtlasInspection: observation =>
+                            store.RecordAtlasInspection(job.TaskId,
+                                job.Id, item.Id, observation)), token);
                 token.ThrowIfCancellationRequested();
                 var committed = store.CompleteTask(job.TaskId, job.Id, item.Id, result);
                 // Notification is best effort AFTER the durable transaction.
