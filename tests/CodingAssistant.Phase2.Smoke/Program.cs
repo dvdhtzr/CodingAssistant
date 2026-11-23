@@ -739,19 +739,24 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           patchFactory.UserPrompts.Any(message => message.Contains(
               "FULL REPAIR TARGET SOURCE app.js", StringComparison.Ordinal)),
         "QA repair uses short exact edit even for a first-task-owned static web file");
+    // Build rejected variants from typed JSON. String.Replace on
+    // serialized JSON is unreliable because System.Text.Json escapes
+    // apostrophes inside source as Unicode escape sequences.
+    string EditJson(string path, string oldText, string newText) =>
+        JsonSerializer.Serialize(new {
+            summary = "Update only the precise authorized source handler.",
+            edits = new[] { new { path, oldText, newText } },
+            verificationNotes = new[] { "Check saved interaction manually" }
+        });
     var invalidPatches = new[] {
-        (Raw: patchJson.Replace(brokenHandler, "missing uniquely anchored source",
-            StringComparison.Ordinal), Code: "REPAIR_EDIT_NOT_UNIQUE"),
-        (Raw: patchJson.Replace("app.js", "index.html",
-            StringComparison.Ordinal), Code: "REPAIR_SCOPE"),
-        (Raw: patchJson.Replace(correctedHandler, brokenHandler,
-            StringComparison.Ordinal), Code: "REPAIR_EDIT_NO_CHANGE"),
-        (Raw: JsonSerializer.Serialize(new {
-            summary = "Try replacing a repeated marker twice in source.",
-            edits = new[] { new { path = "app.js", oldText = new string('x', 32),
-                newText = "changed repeated text" } },
-            verificationNotes = new[] { "Check original source unchanged" }
-        }), Code: "REPAIR_EDIT_NOT_UNIQUE")
+        (Raw: EditJson("app.js", "missing uniquely anchored source",
+            correctedHandler), Code: "REPAIR_EDIT_NOT_UNIQUE"),
+        (Raw: EditJson("index.html", brokenHandler, correctedHandler),
+            Code: "REPAIR_SCOPE"),
+        (Raw: EditJson("app.js", brokenHandler, brokenHandler),
+            Code: "REPAIR_EDIT_NO_CHANGE"),
+        (Raw: EditJson("app.js", new string('x', 32), "changed repeated text"),
+            Code: "REPAIR_EDIT_NOT_UNIQUE")
     };
     foreach (var (raw, expectedCode) in invalidPatches)
     {
