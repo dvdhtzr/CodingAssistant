@@ -136,6 +136,40 @@ export function useEngineeringRun(token: string, taskId: string) {
     } finally { setBusy(''); }
   }
 
+  async function resume() {
+    const prior = snapshot;
+    if (busy || !prior ||
+        !['Failed', 'Interrupted'].includes(prior.job.state) ||
+        prior.tasks.filter(t => t.state === 'Completed').length === 0 ||
+        prior.tasks.every(t => t.state === 'Completed')) return;
+    setBusy('resume');
+    setError('');
+    try {
+      const approval = await api<PlanResponse>(token,
+        '/api/tasks/' + taskId + '/implementation-plan');
+      setPlan(approval.plan);
+      if (!approval.plan || !approval.plan.current ||
+          approval.plan.status !== 'Approved' ||
+          approval.plan.planSha256 !== prior.job.planSha256 ||
+          approval.plan.revision !== prior.job.planRevision)
+        throw new Error('The approved plan changed; cannot resume an older run.');
+      const resumed = await api<EngineerRun>(token,
+        '/api/tasks/' + taskId + '/engineering-runs', {
+          planRevision: approval.plan.revision,
+          planSha256: approval.plan.planSha256,
+          resumeRunId: prior.job.id,
+        });
+      // Load the exact returned run so inherited files and task receipts
+      // appear immediately; do not briefly replace them with an empty graph.
+      const saved = await api<EngineerSnapshot>(token,
+        '/api/tasks/' + taskId + '/engineering-runs/' + resumed.id);
+      setSnapshot(saved);
+      refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not resume saved assignments');
+    } finally { setBusy(''); }
+  }
+
   async function cancel() {
     if (!snapshot || snapshot.job.state !== 'Running' || busy) return;
     setBusy('cancel');
@@ -180,7 +214,7 @@ export function useEngineeringRun(token: string, taskId: string) {
     } finally { setBusy(''); }
   }
 
-  return { token, taskId, snapshot, plan, busy, error, refresh, start, cancel, download };
+  return { token, taskId, snapshot, plan, busy, error, refresh, start, resume, cancel, download };
 }
 
 export type EngineeringState = ReturnType<typeof useEngineeringRun>;
@@ -196,6 +230,11 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
   const activeTask = assignments.find(item => item.state === 'Running');
   const approved = engine.plan?.status === 'Approved' &&
     engine.plan.current === true;
+  const resumable = approved &&
+    (job?.state === 'Failed' || job?.state === 'Interrupted') &&
+    job.planRevision === engine.plan?.revision &&
+    job.planSha256 === engine.plan?.planSha256 &&
+    completedCount > 0 && completedCount < assignments.length;
   return <section className="engineering-workspace"
     data-has-run={!!job}
     aria-label="MAF Software Engineer tasks">
@@ -211,10 +250,17 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
       Approve the current Technical Lead plan to enable this workflow.
       Existing source generation remains available below.</p>}
     <div className="actions">
-      <button type="button" className="primary"
+      {resumable && <button type="button" className="primary"
+        disabled={!!engine.busy || legacyRunning}
+        onClick={() => void engine.resume()}>
+        {engine.busy === 'resume' ? 'Resuming saved source…' :
+          'Resume remaining ' + (assignments.length - completedCount) + ' assignment(s)'}
+      </button>}
+      <button type="button" className={resumable ? 'outline' : 'primary'}
         disabled={!approved || !!engine.busy || legacyRunning || running}
         onClick={() => void engine.start()}>
         {engine.busy === 'start' ? 'Admitting tasks…' :
+          resumable ? 'Start a separate new run from task 1' :
           'Ask Software Engineer to implement approved tasks'}
       </button>
       {running && <button type="button" className="danger"
