@@ -183,6 +183,37 @@ test('failed task names are separated from file counts and show exact persisted 
   assert.doesNotMatch(html, /Task 60 saved/);
 });
 
+test('failed run offers scoped resume and clearly distinguishes restarting from task one', () => {
+  const priorRun = {
+    id: 'a'.repeat(32), taskId: 'b'.repeat(32), state: 'Failed',
+    phase: 'Failed', planRevision: 2, planSha256: 'c'.repeat(64),
+    model: 'qwen3-coder:30b', errorCode: 'MODEL_OUTPUT_REJECTED',
+  };
+  const html = renderToStaticMarkup(React.createElement(EngineeringGenerationPanel, {
+    legacyRunning: false,
+    engine: {
+      snapshot: {
+        job: priorRun,
+        tasks: [
+          { id: 'first', ordinal: 0, title: 'Website foundation', state: 'Completed',
+            summary: 'Saved source', startedUtc: null, completedUtc: '2026-11-23T10:00:00Z' },
+          { id: 'final', ordinal: 1, title: 'Launch preparation', state: 'Failed',
+            summary: null, startedUtc: '2026-11-23T10:47:14Z', completedUtc: null },
+        ],
+        files: [{ path: 'index.html', lastWorkItemId: 'first' }], events: [],
+      },
+      plan: { revision: 2, planSha256: priorRun.planSha256,
+        status: 'Approved', current: true },
+      error: '', busy: '', start: noop, resume: noop, cancel: noop,
+      refresh: noop, download: noop,
+    },
+  }));
+  assert.match(html, /Resume remaining 1 assignment\(s\)/);
+  assert.match(html, /Start a separate new run from task 1/);
+  assert.match(html, /MODEL_OUTPUT_REJECTED/);
+  assert.match(html, /Assignment 2 · 0 source file\(s\)/);
+});
+
 test('agent presence stylesheet is loaded after the base Mission Control design', () => {
   const bootstrap = readFileSync('src/main.tsx', 'utf8');
   const css = readFileSync('src/agent-presence.css', 'utf8');
