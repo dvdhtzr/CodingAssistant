@@ -678,6 +678,105 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
                   StringComparison.Ordinal)),
         "legacy launch task is guided toward concise source-only deliverable with bounded prior context");
 
+    // A QA repair must NOT require the full index.html entry point again
+    // when the owner authorized a precise change in app.js. Large saved
+    // source must be editable with a short JSON answer and preserve all
+    // unrelated content and exact owner file scope.
+    var brokenHandler =
+        "document.getElementById('save').addEventListener('click', () => save(false));";
+    var correctedHandler =
+        "document.getElementById('save').addEventListener('click', () => save(true));";
+    var largeScript = "const marker = 'preserve-all-existing-state';\\n" +
+        new string('x', 24000) + "\\n" + brokenHandler + "\\n" +
+        "const footer = 'preserve-footer';\\n";
+    var savedRepairFiles = new[] {
+        new EngineeringSourceFile("index.html", "Existing approved entry point",
+            "<!doctype html><html><body><script src='app.js'></script></body></html>\\n",
+            new string('1', 64), "create-ui", "2026-11-22T00:00:00Z"),
+        new EngineeringSourceFile("app.js", "Original interactive behavior",
+            largeScript, new string('2', 64), "create-ui", "2026-11-22T00:00:00Z")
+    };
+    var authorizedRepair = new RepairTaskContext(
+        new string('3', 32), new string('4', 64),
+        [new RepairFindingReference("app.js", 0, "Major",
+            "Save handler ignores the checkbox state",
+            "The saved handler calls save(false) unconditionally",
+            "Read checkbox state in the Save handler", "ImplementationDefect")],
+        ["app.js"]);
+    var patchJson = JsonSerializer.Serialize(new {
+        summary = "Correct the exact saved Save handler while preserving all other code.",
+        edits = new[] { new {
+            path = "app.js", oldText = brokenHandler, newText = correctedHandler
+        } },
+        verificationNotes = new[] {
+            "Independent QA must inspect the handler and test checkbox behavior."
+        }
+    });
+    var appliedPatch = MafSoftwareEngineer.ApplyRepairEdits(
+        patchJson, authorizedRepair, savedRepairFiles);
+    Check(appliedPatch.Files.Count == 1 &&
+          appliedPatch.Files[0].Path == "app.js" &&
+          appliedPatch.Files[0].Content.Contains(correctedHandler, StringComparison.Ordinal) &&
+          appliedPatch.Files[0].Content.Contains(
+              "preserve-all-existing-state", StringComparison.Ordinal) &&
+          appliedPatch.Files[0].Content.Contains(
+              "preserve-footer", StringComparison.Ordinal) &&
+          !appliedPatch.Files[0].Content.Contains(
+              brokenHandler, StringComparison.Ordinal) &&
+          savedRepairFiles[1].Content.Contains(brokenHandler, StringComparison.Ordinal),
+        "exact repair patch updates selected file only and leaves immutable original untouched");
+    var patchFactory = new Phase4FakeMafFactory();
+    patchFactory.Responses.Enqueue(patchJson);
+    var engineerRepair = await new MafSoftwareEngineer(patchFactory)
+        .ImplementAsync(assignment with {
+            ExistingFiles = savedRepairFiles,
+            Repair = authorizedRepair
+        }, CancellationToken.None);
+    Check(patchFactory.Attempts == 1 &&
+          engineerRepair.Files.Single().Path == "app.js" &&
+          engineerRepair.Files.Single().Content.Contains(
+              correctedHandler, StringComparison.Ordinal) &&
+          patchFactory.UserPrompts.Any(message => message.Contains(
+              "FULL REPAIR TARGET SOURCE app.js", StringComparison.Ordinal)),
+        "QA repair uses short exact edit even for a first-task-owned static web file");
+    var invalidPatches = new[] {
+        (Raw: patchJson.Replace(brokenHandler, "missing uniquely anchored source",
+            StringComparison.Ordinal), Code: "REPAIR_EDIT_NOT_UNIQUE"),
+        (Raw: patchJson.Replace("app.js", "index.html",
+            StringComparison.Ordinal), Code: "REPAIR_SCOPE"),
+        (Raw: patchJson.Replace(correctedHandler, brokenHandler,
+            StringComparison.Ordinal), Code: "REPAIR_EDIT_NO_CHANGE"),
+        (Raw: JsonSerializer.Serialize(new {
+            summary = "Try replacing a repeated marker twice in source.",
+            edits = new[] { new { path = "app.js", oldText = new string('x', 32),
+                newText = "changed repeated text" } },
+            verificationNotes = new[] { "Check original source unchanged" }
+        }), Code: "REPAIR_EDIT_NOT_UNIQUE")
+    };
+    foreach (var (raw, expectedCode) in invalidPatches)
+    {
+        Check(!MafSoftwareEngineer.TryParseRepair(raw, authorizedRepair,
+              savedRepairFiles, out _, out var failure) &&
+              failure.StartsWith(expectedCode + ":", StringComparison.Ordinal),
+            "unsafe or ambiguous exact edits reject with safe category " + expectedCode);
+    }
+    var correctionFactory = new Phase4FakeMafFactory();
+    correctionFactory.Responses.Enqueue(invalidPatches[0].Raw);
+    correctionFactory.Responses.Enqueue(patchJson);
+    var patchRejections = new List<EngineeringOutputRejection>();
+    var correctedPatch = await new MafSoftwareEngineer(correctionFactory)
+        .ImplementAsync(assignment with {
+            ExistingFiles = savedRepairFiles, Repair = authorizedRepair,
+            OnOutputRejected = notice => patchRejections.Add(notice)
+        }, CancellationToken.None);
+    Check(correctedPatch.Files.Single().Path == "app.js" &&
+          correctionFactory.Attempts == 2 &&
+          patchRejections.Count == 1 &&
+          patchRejections[0].Category == "REPAIR_EDIT_NOT_UNIQUE" &&
+          correctionFactory.CorrectionReasons.Any(reason =>
+              reason.Contains("REPAIR_EDIT_NOT_UNIQUE", StringComparison.Ordinal)),
+        "engineer retries stale exact-match target with bounded diagnostic and no source leak");
+
     var firstTaskFactory = new Phase4FakeMafFactory();
     firstTaskFactory.Responses.Enqueue(goodSource.Replace(
         "index.html", "app.js", StringComparison.Ordinal));
