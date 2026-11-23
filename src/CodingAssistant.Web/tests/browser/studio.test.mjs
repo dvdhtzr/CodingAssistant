@@ -94,6 +94,7 @@ function mockApi(page) {
       status: 'READY', readyForSourceGeneration: true, architectureSha256: arch,
       blockingTopics: [], approvedChoices: [],
     });
+    console.error('Studio fixture has no GET handler for', method, path);
     return done(route, { error: 'NO_FIXTURE' }, 404);
   });
 }
@@ -112,6 +113,10 @@ after(async () => { await browser?.close();await vite?.close(); });
 
 test('studio prioritizes real QA, keeps prior failed repair separate, and exposes source on demand', async () => {
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  page.on('pageerror', error => console.error('Studio desktop page error:', error.stack));
+  page.on('console', message => {
+    if (message.type() === 'error') console.error('Studio desktop console:', message.text());
+  });
   try {
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
@@ -160,6 +165,10 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
 test('narrow Studio has no page-level horizontal scrolling and keeps QA available', async () => {
   const page = await browser.newPage({ viewport: { width: 390, height: 820 },
     reducedMotion: 'reduce' });
+  page.on('pageerror', error => console.error('Studio mobile page error:', error.stack));
+  page.on('console', message => {
+    if (message.type() === 'error') console.error('Studio mobile console:', message.text());
+  });
   try {
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
