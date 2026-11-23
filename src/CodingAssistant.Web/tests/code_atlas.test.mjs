@@ -82,6 +82,18 @@ test('new source arrival markers do not flash and live follow starts disabled', 
   assert.doesNotMatch(css, /\.atlas-node\.atlas-new \.atlas-node-halo\{[^}]*animation:/);
 });
 
+test('generation stays visible until the owner chooses delivery', () => {
+  const project = readFileSync('src/ProjectDraftPanel.tsx', 'utf8');
+  const journey = readFileSync('src/InterviewStudio.tsx', 'utf8');
+  const engineer = readFileSync('src/EngineeringWorkspace.tsx', 'utf8');
+  assert.match(project, /View generated artifacts and delivery/);
+  assert.doesNotMatch(journey, /setExpanded\\(current => current === 'generation' \\? 'delivery'/);
+  assert.match(engineer, /data-has-run=\\{!!job\\}/);
+  assert.match(engineer, /setSnapshot\\(null\\);[\\s\\S]*?\\}, \\[token, taskId\\]\\)/);
+  assert.doesNotMatch(engineer, /onSourceChanged=\\{engine.refresh\\}/,
+    'Atlas events must not repeatedly clear the parent snapshot');
+});
+
 test('JS/TS structural nodes remain source-backed and method toggle is real', () => {
   const js = {
     ...snapshot, coverage: 'ECMA_STRUCTURE_ONLY',
