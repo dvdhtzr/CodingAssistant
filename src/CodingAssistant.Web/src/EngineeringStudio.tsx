@@ -161,7 +161,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
       </span>
     </header>
     <div className="ca-studio-layout">
-      <aside className="ca-studio-people" aria-label="Engineering team">
+      <aside className="ca-studio-people" role="complementary" aria-label="Engineering team">
         <div className="ca-studio-rail-heading">
           <span className="ca-studio-eyebrow">YOUR TEAM</span>
           <button type="button" className="ca-studio-text-action" onClick={onTeam}>Team details</button>
@@ -196,7 +196,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
         <InterviewStudio token={token} task={task}
           studioCanvas focusRequest={request} onStageSelected={setSelectedStage} />
       </section>
-      <aside className="ca-studio-context" aria-label="Owner attention and handoffs">
+      <aside className="ca-studio-context" role="complementary" aria-label="Owner attention and handoffs">
         <div className="ca-studio-context-heading">
           <span className="ca-studio-eyebrow">YOUR ATTENTION</span>
           <strong>{attention.length ? 'Next decisions' : 'No pending decisions'}</strong>
