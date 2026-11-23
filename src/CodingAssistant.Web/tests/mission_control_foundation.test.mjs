@@ -80,7 +80,7 @@ test('mission overview keeps user text escaped and labels evidence boundaries', 
   const markup = renderToStaticMarkup(React.createElement(ProjectOverview, {
     token: 'f'.repeat(64), task, onContinue: noop, onDiagnostics: noop,
   }));
-  assert.match(markup, /MISSION CONTROL \/ PROJECT OVERVIEW/);
+  assert.match(markup, /PROJECT OVERVIEW \/ SAVED STATUS/);
   assert.match(markup, /Research &lt;Lab&gt;/);
   assert.match(markup, /&lt;script&gt; text/);
   assert.doesNotMatch(markup, /<script>/);
