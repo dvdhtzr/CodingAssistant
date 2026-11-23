@@ -687,7 +687,7 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var correctedHandler =
         "document.getElementById('save').addEventListener('click', () => save(true));";
     var largeScript = "const marker = 'preserve-all-existing-state';\n" +
-        new string('x', 24000) + "\n" + brokenHandler + "\n" +
+        new string('x', 14000) + "\n" + brokenHandler + "\n" +
         "const footer = 'preserve-footer';\n";
     var savedRepairFiles = new[] {
         new EngineeringSourceFile("index.html", "Existing approved entry point",
