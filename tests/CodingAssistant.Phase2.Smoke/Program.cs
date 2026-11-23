@@ -450,6 +450,42 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     // Repair broken JSON, unsafe source paths and model refusals without
     // accepting any invalid files or attempting code execution.
     const string goodSource = """{"summary":"Implemented complete recipe ingredient input interactions.","files":[{"path":"index.html","purpose":"Complete ingredient input screen","content":"<!doctype html><html><body><input id='ingredients'><button>Compare</button></body></html>"}],"verificationNotes":["Verify ingredient entry in a browser"]}""";
+    // Qwen may include a closed reasoning prefix even with think:false.
+    // Never turn the private reasoning into source; only parse final JSON.
+    foreach (var answer in new[] {
+        "<think>PRIVATE reasoning not source</think>\\n" + goodSource,
+        "</think>\\n" + goodSource,
+        goodSource
+    })
+    {
+        var payload = JsonSerializer.Serialize(new {
+            done_reason = "stop", message = new { role = "assistant", content = answer }
+        });
+        var final = LocalMafChatClient.ReadAssistantContent(
+            payload, MafAgentPurpose.SoftwareEngineer);
+        Check(MafSoftwareEngineer.Parse(final).Files.Single().Path == "index.html" &&
+              !final.Contains("PRIVATE reasoning", StringComparison.Ordinal),
+            "Software Engineer accepts only JSON after CLOSED Qwen thinking prefix");
+    }
+    foreach (var response in new[] {
+        "<think>never closed\\n" + goodSource,
+        "<think>private</think><think>restarted</think>" + goodSource
+    })
+    {
+        var payload = JsonSerializer.Serialize(new {
+            done_reason = "stop",
+            message = new { role = "assistant", content = response }
+        });
+        try {
+            _ = LocalMafChatClient.ReadAssistantContent(
+                payload, MafAgentPurpose.SoftwareEngineer);
+            Check(false, "incomplete or reopened reasoning prefix accepted");
+        }
+        catch (StoreFailure error) when (error.Code == "MODEL_THINKING_ONLY")
+        {
+            Check(true, "Software Engineer rejects unfinished or reopened thinking");
+        }
+    }
     Check(MafSoftwareEngineer.TryParse(goodSource, out var parsedSource,
         out var acceptedReason) && parsedSource!.Files.Count == 1 &&
         acceptedReason == "", "valid engineer output remains accepted");
@@ -575,6 +611,23 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           correctedFactory.CorrectionReasons.All(reason =>
               !reason.Contains("SECRET_MODEL_CONTENT", StringComparison.Ordinal)),
         "Software Engineer uses safe targeted correction and recovers");
+
+    var thoughtOnly = new Phase4FakeMafFactory();
+    thoughtOnly.Failures.Enqueue("MODEL_THINKING_ONLY");
+    thoughtOnly.Responses.Enqueue(goodSource);
+    var thoughtRejections = new List<EngineeringOutputRejection>();
+    var resumedFromThinking = await new MafSoftwareEngineer(thoughtOnly)
+        .ImplementAsync(assignment with {
+            OnOutputRejected = reason => thoughtRejections.Add(reason)
+        }, CancellationToken.None);
+    Check(resumedFromThinking.Files.Single().Path == "index.html" &&
+          thoughtOnly.Attempts == 2 &&
+          thoughtRejections.Count == 1 &&
+          thoughtRejections[0].Attempt == 1 &&
+          thoughtRejections[0].Category == "MODEL_THINKING_ONLY" &&
+          thoughtOnly.CorrectionReasons.Any(message =>
+              message.Contains("MODEL_THINKING_ONLY", StringComparison.Ordinal)),
+        "MAF recovers from thinking-only reply without exposing private thoughts");
 
     var firstTaskFactory = new Phase4FakeMafFactory();
     firstTaskFactory.Responses.Enqueue(goodSource.Replace(
@@ -2867,6 +2920,7 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
 sealed class Phase4FakeMafFactory : IMafChatClientFactory
 {
     public Queue<string> Responses { get; } = new();
+    public Queue<string> Failures { get; } = new();
     public List<string> CorrectionReasons { get; } = [];
     public List<string> AtlasObservations { get; } = [];
     public int Attempts { get; private set; }
@@ -2890,6 +2944,8 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
             CancellationToken cancellationToken = default)
         {
             parent.Attempts++;
+            if (parent.Failures.Count > 0)
+                throw new StoreFailure(parent.Failures.Dequeue());
             var history = messages.ToArray();
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
             parent.AtlasObservations.AddRange(history.Where(m =>
