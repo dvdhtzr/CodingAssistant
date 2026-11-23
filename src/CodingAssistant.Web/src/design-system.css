@@ -1084,3 +1084,75 @@ input::placeholder, textarea::placeholder { color:var(--ca-faint); }
   .ca-console-handoff-kind { grid-column: 1/-1; grid-row: 2; }
   .ca-console-journey small { margin: 0; }
 }
+
+
+/* Work destination's persistent, low-height team observation strip. */
+.ca-work-team-strip {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  min-width: 0;
+  border: 1px solid var(--ca-line);
+  border-radius: var(--ca-r);
+  background: var(--ca-panel);
+  padding: .5rem .7rem;
+  overflow-anchor: none;
+}
+.ca-work-team-label { display: grid; gap: .16rem; flex: none; max-width: 160px; }
+.ca-work-team-label strong { font-size: .65rem; color: var(--ca-fg); }
+.ca-work-agent-pips { display: flex; gap: .3rem; flex: 1; min-width: 0; overflow: hidden; }
+.ca-work-agent-pip {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  padding: .25rem .35rem;
+  border-radius: 5px;
+  background: var(--ca-inset);
+  color: var(--ca-muted);
+  font-size: .58rem;
+  min-width: 0;
+  white-space: nowrap;
+}
+.ca-work-agent-pip > span {
+  display: grid;
+  place-items: center;
+  height: 23px;
+  width: 23px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--ca-line);
+  font-family: var(--ca-mono);
+  font-weight: 700;
+}
+.ca-work-agent-pip small { font-size: .52rem; }
+.ca-work-agent-pip.is-active {
+  color: var(--ca-fg);
+  border: 1px solid var(--ca-good);
+}
+.ca-work-agent-pip.is-active > span {
+  color: var(--ca-good);
+  border-color: var(--ca-good);
+}
+.ca-work-team-handoff {
+  min-width: 0; flex: 0 1 175px;
+  overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: .62rem; color: var(--ca-muted);
+}
+.ca-work-team-handoff span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.ca-work-team-empty { color: var(--ca-muted); font-size: .67rem; flex: 1; }
+.ca-work-team-strip > button {
+  flex: none;
+  padding: .42rem .6rem;
+  font-size: .65rem;
+}
+@media(max-width:1200px) {
+  .ca-work-agent-pip { font-size: 0; gap: 0; }
+  .ca-work-agent-pip small { font-size: 0; }
+  .ca-work-team-label { max-width: 145px; }
+}
+@media(max-width:650px) {
+  .ca-work-team-strip { flex-wrap: wrap; }
+  .ca-work-agent-pips { order: 3; flex-basis: 100%; justify-content: space-between; }
+  .ca-work-team-handoff { display: none; }
+  .ca-work-team-strip > button { margin-left: auto; }
+}
