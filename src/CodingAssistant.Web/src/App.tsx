@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
-import { InterviewStudio } from './InterviewStudio';
 import { CommandActivity } from './CommandActivity';
-import { WorkTeamStrip } from './WorkTeamStrip';
+import { EngineeringStudio } from './EngineeringStudio';
 import { TeamDestination, QualityDestination, SkillsDestination, HistoryDestination } from './MissionDestinations';
 import { WorkbenchInspector, WorkbenchSidebar, ProjectSwitcher,
   type WorkbenchView } from './Workbench';
@@ -520,11 +519,9 @@ export default function App() {
         </section>}
         {view === 'command' && taskView && <CommandActivity
           token={token} task={taskView.task} onNavigate={setView} />}
-        {taskView && view === 'work' && <WorkTeamStrip token={token}
-          taskId={taskId} onOpen={() => setView('command')}/>} 
         {taskView && <div hidden={view !== 'work'}>
-          <InterviewStudio key={taskView.task.id}
-            token={token} task={taskView.task} />
+          <EngineeringStudio key={taskView.task.id} token={token} task={taskView.task}
+            onTeam={() => setView('team')}/>
         </div>}
         {taskView && view === 'team' && <TeamDestination token={token} taskId={taskId}
           onWork={() => setView('work')} />}
