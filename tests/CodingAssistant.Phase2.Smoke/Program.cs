@@ -498,6 +498,71 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           agentFactory.TaskDescriptionSeen,
         "fourth real MAF agent gets independent identity, task, exact model and no tools");
 
+    // M8.16: The Software Engineer genuinely asks the host to inspect
+    // stored source, receives bounded evidence, and then produces source.
+    // No native MAF tools or execution permissions are enabled.
+    var inspectedFactory = new Phase4FakeMafFactory();
+    inspectedFactory.Responses.Enqueue(
+        """{"toolRequest":{"name":"atlas.find_symbols","argument":"index"}}""");
+    inspectedFactory.Responses.Enqueue(goodSource);
+    var inspectionEvidence = new List<AtlasInspectionObservation>();
+    var inspectedAssignment = assignment with {
+        ExistingFiles = [
+            new EngineeringSourceFile("index.html", "Approved prior UI",
+                "<!doctype html><html><body>Prior page</body></html>",
+                new string('1', 64), "create-ui", "2026-11-22T00:00:00Z")
+        ],
+        OnAtlasInspection = observation => inspectionEvidence.Add(observation)
+    };
+    var inspectedOutput = await new MafSoftwareEngineer(inspectedFactory)
+        .ImplementAsync(inspectedAssignment, CancellationToken.None);
+    Check(inspectedFactory.Attempts == 2 &&
+        inspectedFactory.AtlasObservations.Count == 1 &&
+        inspectedFactory.AtlasObservations[0].Contains(
+            "atlas.find_symbols", StringComparison.Ordinal) &&
+        inspectedFactory.AtlasObservations[0].Contains(
+            "\"SourceRevision\"", StringComparison.Ordinal) &&
+        inspectionEvidence.Count == 1 &&
+        inspectionEvidence[0].Name == "atlas.find_symbols" &&
+        inspectionEvidence[0].SourceRevision.Length == 64 &&
+        inspectedOutput.Files.Single().Path == "index.html" &&
+        inspectedFactory.NoTools,
+        "Software Engineer requests host-backed source evidence before code changes");
+    var deniedFactory = new Phase4FakeMafFactory();
+    deniedFactory.Responses.Enqueue(
+        """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""");
+    deniedFactory.Responses.Enqueue(goodSource);
+    var deniedEvents = new List<AtlasInspectionObservation>();
+    var deniedOutput = await new MafSoftwareEngineer(deniedFactory)
+        .ImplementAsync(inspectedAssignment with {
+            OnAtlasInspection = observation => deniedEvents.Add(observation)
+        }, CancellationToken.None);
+    Check(deniedOutput.Files.Single().Path == "index.html" &&
+          deniedFactory.Attempts == 2 &&
+          deniedEvents.Count == 0 &&
+          deniedFactory.CorrectionReasons.Any(x =>
+              x.Contains("MODEL_OUTPUT_REJECTED", StringComparison.Ordinal)),
+        "unknown agent tool requests never execute or record observations");
+    var overLimitFactory = new Phase4FakeMafFactory();
+    for (var i = 0; i < 3; i++)
+        overLimitFactory.Responses.Enqueue(
+            """{"toolRequest":{"name":"atlas.find_symbols","argument":"index"}}""");
+    var cappedEvents = new List<AtlasInspectionObservation>();
+    try
+    {
+        _ = await new MafSoftwareEngineer(overLimitFactory)
+            .ImplementAsync(inspectedAssignment with {
+                OnAtlasInspection = observation => cappedEvents.Add(observation)
+            }, CancellationToken.None);
+        Check(false, "unbounded agent tool loop was accepted");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(overLimitFactory.Attempts == 3 &&
+            cappedEvents.Count == AgentAtlasInspectionGateway.MaximumRequestsPerTask,
+            "source-inspection request loop has a hard two-request ceiling");
+    }
+
     var correctedFactory = new Phase4FakeMafFactory();
     correctedFactory.Responses.Enqueue("truncated SECRET_MODEL_CONTENT");
     correctedFactory.Responses.Enqueue(goodSource);
@@ -2416,6 +2481,7 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
 {
     public Queue<string> Responses { get; } = new();
     public List<string> CorrectionReasons { get; } = [];
+    public List<string> AtlasObservations { get; } = [];
     public int Attempts { get; private set; }
     public List<MafAgentPurpose> Purposes { get; } = [];
     public List<string> Models { get; } = [];
@@ -2438,6 +2504,11 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
         {
             parent.Attempts++;
             var history = messages.ToArray();
+            parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
+            parent.AtlasObservations.AddRange(history.Where(m =>
+                m.Role == ChatRole.User && m.Text?.StartsWith(
+                    "HOST CODE ATLAS READ-ONLY RESULT",
+                    StringComparison.Ordinal) == true).Select(m => m.Text!));
             parent.CorrectionReasons.AddRange(history
                 .Where(m => m.Role == ChatRole.User &&
                     m.Text?.Contains("Reason:", StringComparison.Ordinal) == true)
