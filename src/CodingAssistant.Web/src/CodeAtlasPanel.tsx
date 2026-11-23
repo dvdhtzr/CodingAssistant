@@ -777,7 +777,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
       </div>}
     </section>}
     {error && <p role="alert" className="atlas-error">{error}</p>}
-    {!snapshot && !error && <p role="status" className="atlas-empty">
+    {!snapshot && !error && <p role="status" className="atlas-empty atlas-loading-space">
       {importedGraph ? 'Reading imported source structure…' :
         'Reading saved source structure…'}</p>}
     {displayGraph && view && <div className="atlas-workspace">
@@ -1093,7 +1093,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
         Source contents are not replayed.
       </p>}
     </section>}
-    {sourceEvents.length > 0 && <details className="atlas-source-history">
+    {!importedGraph && <details className="atlas-source-history">
       <summary>Recorded source changes ({sourceEvents.length})</summary>
       <ol aria-label="Committed Code Atlas source events">
         {sourceEvents.slice().reverse().slice(0, 8).map(event => <li key={event.sequence}>
