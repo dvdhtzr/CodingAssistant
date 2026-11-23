@@ -55,6 +55,33 @@ test('Atlas overview comes exclusively from provided source graph', () => {
     Number.isFinite(p.x) && Number.isFinite(p.y)));
 });
 
+test('live growth preserves positions of existing source symbols', () => {
+  const before = projectAtlas(snapshot, null, false);
+  const extra = { id: 'new-file', kind: 'File', name: 'NewFile.cs',
+    qualifiedName: 'NewFile.cs', parentId: 'project',
+    path: 'NewFile.cs', line: 1 };
+  const grown = { ...snapshot, sourceRevision: 'b'.repeat(64),
+    nodes: [...nodes, extra].reverse(),
+    edges: [...edges, { sourceId: 'project', targetId: extra.id,
+      kind: 'Contains' }].reverse(),
+  };
+  const after = projectAtlas(grown, null, false);
+  assert.ok(after.nodes.some(n => n.id === extra.id));
+  for (const symbol of before.nodes) {
+    assert.deepEqual(after.positions[symbol.id], before.positions[symbol.id],
+      symbol.id + ' must stay fixed when an unrelated file is saved');
+  }
+  assert.deepEqual(projectAtlas(grown, null, false).positions, after.positions);
+});
+
+test('new source arrival markers do not flash and live follow starts disabled', () => {
+  const panel = readFileSync('src/CodeAtlasPanel.tsx', 'utf8');
+  const css = readFileSync('src/code-atlas.css', 'utf8');
+  assert.match(panel, /\\[followBuild, setFollowBuild\\] = useState\\(false\\)/);
+  assert.doesNotMatch(css, /@keyframes atlas-arrival/);
+  assert.doesNotMatch(css, /\\.atlas-node\\.atlas-new \\.atlas-node-halo\\{[^}]*animation:/);
+});
+
 test('JS/TS structural nodes remain source-backed and method toggle is real', () => {
   const js = {
     ...snapshot, coverage: 'ECMA_STRUCTURE_ONLY',
