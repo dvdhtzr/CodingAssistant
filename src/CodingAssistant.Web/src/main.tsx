@@ -24,5 +24,5 @@ try {
 }
 
 const target = document.getElementById('root');
-if (!target) throw new Error('Missing Mission Control mount');
+if (!target) throw new Error('Missing CodingAssistant mount');
 createRoot(target).render(<React.StrictMode><App /></React.StrictMode>);
