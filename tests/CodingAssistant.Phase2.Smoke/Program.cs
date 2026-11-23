@@ -2009,6 +2009,75 @@ try
               .Single(f => f.Path == "app.js").Sha256 ==
           engineeringResult!.Files.Single(f => f.Path == "app.js").Sha256,
         "prior engineering run is unchanged after source-only repair");
+
+    // A real Windows installation can already contain 1-3 approved repairs.
+    // Exercise in-place migration of its populated SQLite CHECK constraint,
+    // including preservation of all original cycle metadata and source refs.
+    var repairDatabasePath = Path.Combine(root, "codingassistant.db");
+    using (var oldDb = new Microsoft.Data.Sqlite.SqliteConnection(
+        "Data Source=" + repairDatabasePath))
+    {
+        oldDb.Open();
+        using var migration = oldDb.BeginTransaction();
+        using (var old = oldDb.CreateCommand())
+        {
+            old.Transaction = migration;
+            old.CommandText = """
+                CREATE TABLE repair_cycles_old_fixture (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    task_id TEXT NOT NULL REFERENCES tasks(id),
+                    proposal_id TEXT NOT NULL UNIQUE REFERENCES repair_proposals(id),
+                    base_run_id TEXT NOT NULL REFERENCES engineering_runs(id),
+                    engineering_run_id TEXT NOT NULL UNIQUE REFERENCES engineering_runs(id),
+                    qa_review_id TEXT REFERENCES qa_reviews(id),
+                    base_source_sha256 TEXT NOT NULL,
+                    work_item_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN
+                        ('Running','Generated','QaRunning','QaReviewed','Failed','Interrupted')),
+                    attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 3),
+                    error_code TEXT,
+                    findings_json TEXT NOT NULL,
+                    created_utc TEXT NOT NULL, updated_utc TEXT NOT NULL
+                );
+                INSERT INTO repair_cycles_old_fixture
+                SELECT * FROM repair_cycles;
+                DROP TABLE repair_cycles;
+                ALTER TABLE repair_cycles_old_fixture RENAME TO repair_cycles;
+                CREATE INDEX repair_cycles_latest
+                    ON repair_cycles(task_id,created_utc DESC,id DESC);
+                """;
+            _ = old.ExecuteNonQuery();
+        }
+        migration.Commit();
+    }
+    var upgradedRepairs = new RepairCycleStore(tasks, engineeringStore,
+        reviewStore, repairProposal);
+    upgradedRepairs.Initialize();
+    var keptCycle = upgradedRepairs.Get(taskBound.Id, cycleId);
+    using (var inspectedDb = new Microsoft.Data.Sqlite.SqliteConnection(
+        "Data Source=" + repairDatabasePath))
+    {
+        inspectedDb.Open();
+        using var schemaCheck = inspectedDb.CreateCommand();
+        schemaCheck.CommandText = """
+            SELECT sql FROM sqlite_master
+            WHERE type='table' AND name='repair_cycles'
+            """;
+        var newSchema = (string?)schemaCheck.ExecuteScalar() ?? "";
+        Check(keptCycle.Cycle.Id == cycleId &&
+              keptCycle.Cycle.Attempt == 1 &&
+              keptCycle.Cycle.ProposalId == selectedRepairProposal.Id &&
+              keptCycle.Cycle.BaseSourceSha256 ==
+                  repairOutcome.Cycle.BaseSourceSha256 &&
+              keptCycle.Engineering.Files.Count == repairOutcome.Engineering.Files.Count &&
+              newSchema.Contains("attempt >= 1", StringComparison.OrdinalIgnoreCase) &&
+              !newSchema.Contains("BETWEEN 1 AND 3", StringComparison.OrdinalIgnoreCase),
+            "legacy populated three-cycle table migrates atomically with evidence intact and no project-wide limit");
+    }
+    upgradedRepairs.Initialize();
+    Check(upgradedRepairs.Get(taskBound.Id, cycleId).Cycle.Attempt == 1,
+        "repair schema migration is idempotent on repeated app startup");
+
     using (var cycleList = await client.GetAsync(latestRepairPath + "/latest"))
     using (var body = await Body(cycleList))
         Check(cycleList.StatusCode == HttpStatusCode.OK &&
