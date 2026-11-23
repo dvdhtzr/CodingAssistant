@@ -57,13 +57,12 @@ interface DraftResponse {
 }
 
 export function ProjectDraftPanel({ token, taskId, spec, expanded,
-  onExpand, onGenerated, onStageChange }: {
+  onExpand, onStageChange }: {
   token: string;
   taskId: string;
   spec: SpecContract | null;
   expanded: JourneyId | null;
   onExpand: (stage: JourneyId) => void;
-  onGenerated: () => void;
   onStageChange: (generation: JourneyStep, delivery: JourneyStep) => void;
 }) {
   const [result, setResult] = useState<DraftSnapshot | null>(null);
@@ -269,21 +268,8 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
     [onStageChange, generationStep.tone, generationStep.status,
       deliveryStep.tone, deliveryStep.status]);
 
-  // Navigate forward only when an observed running job completes. Merely opening
-  // a saved completed project must not silently interrupt the owner's navigation.
-  const previousJobState = useRef<string | null>(null);
-  const previousEngineerState = useRef<string | null>(null);
-  useEffect(() => {
-    if (previousJobState.current === 'Running' && job?.state === 'Generated')
-      onGenerated();
-    previousJobState.current = job?.state ?? null;
-  }, [job?.state, onGenerated]);
-  useEffect(() => {
-    if (previousEngineerState.current === 'Running' &&
-        engineerJob?.state === 'Generated')
-      onGenerated();
-    previousEngineerState.current = engineerJob?.state ?? null;
-  }, [engineerJob?.state, onGenerated]);
+  // Never redirect the entire workspace when a long-running build finishes.
+  // Completion is visible here; the owner opens Delivery deliberately.
 
   return <>
     <JourneyStage step={generationStep} index={4}
@@ -291,6 +277,8 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
       <section className="build-stage" aria-label="Task-specific project draft generation">
         <EngineeringGenerationPanel engine={engineer}
           legacyRunning={running} />
+        {(engineerGenerated || generated) && <button type="button" className="outline"
+          onClick={() => onExpand('delivery')}>View generated artifacts and delivery</button>}
         <details className="mc-work-secondary" open={running || !!job?.errorCode}>
           <summary>Additional source-generation options</summary>
           <div className="mc-work-secondary-content">
