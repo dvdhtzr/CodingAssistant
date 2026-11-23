@@ -219,9 +219,10 @@ export function useEngineeringRun(token: string, taskId: string) {
 
 export type EngineeringState = ReturnType<typeof useEngineeringRun>;
 
-export function EngineeringGenerationPanel({ engine, legacyRunning }: {
+export function EngineeringGenerationPanel({ engine, legacyRunning, studioMode = false }: {
   engine: EngineeringState;
   legacyRunning: boolean;
+  studioMode?: boolean;
 }) {
   const job = engine.snapshot?.job;
   const running = job?.state === 'Running';
@@ -271,6 +272,11 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
         disabled={!!engine.busy}>Refresh saved task progress</button>
     </div>
     {engine.error && <div className="alert" role="alert">{engine.error}</div>}
+    {studioMode && job && <div className="ca-studio-atlas-focus">
+      <span className="ca-studio-eyebrow">LIVE WORKSPACE / SAVED SOURCE</span>
+      <CodeAtlasPanel token={engine.token} taskId={job.taskId}
+        runId={job.id} files={engine.snapshot?.files ?? []} running={running}/>
+    </div>}
     <details className="atlas-repository-entry">
       <summary>Code Atlas · Explore an existing GitHub repository</summary>
       <CodeAtlasRepositoryPanel token={engine.token}
@@ -296,8 +302,8 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
             ' The application restarted while generation was active; this is not a failed build or test.'}
           {' '}No independent build or runtime verification is claimed.
         </p>}
-      <CodeAtlasPanel token={engine.token} taskId={job.taskId}
-        runId={job.id} files={engine.snapshot?.files ?? []} running={running}/>
+      {!studioMode && <CodeAtlasPanel token={engine.token} taskId={job.taskId}
+        runId={job.id} files={engine.snapshot?.files ?? []} running={running}/>}
       <div className="engineering-board-header">
         <div><span className="wb-kicker">SAVED ENGINEERING ASSIGNMENTS</span>
           <h3>Implementation workstream</h3></div>
