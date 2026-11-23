@@ -190,6 +190,7 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
   const approved = engine.plan?.status === 'Approved' &&
     engine.plan.current === true;
   return <section className="engineering-workspace"
+    data-has-run={!!job}
     aria-label="MAF Software Engineer tasks">
     <div className="technical-plan-heading">
       <strong>Software Engineer · MAF task-by-task</strong>
@@ -241,10 +242,12 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
         <span className="engineering-board-count">{completedCount} of
           {' '}{assignments.length} completed</span>
       </div>
-      {running && <div className="engineering-now-working" role="status">
+      {job && <div className="engineering-now-working" role="status">
         <span className="engineering-run-dot" aria-hidden="true" />
-        {activeTask ? 'Recorded active assignment: ' + activeTask.title :
-          'Engineering run active · waiting for a persisted assignment'}
+        {running ? activeTask ?
+          'Recorded active assignment: ' + activeTask.title :
+          'Engineering run active · waiting for a persisted assignment' :
+          'Engineering run: ' + job.state}
       </div>}
       <ol className="engineering-tasks engineering-task-board"
         aria-label="Saved Software Engineer task progression">
