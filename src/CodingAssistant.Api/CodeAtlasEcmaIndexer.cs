@@ -935,7 +935,12 @@ public static class CodeAtlasEcmaIndexer
                     (next is "{" or "[") ||
                     (word == "eval" && next == "("))
                     unsafeFiles.Add(file.Path);
-                if (Word(word) && next == "=")
+                // A declaration initializer is not a subsequent
+                // reassignment. Preserve immutable const-arrow bindings,
+                // but still reject any later assignment to their names.
+                var previous = i > 0 ? t[i - 1].Text : "";
+                if (Word(word) && next == "=" &&
+                    previous is not ("const" or "let" or "var"))
                     names.Add(word);
             }
             rebound[file.Path] = names;
