@@ -262,13 +262,20 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
               <span className="engineering-task-state">{item.state}</span>
             </div>
             <div className="engineering-task-evidence">
-              <span>Task {item.ordinal + 1}</span>
-              <span>{changedFiles} saved file(s) last changed by this task</span>
+              <span>Assignment {item.ordinal + 1} · {changedFiles} source file(s)
+                {' '}last saved by this assignment</span>
               {item.completedUtc && <span>Completed
                 {' '}{new Date(item.completedUtc).toLocaleString()}</span>}
               {item.startedUtc && !item.completedUtc && <span>Started
                 {' '}{new Date(item.startedUtc).toLocaleString()}</span>}
             </div>
+            {item.state === 'Failed' && <p role="alert" className="engineering-task-failure">
+              <strong>Source generation failed on this assignment.</strong>
+              {' '}Reason code: <code>{job.errorCode ?? 'UNKNOWN_FAILURE'}</code>.
+              Earlier completed source remains saved. Expand
+              {' '}<strong>Saved engineering activity</strong> below for the durable failure event.
+              No build or runtime testing was performed by this agent.
+            </p>}
             {item.summary && <p className="hint">{item.summary}</p>}
           </li>;
         })}
