@@ -111,10 +111,10 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
                     ChatRole.Assistant, ReadAssistantContent(payload, purpose)));
             }
             catch (StoreFailure error) when (
-                purpose is MafAgentPurpose.Specification or
-                    MafAgentPurpose.SoftwareEngineer &&
-                error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
-                    "MODEL_OUTPUT_TRUNCATED")
+                (purpose is MafAgentPurpose.Specification or
+                    MafAgentPurpose.SoftwareEngineer) &&
+                (error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
+                    "MODEL_OUTPUT_TRUNCATED"))
             {
                 // Metadata only: no interview text, answer content, thinking,
                 // credentials or full Ollama response is written to logs.
