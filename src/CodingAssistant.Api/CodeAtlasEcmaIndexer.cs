@@ -926,18 +926,35 @@ public static class CodeAtlasEcmaIndexer
         {
             var names = new HashSet<string>(StringComparer.Ordinal);
             var t = tokenCache[file.Path];
+            var parens = 0;
+            var brackets = 0;
             for (var i = 0; i + 1 < t.Count; i++)
             {
-                if (t[i].Depth != 0) continue;
+                // The lexical depth tracks braces only. Parameter defaults
+                // and argument expressions are inside parentheses and must
+                // not be mistaken for module-level assignments.
+                if (t[i].Text == "(") { parens++; continue; }
+                if (t[i].Text == ")")
+                {
+                    parens = Math.Max(0, parens - 1);
+                    continue;
+                }
+                if (t[i].Text == "[") { brackets++; continue; }
+                if (t[i].Text == "]")
+                {
+                    brackets = Math.Max(0, brackets - 1);
+                    continue;
+                }
+                if (t[i].Depth != 0 || parens != 0 || brackets != 0)
+                    continue;
                 var word = t[i].Text;
                 var next = t[i + 1].Text;
                 if ((word is "let" or "const" or "var") &&
                     (next is "{" or "[") ||
                     (word == "eval" && next == "("))
                     unsafeFiles.Add(file.Path);
-                // A declaration initializer is not a subsequent
-                // reassignment. Preserve immutable const-arrow bindings,
-                // but still reject any later assignment to their names.
+                // Declaration initializers do not rebind an existing
+                // symbol. Later top-level assignments still disqualify it.
                 var previous = i > 0 ? t[i - 1].Text : "";
                 if (Word(word) && next == "=" &&
                     previous is not ("const" or "let" or "var"))
