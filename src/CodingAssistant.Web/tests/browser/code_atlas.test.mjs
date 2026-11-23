@@ -195,6 +195,37 @@ test('generation status indicators do not animate regardless of OS preferences',
   }
 });
 
+test('adding source keeps the graph viewport height steady, without page scroll anchoring', async () => {
+  const steadyPage = await browser.newPage({ viewport: { width: 1400, height: 960 } });
+  try {
+    await steadyPage.goto(page.url());
+    const atlas = steadyPage.getByRole('region', { name: 'Code Atlas', exact: true });
+    const viewport = atlas.locator('.atlas-workspace');
+    const before = await viewport.boundingBox();
+    assert.ok(before && before.height >= 330, 'Atlas must reserve a stable viewing area');
+    await steadyPage.getByRole('button', { name: 'Persist next source revision' }).click();
+    await atlas.getByText('Recorded source changes (1)').waitFor();
+    const after = await viewport.boundingBox();
+    assert.ok(after && Math.abs(after.height - before.height) < 2,
+      'new saved symbols must not change the graph area height');
+    const properties = await steadyPage.evaluate(() => {
+      const workspace = document.createElement('main');
+      workspace.className = 'wb-main';
+      document.body.appendChild(workspace);
+      const properties = {
+        anchor: getComputedStyle(workspace).overflowAnchor,
+        animation: getComputedStyle(workspace).animationName,
+      };
+      workspace.remove();
+      return properties;
+    });
+    assert.equal(properties.anchor, 'none');
+    assert.equal(properties.animation, 'none');
+  } finally {
+    await steadyPage.close();
+  }
+});
+
 test('manual graph exploration disables follow-build focus stealing', async () => {
   const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   await atlas.getByRole('checkbox', { name: 'Follow build' }).check();
