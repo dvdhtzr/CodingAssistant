@@ -65,7 +65,8 @@ public sealed class QaReviewCoordinator(
                 token.ThrowIfCancellationRequested();
                 // QA reads source but does not write into the engineering run.
                 var input = new QaReviewInput(objective, specification, plan,
-                    architecture, source.Job, file, source.Files);
+                    architecture, source.Job, file, source.Files,
+                    source.Events);
                 var report = await reviewer.ReviewAsync(input, token);
                 token.ThrowIfCancellationRequested();
                 reviews.SaveFileReport(review.TaskId, review.Id, file, report);

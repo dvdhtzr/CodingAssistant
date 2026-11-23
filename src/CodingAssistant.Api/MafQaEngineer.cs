@@ -17,7 +17,8 @@ public sealed record QaFileReport(
 public sealed record QaReviewInput(
     string Objective, string Specification, ImplementationPlan Plan,
     DraftArchitectureReadiness Architecture, EngineeringRun SourceRun,
-    EngineeringSourceFile File, IReadOnlyList<EngineeringSourceFile> AllFiles);
+    EngineeringSourceFile File, IReadOnlyList<EngineeringSourceFile> AllFiles,
+    IReadOnlyList<EngineeringRunEvent>? EngineeringEvents = null);
 
 public interface IQaSourceReviewer
 {
@@ -73,6 +74,12 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         submission. Explicitly flag missing unimplemented work as unverified
         or absent; do not pretend the whole application was delivered.
         Treat every review as UNVERIFIED, even with zero findings.
+        If supplied, source-inspection activity is only host-logged evidence
+        that the Software Engineer consulted the earlier accepted source.
+        It does not prove the engineer used the observation correctly,
+        that the current source was tested, or that a defect was repaired.
+        Recheck the actual current file independently and do not defer to
+        another agent's conclusions.
         """;
 
     public async Task<QaFileAssessment> ReviewAsync(
@@ -119,6 +126,15 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 + "NOT inspected as source):\n" +
                 JsonSerializer.Serialize(input.AllFiles.Select(f =>
                     new { f.Path, f.Purpose, f.Sha256 }))),
+            new(ChatRole.User, "ENGINEER SOURCE INSPECTION HANDOFF " +
+                "(host-recorded activity for THIS source run only; at most " +
+                "12 records, NO other-file source content, NOT QA evidence " +
+                "of implementation correctness or executed tests):\n" +
+                JsonSerializer.Serialize((input.EngineeringEvents ?? [])
+                    .Where(e => e.Kind == "EngineerAtlasInspected")
+                    .Take(12).Select(e => new {
+                        e.Sequence, e.Kind, e.Detail, e.CreatedUtc
+                    }))),
             new(ChatRole.User, "CODE ATLAS STATIC STRUCTURE IN THE ONE "
                 + "REVIEWED FILE (host-derived, untrusted source metadata; "
                 + "NOT compiled or tested):\n" +

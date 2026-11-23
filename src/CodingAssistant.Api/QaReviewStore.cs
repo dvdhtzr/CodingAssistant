@@ -249,6 +249,20 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 ? "Independent static QA of generated source; no tests executed"
                 : "Independent static QA of PARTIAL " + source.Job.State +
                   " source; incomplete project, no tests executed");
+        // This is a real host-verified handoff, not a model-generated claim.
+        // Count ONLY recorded inspection events on this exact source run
+        // under the same QA admission and source-binding transaction.
+        var inspectionText = TaskStore.Scalar(db, tx, """
+            SELECT COUNT(*) FROM engineering_run_events
+            WHERE run_id=@run AND kind='EngineerAtlasInspected'
+            """, ("@run", source.Job.Id));
+        if (int.TryParse(inspectionText, out var inspectionCount) &&
+            inspectionCount > 0)
+            Event(db, tx, review.Id, "QaReceivedEngineerInspectionEvidence",
+                "Independent QA received " +
+                Math.Min(inspectionCount, 12) +
+                " saved source-inspection activity record(s) from this " +
+                "engineering run; no build or tests executed");
         tx.Commit();
         return review;
     }
