@@ -19,11 +19,40 @@ type Engineering = {
   job: { id: string; state: string; planSha256: string };
   events: { sequence: number; kind: string; detail: string; createdUtc: string }[];
 };
+type Repair = {
+  cycle: { engineeringRunId: string; qaReviewId: string | null;
+    state: string; attempt: number };
+};
 type RecordedData = {
   qa: QaSnapshot | null;
   handoffs: Handoff[];
   engineering: Engineering | null;
+  repair: Repair | null;
 };
+
+// Derived only from the latest saved project records. Do not turn a source
+// inspection into a build PASS, assume an old QA run reviewed new source,
+// or claim a repair was authorized just because an engineer was active.
+export function collaborationEvidence(data: RecordedData | null) {
+  const engineering = data?.engineering;
+  const qa = data?.qa;
+  const inspections = engineering?.events.filter(event =>
+    event.kind === 'EngineerAtlasInspected').length ?? 0;
+  const repair = data?.repair?.cycle;
+  const boundRepair = !!repair && !!engineering &&
+    repair.engineeringRunId === engineering.job.id;
+  const boundQa = !!qa && !!engineering &&
+    qa.job.engineeringRunId === engineering.job.id &&
+    qa.job.planSha256 === engineering.job.planSha256;
+  const qaReceived = boundQa && qa!.events.some(event =>
+    event.kind === 'QaReceivedEngineerInspectionEvidence');
+  return {
+    inspections,
+    repairState: boundRepair ? repair!.state : null,
+    qaState: boundQa ? qa!.job.state : null,
+    qaReceived: !!qaReceived,
+  };
+}
 
 function useRecordedProject(token: string, taskId: string): {
   data: RecordedData | null; error: boolean;
@@ -36,13 +65,15 @@ function useRecordedProject(token: string, taskId: string): {
     setError(false);
     const load = async () => {
       try {
-        const [qa, handoffs, engineering] = await Promise.all([
+        const [qa, handoffs, engineering, repair] = await Promise.all([
           api<{ snapshot: QaSnapshot | null }>(token, '/api/tasks/' + taskId + '/qa-reviews/latest'),
           api<{ events: Handoff[] }>(token, '/api/tasks/' + taskId + '/agent-handoffs'),
           api<{ snapshot: Engineering | null }>(token, '/api/tasks/' + taskId + '/engineering-runs/latest'),
+          api<{ snapshot: Repair | null }>(token, '/api/tasks/' + taskId + '/repair-cycles/latest'),
         ]);
         if (!closed) {
-          setData({ qa: qa.snapshot, handoffs: handoffs.events, engineering: engineering.snapshot });
+          setData({ qa: qa.snapshot, handoffs: handoffs.events,
+            engineering: engineering.snapshot, repair: repair.snapshot });
           setError(false);
         }
       } catch {
@@ -86,6 +117,7 @@ export function QualityDestination({ token, taskId, onWork }: {
     data.engineering.job.planSha256 === qa.job.planSha256;
   const findingCount = qa
     ? qa.reports.reduce((n, r) => n + (r.assessment?.findings?.length ?? 0), 0) : 0;
+  const collaboration = collaborationEvidence(data);
   return <section className="mc-destination ca-quality" aria-label="Quality evidence">
     <div className="ca-dest-head">
       <div><span className="wb-kicker">STATIC QA EVIDENCE</span>
@@ -108,6 +140,28 @@ export function QualityDestination({ token, taskId, onWork }: {
           <span className="v">{boundToLatest ? 'Matches latest run'
             : qa ? 'Historical / unbound' : '—'}</span></div>
       </div>
+      <section className="ca-report" aria-label="Recorded agent collaboration">
+        <div className="ca-report-head">
+          <strong>Investigation → repair → independent QA</strong>
+          <span className="pill">Saved evidence</span>
+        </div>
+        <ol className="ca-collaboration-list">
+          <li><strong>Software Engineer:</strong>{' '}
+            {collaboration.inspections > 0
+              ? collaboration.inspections + ' Code Atlas source inspection(s) recorded'
+              : 'No Code Atlas inspection recorded for the latest source run'}</li>
+          <li><strong>Authorized repair:</strong>{' '}
+            {collaboration.repairState ?? 'No repair cycle bound to the latest source run'}</li>
+          <li><strong>Independent QA:</strong>{' '}
+            {collaboration.qaState
+              ? collaboration.qaState + (collaboration.qaReceived
+                ? ' · received recorded investigation context'
+                : ' · no investigation handoff recorded')
+              : 'No QA review bound to the latest source run'}</li>
+        </ol>
+        <p className="hint">These are actual recorded steps, not proof that generated
+          code compiled, executed or passed tests.</p>
+      </section>
       {!qa && <p className="panel">No QA review recorded yet.</p>}
       {qa && qa.reports.map(report => <div className="ca-report" key={report.path}>
         <div className="ca-report-head">

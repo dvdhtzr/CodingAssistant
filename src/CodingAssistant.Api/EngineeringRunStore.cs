@@ -94,6 +94,7 @@ public sealed class EngineeringRunStore(
                 PRIMARY KEY(run_id,path)
             );
             """);
+        EngineeringAtlasLedger.EnsureSchema(db);
     }
 
     public void MarkInterruptedOnStartup()
@@ -317,7 +318,46 @@ public sealed class EngineeringRunStore(
         tx.Commit();
     }
 
-    public void CompleteTask(string taskId, string runId, string workItemId,
+    /// <summary>
+    /// Admit a read-only Code Atlas observation only for the exact currently
+    /// running approved work item. Persist host-verified metadata without
+    /// leaking a model query, source excerpt or arbitrary model narrative.
+    /// </summary>
+    public void RecordAtlasInspection(string taskId, string runId,
+        string workItemId, AtlasInspectionObservation observation)
+    {
+        ValidId(taskId); ValidId(runId);
+        ArgumentNullException.ThrowIfNull(observation);
+        if (observation.Name is not ("atlas.find_symbols" or
+                "atlas.get_relationships" or "atlas.source_excerpt") ||
+            observation.ResultCount is < 0 or > 16 ||
+            observation.SourceRevision is null ||
+            observation.SourceRevision.Length != 64 ||
+            !observation.SourceRevision.All(ch =>
+                ch is >= '0' and <= '9' or >= 'a' and <= 'f'))
+            throw new StoreFailure("INVALID_INPUT");
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var job = Find(db, tx, runId);
+        if (job is null || job.TaskId != taskId)
+            throw new StoreFailure("NOT_FOUND");
+        if (job.State != "Running")
+            throw new StoreFailure("INVALID_STATE");
+        RequireBinding(db, tx, job);
+        if (TaskStore.Scalar(db, tx, """
+            SELECT 1 FROM engineering_run_tasks
+            WHERE run_id=@run AND work_item_id=@item AND state='Running'
+            """, ("@run", runId), ("@item", workItemId)) is null)
+            throw new StoreFailure("INVALID_STATE");
+        Event(db, tx, runId, "EngineerAtlasInspected",
+            "SoftwareEngineer used " + observation.Name +
+            " on accepted source revision " +
+            observation.SourceRevision[..12] + " (" +
+            observation.ResultCount + " results)");
+        tx.Commit();
+    }
+
+    public AtlasSourceEvent? CompleteTask(string taskId, string runId, string workItemId,
         EngineeringChangeSet changes)
     {
         ValidId(taskId); ValidId(runId);
@@ -375,6 +415,16 @@ public sealed class EngineeringRunStore(
         if (existing.Count > MaxDistinctFiles || total > MaxTotalCharacters)
             throw new StoreFailure("PROJECT_SIZE_LIMIT");
 
+        // Compare committed source hashes inside this same transaction. Atlas
+        // events must never claim a file changed if the source save rolled back.
+        var beforeAtlas = EngineeringAtlasLedger.CaptureHashes(db, tx, runId);
+        AtlasSnapshot? previousGraph = null;
+        try { previousGraph = EngineeringAtlasLedger.CaptureGraph(db, tx, runId); }
+        catch (Exception)
+        {
+            // An indexer failure must not prevent saving authorized source.
+            // The file ledger remains authoritative and can be replayed.
+        }
         var now = DateTimeOffset.UtcNow.ToString("O");
         foreach (var file in safe.Files)
         {
@@ -392,6 +442,14 @@ public sealed class EngineeringRunStore(
                 ("@purpose", file.Purpose), ("@content", file.Content),
                 ("@sha", sha), ("@item", workItemId), ("@now", now));
         }
+        AtlasSnapshot? currentGraph = null;
+        try { currentGraph = EngineeringAtlasLedger.CaptureGraph(db, tx, runId); }
+        catch (Exception)
+        {
+            // Source-only work remains valid even if graph enrichment fails.
+        }
+        var atlasEvent = EngineeringAtlasLedger.Append(
+            db, tx, runId, workItemId, beforeAtlas, previousGraph, currentGraph);
         TaskStore.Execute(db, tx, """
             UPDATE engineering_run_tasks SET state='Completed',
                 summary=@summary,completed_utc=@now
@@ -406,6 +464,7 @@ public sealed class EngineeringRunStore(
             workItemId + ": " + safe.Files.Count +
             " complete source file replacement(s) persisted (not tested)");
         tx.Commit();
+        return atlasEvent;
     }
 
     public void Finish(string taskId, string runId, bool success, string? reason)

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from './api';
 import { SourceArtifactExplorer } from './SourceArtifactExplorer';
+import { CodeAtlasPanel } from './CodeAtlasPanel';
+import { CodeAtlasRepositoryPanel } from './CodeAtlasRepositoryPanel';
 import { EngineeringVerificationScope } from './VerificationScope';
 
 export interface EngineerRun {
@@ -165,7 +167,7 @@ export function useEngineeringRun(token: string, taskId: string) {
     } finally { setBusy(''); }
   }
 
-  return { token, snapshot, plan, busy, error, refresh, start, cancel, download };
+  return { token, taskId, snapshot, plan, busy, error, refresh, start, cancel, download };
 }
 
 export type EngineeringState = ReturnType<typeof useEngineeringRun>;
@@ -209,6 +211,11 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
         disabled={!!engine.busy}>Refresh saved task progress</button>
     </div>
     {engine.error && <div className="alert" role="alert">{engine.error}</div>}
+    <details className="atlas-repository-entry">
+      <summary>Code Atlas · Explore an existing GitHub repository</summary>
+      <CodeAtlasRepositoryPanel token={engine.token}
+        taskId={engine.taskId}/>
+    </details>
     {job && <>
       <p className="hint" role="status"><strong>{job.state}</strong>
         {' · '}plan v{job.planRevision}{' · '}{job.phase}
@@ -220,6 +227,9 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
       {job.state === 'Failed' && <p className="activity-warning" role="alert">
         Source generation stopped safely. Completed task files remain inspectable.
         No verification or successful full build is claimed.</p>}
+      <CodeAtlasPanel token={engine.token} taskId={job.taskId}
+        runId={job.id} files={engine.snapshot?.files ?? []} running={running}
+        onSourceChanged={engine.refresh}/>
       <div className="engineering-board-header">
         <div><span className="wb-kicker">SAVED ENGINEERING ASSIGNMENTS</span>
           <h3>Implementation workstream</h3></div>

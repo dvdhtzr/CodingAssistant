@@ -9,6 +9,7 @@ import './agent-presence.css';
 import './conversation-workroom.css';
 import './owner-decision-inbox.css';
 import './source-explorer.css';
+import './code-atlas.css';
 import './team-workroom.css';
 import './verification-timeline.css';
 import './design-system.css';

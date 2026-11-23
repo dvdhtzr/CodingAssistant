@@ -498,6 +498,71 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           agentFactory.TaskDescriptionSeen,
         "fourth real MAF agent gets independent identity, task, exact model and no tools");
 
+    // M8.16: The Software Engineer genuinely asks the host to inspect
+    // stored source, receives bounded evidence, and then produces source.
+    // No native MAF tools or execution permissions are enabled.
+    var inspectedFactory = new Phase4FakeMafFactory();
+    inspectedFactory.Responses.Enqueue(
+        """{"toolRequest":{"name":"atlas.find_symbols","argument":"index"}}""");
+    inspectedFactory.Responses.Enqueue(goodSource);
+    var inspectionEvidence = new List<AtlasInspectionObservation>();
+    var inspectedAssignment = assignment with {
+        ExistingFiles = [
+            new EngineeringSourceFile("index.html", "Approved prior UI",
+                "<!doctype html><html><body>Prior page</body></html>",
+                new string('1', 64), "create-ui", "2026-11-22T00:00:00Z")
+        ],
+        OnAtlasInspection = observation => inspectionEvidence.Add(observation)
+    };
+    var inspectedOutput = await new MafSoftwareEngineer(inspectedFactory)
+        .ImplementAsync(inspectedAssignment, CancellationToken.None);
+    Check(inspectedFactory.Attempts == 2 &&
+        inspectedFactory.AtlasObservations.Count == 1 &&
+        inspectedFactory.AtlasObservations[0].Contains(
+            "atlas.find_symbols", StringComparison.Ordinal) &&
+        inspectedFactory.AtlasObservations[0].Contains(
+            "\"SourceRevision\"", StringComparison.Ordinal) &&
+        inspectionEvidence.Count == 1 &&
+        inspectionEvidence[0].Name == "atlas.find_symbols" &&
+        inspectionEvidence[0].SourceRevision.Length == 64 &&
+        inspectedOutput.Files.Single().Path == "index.html" &&
+        inspectedFactory.NoTools,
+        "Software Engineer requests host-backed source evidence before code changes");
+    var deniedFactory = new Phase4FakeMafFactory();
+    deniedFactory.Responses.Enqueue(
+        """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""");
+    deniedFactory.Responses.Enqueue(goodSource);
+    var deniedEvents = new List<AtlasInspectionObservation>();
+    var deniedOutput = await new MafSoftwareEngineer(deniedFactory)
+        .ImplementAsync(inspectedAssignment with {
+            OnAtlasInspection = observation => deniedEvents.Add(observation)
+        }, CancellationToken.None);
+    Check(deniedOutput.Files.Single().Path == "index.html" &&
+          deniedFactory.Attempts == 2 &&
+          deniedEvents.Count == 0 &&
+          deniedFactory.CorrectionReasons.Any(x =>
+              x.Contains("EMPTY_OR_INVALID_RESPONSE", StringComparison.Ordinal)),
+        "unknown agent tool requests never execute or record observations");
+    var overLimitFactory = new Phase4FakeMafFactory();
+    for (var i = 0; i < 3; i++)
+        overLimitFactory.Responses.Enqueue(
+            """{"toolRequest":{"name":"atlas.find_symbols","argument":"index"}}""");
+    var cappedEvents = new List<AtlasInspectionObservation>();
+    try
+    {
+        _ = await new MafSoftwareEngineer(overLimitFactory)
+            .ImplementAsync(inspectedAssignment with {
+                OnAtlasInspection = observation => cappedEvents.Add(observation)
+            }, CancellationToken.None);
+        Check(false, "unbounded agent tool loop was accepted");
+    }
+    catch (StoreFailure error) when (error.Code == "ATLAS_TOOL_LIMIT")
+    {
+        Check(overLimitFactory.Attempts == 3 &&
+            cappedEvents.Count == AgentAtlasInspectionGateway.MaximumRequestsPerTask,
+            "source-inspection request loop has a hard two-request ceiling");
+    }
+
     var correctedFactory = new Phase4FakeMafFactory();
     correctedFactory.Responses.Enqueue("truncated SECRET_MODEL_CONTENT");
     correctedFactory.Responses.Enqueue(goodSource);
@@ -652,6 +717,119 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           fakeFactory.QaRoleSeen && fakeFactory.NoTools &&
           fakeFactory.SourceSeen,
         "fifth real MAF agent independently inspects exact source without tools");
+    var investigation = new EngineeringRunEvent(6,
+        "EngineerAtlasInspected",
+        "SoftwareEngineer used atlas.find_symbols on accepted source " +
+            "revision 0123456789ab (2 results)",
+        "2026-11-21T00:02:20Z");
+    var reassessed = await new MafQaEngineer(fakeFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file], [investigation]),
+        CancellationToken.None);
+    Check(reassessed.Findings.Count == 1 &&
+          fakeFactory.InspectionContextSeen &&
+          fakeFactory.NoTools,
+        "independent QA receives bounded host-logged engineering investigation context without gaining tools");
+}
+
+// M8.18: independent MAF QA selects bounded source inspections, receives
+// host-issued evidence, and still cannot access another file or run tools.
+{
+    var factory = new Phase5FakeMafFactory();
+    var plan = new ImplementationPlan(new string('a', 32), 1, 1,
+        new string('b', 64), new string('c', 64), "qwen3.5:4b",
+        new ImplementationOutline("Independent QA investigation fixture.",
+            [new ImplementationWorkItem("qa", "Assess source",
+                "Investigate a saved file without executing it.", [],
+                ["Report a concrete source concern"])], [], []),
+        new string('d', 64), "Approved", "2026-11-21T00:00:00Z",
+        "2026-11-21T00:01:00Z", true, "Approved");
+    var arch = new DraftArchitectureReadiness("READY", true,
+        new string('c', 64), [], []);
+    var run = new EngineeringRun(new string('9', 32), plan.TaskId,
+        1, plan.PlanSha256, 1, plan.SpecificationSha256,
+        plan.ArchitectureSha256, plan.Model, "Generated", "SourceOnlyGenerated",
+        null, "2026-11-21T00:02:00Z", "2026-11-21T00:03:00Z");
+    var sourceFile = new EngineeringSourceFile("index.html", "Reviewed source",
+        "<!doctype html><html><button>Save</button></html>",
+        new string('8', 64), "qa", "2026-11-21T00:03:00Z");
+    var privateFile = sourceFile with { Path = "secrets.cs",
+        Content = "namespace Secret; public class RestrictedDetails {}",
+        Sha256 = new string('7', 64) };
+    var input = new QaReviewInput("Review controls",
+        "Approved source assessment", plan, arch, run, sourceFile,
+        [sourceFile, privateFile]);
+    var found = QaAtlasInspectionGateway.Execute(input,
+        new AtlasInspectionRequest("atlas.find_symbols", "index"));
+    Check(found.Symbols.Count > 0 &&
+          found.Symbols.All(s => s.Path == "index.html") &&
+          found.ResultCount <= 12 && found.SourceRevision.Length == 64,
+        "QA read-only tool returns only the assigned file's indexed source");
+    var excluded = QaAtlasInspectionGateway.Execute(input,
+        new AtlasInspectionRequest("atlas.find_symbols", "RestrictedDetails"));
+    Check(excluded.Symbols.Count == 0,
+        "QA selected lookup cannot reveal other saved file declarations");
+    var foreignId = CodeAtlasIndexer.Index(run.Id, [sourceFile, privateFile])
+        .Nodes.Single(n => n.Name == "RestrictedDetails").Id;
+    var forbiddenExcerpt = QaAtlasInspectionGateway.Execute(input,
+        new AtlasInspectionRequest("atlas.source_excerpt", foreignId));
+    Check(forbiddenExcerpt.ResultCount == 0 &&
+          forbiddenExcerpt.SourceEvidence is null,
+        "foreign file symbol IDs cannot bypass QA's exact-file scope");
+    try
+    {
+        _ = QaAtlasInspectionGateway.Execute(input,
+            new AtlasInspectionRequest("shell.run", "echo hi"));
+        Check(false, "QA must reject executable tool requests");
+    }
+    catch (StoreFailure e) when (e.Code == "INVALID_INPUT")
+    {
+        Check(true, "QA host broker rejects unapproved tools");
+    }
+
+    factory.ScriptedReplies.Enqueue(
+        """{"toolRequest":{"name":"atlas.find_symbols","argument":"index"}}""");
+    factory.ScriptedReplies.Enqueue(
+        """{"summary":"The control is present but click behavior remains unverified.","findings":[],"manualChecks":["Click Save in an independent browser session"]}""");
+    var observations = new List<AtlasInspectionObservation>();
+    var report = await new MafQaEngineer(factory).ReviewAsync(
+        input with { OnAtlasInspection = observations.Add },
+        CancellationToken.None);
+    Check(report.Findings.Count == 0 && observations.Count == 1 &&
+          observations[0].SourceRevision == found.SourceRevision &&
+          observations[0].Name == "atlas.find_symbols" &&
+          factory.HostObservationSeen && factory.NoTools,
+        "real QA MAF agent requests host observation then returns independent report");
+
+    var limited = new Phase5FakeMafFactory();
+    for (var i = 0; i < 3; i++)
+        limited.ScriptedReplies.Enqueue(
+            """{"toolRequest":{"name":"atlas.find_symbols","argument":"index"}}""");
+    var count = 0;
+    try
+    {
+        _ = await new MafQaEngineer(limited).ReviewAsync(
+            input with { OnAtlasInspection = _ => count++ },
+            CancellationToken.None);
+        Check(false, "QA must never be allowed a third inspection");
+    }
+    catch (StoreFailure e) when (e.Code == "ATLAS_TOOL_LIMIT")
+    {
+        Check(count == 2, "QA hard tool-call budget cannot be bypassed");
+    }
+    var denied = new Phase5FakeMafFactory();
+    denied.ScriptedReplies.Enqueue(
+        """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""");
+    try
+    {
+        _ = await new MafQaEngineer(denied).ReviewAsync(input,
+            CancellationToken.None);
+        Check(false, "QA must never gain arbitrary host capabilities");
+    }
+    catch (StoreFailure e) when (e.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(true, "QA MAF rejects forbidden tool names before dispatch");
+    }
 }
 
 // UX-6B: a pure host-owned static preflight catches the frozen Calculation
@@ -1762,6 +1940,49 @@ try
               qaModel.ReviewedFiles.Count == 6,
             "QA cannot read an active engineering job even when it saved source");
     engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-state");
+    // M8.16: only a running, approved engineering task may persist host
+    // observations. Stored metadata never contains a model query or source.
+    var savedForAtlas = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
+    var hostObservation = AgentAtlasInspectionGateway.Execute(
+        approvedEngineerPlan.PlanSha256, savedForAtlas.Files,
+        new AtlasInspectionRequest("atlas.find_symbols", "index"));
+    engineeringStore.RecordAtlasInspection(
+        taskBound.Id, failedEngineerRun.Id, "timer-state",
+        new AtlasInspectionObservation(hostObservation.Name,
+            hostObservation.SourceRevision, hostObservation.ResultCount));
+    var inspectionLedger = engineeringStore.Get(
+        taskBound.Id, failedEngineerRun.Id);
+    Check(inspectionLedger.Events.Any(e =>
+        e.Kind == "EngineerAtlasInspected" &&
+        e.Detail.Contains("atlas.find_symbols", StringComparison.Ordinal) &&
+        e.Detail.Contains(hostObservation.SourceRevision[..12],
+            StringComparison.Ordinal) &&
+        !e.Detail.Contains("index", StringComparison.OrdinalIgnoreCase)),
+        "host-approved agent tool activity appears as private source-revision evidence");
+    try
+    {
+        engineeringStore.RecordAtlasInspection(taskBound.Id,
+            failedEngineerRun.Id, "timer-interface",
+            new AtlasInspectionObservation(hostObservation.Name,
+                hostObservation.SourceRevision, hostObservation.ResultCount));
+        Check(false, "finished task admitted an unrelated inspection");
+    }
+    catch (StoreFailure error) when (error.Code == "INVALID_STATE")
+    {
+        Check(true, "completed work items cannot forge later tool activity");
+    }
+    try
+    {
+        engineeringStore.RecordAtlasInspection(taskBound.Id,
+            failedEngineerRun.Id, "timer-state",
+            new AtlasInspectionObservation("shell.run",
+                hostObservation.SourceRevision, 1));
+        Check(false, "unlisted agent operation persisted");
+    }
+    catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+    {
+        Check(true, "tool ledger rejects operations outside approved read-only scope");
+    }
     engineeringStore.Finish(taskBound.Id, failedEngineerRun.Id, false, "MODEL_OUTPUT_REJECTED");
     var partialSource = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
     Check(partialSource.Job.State == "Failed" &&
@@ -1769,6 +1990,65 @@ try
           partialSource.Tasks[0].State == "Completed" &&
           partialSource.Tasks[1].State == "Failed",
         "failed engineering job retains first file with correct task statuses");
+    // M8.18: exact run/plan/source review admission, durable QA tool audit,
+    // per-file tool budget and no acceptance of fabricated source revisions.
+    var probeReview = reviewStore.Start(taskBound.Id, partialSource,
+        approvedEngineerPlan);
+    var probeSource = partialSource.Files.Single();
+    var probeRevision = CodeAtlasIndexer.Index(
+        partialSource.Job.Id, partialSource.Files).SourceRevision;
+    var probeObservation = new AtlasInspectionObservation(
+        "atlas.find_symbols", probeRevision, 1);
+    reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
+        probeSource, probeObservation);
+    var probeLedger = reviewStore.Get(taskBound.Id, probeReview.Id);
+    Check(probeLedger.Events.Any(e => e.Kind == "QaAtlasInspected" &&
+          e.Detail.Contains("atlas.find_symbols", StringComparison.Ordinal) &&
+          e.Detail.Contains(probeRevision[..12], StringComparison.Ordinal) &&
+          !e.Detail.Contains(probeSource.Content,
+              StringComparison.Ordinal)),
+        "QA source investigation persisted as host-only metadata, not raw source");
+    foreach (var bad in new[] {
+        new AtlasInspectionObservation("shell.run", probeRevision, 1),
+        new AtlasInspectionObservation("atlas.find_symbols", new string('f', 64), 1)
+    })
+    {
+        try
+        {
+            reviewStore.RecordAtlasInspection(taskBound.Id,
+                probeReview.Id, probeSource, bad);
+            Check(false, "QA audit accepted a fabricated operation or revision");
+        }
+        catch (StoreFailure e) when (
+            e.Code is "INVALID_INPUT" or "SOURCE_CHANGED")
+        {
+            Check(true, "QA audit rejects forged tool evidence");
+        }
+    }
+    reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
+        probeSource, probeObservation);
+    try
+    {
+        reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
+            probeSource, probeObservation);
+        Check(false, "QA audit must enforce per-file tool budget");
+    }
+    catch (StoreFailure e) when (e.Code == "ATLAS_TOOL_LIMIT")
+    {
+        Check(true, "QA audit enforces two observations per reviewed file");
+    }
+    reviewStore.Finish(taskBound.Id, probeReview.Id, false, "TEST_PROBE");
+    try
+    {
+        reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
+            probeSource, probeObservation);
+        Check(false, "QA audit accepted an observation after review completion");
+    }
+    catch (StoreFailure e) when (e.Code == "INVALID_STATE")
+    {
+        Check(true, "finished QA reviews cannot add new investigation evidence");
+    }
+
     using (var zipResponse = await client.GetAsync(
         engineeringPath + "/" + failedEngineerRun.Id + "/zip"))
     {
@@ -1805,6 +2085,12 @@ try
         break;
     }
     Check(partialReport?.Job.State == "Reviewed" &&
+          partialReport.Events.Any(e =>
+              e.Kind == "QaReceivedEngineerInspectionEvidence" &&
+              e.Detail.Contains("1 saved source-inspection",
+                  StringComparison.Ordinal) &&
+              e.Detail.Contains("no build or tests executed",
+                  StringComparison.Ordinal)) &&
           partialReport.SourceState == "Failed" &&
           partialReport.Reports.Count == 1 &&
           partialReport.Reports[0].Path == "index.html" &&
@@ -2416,6 +2702,7 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
 {
     public Queue<string> Responses { get; } = new();
     public List<string> CorrectionReasons { get; } = [];
+    public List<string> AtlasObservations { get; } = [];
     public int Attempts { get; private set; }
     public List<MafAgentPurpose> Purposes { get; } = [];
     public List<string> Models { get; } = [];
@@ -2438,6 +2725,11 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
         {
             parent.Attempts++;
             var history = messages.ToArray();
+            parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
+            parent.AtlasObservations.AddRange(history.Where(m =>
+                m.Role == ChatRole.User && m.Text?.StartsWith(
+                    "HOST CODE ATLAS READ-ONLY RESULT",
+                    StringComparison.Ordinal) == true).Select(m => m.Text!));
             parent.CorrectionReasons.AddRange(history
                 .Where(m => m.Role == ChatRole.User &&
                     m.Text?.Contains("Reason:", StringComparison.Ordinal) == true)
@@ -2506,7 +2798,10 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public List<string> Models { get; } = [];
     public bool QaRoleSeen { get; private set; }
     public bool SourceSeen { get; private set; }
+    public bool InspectionContextSeen { get; private set; }
     public bool NoTools { get; private set; }
+    public bool HostObservationSeen { get; private set; }
+    public Queue<string> ScriptedReplies { get; } = new();
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
     {
@@ -2530,10 +2825,21 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
             parent.SourceSeen = history.Any(m => m.Role.Value == "user" &&
                 m.Text?.Contains("<html><body><button>Save",
                     StringComparison.Ordinal) == true);
+            parent.InspectionContextSeen = history.Any(m =>
+                m.Role.Value == "user" &&
+                m.Text?.Contains("EngineerAtlasInspected",
+                    StringComparison.Ordinal) == true &&
+                m.Text.Contains("0123456789ab", StringComparison.Ordinal));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
-            return Task.FromResult(new ChatResponse(new ChatMessage(
-                ChatRole.Assistant,
-                """{"summary":"The static source exposes an interactive control but its behavior is unknown.","findings":[{"severity":"Minor","requirement":"The Save button must work","evidence":"A button is declared but no listener is present in this source","recommendation":"Inspect linked scripts and test saving notes in a browser"}],"manualChecks":["Click Save and reload the page in a real browser"]}""")));
+            parent.HostObservationSeen |= history.Any(m =>
+                m.Role.Value == "user" &&
+                m.Text?.Contains("HOST QA CODE ATLAS OBSERVATION",
+                    StringComparison.Ordinal) == true);
+            var answer = parent.ScriptedReplies.Count > 0
+                ? parent.ScriptedReplies.Dequeue()
+                : """{"summary":"The static source exposes an interactive control but its behavior is unknown.","findings":[{"severity":"Minor","requirement":"The Save button must work","evidence":"A button is declared but no listener is present in this source","recommendation":"Inspect linked scripts and test saving notes in a browser"}],"manualChecks":["Click Save and reload the page in a real browser"]}""";
+            return Task.FromResult(new ChatResponse(
+                new ChatMessage(ChatRole.Assistant, answer)));
         }
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages, ChatOptions? options = null,

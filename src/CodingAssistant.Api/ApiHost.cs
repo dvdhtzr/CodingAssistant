@@ -51,7 +51,8 @@ public static class ApiHost
         IImplementationPlanner? implementationPlannerOverride = null,
         IEngineeringTaskModel? engineeringModelOverride = null,
         IQaSourceReviewer? qaReviewerOverride = null,
-        ILocalSourceSmokeRunner? sourceSmokeOverride = null)
+        ILocalSourceSmokeRunner? sourceSmokeOverride = null,
+        IAtlasCommitArchiveDownloader? atlasArchiveOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -93,6 +94,11 @@ public static class ApiHost
         var engineeringRuns = new EngineeringRunStore(
             store, implementationPlans);
         engineeringRuns.Initialize();
+        var atlasLedger = new EngineeringAtlasLedger(store, engineeringRuns);
+        atlasLedger.Initialize();
+        var atlasImports = new CodeAtlasRepositoryImportStore(store,
+            atlasArchiveOverride ?? new PublicGitHubCommitArchiveDownloader());
+        atlasImports.Initialize();
         engineeringRuns.MarkInterruptedOnStartup();
         var qaReviews = new QaReviewStore(store, implementationPlans);
         qaReviews.Initialize();
@@ -169,12 +175,15 @@ public static class ApiHost
         builder.Services.AddSingleton(handoffs);
         builder.Services.AddSingleton(implementationPlans);
         builder.Services.AddSingleton(engineeringRuns);
+        builder.Services.AddSingleton(atlasLedger);
+        builder.Services.AddSingleton(atlasImports);
         builder.Services.AddSingleton<IEngineeringTaskModel>(softwareEngineer);
         builder.Services.AddSingleton<EngineeringRunCoordinator>();
         builder.Services.AddSingleton(qaReviews);
         builder.Services.AddSingleton(repairProposals);
         builder.Services.AddSingleton(repairTriage);
         builder.Services.AddSingleton(repairCycles);
+        builder.Services.AddSingleton<CodeAtlasEvidenceService>();
         builder.Services.AddSingleton<RepairCycleCoordinator>();
         builder.Services.AddSingleton<IQaSourceReviewer>(qaEngineer);
         builder.Services.AddSingleton<QaReviewCoordinator>();
@@ -202,6 +211,7 @@ public static class ApiHost
             options.MaximumParallelInvocationsPerClient = 2;
         });
         builder.Services.AddSingleton<RunNotifier>();
+        builder.Services.AddSingleton<EngineeringAtlasNotifier>();
 
         var app = builder.Build();
         app.Use(async (context, next) =>
@@ -568,6 +578,72 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(db.Get(id, runId))));
+        // M7: import only a public, exact-commit GitHub source archive.
+        // No repo scripts, assembly loading, shell or untrusted execution.
+        app.MapGet("/api/tasks/{id}/atlas-imports",
+            (string id, CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(db.List(id))));
+        app.MapPost("/api/tasks/{id}/atlas-imports",
+            (string id, AtlasImportGitHubRequest request,
+             CodeAtlasRepositoryImportStore db, CancellationToken cancellation) =>
+                SafeAsync(async () => Results.Ok(
+                    await db.ImportAsync(id, request, cancellation))));
+        // Two already-saved, task-scoped, immutable GitHub commits.
+        app.MapGet("/api/tasks/{id}/atlas-imports/drift",
+            (string id, string from, string to,
+             CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(CodeAtlasImportedCommitDrift.Compare(
+                    db.Get(id, from), db.Get(id, to)))));
+        app.MapGet("/api/tasks/{id}/atlas-imports/{importId}",
+            (string id, string importId, CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(db.Get(id, importId))));
+        app.MapGet("/api/tasks/{id}/atlas-imports/{importId}/file",
+            (string id, string importId, string path,
+             CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(db.GetFile(id, importId, path))));
+        app.MapGet("/api/tasks/{id}/atlas-imports/{importId}/path",
+            (string id, string importId, string from, string to,
+             int? maxHops, CodeAtlasRepositoryImportStore db) =>
+                Safe(() => Results.Ok(CodeAtlasPathFinder.Trace(
+                    db.Get(id, importId).Graph, from, to, maxHops ?? 6))));
+        // Atlas is a read-only projection of persisted source. It performs
+        // syntax parsing only; it does not compile or execute user code.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas",
+            (string id, string runId, EngineeringRunStore db) =>
+                Safe(() => Results.Ok(CodeAtlasIndexer.Index(db.Get(id, runId)))));
+        // Immutable historical graph checkpoints; playback does not execute
+        // source or pretend the latest source text matches older revisions.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/replay",
+            (string id, string runId, EngineeringAtlasLedger ledger) =>
+                Safe(() => Results.Ok(ledger.Timeline(id, runId))));
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/replay/{sequence:int}",
+            (string id, string runId, int sequence, EngineeringAtlasLedger ledger) =>
+                Safe(() => Results.Ok(ledger.Replay(id, runId, sequence))));
+        // M8: exact two-checkpoint architecture drift; existing run/task
+        // scoping and owner authentication apply to both historical reads.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/drift",
+            (string id, string runId, int from, int to,
+             EngineeringAtlasLedger ledger) =>
+                Safe(() => Results.Ok(CodeAtlasArchitectureDrift.Compare(
+                    ledger.Replay(id, runId, from),
+                    ledger.Replay(id, runId, to)))));
+        // Bounded directed traversal of source-backed relationships.
+        // It neither executes a project nor invents dynamic call targets.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/path",
+            (string id, string runId, string from, string to,
+             int? maxHops, EngineeringRunStore db) =>
+                Safe(() => Results.Ok(CodeAtlasPathFinder.Trace(
+                    CodeAtlasIndexer.Index(db.Get(id, runId)),
+                    from, to, maxHops ?? 6))));
+        // QA and repair findings remain hypotheses until independent runtime
+        // verification. Overlay is read-only and bound to this saved run.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas/evidence",
+            (string id, string runId, CodeAtlasEvidenceService evidence) =>
+                Safe(() => Results.Ok(evidence.Read(id, runId))));
+        // Durable source-change cursor; no source contents cross the event wire.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/atlas-events",
+            (string id, string runId, int? after, EngineeringAtlasLedger ledger) =>
+                Safe(() => Results.Ok(ledger.Read(id, runId, after ?? 0))));
         // Read-only deterministic source inspection: no Node, Chromium,
         // model, sandbox admission, independent tests, or VERIFIED claim.
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/static-web-preflight",
