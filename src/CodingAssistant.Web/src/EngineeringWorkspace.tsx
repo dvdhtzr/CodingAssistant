@@ -234,8 +234,7 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
         Source generation stopped safely. Completed task files remain inspectable.
         No verification or successful full build is claimed.</p>}
       <CodeAtlasPanel token={engine.token} taskId={job.taskId}
-        runId={job.id} files={engine.snapshot?.files ?? []} running={running}
-        onSourceChanged={engine.refresh}/>
+        runId={job.id} files={engine.snapshot?.files ?? []} running={running}/>
       <div className="engineering-board-header">
         <div><span className="wb-kicker">SAVED ENGINEERING ASSIGNMENTS</span>
           <h3>Implementation workstream</h3></div>
