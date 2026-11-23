@@ -1038,6 +1038,110 @@ var directCallAmbiguous = CodeAtlasIndexer.Index("ambiguous-calls", new[]
 Check(!directCallAmbiguous.Edges.Any(e => e.Kind == "Calls"),
     "ambiguous, reassigned, eval and destructured callable names fail closed");
 
+// M8.14: safely parsed parameterized callers and immutable arrows.
+var m814Sources = new[]
+{
+    File("src/runner.ts", """
+        import { arrowRemote as aliasArrow, service } from './service';
+        function local(value: number) { return value; }
+        const localArrow = (value: number) => value;
+        export function run(value: number) {
+            local(value);
+            localArrow(value);
+            aliasArrow(value);
+            service(value);
+        }
+        export function typed(value: number): void {
+            aliasArrow(value);
+        }
+        function zero() {
+            localArrow();
+        }
+        function shadowed(local) {
+            local();
+        }
+        function otherParam(local: number) {
+            aliasArrow();
+        }
+        function defaultParam(local = 1) {
+            aliasArrow();
+        }
+        function destructured({ local }) {
+            aliasArrow();
+        }
+        function generic(value: Array<number>) {
+            aliasArrow();
+        }
+        """),
+    File("src/service.ts", """
+        export const arrowRemote = (value) => value;
+        export function service(value) { return value; }
+        """)
+};
+var m814Graph = CodeAtlasIndexer.Index("ecma-parameter-call-run", m814Sources);
+var m814Calls = m814Graph.Edges.Where(e => e.Kind == "Calls").ToArray();
+Check(m814Graph.Coverage == "ECMA_STRUCTURE_ONLY" &&
+    m814Calls.Length == 7,
+    "parameterized callers and immutable arrows yield seven direct call edges");
+AtlasNode M814Function(string path, string name) =>
+    m814Graph.Nodes.Single(n => n.Kind == "Function" &&
+        n.Path == path && n.Name.StartsWith(name + "(",
+            StringComparison.Ordinal));
+var m814Run = M814Function("src/runner.ts", "run");
+var m814Typed = M814Function("src/runner.ts", "typed");
+var m814Local = M814Function("src/runner.ts", "local");
+var m814Arrow = M814Function("src/runner.ts", "localArrow");
+var m814Remote = M814Function("src/service.ts", "arrowRemote");
+var m814Service = M814Function("src/service.ts", "service");
+Check(new[] { m814Local.Id, m814Arrow.Id, m814Remote.Id,
+    m814Service.Id }.All(id =>
+    m814Calls.Any(e => e.SourceId == m814Run.Id &&
+        e.TargetId == id)),
+    "parameterized callers resolve local, arrow and imported callable targets");
+Check(m814Calls.Any(e => e.SourceId == m814Typed.Id &&
+    e.TargetId == m814Remote.Id) &&
+    m814Calls.All(e =>
+        e.Resolution == "ExplicitEcmaDirectCallSyntax" &&
+        e.EvidencePath == "src/runner.ts" && e.EvidenceLine > 0),
+    "simple typed return annotation and evidence are preserved");
+Check(new[] { "shadowed", "defaultParam", "destructured", "generic" }
+    .All(name => !m814Calls.Any(e =>
+        e.SourceId == M814Function("src/runner.ts", name).Id)),
+    "shadowed and unsupported parameter grammars never create calls");
+var m814Trace = CodeAtlasPathFinder.Trace(m814Graph,
+    m814Run.Id, m814Remote.Id);
+Check(m814Trace.Found && m814Trace.Edges.Count == 1 &&
+    m814Trace.Edges[0].Kind == "Calls",
+    "direct calls to imported immutable arrows remain navigable");
+var m814Reordered = CodeAtlasIndexer.Index("ecma-parameter-call-run",
+    m814Sources.Reverse().ToArray());
+Check(m814Graph.SourceRevision == m814Reordered.SourceRevision &&
+    m814Graph.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(m814Reordered.Edges.Select(e =>
+            (e.Kind, e.SourceId, e.TargetId))),
+    "parameterized-call evidence stable under source file reordering");
+var m814Unsafe = CodeAtlasIndexer.Index("unsafe-targets", new[]
+{
+    File("main.ts", """
+        import { changed as named } from './service';
+        function call() { named(); }
+        function original() { return 1; }
+        const immutableArrow = () => 1;
+        function mutates() {
+            immutableArrow();
+            original();
+        }
+        """),
+    File("service.ts", """
+        export const changed = () => 1;
+        changed = another;
+        """)
+});
+Check(!m814Unsafe.Edges.Any(e => e.Kind == "Calls" &&
+    m814Unsafe.Nodes.Any(n => n.Id == e.TargetId &&
+        n.Path == "service.ts")),
+    "reassigned named exports cannot become imported call links");
+
 // M4: only Roslyn-resolved, source-backed relationships may become graph edges.
 var semanticFiles = new[]
 {

@@ -200,3 +200,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - No attempt to resolve receiver/property calls, methods, dynamic imports, generic invocations, nested callbacks, arrow-function caller bodies, function parameters, overloaded/duplicate names, type-only imports, arbitrary expression calls, optional chaining, or module aliases.
 - Local shadowing/rebinding, unsafe eval/with/destructuring scopes and ambiguous local or imported declarations fail closed. Source files remain data: there is no JS evaluation, filesystem fetch, package installation, script execution or new sandbox permission.
 - Limits, deterministic revision identity, independent QA and owner approval/security boundaries are unchanged. Compiler-backed TypeScript/JavaScript calls and richer semantic coverage remain future milestones.
+
+## M8.14 — Safe parameterized JS/TS callers and immutable arrow callees
+
+- Extends M8.13 direct statement-form call evidence to named top-level function callers with simple parameter lists: bare identifiers, optional `?`, and one-token TypeScript type annotations, including a simple one-token return type. Each parameter name shadows any same-named local or imported callee.
+- Uniquely indexed `const name = (args) => ...` or `const name = arg => ...` declarations may now be direct callees from the same file or through a uniquely named, directly exported, non-type import. File-level reassignment or ambiguous bindings disqualify a target, including across files.
+- Unsupported defaults, destructuring, rest arguments, generic/union/qualified parameter annotations, arrow-function caller bodies, nested callbacks, and receiver methods remain unlinked. No runtime dispatch or TypeScript language-service analysis is claimed.
+- `Calls` retains `ExplicitEcmaDirectCallSyntax` path/line evidence, deterministic graph source revision and bounded path tracing. No package installation, code execution, network fetch, sandbox elevation, approval changes or merge to `main`.
