@@ -77,7 +77,12 @@ export function useEngineeringRun(token: string, taskId: string) {
 
   useEffect(() => {
     let closed = false;
+    // A slow response must not race with the next interval and overwrite
+    // newer terminal events with an older snapshot.
+    let inFlight = false;
     async function load() {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const [result, currentPlan] = await Promise.all([
           api<{ snapshot: EngineerSnapshot | null }>(
@@ -92,6 +97,8 @@ export function useEngineeringRun(token: string, taskId: string) {
       } catch (cause) {
         if (!closed) setError(cause instanceof Error ? cause.message :
           'Cannot load Software Engineer history');
+      } finally {
+        inFlight = false;
       }
     }
     void load();
@@ -227,13 +234,22 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
       <p className="hint" role="status"><strong>{job.state}</strong>
         {' · '}plan v{job.planRevision}{' · '}{job.phase}
         {' · '}model {job.model}
-        {job.errorCode ? ' · ' + job.errorCode : ''}
+        {' · '}{engine.snapshot?.events.length ?? 0} saved activity events
+        {job.id ? ' · run ' + job.id.slice(0, 8) : ''}
+        {job.errorCode ? ' · reason: ' + job.errorCode : ''}
       </p>
       {running && <p className="hint">Your selected model is working on the
         recorded tasks. This is not a fabricated progress percentage.</p>}
-      {job.state === 'Failed' && <p className="activity-warning" role="alert">
-        Source generation stopped safely. Completed task files remain inspectable.
-        No verification or successful full build is claimed.</p>}
+      {(job.state === 'Failed' || job.state === 'Interrupted') &&
+        <p className="activity-warning" role="alert">
+          <strong>{job.state === 'Interrupted' ? 'Engineering run interrupted' :
+            'Engineering run failed'}.</strong>
+          {' '}Recorded reason: <code>{job.errorCode ?? 'NOT_RECORDED'}</code>.
+          {' '}Earlier completed source remains saved and inspectable.
+          {job.errorCode === 'PROCESS_INTERRUPTED' &&
+            ' The application restarted while generation was active; this is not a failed build or test.'}
+          {' '}No independent build or runtime verification is claimed.
+        </p>}
       <CodeAtlasPanel token={engine.token} taskId={job.taskId}
         runId={job.id} files={engine.snapshot?.files ?? []} running={running}/>
       <div className="engineering-board-header">
@@ -269,12 +285,18 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
               {item.startedUtc && !item.completedUtc && <span>Started
                 {' '}{new Date(item.startedUtc).toLocaleString()}</span>}
             </div>
-            {item.state === 'Failed' && <p role="alert" className="engineering-task-failure">
-              <strong>Source generation failed on this assignment.</strong>
-              {' '}Reason code: <code>{job.errorCode ?? 'UNKNOWN_FAILURE'}</code>.
-              Earlier completed source remains saved. Expand
-              {' '}<strong>Saved engineering activity</strong> below for the durable failure event.
+            {(item.state === 'Failed' || item.state === 'Interrupted') &&
+              <p role="alert" className="engineering-task-failure">
+              <strong>{item.state === 'Interrupted' ?
+                'Assignment interrupted before completion.' :
+                'Source generation failed on this assignment.'}</strong>
+              {' '}Reason code: <code>{job.errorCode ?? 'NOT_RECORDED'}</code>.
+              Earlier completed source remains saved. Open
+              {' '}<strong>Saved engineering activity</strong> for the event history.
               No build or runtime testing was performed by this agent.
+              {job.state === 'Interrupted' &&
+                !engine.snapshot?.events.some(e => e.kind === 'EngineeringRunInterrupted') &&
+                ' This older run has no terminal interruption event; restart recovery now repairs that missing receipt.'}
             </p>}
             {item.summary && <p className="hint">{item.summary}</p>}
           </li>;
