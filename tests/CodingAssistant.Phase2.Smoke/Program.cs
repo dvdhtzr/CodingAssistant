@@ -1990,6 +1990,65 @@ try
           partialSource.Tasks[0].State == "Completed" &&
           partialSource.Tasks[1].State == "Failed",
         "failed engineering job retains first file with correct task statuses");
+    // M8.18: exact run/plan/source review admission, durable QA tool audit,
+    // per-file tool budget and no acceptance of fabricated source revisions.
+    var probeReview = reviewStore.Start(taskBound.Id, partialSource,
+        approvedEngineerPlan);
+    var probeSource = partialSource.Files.Single();
+    var probeRevision = CodeAtlasIndexer.Index(
+        partialSource.Job.Id, partialSource.Files).SourceRevision;
+    var probeObservation = new AtlasInspectionObservation(
+        "atlas.find_symbols", probeRevision, 1);
+    reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
+        probeSource, probeObservation);
+    var probeLedger = reviewStore.Get(taskBound.Id, probeReview.Id);
+    Check(probeLedger.Events.Any(e => e.Kind == "QaAtlasInspected" &&
+          e.Detail.Contains("atlas.find_symbols", StringComparison.Ordinal) &&
+          e.Detail.Contains(probeRevision[..12], StringComparison.Ordinal) &&
+          !e.Detail.Contains(probeSource.Content,
+              StringComparison.Ordinal)),
+        "QA source investigation persisted as host-only metadata, not raw source");
+    foreach (var bad in new[] {
+        new AtlasInspectionObservation("shell.run", probeRevision, 1),
+        new AtlasInspectionObservation("atlas.find_symbols", new string('f', 64), 1)
+    })
+    {
+        try
+        {
+            reviewStore.RecordAtlasInspection(taskBound.Id,
+                probeReview.Id, probeSource, bad);
+            Check(false, "QA audit accepted a fabricated operation or revision");
+        }
+        catch (StoreFailure e) when (
+            e.Code is "INVALID_INPUT" or "SOURCE_CHANGED")
+        {
+            Check(true, "QA audit rejects forged tool evidence");
+        }
+    }
+    reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
+        probeSource, probeObservation);
+    try
+    {
+        reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
+            probeSource, probeObservation);
+        Check(false, "QA audit must enforce per-file tool budget");
+    }
+    catch (StoreFailure e) when (e.Code == "ATLAS_TOOL_LIMIT")
+    {
+        Check(true, "QA audit enforces two observations per reviewed file");
+    }
+    reviewStore.Finish(taskBound.Id, probeReview.Id, false, "TEST_PROBE");
+    try
+    {
+        reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
+            probeSource, probeObservation);
+        Check(false, "QA audit accepted an observation after review completion");
+    }
+    catch (StoreFailure e) when (e.Code == "INVALID_STATE")
+    {
+        Check(true, "finished QA reviews cannot add new investigation evidence");
+    }
+
     using (var zipResponse = await client.GetAsync(
         engineeringPath + "/" + failedEngineerRun.Id + "/zip"))
     {
