@@ -94,6 +94,17 @@ test('generation stays visible until the owner chooses delivery', () => {
     'Atlas events must not repeatedly clear the parent snapshot');
 });
 
+test('failed engineering assignments display their durable reason without ambiguous file counts', () => {
+  const panel = readFileSync('src/EngineeringWorkspace.tsx', 'utf8');
+  const css = readFileSync('src/agent-presence.css', 'utf8');
+  assert.ok(panel.includes('Assignment {item.ordinal + 1} · {changedFiles} source file(s)'));
+  assert.ok(panel.includes("item.state === 'Failed' && <p role=\"alert\""));
+  assert.ok(panel.includes("job.errorCode ?? 'UNKNOWN_FAILURE'"));
+  assert.ok(panel.includes('Saved engineering activity'));
+  assert.ok(css.includes('.engineering-task-failure'));
+  assert.ok(!panel.includes('saved file(s) last changed by this task'));
+});
+
 test('JS/TS structural nodes remain source-backed and method toggle is real', () => {
   const js = {
     ...snapshot, coverage: 'ECMA_STRUCTURE_ONLY',
