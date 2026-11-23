@@ -292,7 +292,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
   return <div className={'journey-shell' +
     (showAllStages ? ' journey-shell--expanded' : ' journey-shell--focused') +
     (studioCanvas ? ' ca-studio-journey' : '')}>
-    <section className={studioCanvas ? 'ca-studio-stagebar' : 'mc-work-focus'}
+    <section className={studioCanvas ? 'mc-work-focus ca-studio-stagebar' : 'mc-work-focus'}
       aria-label="Focused project work">
       <div className="mc-work-focus-heading">
         <div><span className="wb-kicker">WORK / CURRENT STEP</span>
