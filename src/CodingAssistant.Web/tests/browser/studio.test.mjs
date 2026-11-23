@@ -153,7 +153,7 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
     assert.equal(await disclos.getAttribute('open'), null);
     assert.equal(await canvas.getByRole('heading', { name: 'Independent QA & repair' })
       .isVisible(), true);
-    await disclos.locator('summary').click();
+    await disclos.locator(':scope > summary').click();
     assert.match(await disclos.textContent(), /Generated source/);
     const boxes = [await team.boundingBox(), await canvas.boundingBox(),
       await attention.boundingBox()];
