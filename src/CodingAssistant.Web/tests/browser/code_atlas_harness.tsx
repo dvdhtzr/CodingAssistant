@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { CodeAtlasPanel, type AtlasSnapshot } from '../../src/CodeAtlasPanel';
-import type { EngineerFile } from '../../src/EngineeringWorkspace';
+import { useEngineeringRun, type EngineerFile } from '../../src/EngineeringWorkspace';
 import '../../src/styles.css';
 import '../../src/code-atlas.css';
+import '../../src/design-system.css';
 
 const runId = 'a'.repeat(32);
 const taskId = 'b'.repeat(32);
@@ -40,9 +41,40 @@ const next: AtlasSnapshot = {
   edges: [...baseEdges, { sourceId: 'c', targetId: 'm', kind: 'Contains' }],
 };
 let response = initial;
+let engineeringRequestCount = 0;
 const original = window.fetch.bind(window);
 window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input instanceof Request ? input.url : input);
+  if (url.endsWith('/engineering-runs/latest')) {
+    engineeringRequestCount++;
+    const current = response === next ? '2' : '1';
+    return Promise.resolve(new Response(JSON.stringify({ snapshot: {
+      job: {
+        id: runId, taskId, state: 'Running', phase: 'Generating',
+        planRevision: 1, planSha256: 'a'.repeat(64),
+        specificationVersion: 1, specificationSha256: 'b'.repeat(64),
+        architectureSha256: 'c'.repeat(64), model: 'fixture',
+        errorCode: null, createdUtc: '2026-11-22T14:00:00Z',
+        updatedUtc: '2026-11-22T14:00:01Z',
+      },
+      tasks: [], events: [{
+        sequence: engineeringRequestCount, kind: 'Refreshed',
+        detail: 'Refresh #' + engineeringRequestCount,
+        createdUtc: '2026-11-22T14:00:01Z',
+      }],
+      files: [{
+        path: 'TaskService.cs', purpose: 'Source',
+        content: 'namespace Demo;\\nclass TaskService {}\\n',
+        sha256: current.repeat(64), lastWorkItemId: 'W1',
+        updatedUtc: '2026-11-22T14:00:01Z',
+      }],
+    } }), { status: 200,
+      headers: { 'content-type': 'application/json' } }));
+  }
+  if (url.endsWith('/implementation-plan'))
+    return Promise.resolve(new Response(JSON.stringify({ plan: null }), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
   if (url.endsWith('/atlas'))
     return Promise.resolve(new Response(JSON.stringify(response), {
       status: 200, headers: { 'content-type': 'application/json' },
@@ -137,8 +169,21 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
   }
   return original(input, init);
 };
+function EngineeringRefreshProbe() {
+  const engine = useEngineeringRun('f'.repeat(64), taskId);
+  return <section aria-label="Engineering refresh regression">
+    <button type="button" onClick={engine.refresh}>Refresh engineering snapshot</button>
+    <span data-testid="refresh-receipt">{engine.snapshot?.events[0]?.detail ?? 'Loading'}</span>
+    {engine.snapshot && <div data-testid="refresh-probe-atlas">
+      <CodeAtlasPanel token={engine.token} taskId={taskId}
+        runId={runId} files={engine.snapshot.files} running={true}/>
+    </div>}
+  </section>;
+}
+
 function Demo() {
   const [stage, setStage] = useState(0);
+  const [probeOpen, setProbeOpen] = useState(false);
   const files: EngineerFile[] = [{
     path: 'TaskService.cs', purpose: 'Service source',
     content: stage ? 'namespace Demo;\nclass TaskService {\n void CreateTask() {}\n}\n'
@@ -152,6 +197,10 @@ function Demo() {
     }}>Persist next source revision</button>
     <CodeAtlasPanel token={'f'.repeat(64)} taskId={taskId}
       runId={runId} files={files} running={stage === 0}/>
+    <button type="button" onClick={() => setProbeOpen(value => !value)}>
+      Show engineering refresh probe
+    </button>
+    {probeOpen && <EngineeringRefreshProbe />}
   </main>;
 }
 createRoot(document.getElementById('root')!).render(<Demo/>);
