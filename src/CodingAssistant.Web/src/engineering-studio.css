@@ -347,3 +347,35 @@
   .ca-studio-person { flex-basis: 150px; }
   .ca-studio-stagebar .mc-work-focus-heading { flex-direction:column; }
 }
+
+/* In QA focus the role and verification boundary are already in the canvas
+   heading. Remove the duplicated inner card chrome, not the repair controls. */
+.ca-studio-qa-heading + .engineering-workspace {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.ca-studio-qa-heading + .engineering-workspace > .technical-plan-heading,
+.ca-studio-qa-heading + .engineering-workspace > .technical-plan-heading + .hint {
+  display: none;
+}
+.ca-studio-qa-heading + .engineering-workspace > .actions {
+  margin: .2rem 0 1rem;
+  gap: .55rem;
+}
+.ca-studio-qa-heading + .engineering-workspace > .actions button {
+  font-size: .77rem;
+  padding: .65rem .85rem;
+}
+.ca-studio-qa-heading + .engineering-workspace .qa-repair-progress {
+  padding: .75rem .95rem;
+  margin: .7rem 0;
+  background: #283137;
+  border: 1px solid #675b4e;
+  border-left: 3px solid #d1a56d;
+}
+.ca-studio-qa-heading + .engineering-workspace .qa-repair-progress > p {
+  margin: .22rem 0 .55rem;
+}
