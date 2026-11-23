@@ -95,9 +95,9 @@ public static class AgentAtlasInspectionGateway
         if (request.Name == "atlas.find_symbols")
         {
             symbols.AddRange(nodes.Values.Where(node =>
-                node.Kind is "Class" or "Interface" or "Struct" or
+                (node.Kind is "Class" or "Interface" or "Struct" or
                     "Enum" or "Method" or "Constructor" or "Function" or
-                    "File" &&
+                    "File") &&
                 (node.Name.Contains(request.Argument,
                     StringComparison.OrdinalIgnoreCase) ||
                  node.QualifiedName.Contains(request.Argument,

@@ -224,7 +224,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                         answer.Text, out var inspection))
                 {
                     if (inspections == AgentAtlasInspectionGateway.MaximumRequestsPerTask)
-                        throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+                        throw new StoreFailure("ATLAS_TOOL_LIMIT");
                     cancellation.ThrowIfCancellationRequested();
                     var result = AgentAtlasInspectionGateway.Execute(
                         input.Plan.PlanSha256, input.ExistingFiles, inspection!);

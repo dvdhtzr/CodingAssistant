@@ -541,7 +541,7 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           deniedFactory.Attempts == 2 &&
           deniedEvents.Count == 0 &&
           deniedFactory.CorrectionReasons.Any(x =>
-              x.Contains("MODEL_OUTPUT_REJECTED", StringComparison.Ordinal)),
+              x.Contains("EMPTY_OR_INVALID_RESPONSE", StringComparison.Ordinal)),
         "unknown agent tool requests never execute or record observations");
     var overLimitFactory = new Phase4FakeMafFactory();
     for (var i = 0; i < 3; i++)
@@ -556,7 +556,7 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
             }, CancellationToken.None);
         Check(false, "unbounded agent tool loop was accepted");
     }
-    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+    catch (StoreFailure error) when (error.Code == "ATLAS_TOOL_LIMIT")
     {
         Check(overLimitFactory.Attempts == 3 &&
             cappedEvents.Count == AgentAtlasInspectionGateway.MaximumRequestsPerTask,
