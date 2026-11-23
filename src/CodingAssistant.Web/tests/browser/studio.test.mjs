@@ -86,8 +86,17 @@ function mockApi(page) {
       })),
     });
     if (path.endsWith('/implementation-plan')) return done(route, {
-      plan: { revision: 1, planSha256: sha, status: 'Approved', current: true,
-        outline: { tasks: [{ id: 'item1', title: 'Create initial application' }] } },
+      schemaVersion: 1,
+      plan: { taskId: id, revision: 1,
+        specificationVersion: 1, specificationSha256: spec, architectureSha256: arch,
+        model: 'qwen3-coder:30b', planSha256: sha, status: 'Approved', current: true,
+        effectiveStatus: 'Approved', createdUtc: time, approvedUtc: time,
+        outline: { summary: 'Create the historic site',
+          tasks: [{ id: 'item1', title: 'Create initial application',
+            description: 'Provide a self-contained static page',
+            dependsOn: [], acceptanceCriteria: ['Saved source contains index.html'] }],
+          testStrategy: ['Independent HTML review'], risks: [] } },
+      history: [],
     });
     if (path.endsWith('/draft-build')) return done(route, { available: true, snapshot: null });
     if (path.endsWith('/draft-build/architecture')) return done(route, {
