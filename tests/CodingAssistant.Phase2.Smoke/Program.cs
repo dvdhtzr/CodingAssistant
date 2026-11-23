@@ -1993,6 +1993,35 @@ try
               qaModel.ReviewedFiles.Count == 6,
             "QA cannot read an active engineering job even when it saved source");
     engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-state");
+    // Persist only a bounded response-failure category, never returned text.
+    engineeringStore.RecordOutputRejection(taskBound.Id, failedEngineerRun.Id,
+        "timer-state", new EngineeringOutputRejection(1, "JSON_SYNTAX"));
+    engineeringStore.RecordOutputRejection(taskBound.Id, failedEngineerRun.Id,
+        "timer-state", new EngineeringOutputRejection(2, "MODEL_THINKING_ONLY"));
+    var rejectedLedger = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
+    Check(rejectedLedger.Events.Count(e => e.Kind == "EngineerOutputRejected") == 2 &&
+          rejectedLedger.Events.Any(e => e.Detail.Contains("timer-state: attempt 2/3, category MODEL_THINKING_ONLY",
+              StringComparison.Ordinal)) &&
+          rejectedLedger.Events.All(e => !e.Detail.Contains("SECRET_SOURCE_TEXT",
+              StringComparison.Ordinal)),
+        "each rejected model response produces a task-scoped content-free receipt");
+    foreach (var invalid in new[] {
+        new EngineeringOutputRejection(3, "SECRET_SOURCE_TEXT"),
+        new EngineeringOutputRejection(1, "JSON_SYNTAX")
+    })
+    {
+        try
+        {
+            engineeringStore.RecordOutputRejection(taskBound.Id,
+                failedEngineerRun.Id, "timer-state", invalid);
+            Check(false, "untrusted diagnostic category or duplicate attempt persisted");
+        }
+        catch (StoreFailure error) when (
+            error.Code is "INVALID_INPUT" or "INVALID_STATE")
+        {
+            Check(true, "diagnostics require allowlisted category and next attempt number");
+        }
+    }
     // M8.16: only a running, approved engineering task may persist host
     // observations. Stored metadata never contains a model query or source.
     var savedForAtlas = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
