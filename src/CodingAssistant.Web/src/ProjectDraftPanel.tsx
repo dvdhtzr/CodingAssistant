@@ -277,7 +277,7 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
       open={expanded === 'generation'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Task-specific project draft generation">
         <EngineeringGenerationPanel engine={engineer}
-          legacyRunning={running} />
+          legacyRunning={running} studioMode={studioCanvas} />
         {(engineerGenerated || generated) && <button type="button" className="outline"
           onClick={() => onExpand('delivery')}>View generated artifacts and delivery</button>}
         <details className="mc-work-secondary" open={running || !!job?.errorCode}>
