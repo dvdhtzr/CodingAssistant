@@ -16,12 +16,14 @@ public sealed record RepairTaskContext(
     string ProposalId, string BaseSourceSha256,
     IReadOnlyList<RepairFindingReference> Findings,
     IReadOnlyList<string> AllowedPaths);
+public sealed record EngineeringOutputRejection(int Attempt, string Category);
 public sealed record EngineeringTaskInput(
     string Objective, string Specification, ImplementationPlan Plan,
     DraftArchitectureReadiness Architecture, ImplementationWorkItem WorkItem,
     IReadOnlyList<EngineeringSourceFile> ExistingFiles,
     RepairTaskContext? Repair = null,
-    Action<AtlasInspectionObservation>? OnAtlasInspection = null);
+    Action<AtlasInspectionObservation>? OnAtlasInspection = null,
+    Action<EngineeringOutputRejection>? OnOutputRejected = null);
 
 public interface IEngineeringTaskModel
 {
@@ -130,14 +132,22 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
         // Keep whole small files available across sequential tasks. Previously
         // every file was truncated to 1100 chars, making safe later edits
         // impossible. Keep prompts within the transport's 18k/message bound.
-        var remainingSourceBudget = 14000;
+        // Deployment/test-only assignments must not send 14k of historical
+        // HTML just to draft concise launch instructions. A compact source
+        // manifest plus the immutable task and acceptance criteria is enough;
+        // the host-brokered Atlas inspection remains available if needed.
+        var launchPreparation = input.Repair is null &&
+            new[] { "launch", "testing", "deploy", "verification" }.Any(term =>
+                input.WorkItem.Title.Contains(term,
+                    StringComparison.OrdinalIgnoreCase));
+        var remainingSourceBudget = launchPreparation ? 1600 : 14000;
         var priorFiles = input.ExistingFiles
             .OrderBy(file => file.Path.Equals("index.html",
                 StringComparison.OrdinalIgnoreCase) ? 0 : 1)
             .ThenBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
             .Select(file => {
                 var length = Math.Min(file.Content.Length,
-                    Math.Min(remainingSourceBudget, 12000));
+                    Math.Min(remainingSourceBudget, launchPreparation ? 600 : 12000));
                 remainingSourceBudget -= length;
                 return new {
                     file.Path, file.Purpose, file.Sha256,
@@ -183,8 +193,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
         // only. Do not misrepresent that task as an executable admission:
         // interpret its approved deliverables as bounded launch-ready source
         // or documentation, leaving actual testing to independent QA.
-        if (new[] { "launch", "testing", "deploy", "verification" }.Any(term =>
-            input.WorkItem.Title.Contains(term, StringComparison.OrdinalIgnoreCase)))
+        if (launchPreparation)
             messages.Add(new(ChatRole.User,
                 "SOURCE-ONLY LAUNCH PREPARATION: You may prepare complete " +
                 "README.md instructions, a valid configuration/source file, " +
@@ -285,16 +294,25 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 }
             }
             catch (StoreFailure error) when (error.Code is
-                "MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED")
+                "MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or
+                "MODEL_THINKING_ONLY")
             {
-                reason = error.Code == "MODEL_OUTPUT_TRUNCATED"
-                    ? "OUTPUT_TRUNCATED: Reduce response size; implement a focused, complete file."
-                    : "EMPTY_OR_INVALID_RESPONSE: Return one complete JSON object.";
+                reason = error.Code switch {
+                    "MODEL_OUTPUT_TRUNCATED" =>
+                        "OUTPUT_TRUNCATED: Reduce response size; implement a focused, complete file.",
+                    "MODEL_THINKING_ONLY" =>
+                        "MODEL_THINKING_ONLY: Provide a final JSON answer after completing reasoning.",
+                    _ => "EMPTY_OR_INVALID_RESPONSE: Return one complete JSON object."
+                };
             }
-            // Safe bounded diagnostics remain visible in the Windows console.
+            // Only the allowlisted diagnostic CATEGORY may be durably saved;
+            // never persist rejected model text, snippets, prompts or thoughts.
+            var category = reason.Split(':', 2)[0];
+            input.OnOutputRejected?.Invoke(new EngineeringOutputRejection(
+                attempt + 1, category));
             Console.Error.WriteLine(
                 $"[{DateTimeOffset.UtcNow:O}] Software Engineer output rejected " +
-                $"(attempt {attempt + 1}/3): {reason}");
+                $"(attempt {attempt + 1}/3): {category}");
             if (++attempt == 3)
                 break;
             messages.Add(new ChatMessage(ChatRole.User,
