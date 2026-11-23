@@ -109,6 +109,35 @@ test('new persisted source creates method node and honest live indicator', async
   assert.doesNotMatch(await atlas.textContent(), /VERIFIED BUILD/);
 });
 
+test('live updates do not move existing nodes or hijack the graph camera', async () => {
+  const calmPage = await browser.newPage({ viewport: { width: 1400, height: 980 } });
+  try {
+    await calmPage.goto(page.url());
+    const atlas = calmPage.getByRole('region', { name: 'Code Atlas', exact: true });
+    const graph = atlas.getByRole('group', {
+      name: 'Interactive Code Atlas graph of saved source',
+    });
+    const follow = atlas.getByRole('checkbox', { name: 'Follow build' });
+    assert.equal(await follow.isChecked(), false);
+    const existing = graph.getByRole('button', { name: 'Class: Demo.TaskService' });
+    const original = await existing.getAttribute('transform');
+    const originalCamera = await graph.locator('g[transform]').first()
+      .getAttribute('transform');
+    await follow.check();
+    await calmPage.getByRole('button', { name: 'Persist next source revision' }).click();
+    await graph.getByRole('button', {
+      name: 'Method: Demo.TaskService.CreateTask()',
+    }).waitFor();
+    assert.equal(await existing.getAttribute('transform'), original);
+    assert.equal(await graph.locator('g[transform]').first()
+      .getAttribute('transform'), originalCamera);
+    assert.match(await atlas.getByRole('complementary',
+      { name: 'Selected source entity' }).textContent(), /CreateTask/);
+  } finally {
+    await calmPage.close();
+  }
+});
+
 test('manual graph exploration disables follow-build focus stealing', async () => {
   const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   await atlas.getByRole('checkbox', { name: 'Follow build' }).check();
