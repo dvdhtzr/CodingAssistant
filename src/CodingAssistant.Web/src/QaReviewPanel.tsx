@@ -57,7 +57,9 @@ interface RepairCycleView {
     attempt: number; errorCode: string | null;
     engineeringRunId: string; qaReviewId: string | null;
   };
-  engineering: { job: { state: string; errorCode: string | null }; files: unknown[] };
+  engineering: { job: { state: string; errorCode: string | null };
+    files: unknown[];
+    events?: { sequence: number; kind: string; detail: string; createdUtc: string }[] };
   review: { job: { state: string }; reports: QaFileReport[] } | null;
   staticPreflight: { status: string; verificationStatus: string; findings: unknown[] };
 }
@@ -338,7 +340,23 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         {' · '}Functional verification: NOT VERIFIED
       </p>
       {repair.cycle.errorCode && <p className="activity-warning">
-        Repair stopped: {repair.cycle.errorCode}</p>}
+        Repair stopped: {repair.cycle.errorCode}.
+        {' '}Previously saved source is preserved.</p>}
+      {repair.engineering.events?.filter(event =>
+        event.kind === 'EngineerOutputRejected').slice(-1).map(event =>
+        <p key={event.sequence} className="activity-warning">
+          <strong>Last repair output diagnostic:</strong>{' '}
+          {event.detail}
+        </p>)}
+      {repair.cycle.state === 'QaReviewed' &&
+        <p className="hint" role="status">
+          Independent QA reassessment recorded:
+          {' '}{repair.review?.reports.reduce((sum, report) =>
+            sum + (report.assessment?.findings?.length ?? 0), 0) ?? 0}
+          {' '}potential finding(s). Inspect the current QA report and classify
+          any remaining defects before authorizing another repair.
+          {' '}A static review does not prove functional correctness.
+        </p>}
       {repairRunning && <button type="button" className="danger"
         disabled={!!busy} onClick={() => void cancelRepair()}>
         Stop repair cycle
