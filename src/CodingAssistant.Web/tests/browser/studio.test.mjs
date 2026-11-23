@@ -79,10 +79,14 @@ function mockApi(page) {
         sha256: spec, status: 'Approved', createdUtc: time, approvedUtc: time },
     });
     if (path === '/api/models') return done(route, { models: ['qwen3-coder:30b'] });
+    if (path === '/api/runtime-profiles') return done(route, { profiles: [] });
     if (path.endsWith('/architecture-decisions')) return done(route, {
       decisions: ['technology-stack', 'architecture-style'].map(topic => ({
-        topic, revision: 1, specificationSha256: spec,
-        specificationCurrent: true, status: 'Approved',
+        topic, revision: 1, specificationSha256: spec, specificationCurrent: true,
+        recommendedOptionId: 'option-1', rationale: 'Owner-approved project decisions',
+        options: [{ id: 'option-1', label: 'Static Web', benefit: 'Local-first',
+          tradeoff: 'No executable runtime', runtimeProfileId: null }],
+        proposalSha256: arch, status: 'Approved', selectedOptionId: 'option-1',
       })),
     });
     if (path.endsWith('/implementation-plan')) return done(route, {
