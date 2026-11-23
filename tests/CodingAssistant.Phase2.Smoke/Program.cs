@@ -732,6 +732,106 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "independent QA receives bounded host-logged engineering investigation context without gaining tools");
 }
 
+// M8.18: independent MAF QA selects bounded source inspections, receives
+// host-issued evidence, and still cannot access another file or run tools.
+{
+    var factory = new Phase5FakeMafFactory();
+    var plan = new ImplementationPlan(new string('a', 32), 1, 1,
+        new string('b', 64), new string('c', 64), "qwen3.5:4b",
+        new ImplementationOutline("Independent QA investigation fixture.",
+            [new ImplementationWorkItem("qa", "Assess source",
+                "Investigate a saved file without executing it.", [],
+                ["Report a concrete source concern"])], [], []),
+        new string('d', 64), "Approved", "2026-11-21T00:00:00Z",
+        "2026-11-21T00:01:00Z", true, "Approved");
+    var arch = new DraftArchitectureReadiness("READY", true,
+        new string('c', 64), [], []);
+    var run = new EngineeringRun(new string('9', 32), plan.TaskId,
+        1, plan.PlanSha256, 1, plan.SpecificationSha256,
+        plan.ArchitectureSha256, plan.Model, "Generated", "SourceOnlyGenerated",
+        null, "2026-11-21T00:02:00Z", "2026-11-21T00:03:00Z");
+    var sourceFile = new EngineeringSourceFile("index.html", "Reviewed source",
+        "<!doctype html><html><button>Save</button></html>",
+        new string('8', 64), "qa", "2026-11-21T00:03:00Z");
+    var privateFile = sourceFile with { Path = "secrets.cs",
+        Content = "namespace Secret; public class RestrictedDetails {}",
+        Sha256 = new string('7', 64) };
+    var input = new QaReviewInput("Review controls",
+        "Approved source assessment", plan, arch, run, sourceFile,
+        [sourceFile, privateFile]);
+    var found = QaAtlasInspectionGateway.Execute(input,
+        new AtlasInspectionRequest("atlas.find_symbols", "index"));
+    Check(found.Symbols.Count > 0 &&
+          found.Symbols.All(s => s.Path == "index.html") &&
+          found.ResultCount <= 12 && found.SourceRevision.Length == 64,
+        "QA read-only tool returns only the assigned file's indexed source");
+    var excluded = QaAtlasInspectionGateway.Execute(input,
+        new AtlasInspectionRequest("atlas.find_symbols", "RestrictedDetails"));
+    Check(excluded.Symbols.Count == 0,
+        "QA selected lookup cannot reveal other saved file declarations");
+    var foreignId = CodeAtlasIndexer.Index(run.Id, [sourceFile, privateFile])
+        .Nodes.Single(n => n.Name == "RestrictedDetails").Id;
+    var forbiddenExcerpt = QaAtlasInspectionGateway.Execute(input,
+        new AtlasInspectionRequest("atlas.source_excerpt", foreignId));
+    Check(forbiddenExcerpt.ResultCount == 0 &&
+          forbiddenExcerpt.SourceEvidence is null,
+        "foreign file symbol IDs cannot bypass QA's exact-file scope");
+    try
+    {
+        _ = QaAtlasInspectionGateway.Execute(input,
+            new AtlasInspectionRequest("shell.run", "echo hi"));
+        Check(false, "QA must reject executable tool requests");
+    }
+    catch (StoreFailure e) when (e.Code == "INVALID_INPUT")
+    {
+        Check(true, "QA host broker rejects unapproved tools");
+    }
+
+    factory.ScriptedReplies.Enqueue(
+        """{"toolRequest":{"name":"atlas.find_symbols","argument":"index"}}""");
+    factory.ScriptedReplies.Enqueue(
+        """{"summary":"The control is present but click behavior remains unverified.","findings":[],"manualChecks":["Click Save in an independent browser session"]}""");
+    var observations = new List<AtlasInspectionObservation>();
+    var report = await new MafQaEngineer(factory).ReviewAsync(
+        input with { OnAtlasInspection = observations.Add },
+        CancellationToken.None);
+    Check(report.Findings.Count == 0 && observations.Count == 1 &&
+          observations[0].SourceRevision == found.SourceRevision &&
+          observations[0].Name == "atlas.find_symbols" &&
+          factory.HostObservationSeen && factory.NoTools,
+        "real QA MAF agent requests host observation then returns independent report");
+
+    var limited = new Phase5FakeMafFactory();
+    for (var i = 0; i < 3; i++)
+        limited.ScriptedReplies.Enqueue(
+            """{"toolRequest":{"name":"atlas.find_symbols","argument":"index"}}""");
+    var count = 0;
+    try
+    {
+        _ = await new MafQaEngineer(limited).ReviewAsync(
+            input with { OnAtlasInspection = _ => count++ },
+            CancellationToken.None);
+        Check(false, "QA must never be allowed a third inspection");
+    }
+    catch (StoreFailure e) when (e.Code == "ATLAS_TOOL_LIMIT")
+    {
+        Check(count == 2, "QA hard tool-call budget cannot be bypassed");
+    }
+    var denied = new Phase5FakeMafFactory();
+    denied.ScriptedReplies.Enqueue(
+        """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""");
+    try
+    {
+        _ = await new MafQaEngineer(denied).ReviewAsync(input,
+            CancellationToken.None);
+        Check(false, "QA must never gain arbitrary host capabilities");
+    }
+    catch (StoreFailure e) when (e.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(true, "QA MAF rejects forbidden tool names before dispatch");
+    }
+}
+
 // UX-6B: a pure host-owned static preflight catches the frozen Calculation
 // Journal defect. It never evaluates model JavaScript or claims a browser pass.
 {
@@ -2641,6 +2741,8 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool SourceSeen { get; private set; }
     public bool InspectionContextSeen { get; private set; }
     public bool NoTools { get; private set; }
+    public bool HostObservationSeen { get; private set; }
+    public Queue<string> ScriptedReplies { get; } = new();
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
     {
@@ -2670,9 +2772,15 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                     StringComparison.Ordinal) == true &&
                 m.Text.Contains("0123456789ab", StringComparison.Ordinal));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
-            return Task.FromResult(new ChatResponse(new ChatMessage(
-                ChatRole.Assistant,
-                """{"summary":"The static source exposes an interactive control but its behavior is unknown.","findings":[{"severity":"Minor","requirement":"The Save button must work","evidence":"A button is declared but no listener is present in this source","recommendation":"Inspect linked scripts and test saving notes in a browser"}],"manualChecks":["Click Save and reload the page in a real browser"]}""")));
+            parent.HostObservationSeen |= history.Any(m =>
+                m.Role.Value == "user" &&
+                m.Text?.Contains("HOST QA CODE ATLAS OBSERVATION",
+                    StringComparison.Ordinal) == true);
+            var answer = parent.ScriptedReplies.Count > 0
+                ? parent.ScriptedReplies.Dequeue()
+                : """{"summary":"The static source exposes an interactive control but its behavior is unknown.","findings":[{"severity":"Minor","requirement":"The Save button must work","evidence":"A button is declared but no listener is present in this source","recommendation":"Inspect linked scripts and test saving notes in a browser"}],"manualChecks":["Click Save and reload the page in a real browser"]}""";
+            return Task.FromResult(new ChatResponse(
+                new ChatMessage(ChatRole.Assistant, answer)));
         }
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages, ChatOptions? options = null,
