@@ -101,6 +101,17 @@ public sealed class EngineeringRunStore(
     {
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
+        // Record every restart interruption with the same transaction that
+        // updates the run and active assignment. Previously a running process
+        // would silently turn into Interrupted with NO terminal audit event.
+        var interruptedRuns = new List<string>();
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT id FROM engineering_runs WHERE state='Running'
+            ORDER BY created_utc,id
+            """))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                interruptedRuns.Add(reader.GetString(0));
         TaskStore.Execute(db, tx, """
             UPDATE engineering_run_tasks SET state='Interrupted'
             WHERE state='Running' AND run_id IN (
@@ -111,6 +122,9 @@ public sealed class EngineeringRunStore(
                 phase='RestartInterrupted',error_code='PROCESS_INTERRUPTED',
                 updated_utc=@now WHERE state='Running'
             """, ("@now", DateTimeOffset.UtcNow.ToString("O")));
+        foreach (var runId in interruptedRuns)
+            Event(db, tx, runId, "EngineeringRunInterrupted",
+                "PROCESS_INTERRUPTED: app restarted while generation was active; completed source remains saved");
         tx.Commit();
     }
 
