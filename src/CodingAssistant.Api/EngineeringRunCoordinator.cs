@@ -72,7 +72,10 @@ public sealed class EngineeringRunCoordinator(
                         architecture, item, prior,
                         OnAtlasInspection: observation =>
                             store.RecordAtlasInspection(job.TaskId,
-                                job.Id, item.Id, observation)), token);
+                                job.Id, item.Id, observation),
+                        OnOutputRejected: rejection =>
+                            store.RecordOutputRejection(job.TaskId,
+                                job.Id, item.Id, rejection)), token);
                 token.ThrowIfCancellationRequested();
                 var committed = store.CompleteTask(job.TaskId, job.Id, item.Id, result);
                 // Notification is best effort AFTER the durable transaction.
