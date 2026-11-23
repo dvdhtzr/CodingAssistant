@@ -226,13 +226,13 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                     if (inspections == AgentAtlasInspectionGateway.MaximumRequestsPerTask)
                         throw new StoreFailure("ATLAS_TOOL_LIMIT");
                     cancellation.ThrowIfCancellationRequested();
-                    var result = AgentAtlasInspectionGateway.Execute(
+                    var atlasResult = AgentAtlasInspectionGateway.Execute(
                         input.Plan.PlanSha256, input.ExistingFiles, inspection!);
                     // Durable event contains only tool name/count/revision,
                     // never the model's query, source content or secrets.
                     input.OnAtlasInspection?.Invoke(
-                        new AtlasInspectionObservation(result.Name,
-                            result.SourceRevision, result.ResultCount));
+                        new AtlasInspectionObservation(atlasResult.Name,
+                            atlasResult.SourceRevision, atlasResult.ResultCount));
                     inspections++;
                     messages.Add(new ChatMessage(ChatRole.User,
                         "HOST CODE ATLAS READ-ONLY RESULT (" +
@@ -240,7 +240,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                         AgentAtlasInspectionGateway.MaximumRequestsPerTask +
                         "; saved prior files only; source-level evidence, " +
                         "NOT build/test verification):\n" +
-                        JsonSerializer.Serialize(result) +
+                        JsonSerializer.Serialize(atlasResult) +
                         "\nProceed with the approved implementation task. " +
                         "Output ONLY the complete source changeset JSON, " +
                         "or one additional permitted Atlas inspection."));
