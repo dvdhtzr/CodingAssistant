@@ -642,9 +642,11 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var launchTask = new ImplementationWorkItem(
         "launch-preparation", "Launch Preparation and Testing",
         "Prepare release setup documentation and source-only launch checklist.",
-        [], ["A release checklist describes manual verification steps"]);
+        ["create-ui"], ["A release checklist describes manual verification steps"]);
     var launchPlan = fakePlan with {
-        Outline = fakePlan.Outline with { Tasks = [launchTask] }
+        Outline = fakePlan.Outline with {
+            Tasks = [fakePlan.Outline.Tasks[0], launchTask]
+        }
     };
     var launchFactory = new Phase4FakeMafFactory();
     launchFactory.Responses.Enqueue(JsonSerializer.Serialize(new {
@@ -667,7 +669,8 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         }, CancellationToken.None);
     var launchPrior = launchFactory.UserPrompts.Single(message =>
         message.StartsWith("PREVIOUS SOURCE FILES", StringComparison.Ordinal));
-    Check(launchSource.Files.Single().Path == "README.md" &&
+    Check(launchFactory.Attempts == 1 &&
+          launchSource.Files.Single().Path == "README.md" &&
           launchPrior.Length < 3000 &&
           launchPrior.Contains("originalLength", StringComparison.Ordinal) &&
           launchFactory.UserPrompts.Any(message =>
