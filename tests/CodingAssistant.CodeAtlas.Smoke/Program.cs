@@ -1257,6 +1257,108 @@ Check(!m814Unsafe.Edges.Any(e => e.Kind == "Calls" &&
         n.Path == "service.ts")),
     "reassigned named exports cannot become imported call links");
 
+// M8.16: bounded agent-selected, host-mediated read-only source tools.
+// A tool request is data, never an Ollama/MAF native tool authorization.
+Check(AgentAtlasInspectionGateway.TryParseRequest(
+    """{"toolRequest":{"name":"atlas.find_symbols","argument":"Widget"}}""",
+    out var atlasRequest) &&
+    atlasRequest is { Name: "atlas.find_symbols", Argument: "Widget" },
+    "engineer may explicitly request only an allowlisted source inspection");
+Check(!AgentAtlasInspectionGateway.TryParseRequest(
+    """{"summary":"A regular coding response.","files":[]}""", out _),
+    "ordinary engineer source output is not hijacked as a tool request");
+foreach (var badTool in new[] {
+    """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""",
+    """{"toolRequest":{"name":"atlas.find_symbols","argument":"Widget","path":"../other"}}""",
+    """{"toolRequest":{"name":"atlas.find_symbols","argument":"../secret"}},"extra":1}""",
+    """{"toolRequest":{"name":"atlas.source_excerpt","argument":""}}""",
+    """{"toolRequest":{"name":"atlas.find_symbols","argument":"bad\nsource"}}""",
+    """{"toolRequest":{"name":"atlas.find_symbols","argument":"x"},"files":[{"path":"a.cs"}]}"""
+})
+{
+    try
+    {
+        _ = AgentAtlasInspectionGateway.TryParseRequest(badTool, out _);
+        Check(false, "unknown or extra agent tool capability was accepted");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_REJECTED")
+    {
+        Check(true, "invalid agent tool requests fail closed");
+    }
+}
+var toolSource = new[]
+{
+    File("src/Widget.cs", """
+        namespace Demo;
+        public class Widget {
+            public void Save() {}
+        }
+        """),
+    File("src/Caller.cs", """
+        namespace Demo;
+        public class Caller {
+            public void Execute() { new Widget().Save(); }
+        }
+        """),
+    File("src/script.js", "export function widgetFlow() { return 1; }")
+};
+var toolSha = new string('c', 64);
+var searchTool = AgentAtlasInspectionGateway.Execute(toolSha, toolSource,
+    new AtlasInspectionRequest("atlas.find_symbols", "Widget"));
+Check(searchTool.ResultCount is > 0 and <= 12 &&
+    searchTool.Symbols.Any(x => x.Kind == "Class" &&
+        x.Name == "Widget" && x.Path == "src/Widget.cs") &&
+    searchTool.Symbols.All(x =>
+        toolSource.Any(f => f.Path == x.Path)) &&
+    searchTool.SourceRevision.Length == 64 &&
+    searchTool.Relationships.Count == 0,
+    "source lookup reveals only bounded symbols in exact persisted files");
+var widgetId = searchTool.Symbols.Single(x =>
+    x.Kind == "Class" && x.Name == "Widget").Id;
+var edgesTool = AgentAtlasInspectionGateway.Execute(toolSha, toolSource,
+    new AtlasInspectionRequest("atlas.get_relationships", widgetId));
+Check(edgesTool.ResultCount <= 16 &&
+    edgesTool.Relationships.All(x => x.RelatedSymbolId.Length > 0 &&
+        x.Kind.Length > 0) &&
+    edgesTool.SourceRevision == searchTool.SourceRevision,
+    "relationship observation is bounded to the same accepted revision");
+var excerptTool = AgentAtlasInspectionGateway.Execute(toolSha, toolSource,
+    new AtlasInspectionRequest("atlas.source_excerpt", widgetId));
+Check(excerptTool.ResultCount == 1 &&
+    excerptTool.SourceEvidence?.Path == "src/Widget.cs" &&
+    excerptTool.SourceEvidence.Excerpt.Contains("class Widget",
+        StringComparison.Ordinal) &&
+    excerptTool.SourceEvidence.Excerpt.Length <= 1000,
+    "source excerpt comes from only an already saved source file");
+var foreignTool = AgentAtlasInspectionGateway.Execute(toolSha, toolSource,
+    new AtlasInspectionRequest("atlas.source_excerpt", "class:foreign"));
+Check(foreignTool.ResultCount == 0 && foreignTool.SourceEvidence is null,
+    "unknown/cross-run symbol identifiers cannot expose foreign source");
+var reorderedTool = AgentAtlasInspectionGateway.Execute(toolSha,
+    toolSource.Reverse().ToArray(),
+    new AtlasInspectionRequest("atlas.find_symbols", "Widget"));
+Check(reorderedTool.SourceRevision == searchTool.SourceRevision &&
+    reorderedTool.Symbols.Select(x => x.Id).SequenceEqual(
+        searchTool.Symbols.Select(x => x.Id)),
+    "tool lookup is source-revision-bound and file-order deterministic");
+foreach (var badInput in new[] {
+    new AtlasInspectionRequest("shell", "Widget"),
+    new AtlasInspectionRequest("atlas.find_symbols", "\rsecret"),
+    new AtlasInspectionRequest("atlas.source_excerpt", new string('a', 81))
+})
+{
+    try
+    {
+        _ = AgentAtlasInspectionGateway.Execute(toolSha, toolSource,
+            badInput);
+        Check(false, "host allowed an invalid inspection request");
+    }
+    catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+    {
+        Check(true, "host inspection dispatcher independently rejects bad requests");
+    }
+}
+
 // M4: only Roslyn-resolved, source-backed relationships may become graph edges.
 var semanticFiles = new[]
 {
