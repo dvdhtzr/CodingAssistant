@@ -363,3 +363,20 @@
 @media (prefers-reduced-motion: reduce) {
   .engineering-run-dot { animation: none; }
 }
+
+/* Keep a fixed engineering ledger viewport while saved assignments arrive.
+   Scrolling inside the list is intentional; moving the full page isn't. */
+.engineering-workspace[data-has-run="true"] .engineering-task-board.engineering-tasks {
+  height: 238px;
+  max-height: 238px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.engineering-workspace .engineering-now-working {
+  min-height: 38px;
+  max-height: 38px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
