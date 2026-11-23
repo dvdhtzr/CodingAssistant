@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
 import { CommandActivity } from './CommandActivity';
+import { WorkTeamStrip } from './WorkTeamStrip';
 import { TeamDestination, QualityDestination, SkillsDestination, HistoryDestination } from './MissionDestinations';
 import { WorkbenchInspector, WorkbenchSidebar, ProjectSwitcher,
   type WorkbenchView } from './Workbench';
@@ -381,7 +382,7 @@ export default function App() {
         <span className="wb-mark" aria-hidden="true"><span>◆</span></span>
         <div>
           <h1>CodingAssistant</h1>
-          <p><span>MISSION CONTROL</span><span aria-hidden="true"> / </span>
+          <p><span>CODINGASSISTANT</span><span aria-hidden="true"> / </span>
             <span>LOCAL ENGINEERING ENVIRONMENT</span></p>
         </div>
       </div>
@@ -398,7 +399,7 @@ export default function App() {
     {!token && sessionMode === 'failed' && <section className="panel login"
       role="alert">
       <h2>Local connection unavailable</h2>
-      <p className="hint">Mission Control could not establish a secure local
+      <p className="hint">CodingAssistant could not establish a secure local
         browser session. Open this app at <code>http://127.0.0.1:5098</code>,
         confirm the API is running, then retry. No token entry is needed.</p>
       <button className="primary" type="button"
@@ -519,6 +520,8 @@ export default function App() {
         </section>}
         {view === 'command' && taskView && <CommandActivity
           token={token} task={taskView.task} onNavigate={setView} />}
+        {taskView && view === 'work' && <WorkTeamStrip token={token}
+          taskId={taskId} onOpen={() => setView('command')}/>} 
         {taskView && <div hidden={view !== 'work'}>
           <InterviewStudio key={taskView.task.id}
             token={token} task={taskView.task} />
