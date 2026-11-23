@@ -134,6 +134,10 @@ test('Command gives a next action but no permission or fabricated verification',
   }));
   assert.match(html, /Agent Activity Board/);
   assert.match(html, /Recent activity/);
+  assert.match(html, /Team Console/);
+  assert.match(html, /Handoffs/);
+  assert.match(html, /TechnicalLead.*SoftwareEngineer/s);
+  assert.doesNotMatch(html, /MISSION STATE|ACTIVE MISSION|NEXT HANDOFF · SOFTWARE ENGINEER/);
   assert.match(html, /Inspect ongoing engineering/);
   assert.match(html, /Recorded running/);
   assert.match(html, /Work item W1/);
@@ -290,9 +294,9 @@ test('incomplete server source appears as Software Engineer work, not a complete
   }));
   assert.match(html, /Engineering needs attention/);
   assert.match(html, /Open engineering work order/);
-  assert.match(html, /NEXT HANDOFF · SOFTWARE ENGINEER/);
-  assert.match(html, /Project source is incomplete/);
-  assert.match(html, /Inspect source issues/);
+  assert.match(html, /Source needs attention:/);
+  assert.match(html, /blocking completeness issue/);
+  assert.match(html, /Inspect source/);
   assert.match(html, /Agent Activity Board/);
   assert.doesNotMatch(html, /Verified application|build passed|Tests passed/);
 });
