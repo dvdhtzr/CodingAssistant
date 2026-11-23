@@ -218,6 +218,12 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         // inside message.content even when think:false. Use ONLY the content
         // after a properly terminated reasoning block as the proposed answer.
         // Never save or expose anything from the thinking section.
+        // Engineering answers are JSON. A real source string can itself
+        // contain literal "<think>" markup; do not mistake a tag inside a
+        // syntactically JSON-prefixed answer for hidden model reasoning.
+        if (purpose == MafAgentPurpose.SoftwareEngineer &&
+            finalText.TrimStart().StartsWith("{", StringComparison.Ordinal))
+            return finalText.Trim();
         return purpose is MafAgentPurpose.Specification or
             MafAgentPurpose.SoftwareEngineer
             ? StripClosedThinkingPrefix(finalText) : finalText;
