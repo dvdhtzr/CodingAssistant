@@ -686,12 +686,12 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "document.getElementById('save').addEventListener('click', () => save(false));";
     var correctedHandler =
         "document.getElementById('save').addEventListener('click', () => save(true));";
-    var largeScript = "const marker = 'preserve-all-existing-state';\\n" +
-        new string('x', 24000) + "\\n" + brokenHandler + "\\n" +
-        "const footer = 'preserve-footer';\\n";
+    var largeScript = "const marker = 'preserve-all-existing-state';\n" +
+        new string('x', 24000) + "\n" + brokenHandler + "\n" +
+        "const footer = 'preserve-footer';\n";
     var savedRepairFiles = new[] {
         new EngineeringSourceFile("index.html", "Existing approved entry point",
-            "<!doctype html><html><body><script src='app.js'></script></body></html>\\n",
+            "<!doctype html><html><body><script src='app.js'></script></body></html>\n",
             new string('1', 64), "create-ui", "2026-11-22T00:00:00Z"),
         new EngineeringSourceFile("app.js", "Original interactive behavior",
             largeScript, new string('2', 64), "create-ui", "2026-11-22T00:00:00Z")
