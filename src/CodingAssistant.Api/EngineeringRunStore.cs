@@ -551,6 +551,58 @@ public sealed class EngineeringRunStore(
         tx.Commit();
     }
 
+    /// <summary>
+    /// Model-free, bounded rejection metadata for a single authorized active
+    /// assignment. Never persist model output, generated source or prompt text.
+    /// A failure can now be diagnosed after the third rejected response.
+    /// </summary>
+    public void RecordOutputRejection(string taskId, string runId,
+        string workItemId, EngineeringOutputRejection rejection)
+    {
+        ValidId(taskId);
+        ValidId(runId);
+        if (rejection.Attempt is < 1 or > 3 ||
+            rejection.Category is not (
+                "EMPTY_RESPONSE" or "OUTPUT_TOO_LONG" or "ROOT_SHAPE" or
+                "EXTRA_FIELDS" or "SUMMARY" or "FILES_COUNT" or
+                "FILE_SHAPE" or "FILE_EXTRA_FIELDS" or "FILE_PATH" or
+                "FILE_PURPOSE" or "FILE_CONTENT" or "VERIFICATION_NOTES" or
+                "SOURCE_SYNTAX" or "SOURCE_CONTRACT" or "JSON_SYNTAX" or
+                "STATIC_WEB_PATH" or "STATIC_WEB_ENTRY" or
+                "REPAIR_SCOPE" or "OUTPUT_TRUNCATED" or
+                "MODEL_THINKING_ONLY" or "EMPTY_OR_INVALID_RESPONSE"))
+            throw new StoreFailure("INVALID_INPUT");
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var job = Find(db, tx, runId);
+        if (job is null || job.TaskId != taskId)
+            throw new StoreFailure("NOT_FOUND");
+        if (job.State != "Running")
+            throw new StoreFailure("INVALID_STATE");
+        RequireBinding(db, tx, job);
+        if (TaskStore.Scalar(db, tx, """
+            SELECT 1 FROM engineering_run_tasks
+            WHERE run_id=@run AND work_item_id=@item AND state='Running'
+            """, ("@run", runId), ("@item", workItemId)) is null)
+            throw new StoreFailure("INVALID_STATE");
+        var previous = 0;
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT detail FROM engineering_run_events
+            WHERE run_id=@run AND kind='EngineerOutputRejected'
+            """, ("@run", runId)))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                if (reader.GetString(0).StartsWith(workItemId + ":",
+                    StringComparison.Ordinal))
+                    previous++;
+        if (previous + 1 != rejection.Attempt)
+            throw new StoreFailure("INVALID_STATE");
+        Event(db, tx, runId, "EngineerOutputRejected",
+            workItemId + ": attempt " + rejection.Attempt + "/3, category " +
+            rejection.Category + "; no source saved for this attempt");
+        tx.Commit();
+    }
+
     public AtlasSourceEvent? CompleteTask(string taskId, string runId, string workItemId,
         EngineeringChangeSet changes)
     {
