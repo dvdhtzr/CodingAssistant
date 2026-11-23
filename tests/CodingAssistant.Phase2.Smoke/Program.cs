@@ -2474,6 +2474,7 @@ try
             new string('f', 32))))
         Check(deniedResume.StatusCode != HttpStatusCode.Accepted,
             "resume rejects foreign or nonexistent source run");
+    var engineerCallsBeforeResume = softwareModel.AssignedIds.Count;
     string resumedRunId;
     using (var resumed = await Post(client, engineeringPath,
         new StartEngineeringRunRequest(2, secondPlanHash, resumeSource.Id)))
@@ -2506,7 +2507,7 @@ try
           resumedDone.Events.First().Kind == "EngineeringRunResumed" &&
           resumedDone.Events.Count(e => e.Kind == "EngineeringTaskStarted") == 1 &&
           resumedDone.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 1 &&
-          softwareModel.AssignedIds.Skip(2).SequenceEqual(["timer-state"]),
+          softwareModel.AssignedIds.Skip(engineerCallsBeforeResume).SequenceEqual(["timer-state"]),
         "resume carries completed work and asks MAF to implement only failed assignment");
     var unchangedCheckpoint = engineeringStore.Get(taskBound.Id, resumeSource.Id);
     Check(unchangedCheckpoint.Job.State == "Failed" &&
