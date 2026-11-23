@@ -119,6 +119,7 @@ test('live updates do not move existing nodes or hijack the graph camera', async
     });
     const follow = atlas.getByRole('checkbox', { name: 'Follow build' });
     assert.equal(await follow.isChecked(), false);
+    await atlas.getByRole('checkbox', { name: 'Methods' }).check();
     const existing = graph.getByRole('button', { name: 'Class: Demo.TaskService' });
     const original = await existing.getAttribute('transform');
     const originalCamera = await graph.locator('g[transform]').first()
