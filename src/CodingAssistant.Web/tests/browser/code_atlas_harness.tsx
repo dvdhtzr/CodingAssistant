@@ -4,6 +4,8 @@ import { CodeAtlasPanel, type AtlasSnapshot } from '../../src/CodeAtlasPanel';
 import { useEngineeringRun, type EngineerFile } from '../../src/EngineeringWorkspace';
 import '../../src/styles.css';
 import '../../src/code-atlas.css';
+import '../../src/mission-control.css';
+import '../../src/agent-presence.css';
 import '../../src/design-system.css';
 
 const runId = 'a'.repeat(32);
