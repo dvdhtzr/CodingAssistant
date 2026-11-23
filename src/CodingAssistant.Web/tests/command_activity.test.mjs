@@ -12,6 +12,7 @@ let CommandActivityView;
 let CommandDrawer;
 let buildCommandDecisionQueue;
 let DecisionQueueView;
+let collaborationEvidence;
 const time1 = '2026-11-22T12:01:00Z';
 const time2 = '2026-11-22T12:02:00Z';
 const agent = (id, role) => ({
@@ -60,10 +61,52 @@ before(async () => {
   ({ commandActivity, commandAgents, commandJourney, CommandActivityView } =
     await vite.ssrLoadModule('/src/CommandActivity.tsx'));
   ({ CommandDrawer } = await vite.ssrLoadModule('/src/CommandDrawer.tsx'));
+  ({ collaborationEvidence } = await vite.ssrLoadModule('/src/MissionDestinations.tsx'));
   ({ buildCommandDecisionQueue, DecisionQueueView } =
     await vite.ssrLoadModule('/src/DecisionQueue.tsx'));
 });
 after(async () => { if (vite) await vite.close(); });
+
+test('agent collaboration trail requires saved exact-source investigation and QA receipts', () => {
+  assert.deepEqual(collaborationEvidence(null), {
+    inspections: 0, repairState: null, qaState: null, qaReceived: false,
+  });
+  const data = {
+    engineering: {
+      job: { id: 'a'.repeat(32), state: 'Generated',
+        planSha256: 'b'.repeat(64) },
+      events: [
+        { sequence: 2, kind: 'EngineerAtlasInspected',
+          detail: 'Host used atlas.find_symbols', createdUtc: time1 },
+        { sequence: 3, kind: 'EngineeringTaskCompleted',
+          detail: 'Saved source', createdUtc: time2 },
+      ],
+    },
+    repair: { cycle: { engineeringRunId: 'a'.repeat(32),
+      qaReviewId: 'c'.repeat(32), state: 'QaReviewed', attempt: 1 } },
+    qa: {
+      job: { id: 'c'.repeat(32), state: 'Reviewed',
+        engineeringRunId: 'a'.repeat(32), planSha256: 'b'.repeat(64) },
+      events: [{ sequence: 2, kind: 'QaReceivedEngineerInspectionEvidence',
+        detail: 'Host-backed receipt', createdUtc: time2 }],
+      reports: [],
+    },
+    handoffs: [],
+  };
+  assert.deepEqual(collaborationEvidence(data), {
+    inspections: 1, repairState: 'QaReviewed',
+    qaState: 'Reviewed', qaReceived: true,
+  });
+  data.qa.job.engineeringRunId = 'old-run-id';
+  data.repair.cycle.engineeringRunId = 'old-run-id';
+  assert.deepEqual(collaborationEvidence(data), {
+    inspections: 1, repairState: null, qaState: null, qaReceived: false,
+  });
+  // An unrelated or old approval hash must not look like current QA.
+  data.qa.job.engineeringRunId = data.engineering.job.id;
+  data.qa.job.planSha256 = 'd'.repeat(64);
+  assert.equal(collaborationEvidence(data).qaReceived, false);
+});
 
 test('agent status is host-backed, not fabricated presence', () => {
   const data = evidence();
