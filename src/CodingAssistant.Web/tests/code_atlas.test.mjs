@@ -77,9 +77,9 @@ test('live growth preserves positions of existing source symbols', () => {
 test('new source arrival markers do not flash and live follow starts disabled', () => {
   const panel = readFileSync('src/CodeAtlasPanel.tsx', 'utf8');
   const css = readFileSync('src/code-atlas.css', 'utf8');
-  assert.match(panel, /\\[followBuild, setFollowBuild\\] = useState\\(false\\)/);
+  assert.match(panel, /\[followBuild, setFollowBuild\] = useState\(false\)/);
   assert.doesNotMatch(css, /@keyframes atlas-arrival/);
-  assert.doesNotMatch(css, /\\.atlas-node\\.atlas-new \\.atlas-node-halo\\{[^}]*animation:/);
+  assert.doesNotMatch(css, /\.atlas-node\.atlas-new \.atlas-node-halo\{[^}]*animation:/);
 });
 
 test('JS/TS structural nodes remain source-backed and method toggle is real', () => {
