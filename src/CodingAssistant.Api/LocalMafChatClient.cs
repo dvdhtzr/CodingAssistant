@@ -110,15 +110,17 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
                 return new ChatResponse(new ChatMessage(
                     ChatRole.Assistant, ReadAssistantContent(payload, purpose)));
             }
-            catch (StoreFailure error) when (purpose == MafAgentPurpose.Specification &&
+            catch (StoreFailure error) when (
+                purpose is MafAgentPurpose.Specification or
+                    MafAgentPurpose.SoftwareEngineer &&
                 error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
                     "MODEL_OUTPUT_TRUNCATED")
             {
                 // Metadata only: no interview text, answer content, thinking,
                 // credentials or full Ollama response is written to logs.
                 Console.Error.WriteLine(
-                    "Ollama specification output: " + SafeCompletionSummary(payload) +
-                    " result=" + error.Code);
+                    "Ollama " + purpose + " output: " +
+                    SafeCompletionSummary(payload) + " result=" + error.Code);
                 throw;
             }
         }
@@ -216,7 +218,8 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         // inside message.content even when think:false. Use ONLY the content
         // after a properly terminated reasoning block as the proposed answer.
         // Never save or expose anything from the thinking section.
-        return purpose == MafAgentPurpose.Specification
+        return purpose is MafAgentPurpose.Specification or
+            MafAgentPurpose.SoftwareEngineer
             ? StripClosedThinkingPrefix(finalText) : finalText;
     }
 
