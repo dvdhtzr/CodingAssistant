@@ -467,6 +467,16 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               !final.Contains("PRIVATE reasoning", StringComparison.Ordinal),
             "Software Engineer accepts only JSON after CLOSED Qwen thinking prefix");
     }
+    var literalThink = goodSource.Replace(
+        "<button>Compare</button>", "<span><think>literal HTML</think></span>",
+        StringComparison.Ordinal);
+    var literalPayload = JsonSerializer.Serialize(new {
+        done_reason = "stop",
+        message = new { role = "assistant", content = literalThink }
+    });
+    Check(LocalMafChatClient.ReadAssistantContent(
+        literalPayload, MafAgentPurpose.SoftwareEngineer) == literalThink,
+        "literal think-like markup inside a JSON string is not stripped as reasoning");
     foreach (var response in new[] {
         "<think>never closed\n" + goodSource,
         "<think>private</think><think>restarted</think>" + goodSource
