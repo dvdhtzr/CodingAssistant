@@ -73,6 +73,17 @@ script execution, filesystem access or arbitrary tool/command handler
 in any of these five agents. That is intentional until security
 qualification is completed.
 
+**M8.16 additive capability:** The Software Engineer may request one of three
+narrowly host-brokered, read-only Code Atlas inspections of already saved
+source (symbol search, explicit relationships, source excerpt). A validated
+JSON request is handled by the host, and evidence is returned to the agent
+in the next MAF turn. Only two requests per approved task are allowed.
+The local Ollama adapter still denies native function tools, and no engineer
+or QA agent gets shell, build, network, installation or arbitrary filesystem
+access. Host-issued observations are recorded in the owner-private run ledger.
+See CODE_ATLAS.md section M8.16. This is an observe/act loop, not a qualified
+autonomous coding executor.
+
 References:
 - https://agentskills.io/specification
 - https://www.anthropic.com/research/equipping-agents-for-the-real-world-with-agent-skills
