@@ -72,9 +72,13 @@ export function SpecificationDraftFeedback({ error, drafting }: {
   </>;
 }
 
-export function InterviewStudio({ token, task }: {
+export function InterviewStudio({ token, task, studioCanvas = false,
+  focusRequest, onStageSelected }: {
   token: string;
   task: TaskItem;
+  studioCanvas?: boolean;
+  focusRequest?: { stage: JourneyId; revision: number } | null;
+  onStageSelected?: (stage: JourneyId) => void;
 }) {
   const [snapshot, setSnapshot] = useState<InterviewSnapshot | null>(null);
   const [chosenModel, setChosenModel] = useState('');
@@ -101,17 +105,18 @@ export function InterviewStudio({ token, task }: {
     setExpanded(current => showAllStages ? toggleJourneyStage(current, id) : id);
   }, [showAllStages]);
   const navigateToStage = useCallback((id: JourneyId) => {
-    // A navigation control must reveal the actual work, even when the stage
-    // is already selected. Never jump back to the journey picker instead.
+    // Explicit stage navigation never changes approvals or workflow state.
     manuallySelected.current = true;
     setExpanded(id);
+    // The focused studio owns its own viewport; never move the entire page.
+    if (studioCanvas) return;
     window.requestAnimationFrame(() => {
       const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
       document.getElementById('journey-panel-' + id)?.scrollIntoView({
         block: 'start', behavior: reducedMotion ? 'auto' : 'smooth',
       });
     });
-  }, []);
+  }, [studioCanvas]);
   const reportArchitecture = useCallback((step: JourneyStep) => {
     setArchitectureStep(previous => previous.tone === step.tone &&
       previous.status === step.status ? previous : step);
@@ -274,10 +279,21 @@ export function InterviewStudio({ token, task }: {
   }, [snapshot, spec?.status, architectureStep.tone, planStep.tone,
     generationStep.tone, deliveryStep.tone]);
 
+  useEffect(() => {
+    if (!focusRequest) return;
+    manuallySelected.current = true;
+    setExpanded(focusRequest.stage);
+  }, [focusRequest]);
+  useEffect(() => {
+    if (expanded) onStageSelected?.(expanded);
+  }, [expanded, onStageSelected]);
+
   const currentStep = steps.find(step => step.id === expanded) ?? discoveryStep;
   return <div className={'journey-shell' +
-    (showAllStages ? ' journey-shell--expanded' : ' journey-shell--focused')}>
-    <section className="mc-work-focus" aria-label="Focused project work">
+    (showAllStages ? ' journey-shell--expanded' : ' journey-shell--focused') +
+    (studioCanvas ? ' ca-studio-journey' : '')}>
+    <section className={studioCanvas ? 'ca-studio-stagebar' : 'mc-work-focus'}
+      aria-label="Focused project work">
       <div className="mc-work-focus-heading">
         <div><span className="wb-kicker">WORK / CURRENT STEP</span>
           <h2>{currentStep.title}</h2>
@@ -285,6 +301,15 @@ export function InterviewStudio({ token, task }: {
         <span className={'journey-strip-current journey-' + currentStep.tone}>
           {currentStep.status}</span>
       </div>
+      {studioCanvas ? <nav className="ca-studio-stage-tabs" aria-label="Project work stages">
+        {steps.map((step, index) => <button type="button" key={step.id}
+          className={'ca-studio-stage-tab' + (expanded === step.id ? ' is-selected' : '')}
+          data-tone={step.tone}
+          aria-current={expanded === step.id ? 'step' : undefined}
+          onClick={() => navigateToStage(step.id)}>
+          <span>{String(index + 1).padStart(2, '0')}</span>{step.title}
+        </button>)}
+      </nav> : <>
       <ol className="ca-work-track" aria-label="Build journey">
         {steps.map((step, index) => <li key={step.id}>
           <button type="button"
@@ -318,6 +343,7 @@ export function InterviewStudio({ token, task }: {
       </div>
       <p className="hint">Only the selected step is shown. Use the stage selector to
         review earlier decisions or continue work; no approvals happen automatically.</p>
+      </>}
     </section>
     {!!busy && <div className="activity" role="status" aria-live="polite">
       <div className="activity-heading">
@@ -508,7 +534,7 @@ export function InterviewStudio({ token, task }: {
       expanded={expanded === 'plan'} onExpand={openStage}
       onReady={planReady} onStageChange={reportPlan} />
     <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null}
-      expanded={expanded} onExpand={openStage}
+      expanded={expanded} onExpand={openStage} studioCanvas={studioCanvas}
       onStageChange={reportDraft} />
     <details className="mc-work-secondary">
       <summary>Project progress & technical history</summary>
