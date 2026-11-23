@@ -1017,6 +1017,7 @@ public static class ApiHost
                 "ARCHITECTURE_NOT_READY" or "ARCHITECTURE_CONFLICT" or
                 "ARCHITECTURE_PLAN_CONFLICT" or
                 "STALE_DECISION" or "STALE_IMPLEMENTATION_PLAN" or
+                "STALE_SOURCE_RUN" or "RESUME_NOT_AVAILABLE" or
                 "SOURCE_CHANGED" or "SOURCE_SCOPE_CHANGED" or
                 "SMOKE_BUSY" or "SMOKE_ISOLATION_ACK_REQUIRED" or
                 "SPECIFICATION_NOT_APPROVED" or
