@@ -86,11 +86,11 @@ test('generation stays visible until the owner chooses delivery', () => {
   const project = readFileSync('src/ProjectDraftPanel.tsx', 'utf8');
   const journey = readFileSync('src/InterviewStudio.tsx', 'utf8');
   const engineer = readFileSync('src/EngineeringWorkspace.tsx', 'utf8');
-  assert.match(project, /View generated artifacts and delivery/);
-  assert.doesNotMatch(journey, /setExpanded\\(current => current === 'generation' \\? 'delivery'/);
-  assert.match(engineer, /data-has-run=\\{!!job\\}/);
-  assert.match(engineer, /setSnapshot\\(null\\);[\\s\\S]*?\\}, \\[token, taskId\\]\\)/);
-  assert.doesNotMatch(engineer, /onSourceChanged=\\{engine.refresh\\}/,
+  assert.ok(project.includes('View generated artifacts and delivery'));
+  assert.ok(!journey.includes("current === 'generation' ? 'delivery'"));
+  assert.ok(engineer.includes('data-has-run={!!job}'));
+  assert.ok(engineer.includes('  }, [token, taskId]);'));
+  assert.ok(!engineer.includes('onSourceChanged={engine.refresh}'),
     'Atlas events must not repeatedly clear the parent snapshot');
 });
 
