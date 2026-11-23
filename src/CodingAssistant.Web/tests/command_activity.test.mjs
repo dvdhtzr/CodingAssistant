@@ -13,6 +13,8 @@ let CommandDrawer;
 let buildCommandDecisionQueue;
 let DecisionQueueView;
 let collaborationEvidence;
+let workAgentStatuses;
+let WorkTeamStrip;
 const time1 = '2026-11-22T12:01:00Z';
 const time2 = '2026-11-22T12:02:00Z';
 const agent = (id, role) => ({
@@ -62,6 +64,8 @@ before(async () => {
     await vite.ssrLoadModule('/src/CommandActivity.tsx'));
   ({ CommandDrawer } = await vite.ssrLoadModule('/src/CommandDrawer.tsx'));
   ({ collaborationEvidence } = await vite.ssrLoadModule('/src/MissionDestinations.tsx'));
+  ({ workAgentStatuses, WorkTeamStrip } =
+    await vite.ssrLoadModule('/src/WorkTeamStrip.tsx'));
   ({ buildCommandDecisionQueue, DecisionQueueView } =
     await vite.ssrLoadModule('/src/DecisionQueue.tsx'));
 });
@@ -106,6 +110,25 @@ test('agent collaboration trail requires saved exact-source investigation and QA
   data.qa.job.engineeringRunId = data.engineering.job.id;
   data.qa.job.planSha256 = 'd'.repeat(64);
   assert.equal(collaborationEvidence(data).qaReceived, false);
+});
+
+test('compact Work agent strip reports only saved running roles and repair handoff', () => {
+  const data = evidence();
+  const status = workAgentStatuses({ ...data, repair: null });
+  assert.equal(status.find(x => x.agent.id === 'SoftwareEngineer').active, true);
+  assert.equal(status.find(x => x.agent.id === 'QaEngineer').active, false);
+  data.engineering.job.state = 'Generated';
+  const repair = { cycle: { state: 'QaRunning', attempt: 4 } };
+  const duringQa = workAgentStatuses({ ...data, repair });
+  assert.equal(duringQa.find(x => x.agent.id === 'SoftwareEngineer').active, false);
+  assert.equal(duringQa.find(x => x.agent.id === 'QaEngineer').active, true);
+  assert.equal(duringQa.find(x => x.agent.id === 'ProductOwner').active, false);
+  const html = renderToStaticMarkup(React.createElement(WorkTeamStrip, {
+    token: 'f'.repeat(64), taskId: task.id, onOpen: () => {},
+  }));
+  assert.match(html, /Agent collaboration status/);
+  assert.match(html, /Open Team Console/);
+  assert.doesNotMatch(html, /MISSION CONTROL|Mission Control/);
 });
 
 test('agent status is host-backed, not fabricated presence', () => {
