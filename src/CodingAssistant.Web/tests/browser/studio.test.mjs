@@ -116,11 +116,12 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
     const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
-    const team = studio.getByRole('complementary', { name: 'Engineering team' });
+    const team = studio.locator('aside.ca-studio-people');
     const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
-    const attention = studio.getByRole('complementary', {
-      name: 'Owner attention and handoffs',
-    });
+    const attention = studio.locator('aside.ca-studio-context');
+    assert.equal(await team.getAttribute('role'), 'complementary');
+    assert.equal(await attention.getAttribute('role'), 'complementary');
+    assert.equal(await attention.getAttribute('aria-label'), 'Owner attention and handoffs');
     await team.getByRole('button', { name: /QA Engineer/ }).waitFor();
     await attention.getByText('Repair cycle 6 stopped').waitFor();
     await canvas.getByRole('heading', { name: 'Independent QA & repair' }).waitFor();
@@ -165,9 +166,10 @@ test('narrow Studio has no page-level horizontal scrolling and keeps QA availabl
     await page.getByRole('heading', { name: 'Independent QA & repair' }).waitFor();
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth) <= 400,
       'narrow Studio must not force horizontal page scrolling');
-    const team = page.getByRole('complementary', { name: 'Engineering team' });
+    const team = page.locator('aside.ca-studio-people');
+    await team.getByRole('button', { name: /QA Engineer/ }).waitFor();
     assert.equal(await team.getByRole('button', { name: /QA Engineer/ }).count(), 1);
-    const context = page.getByRole('complementary', { name: 'Owner attention and handoffs' });
+    const context = page.locator('aside.ca-studio-context');
     const canvas = page.getByRole('region', { name: 'Focused engineering work' });
     const y1 = await canvas.boundingBox(), y2 = await context.boundingBox();
     assert.ok(y1 && y2 && y2.y >= y1.y + y1.height - 4,
