@@ -66,7 +66,9 @@ public sealed class RepairCycleCoordinator(
                     new RepairTaskContext(cycle.ProposalId, cycle.BaseSourceSha256,
                         cycle.Findings, allowed),
                     observation => engineering.RecordAtlasInspection(
-                        taskId, runId, workItemId, observation)), token);
+                        taskId, runId, workItemId, observation),
+                    rejection => engineering.RecordOutputRejection(
+                        taskId, runId, workItemId, rejection)), token);
             token.ThrowIfCancellationRequested();
             // Recheck model output independently of its claims and prompt.
             var safe = MafSoftwareEngineer.Parse(
