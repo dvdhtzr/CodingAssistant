@@ -139,6 +139,62 @@ test('live updates do not move existing nodes or hijack the graph camera', async
   }
 });
 
+test('engineering event refresh preserves the existing Code Atlas canvas', async () => {
+  const probePage = await browser.newPage({ viewport: { width: 1400, height: 980 } });
+  try {
+    await probePage.goto(page.url());
+    await probePage.getByRole('button', {
+      name: 'Show engineering refresh probe',
+    }).click();
+    const section = probePage.getByRole('region', {
+      name: 'Engineering refresh regression',
+    });
+    const receipt = section.getByTestId('refresh-receipt');
+    const canvas = section.locator('[data-testid="refresh-probe-atlas"] .atlas-canvas');
+    await canvas.waitFor();
+    await probePage.evaluate(() => {
+      window.__originalEngineeringCanvas = document.querySelector(
+        '[data-testid="refresh-probe-atlas"] .atlas-canvas');
+    });
+    const first = Number((await receipt.textContent()).replace('Refresh #', ''));
+    await section.getByRole('button', {
+      name: 'Refresh engineering snapshot',
+    }).click();
+    await probePage.waitForFunction(value => {
+      const receipt = document.querySelector('[data-testid="refresh-receipt"]');
+      return Number((receipt?.textContent ?? '').replace('Refresh #', '')) > value;
+    }, first);
+    assert.equal(await probePage.evaluate(() =>
+      window.__originalEngineeringCanvas?.isConnected &&
+      window.__originalEngineeringCanvas === document.querySelector(
+        '[data-testid="refresh-probe-atlas"] .atlas-canvas'),
+    ), true, 'refresh must not unmount or replace the live graph canvas');
+  } finally {
+    await probePage.close();
+  }
+});
+
+test('generation status indicators do not animate regardless of OS preferences', async () => {
+  const calmPage = await browser.newPage();
+  try {
+    await calmPage.goto(page.url());
+    const computed = await calmPage.evaluate(() => {
+      const classes = ['activity-dot', 'activity-scan', 'ca-stage-live'];
+      return classes.map(name => {
+        const element = document.createElement('span');
+        element.className = name;
+        document.body.append(element);
+        const animation = getComputedStyle(element).animationName;
+        element.remove();
+        return animation;
+      });
+    });
+    assert.deepEqual(computed, ['none', 'none', 'none']);
+  } finally {
+    await calmPage.close();
+  }
+});
+
 test('manual graph exploration disables follow-build focus stealing', async () => {
   const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   await atlas.getByRole('checkbox', { name: 'Follow build' }).check();
