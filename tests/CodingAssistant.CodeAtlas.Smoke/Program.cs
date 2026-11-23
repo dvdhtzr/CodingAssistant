@@ -1267,6 +1267,10 @@ Check(AgentAtlasInspectionGateway.TryParseRequest(
 Check(!AgentAtlasInspectionGateway.TryParseRequest(
     """{"summary":"A regular coding response.","files":[]}""", out _),
     "ordinary engineer source output is not hijacked as a tool request");
+Check(!AgentAtlasInspectionGateway.TryParseRequest(
+    """{"summary":"Code containing the literal text \"toolRequest\" is fine.","files":[{"path":"app.js","content":"const toolRequest = 1;"}]}""",
+    out _),
+    "source with a toolRequest literal is not interpreted as a tool invocation");
 foreach (var badTool in new[] {
     """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""",
     """{"toolRequest":{"name":"atlas.find_symbols","argument":"Widget","path":"../other"}}""",

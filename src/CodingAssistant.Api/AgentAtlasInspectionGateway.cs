@@ -29,14 +29,18 @@ public static class AgentAtlasInspectionGateway
         if (string.IsNullOrWhiteSpace(text) ||
             !text.Contains("\"toolRequest\"", StringComparison.Ordinal))
             return false;
-        if (text.Length > 1000) throw new StoreFailure("MODEL_OUTPUT_REJECTED");
         try
         {
             using var document = JsonDocument.Parse(text);
             var root = document.RootElement;
+            // A source changeset can legitimately contain a string whose
+            // text says "toolRequest"; only a TOP-LEVEL request is a tool
+            // call, never a string embedded inside generated source.
             if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("toolRequest", out var tool))
+                return false;
+            if (text.Length > 1000 ||
                 root.EnumerateObject().Count() != 1 ||
-                !root.TryGetProperty("toolRequest", out var tool) ||
                 tool.ValueKind != JsonValueKind.Object ||
                 tool.EnumerateObject().Count() != 2 ||
                 !tool.TryGetProperty("name", out var name) ||
