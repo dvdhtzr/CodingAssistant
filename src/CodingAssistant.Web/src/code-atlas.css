@@ -234,3 +234,18 @@
 .atlas-search-jumps button span{color:#9fb8c7;font-size:.65rem;min-width:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:630px){.atlas-search-jumps{grid-template-columns:1fr}}
+
+/* The live graph owns a fixed viewport. New files/symbols must not change the
+   page height (or make the owner's scroll position jump) during generation. */
+.atlas-workspace { height: min(54vh, 430px); min-height: 330px; }
+.atlas-canvas-wrap { height: 100%; min-height: 0; overflow: hidden; }
+.atlas-canvas { height: 100%; min-height: 0; flex: 1 1 0; }
+.atlas-graph-footer { flex: 0 0 auto; }
+.atlas-details { height: 100%; max-height: none; overflow: auto; overscroll-behavior: contain; }
+.atlas-loading-space { min-height: min(54vh, 430px); display: flex; align-items: center; }
+.atlas-panel { overflow-anchor: none; }
+@media(max-width:730px) {
+  .atlas-workspace { height: auto; min-height: 0; }
+  .atlas-canvas-wrap { height: 330px; min-height: 330px; }
+  .atlas-details { height: auto; max-height: 230px; }
+}
