@@ -39,6 +39,9 @@ public sealed class CodeAtlasAgentReadOnlyTools
                 StringComparer.Ordinal);
     }
 
+    public string SourceRevision => _graph.SourceRevision;
+    public string Coverage => _graph.Coverage;
+
     // The QA host may supply a short static symbol index as ordinary
     // evidence context while preserving the agent's NO-TOOLS contract.
     public IReadOnlyList<AtlasAgentSymbol> ListFileSymbols() =>

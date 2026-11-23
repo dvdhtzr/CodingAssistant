@@ -66,7 +66,9 @@ public sealed class QaReviewCoordinator(
                 // QA reads source but does not write into the engineering run.
                 var input = new QaReviewInput(objective, specification, plan,
                     architecture, source.Job, file, source.Files,
-                    source.Events);
+                    source.Events,
+                    observation => reviews.RecordAtlasInspection(
+                        review.TaskId, review.Id, file, observation));
                 var report = await reviewer.ReviewAsync(input, token);
                 token.ThrowIfCancellationRequested();
                 reviews.SaveFileReport(review.TaskId, review.Id, file, report);
