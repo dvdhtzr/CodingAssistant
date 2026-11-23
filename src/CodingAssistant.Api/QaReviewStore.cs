@@ -362,6 +362,77 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         tx.Commit();
     }
 
+    /// <summary>
+    /// Save only host-issued, one-file QA inspection metadata. The source and
+    /// approved plan are rechecked in the same transaction as the event; QA
+    /// remains read-only and no inspection can certify a build or test result.
+    /// </summary>
+    public void RecordAtlasInspection(string taskId, string reviewId,
+        EngineeringSourceFile file, AtlasInspectionObservation observation)
+    {
+        ValidateId(taskId); ValidateId(reviewId);
+        ArgumentNullException.ThrowIfNull(file);
+        ArgumentNullException.ThrowIfNull(observation);
+        if (observation.Name is not ("atlas.find_symbols" or
+            "atlas.get_relationships" or "atlas.source_excerpt") ||
+            observation.ResultCount is < 0 or > 16 ||
+            observation.SourceRevision is null ||
+            observation.SourceRevision.Length != 64 ||
+            !observation.SourceRevision.All(ch =>
+                ch is >= '0' and <= '9' or >= 'a' and <= 'f'))
+            throw new StoreFailure("INVALID_INPUT");
+
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var job = Find(db, tx, reviewId);
+        if (job is null || job.TaskId != taskId)
+            throw new StoreFailure("NOT_FOUND");
+        if (job.State != "Running")
+            throw new StoreFailure("INVALID_STATE");
+        RequireSource(db, tx, job);
+        var sha = TaskStore.Scalar(db, tx, """
+            SELECT sha256 FROM engineering_run_files
+            WHERE run_id=@run AND path=@path
+            """, ("@run", job.EngineeringRunId), ("@path", file.Path));
+        if (sha is null || sha != file.Sha256)
+            throw new StoreFailure("SOURCE_CHANGED");
+
+        // The tool's revision is independently recomputed from the actual
+        // saved files, not accepted from the model or a caller's narration.
+        var savedFiles = new List<EngineeringSourceFile>();
+        using (var cmd = TaskStore.Command(db, tx, """
+            SELECT path,purpose,content,sha256,work_item_id,updated_utc
+            FROM engineering_run_files WHERE run_id=@run ORDER BY path
+            """, ("@run", job.EngineeringRunId)))
+        using (var reader = cmd.ExecuteReader())
+            while (reader.Read())
+                savedFiles.Add(new EngineeringSourceFile(
+                    reader.GetString(0), reader.GetString(1),
+                    reader.GetString(2), reader.GetString(3),
+                    reader.GetString(4), reader.GetString(5)));
+        if (CodeAtlasIndexer.Index(job.EngineeringRunId, savedFiles)
+            .SourceRevision != observation.SourceRevision)
+            throw new StoreFailure("SOURCE_CHANGED");
+
+        var fileKey = Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(file.Path + "\n" + file.Sha256)))
+            .ToLowerInvariant();
+        var already = TaskStore.Scalar(db, tx, """
+            SELECT COUNT(*) FROM qa_review_events
+            WHERE qa_id=@id AND kind='QaAtlasInspected'
+                AND detail LIKE @fileKey
+            """, ("@id", reviewId), ("@fileKey", "% " + fileKey + " %"));
+        if (int.TryParse(already, out var count) &&
+            count >= AgentAtlasInspectionGateway.MaximumRequestsPerTask)
+            throw new StoreFailure("ATLAS_TOOL_LIMIT");
+
+        Event(db, tx, reviewId, "QaAtlasInspected",
+            "QaEngineer used " + observation.Name + " file-key " +
+            fileKey + " source " + observation.SourceRevision[..12] +
+            " (" + observation.ResultCount + " static result(s); not tested)");
+        tx.Commit();
+    }
+
     public void Finish(string taskId, string reviewId, bool success, string? code)
     {
         ValidateId(taskId); ValidateId(reviewId);
