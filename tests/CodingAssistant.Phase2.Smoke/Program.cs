@@ -2495,6 +2495,17 @@ try
         }
         await Task.Delay(25);
     }
+    Console.WriteLine("Resume probe (source-only): state=" +
+        (resumedDone?.Job.State ?? "NO_TERMINAL_STATE") +
+        " error=" + (resumedDone?.Job.ErrorCode ?? "none") +
+        " tasks=" + string.Join(",", resumedDone?.Tasks.Select(t => t.State) ??
+            Enumerable.Empty<string>()) +
+        " files=" + string.Join(",", resumedDone?.Files.Select(f => f.Path) ??
+            Enumerable.Empty<string>()) +
+        " events=" + string.Join(",", resumedDone?.Events.Select(e => e.Kind) ??
+            Enumerable.Empty<string>()) +
+        " modelCalls=" + string.Join(",",
+            softwareModel.AssignedIds.Skip(engineerCallsBeforeResume)));
     Check(resumedDone?.Job.State == "Generated" &&
           resumedDone.Tasks.Count == 2 &&
           resumedDone.Tasks.All(item => item.State == "Completed") &&
