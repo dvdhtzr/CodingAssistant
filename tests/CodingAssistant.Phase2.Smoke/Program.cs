@@ -717,6 +717,19 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           fakeFactory.QaRoleSeen && fakeFactory.NoTools &&
           fakeFactory.SourceSeen,
         "fifth real MAF agent independently inspects exact source without tools");
+    var investigation = new EngineeringRunEvent(6,
+        "EngineerAtlasInspected",
+        "SoftwareEngineer used atlas.find_symbols on accepted source " +
+            "revision 0123456789ab (2 results)",
+        "2026-11-21T00:02:20Z");
+    var reassessed = await new MafQaEngineer(fakeFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file], [investigation]),
+        CancellationToken.None);
+    Check(reassessed.Findings.Count == 1 &&
+          fakeFactory.InspectionContextSeen &&
+          fakeFactory.NoTools,
+        "independent QA receives bounded host-logged engineering investigation context without gaining tools");
 }
 
 // UX-6B: a pure host-owned static preflight catches the frozen Calculation
@@ -1913,6 +1926,12 @@ try
         break;
     }
     Check(partialReport?.Job.State == "Reviewed" &&
+          partialReport.Events.Any(e =>
+              e.Kind == "QaReceivedEngineerInspectionEvidence" &&
+              e.Detail.Contains("1 saved source-inspection",
+                  StringComparison.Ordinal) &&
+              e.Detail.Contains("no build or tests executed",
+                  StringComparison.Ordinal)) &&
           partialReport.SourceState == "Failed" &&
           partialReport.Reports.Count == 1 &&
           partialReport.Reports[0].Path == "index.html" &&
@@ -2620,6 +2639,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public List<string> Models { get; } = [];
     public bool QaRoleSeen { get; private set; }
     public bool SourceSeen { get; private set; }
+    public bool InspectionContextSeen { get; private set; }
     public bool NoTools { get; private set; }
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
@@ -2644,6 +2664,11 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
             parent.SourceSeen = history.Any(m => m.Role.Value == "user" &&
                 m.Text?.Contains("<html><body><button>Save",
                     StringComparison.Ordinal) == true);
+            parent.InspectionContextSeen = history.Any(m =>
+                m.Role.Value == "user" &&
+                m.Text?.Contains("EngineerAtlasInspected",
+                    StringComparison.Ordinal) == true &&
+                m.Text.Contains("0123456789ab", StringComparison.Ordinal));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
             return Task.FromResult(new ChatResponse(new ChatMessage(
                 ChatRole.Assistant,
