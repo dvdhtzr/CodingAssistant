@@ -496,7 +496,7 @@ var javaTypeUnsafe = CodeAtlasIndexer.Index("java-type-unsafe", new[]
         package other;
         interface Ambiguous {}
         """)
-};
+});
 Check(!javaTypeUnsafe.Edges.Any(e =>
     e.Kind is "Inherits" or "Implements") &&
     javaTypeUnsafe.Diagnostics.Any(d => d.StartsWith(
