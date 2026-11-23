@@ -458,7 +458,7 @@ public static class CodeAtlasEcmaIndexer
 
 
     private sealed record DirectFunction(string Name, int BodyOpen,
-        int BodyClose, bool HasParameters);
+        int BodyClose, int ParametersOpen, int ParametersClose);
 
     // M8.13: Only named file-scoped declarations with ordinary brace bodies.
     // No arrow/callback, function expression, overload or inferred scope.
@@ -480,15 +480,82 @@ public static class CodeAtlasEcmaIndexer
             var open = ParametersAt(t, i + 2, t.Count);
             if (open < 0) continue;
             var close = Closing(t, open, "(", ")", t.Count);
-            if (close < 0 || close + 1 >= t.Count ||
-                t[close + 1].Text != "{") continue;
+            if (close < 0 || close + 1 >= t.Count) continue;
             var bodyOpen = close + 1;
+            // Only a simple TS return type is supported.
+            if (bodyOpen + 2 < t.Count && t[bodyOpen].Text == ":" &&
+                Word(t[bodyOpen + 1].Text) &&
+                t[bodyOpen + 2].Text == "{")
+                bodyOpen += 2;
+            if (t[bodyOpen].Text != "{") continue;
             var end = Closing(t, bodyOpen, "{", "}", t.Count);
             if (end < 0) continue;
             found.Add(new DirectFunction(t[i + 1].Text, bodyOpen,
-                end, close != open + 1));
+                end, open, close));
         }
         return found;
+    }
+
+
+    // Restrict supported parameters to names, optional markers and simple
+    // one-token type annotations. Defaults, generic/qualified types and
+    // destructuring fail closed to avoid missing shadowing bindings.
+    private static HashSet<string>? SimpleParameters(
+        IReadOnlyList<Token> t, DirectFunction caller)
+    {
+        var parameters = new HashSet<string>(StringComparer.Ordinal);
+        var i = caller.ParametersOpen + 1;
+        while (i < caller.ParametersClose)
+        {
+            if (!Word(t[i].Text) ||
+                t[i].Text is "this" or "new" or "return" or
+                    "const" or "let" or "var")
+                return null;
+            var name = t[i++].Text;
+            if (!parameters.Add(name)) return null;
+            if (i < caller.ParametersClose && t[i].Text == "?") i++;
+            if (i < caller.ParametersClose && t[i].Text == ":")
+            {
+                i++;
+                if (i >= caller.ParametersClose || !Word(t[i].Text))
+                    return null;
+                i++;
+            }
+            if (i == caller.ParametersClose) break;
+            if (t[i].Text != ",") return null;
+            i++;
+        }
+        return parameters;
+    }
+
+    // Top-level const arrow declarations are callee candidates, but not
+    // parsed arrow caller bodies. Require an immediate arrow token.
+    private static IReadOnlyList<string> ConstantArrows(
+        IReadOnlyList<Token> t)
+    {
+        var names = new List<string>();
+        for (var i = 0; i + 4 < t.Count; i++)
+        {
+            if (t[i].Depth != 0 || t[i].Text != "const" ||
+                !Word(t[i + 1].Text) || t[i + 2].Text != "=" ||
+                (i > 0 && t[i - 1].Text is not
+                    (";" or "}" or "export")))
+                continue;
+            var at = i + 3;
+            if (t[at].Text == "(")
+            {
+                var close = Closing(t, at, "(", ")",
+                    Math.Min(t.Count, i + 80));
+                if (close < 0 || close + 1 >= t.Count ||
+                    t[close + 1].Text != "=>")
+                    continue;
+            }
+            else if (!Word(t[at].Text) || at + 1 >= t.Count ||
+                t[at + 1].Text != "=>")
+                continue;
+            names.Add(t[i + 1].Text);
+        }
+        return names;
     }
 
     // The caller's lexical region may shadow or rebind any callee. Reject
@@ -824,13 +891,14 @@ public static class CodeAtlasEcmaIndexer
             }
         }
 
-        // M8.13: direct, unqualified call expressions at statement
-        // boundaries in zero-argument, top-level named function bodies.
-        // Targets must be uniquely declared same-file functions or named,
-        // value-imported, directly exported functions from a saved file.
+        // M8.13-M8.14: explicit, direct calls inside top-level named
+        // functions with safely parsed parameters. Targets may also be
+        // immutable const arrows in the same saved source graph.
         // Evidence is lexical source syntax, never runtime call proof.
         var direct = candidates.ToDictionary(f => f.Path,
             f => DirectFunctions(tokenCache[f.Path]), StringComparer.Ordinal);
+        var arrows = candidates.ToDictionary(f => f.Path,
+            f => ConstantArrows(tokenCache[f.Path]), StringComparer.Ordinal);
         var localNames = candidates.ToDictionary(f => f.Path, f =>
         {
             var t = tokenCache[f.Path];
@@ -883,6 +951,20 @@ public static class CodeAtlasEcmaIndexer
             return matches.Length == 1 ? matches[0] : null;
         }
 
+        bool UniqueCallable(string path, string name)
+        {
+            if (unsafeFiles.Contains(path) ||
+                rebound[path].Contains(name) ||
+                localNames[path].GetValueOrDefault(name) != 1)
+                return false;
+            var functions = direct[path].Count(f => f.Name == name);
+            var constants = arrows[path].Count(n => n == name);
+            if (functions + constants != 1) return false;
+            var node = FunctionNode(path, name);
+            return node is not null && (functions == 1 ||
+                node.Name == name + "(arrow)");
+        }
+
         foreach (var file in candidates)
         {
             if (unsafeFiles.Contains(file.Path)) continue;
@@ -897,18 +979,20 @@ public static class CodeAtlasEcmaIndexer
             var localDirect = direct[file.Path]
                 .GroupBy(f => f.Name, StringComparer.Ordinal)
                 .Where(g => g.Count() == 1 &&
-                    localNames[file.Path].GetValueOrDefault(g.Key) == 1 &&
+                    UniqueCallable(file.Path, g.Key) &&
                     !imported.Any(x => x.LocalName == g.Key))
                 .ToDictionary(g => g.Key, g => g.Single(),
                     StringComparer.Ordinal);
             foreach (var caller in direct[file.Path].Where(f =>
-                !f.HasParameters && localDirect.ContainsKey(f.Name) &&
-                !rebound[file.Path].Contains(f.Name)))
+                localDirect.ContainsKey(f.Name)))
             {
                 var callerNode = FunctionNode(file.Path, caller.Name);
                 if (callerNode is null) continue;
+                var parameters = SimpleParameters(t, caller);
+                if (parameters is null) continue;
                 var (unsafeScope, blocked) = CallShadows(t, caller);
                 if (unsafeScope) continue;
+                blocked.UnionWith(parameters);
 
                 for (var i = caller.BodyOpen + 1;
                     i + 1 < caller.BodyClose; i++)
@@ -929,7 +1013,8 @@ public static class CodeAtlasEcmaIndexer
                         t[end + 1].Text != ";") continue;
 
                     AtlasNode? target = null;
-                    if (localDirect.ContainsKey(t[i].Text))
+                    if (UniqueCallable(file.Path, t[i].Text) &&
+                        !imported.Any(b => b.LocalName == t[i].Text))
                         target = FunctionNode(file.Path, t[i].Text);
                     else if (importsByName.TryGetValue(t[i].Text,
                         out var binding) && !binding.TypeOnly)
@@ -937,10 +1022,7 @@ public static class CodeAtlasEcmaIndexer
                         var (targetPath, _) = Resolve(file.Path,
                             binding.Module, files);
                         if (targetPath is not null &&
-                            direct.TryGetValue(targetPath,
-                                out var candidatesInModule) &&
-                            candidatesInModule.Count(f =>
-                                f.Name == binding.Name) == 1 &&
+                            UniqueCallable(targetPath, binding.Name) &&
                             exported.TryGetValue(targetPath,
                                 out var directExports) &&
                             directExports.TryGetValue(binding.Name,
