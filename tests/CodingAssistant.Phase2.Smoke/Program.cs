@@ -2136,6 +2136,38 @@ try
           qaModel.ReviewedSourceStates.Last() == "Interrupted",
         "Interrupted saved source receives a clearly labeled partial review");
 
+    // A Windows launcher/API restart must not silently truncate the event
+    // ledger after the final completed assignment. Both the terminal code and
+    // event are committed atomically, while already saved source survives.
+    var recovered = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, recovered.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, recovered.Id, "timer-interface",
+        new EngineeringChangeSet("Saved a first file before restart.",
+            [new EngineeringFileChange("index.html", "Offline browser entry point",
+                "<!doctype html><html><body>Saved before restart</body></html>")],
+            ["Not executed"]));
+    engineeringStore.StartTask(taskBound.Id, recovered.Id, "timer-state");
+    var eventsBeforeRestart = engineeringStore.Get(taskBound.Id, recovered.Id).Events.Count;
+    engineeringStore.MarkInterruptedOnStartup();
+    var restartSnapshot = engineeringStore.Get(taskBound.Id, recovered.Id);
+    Check(restartSnapshot.Job.State == "Interrupted" &&
+          restartSnapshot.Job.ErrorCode == "PROCESS_INTERRUPTED" &&
+          restartSnapshot.Events.Count == eventsBeforeRestart + 1 &&
+          restartSnapshot.Events[^1].Sequence == eventsBeforeRestart + 1 &&
+          restartSnapshot.Events[^1].Kind == "EngineeringRunInterrupted" &&
+          restartSnapshot.Events[^1].Detail.Contains("PROCESS_INTERRUPTED",
+              StringComparison.Ordinal) &&
+          restartSnapshot.Tasks.Count == 2 &&
+          restartSnapshot.Tasks[0].State == "Completed" &&
+          restartSnapshot.Tasks[1].State == "Interrupted" &&
+          restartSnapshot.Files.Count == 1 &&
+          restartSnapshot.Files[0].Path == "index.html",
+        "restart interruption persists one terminal event and preserves committed source");
+    engineeringStore.MarkInterruptedOnStartup();
+    Check(engineeringStore.Get(taskBound.Id, recovered.Id).Events.Count ==
+          eventsBeforeRestart + 1,
+        "repeated startup recovery does not duplicate interruption events");
+
     // Even an approved plan does not make an older engineering submission
     // authoritative after a newer run exists; retain historical QA safely.
     var supersedingSource = engineeringStore.Start(taskBound.Id,
