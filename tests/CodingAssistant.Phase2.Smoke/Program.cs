@@ -2068,7 +2068,7 @@ try
               keptCycle.Cycle.Attempt == 1 &&
               keptCycle.Cycle.ProposalId == selectedRepairProposal.Id &&
               keptCycle.Cycle.BaseSourceSha256 ==
-                  repairOutcome.Cycle.BaseSourceSha256 &&
+                  repairOutcome!.Cycle.BaseSourceSha256 &&
               keptCycle.Engineering.Files.Count == repairOutcome.Engineering.Files.Count &&
               newSchema.Contains("attempt >= 1", StringComparison.OrdinalIgnoreCase) &&
               !newSchema.Contains("BETWEEN 1 AND 3", StringComparison.OrdinalIgnoreCase),
