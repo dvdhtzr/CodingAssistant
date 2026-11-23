@@ -1827,6 +1827,49 @@ try
               qaModel.ReviewedFiles.Count == 6,
             "QA cannot read an active engineering job even when it saved source");
     engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-state");
+    // M8.16: only a running, approved engineering task may persist host
+    // observations. Stored metadata never contains a model query or source.
+    var savedForAtlas = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
+    var hostObservation = AgentAtlasInspectionGateway.Execute(
+        approvedEngineerPlan.PlanSha256, savedForAtlas.Files,
+        new AtlasInspectionRequest("atlas.find_symbols", "index"));
+    engineeringStore.RecordAtlasInspection(
+        taskBound.Id, failedEngineerRun.Id, "timer-state",
+        new AtlasInspectionObservation(hostObservation.Name,
+            hostObservation.SourceRevision, hostObservation.ResultCount));
+    var inspectionLedger = engineeringStore.Get(
+        taskBound.Id, failedEngineerRun.Id);
+    Check(inspectionLedger.Events.Any(e =>
+        e.Kind == "EngineerAtlasInspected" &&
+        e.Detail.Contains("atlas.find_symbols", StringComparison.Ordinal) &&
+        e.Detail.Contains(hostObservation.SourceRevision[..12],
+            StringComparison.Ordinal) &&
+        !e.Detail.Contains("index", StringComparison.OrdinalIgnoreCase)),
+        "host-approved agent tool activity appears as private source-revision evidence");
+    try
+    {
+        engineeringStore.RecordAtlasInspection(taskBound.Id,
+            failedEngineerRun.Id, "timer-interface",
+            new AtlasInspectionObservation(hostObservation.Name,
+                hostObservation.SourceRevision, hostObservation.ResultCount));
+        Check(false, "finished task admitted an unrelated inspection");
+    }
+    catch (StoreFailure error) when (error.Code == "INVALID_STATE")
+    {
+        Check(true, "completed work items cannot forge later tool activity");
+    }
+    try
+    {
+        engineeringStore.RecordAtlasInspection(taskBound.Id,
+            failedEngineerRun.Id, "timer-state",
+            new AtlasInspectionObservation("shell.run",
+                hostObservation.SourceRevision, 1));
+        Check(false, "unlisted agent operation persisted");
+    }
+    catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+    {
+        Check(true, "tool ledger rejects operations outside approved read-only scope");
+    }
     engineeringStore.Finish(taskBound.Id, failedEngineerRun.Id, false, "MODEL_OUTPUT_REJECTED");
     var partialSource = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
     Check(partialSource.Job.State == "Failed" &&
