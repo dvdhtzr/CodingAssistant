@@ -1082,7 +1082,14 @@ var m814Graph = CodeAtlasIndexer.Index("ecma-parameter-call-run", m814Sources);
 var m814Calls = m814Graph.Edges.Where(e => e.Kind == "Calls").ToArray();
 Check(m814Graph.Coverage == "ECMA_STRUCTURE_ONLY" &&
     m814Calls.Length == 7,
-    "parameterized callers and immutable arrows yield seven direct call edges");
+    "parameterized callers and immutable arrows yield seven direct call edges: " +
+    "coverage=" + m814Graph.Coverage +
+    " count=" + m814Calls.Length +
+    " edges=" + string.Join(" | ", m814Calls.Select(e =>
+        m814Graph.Nodes.Single(n => n.Id == e.SourceId).Name +
+        " -> " + m814Graph.Nodes.Single(n => n.Id == e.TargetId).Name)) +
+    " nodes=" + string.Join(" | ", m814Graph.Nodes.Where(n =>
+        n.Kind == "Function").Select(n => n.Path + ":" + n.Name)));
 AtlasNode M814Function(string path, string name) =>
     m814Graph.Nodes.Single(n => n.Kind == "Function" &&
         n.Path == path && n.Name.StartsWith(name + "(",
