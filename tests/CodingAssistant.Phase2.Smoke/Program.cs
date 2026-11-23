@@ -639,6 +639,42 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               message.Contains("MODEL_THINKING_ONLY", StringComparison.Ordinal)),
         "MAF recovers from thinking-only reply without exposing private thoughts");
 
+    var launchTask = new ImplementationWorkItem(
+        "launch-preparation", "Launch Preparation and Testing",
+        "Prepare release setup documentation and source-only launch checklist.",
+        [], ["A release checklist describes manual verification steps"]);
+    var launchPlan = fakePlan with {
+        Outline = fakePlan.Outline with { Tasks = [launchTask] }
+    };
+    var launchFactory = new Phase4FakeMafFactory();
+    launchFactory.Responses.Enqueue(JsonSerializer.Serialize(new {
+        summary = "Prepared a source-only manual launch and verification checklist.",
+        files = new[] { new { path = "README.md",
+            purpose = "Complete launch checklist and manual testing guide",
+            content = "# Launch readiness\\nReview the saved website source, " +
+                "inspect authentication, and verify payment integration manually. " +
+                "No tests have been executed by the Software Engineer." } },
+        verificationNotes = new[] { "Independent QA must test the saved application" }
+    }));
+    var launchSource = await new MafSoftwareEngineer(launchFactory).ImplementAsync(
+        assignment with {
+            Plan = launchPlan, WorkItem = launchTask,
+            ExistingFiles = [
+                new EngineeringSourceFile("index.html", "Existing page",
+                    new string('x', 16000), new string('d', 64),
+                    "create-ui", "2026-11-23T00:00:00Z")
+            ]
+        }, CancellationToken.None);
+    var launchPrior = launchFactory.UserPrompts.Single(message =>
+        message.StartsWith("PREVIOUS SOURCE FILES", StringComparison.Ordinal));
+    Check(launchSource.Files.Single().Path == "README.md" &&
+          launchPrior.Length < 3000 &&
+          launchPrior.Contains("originalLength", StringComparison.Ordinal) &&
+          launchFactory.UserPrompts.Any(message =>
+              message.Contains("SOURCE-ONLY LAUNCH PREPARATION",
+                  StringComparison.Ordinal)),
+        "legacy launch task is guided toward concise source-only deliverable with bounded prior context");
+
     var firstTaskFactory = new Phase4FakeMafFactory();
     firstTaskFactory.Responses.Enqueue(goodSource.Replace(
         "index.html", "app.js", StringComparison.Ordinal));
@@ -2961,6 +2997,7 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
     public Queue<string> Responses { get; } = new();
     public Queue<string> Failures { get; } = new();
     public List<string> CorrectionReasons { get; } = [];
+    public List<string> UserPrompts { get; } = [];
     public List<string> AtlasObservations { get; } = [];
     public int Attempts { get; private set; }
     public List<MafAgentPurpose> Purposes { get; } = [];
@@ -2986,6 +3023,8 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
             if (parent.Failures.Count > 0)
                 throw new StoreFailure(parent.Failures.Dequeue());
             var history = messages.ToArray();
+            parent.UserPrompts.AddRange(history.Where(m => m.Role == ChatRole.User)
+                .Select(m => m.Text ?? ""));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
             parent.AtlasObservations.AddRange(history.Where(m =>
                 m.Role == ChatRole.User && m.Text?.StartsWith(
