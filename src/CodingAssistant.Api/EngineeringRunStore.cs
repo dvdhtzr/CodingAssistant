@@ -125,6 +125,25 @@ public sealed class EngineeringRunStore(
         foreach (var runId in interruptedRuns)
             Event(db, tx, runId, "EngineeringRunInterrupted",
                 "PROCESS_INTERRUPTED: app restarted while generation was active; completed source remains saved");
+
+        // Recover an audit gap left by older versions for an ALREADY
+        // interrupted run. This only appends a missing explanatory receipt:
+        // never reactivates a task, changes its approval or alters source.
+        var unreported = new List<string>();
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT id FROM engineering_runs AS r
+            WHERE state='Interrupted' AND error_code='PROCESS_INTERRUPTED'
+              AND NOT EXISTS (
+                SELECT 1 FROM engineering_run_events e
+                WHERE e.run_id=r.id AND e.kind='EngineeringRunInterrupted')
+            ORDER BY created_utc,id
+            """))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                unreported.Add(reader.GetString(0));
+        foreach (var runId in unreported)
+            Event(db, tx, runId, "EngineeringRunInterrupted",
+                "Recovered missing PROCESS_INTERRUPTED receipt from an earlier app restart; saved source unchanged");
         tx.Commit();
     }
 
