@@ -178,6 +178,23 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 + "from its excerpt alone):\n" +
                 JsonSerializer.Serialize(priorFiles))
         };
+        // A Technical Lead may have approved a task named "Launch Preparation
+        // and Testing" before the planner learned that engineering is source
+        // only. Do not misrepresent that task as an executable admission:
+        // interpret its approved deliverables as bounded launch-ready source
+        // or documentation, leaving actual testing to independent QA.
+        if (new[] { "launch", "testing", "deploy", "verification" }.Any(term =>
+            input.WorkItem.Title.Contains(term, StringComparison.OrdinalIgnoreCase)))
+            messages.Add(new(ChatRole.User,
+                "SOURCE-ONLY LAUNCH PREPARATION: You may prepare complete " +
+                "README.md instructions, a valid configuration/source file, " +
+                "or test source text consistent with this approved assignment, " +
+                "but you CANNOT run tests, launch, deploy, or claim verification. " +
+                "Produce the smallest complete tangible file that advances " +
+                "the accepted requirements; do not repeat a large existing " +
+                "index.html unless actually modifying it. Output valid JSON " +
+                "with summary, 1-3 complete files, and verificationNotes. " +
+                "Document any checks that must later be performed independently."));
         if (input.Repair is { } repairContext)
         {
             messages.Add(new(ChatRole.User,
