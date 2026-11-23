@@ -174,6 +174,8 @@ export function QaReviewPanel({ token, taskId, engineering }: {
 
   const potentialIssues = result?.reports.reduce((total, report) =>
     total + report.assessment.findings.length, 0) ?? 0;
+  const qaAtlasInvestigations = result?.events.filter(
+    event => event.kind === 'QaAtlasInspected').length ?? 0;
 
   const repairRunning = repair?.cycle.state === 'Running' ||
     repair?.cycle.state === 'QaRunning';
@@ -364,6 +366,14 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         {' · '} {potentialIssues} potential issue(s)
         {result.job.errorCode ? ' · ' + result.job.errorCode : ''}
       </p>
+      {qaAtlasInvestigations > 0 && <p className="hint"
+        aria-label="Independent QA Code Atlas investigations">
+        QA independently requested <strong>{qaAtlasInvestigations} Code Atlas
+        observation(s)</strong> of its assigned source file(s).
+        {' '}These are saved static investigation records, not executed tests
+        or verified repairs.
+        {!currentReport && ' Historical source only.'}
+      </p>}
       {result.sourceState !== 'Generated' &&
         <p className="activity-warning">
           QA inspected only saved files from a {result.sourceState} engineering
