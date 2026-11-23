@@ -26,6 +26,53 @@ public static class CodeAtlasJavaIndexer
         @"^import\s+(?<type>[A-Za-z_$][A-Za-z_$0-9]*(?:\.[A-Za-z_$][A-Za-z_$0-9]*)+)\s*;\s*$",
         RegexOptions.CultureInvariant | RegexOptions.Compiled);
 
+
+    // M8.15: only bare Java type names in a single-line class/interface
+    // header. Parameterized, qualified, annotated and expression-based
+    // clauses are deliberately not recognized as semantic relationships.
+    private const string SimpleName = @"[A-Za-z_$][A-Za-z_$0-9]*";
+    private static readonly Regex ClassRelations = new(
+        @"^(?:extends\s+(?<base>" + SimpleName +
+        @")\s*)?(?:implements\s+(?<interfaces>" + SimpleName +
+        @"(?:\s*,\s*" + SimpleName + @")*))?\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex InterfaceRelations = new(
+        @"^extends\s+(?<interfaces>" + SimpleName +
+        @"(?:\s*,\s*" + SimpleName + @")*)\s*$",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private sealed record TypeHead(string Path, string Package,
+        string Name, string Kind, string Id, string Tail, int Line);
+    private sealed record TypeRelation(TypeHead Owner, string Name,
+        string ExpectedKind, string Kind);
+
+    private static IReadOnlyList<TypeRelation>? Relations(TypeHead head)
+    {
+        if (head.Tail.Length == 0) return [];
+        if (head.Kind == "Class")
+        {
+            var match = ClassRelations.Match(head.Tail);
+            if (!match.Success) return null;
+            var result = new List<TypeRelation>();
+            if (match.Groups["base"].Success)
+                result.Add(new(head, match.Groups["base"].Value,
+                    "Class", "Inherits"));
+            if (match.Groups["interfaces"].Success)
+                result.AddRange(match.Groups["interfaces"].Value
+                    .Split(',').Select(name => new TypeRelation(head,
+                        name.Trim(), "Interface", "Implements")));
+            return result;
+        }
+        if (head.Kind == "Interface")
+        {
+            var match = InterfaceRelations.Match(head.Tail);
+            if (!match.Success) return null;
+            return match.Groups["interfaces"].Value.Split(',')
+                .Select(name => new TypeRelation(head, name.Trim(),
+                    "Interface", "Inherits")).ToArray();
+        }
+        return [];
+    }
     private static int Closing(string line, int start)
     {
         var depth = 0;
@@ -140,6 +187,7 @@ public static class CodeAtlasJavaIndexer
         var diagnostics = graph.Diagnostics.ToList();
         var partial = false;
         var importStatements = new List<(string Path, string TypeName, int Line)>();
+        var typeHeads = new List<TypeHead>();
         var root = graph.Nodes.FirstOrDefault(n => n.Kind == "Repository")
             ?? throw new StoreFailure("ATLAS_SNAPSHOT_CORRUPT");
 
@@ -257,6 +305,11 @@ public static class CodeAtlasJavaIndexer
                                 fileId : namespaceId),
                                 id, "Contains", file.Path);
                             Link(fileId, id, "Declares", file.Path);
+                            if (owningType is null && depth == 0 &&
+                                id.Length > 0)
+                                typeHeads.Add(new TypeHead(file.Path,
+                                    packageName, name, kind, id,
+                                    code[match.Length..open].Trim(), n + 1));
                             if (id.Length > 0)
                                 types.Push(new TypeScope(name, relative, id,
                                     depth + 1));
@@ -381,6 +434,77 @@ public static class CodeAtlasJavaIndexer
                 reference.Path, reference.Line,
                 "ExplicitJavaTypeSource"));
         }
+
+        // M8.15: resolve direct extends/implements only against saved,
+        // unique top-level declarations. Java source folders do not establish
+        // packages, and an import is not a compiled classpath binding.
+        var typesByQualifiedName = typeHeads
+            .GroupBy(head => (head.Package.Length == 0 ? "" :
+                head.Package + ".") + head.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToArray(),
+                StringComparer.Ordinal);
+        var importsByFile = importStatements
+            .GroupBy(reference => reference.Path, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToArray(),
+                StringComparer.Ordinal);
+
+        foreach (var head in typeHeads)
+        {
+            var ownName = (head.Package.Length == 0 ? "" :
+                head.Package + ".") + head.Name;
+            if (typesByQualifiedName[ownName].Length != 1)
+                continue; // Duplicate owners are not unique source symbols.
+            var relations = Relations(head);
+            if (relations is null)
+            {
+                Problem("TYPE_CLAUSE_UNSUPPORTED:" + head.Line,
+                    head.Path);
+                continue;
+            }
+            foreach (var relation in relations)
+            {
+                var candidateName = (head.Package.Length == 0 ? "" :
+                    head.Package + ".") + relation.Name;
+                var samePackage = typesByQualifiedName.TryGetValue(
+                    candidateName, out var available) ? available : [];
+                var imported = importsByFile.GetValueOrDefault(head.Path,
+                    []).Where(reference => reference.TypeName.EndsWith(
+                        "." + relation.Name, StringComparison.Ordinal))
+                    .ToArray();
+                if (samePackage.Length > 1 || imported.Length > 1 ||
+                    (samePackage.Length > 0 && imported.Length > 0 &&
+                     imported[0].TypeName != candidateName))
+                {
+                    Problem("TYPE_CLAUSE_AMBIGUOUS:" + head.Line, head.Path);
+                    continue;
+                }
+                var matched = samePackage;
+                if (matched.Length == 0 && imported.Length == 1)
+                    matched = typesByQualifiedName.GetValueOrDefault(
+                        imported[0].TypeName, []);
+                if (matched.Length > 1)
+                {
+                    Problem("TYPE_CLAUSE_AMBIGUOUS:" + head.Line, head.Path);
+                    continue;
+                }
+                if (matched.Length != 1 ||
+                    matched[0].Kind != relation.ExpectedKind ||
+                    matched[0].Id == head.Id)
+                    continue;
+                var to = matched[0].Id;
+                var key = relation.Kind + "|" + head.Id + "|" + to;
+                if (edges.ContainsKey(key)) continue;
+                if (edges.Count >= CodeAtlasIndexer.MaximumEdges)
+                {
+                    Problem("EDGE_LIMIT", head.Path);
+                    continue;
+                }
+                edges.Add(key, new AtlasEdge(head.Id, to,
+                    relation.Kind, head.Path, head.Line,
+                    "ExplicitJavaTypeClause"));
+            }
+        }
+
         var otherLanguages = source.Any(f =>
             indexedFiles.ContainsKey(f.Path) &&
             !f.Path.EndsWith(".java", StringComparison.OrdinalIgnoreCase) &&

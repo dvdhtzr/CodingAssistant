@@ -397,6 +397,114 @@ Check(brokenJava.Diagnostics.Contains("UNSAFE_PATH_EXCLUDED") &&
     !brokenJava.Nodes.Any(n => n.Name is "Fake" or "Escaped"),
     "untrusted Java paths and text-block decoys cannot enter the graph");
 
+// M8.15: explicit Java class/interface clauses, never classpath inference.
+var javaTypeRelationSources = new[]
+{
+    File("app/Consumer.java", """
+        package app;
+        import contracts.Ready;
+        import contracts.Base;
+        import contracts.Traceable;
+        // class Fake extends Base {}
+        public class Consumer extends Base implements Ready, Traceable {
+            public void run() {}
+        }
+        class LocalBase {}
+        class LocalChild extends LocalBase {}
+        interface LocalContract {}
+        interface LocalExtended extends LocalContract {}
+        class Missing extends External {}
+        """),
+    File("contracts/Base.java", """
+        package contracts;
+        public class Base {}
+        """),
+    File("contracts/Ready.java", """
+        package contracts;
+        public interface Ready {}
+        """),
+    File("contracts/Traceable.java", """
+        package contracts;
+        public interface Traceable {}
+        """)
+};
+var javaTypeRelations = CodeAtlasIndexer.Index("java-type-run",
+    javaTypeRelationSources);
+var javaTypeEdges = javaTypeRelations.Edges.Where(e =>
+    e.Kind is "Inherits" or "Implements").ToArray();
+Check(javaTypeRelations.Coverage == "JAVA_STRUCTURE_ONLY" &&
+    javaTypeEdges.Length == 5 &&
+    javaTypeEdges.Count(e => e.Kind == "Inherits") == 3 &&
+    javaTypeEdges.Count(e => e.Kind == "Implements") == 2,
+    "five explicit Java class/interface relationships resolve locally");
+AtlasNode JavaType(string path, string name, string kind) =>
+    javaTypeRelations.Nodes.Single(n => n.Path == path &&
+        n.Name == name && n.Kind == kind);
+var consumerJava = JavaType("app/Consumer.java", "Consumer", "Class");
+var importedBase = JavaType("contracts/Base.java", "Base", "Class");
+var importedReady = JavaType("contracts/Ready.java", "Ready", "Interface");
+Check(javaTypeEdges.Any(e => e.SourceId == consumerJava.Id &&
+    e.TargetId == importedBase.Id && e.Kind == "Inherits") &&
+    javaTypeEdges.Any(e => e.SourceId == consumerJava.Id &&
+    e.TargetId == importedReady.Id && e.Kind == "Implements"),
+    "explicit Java type imports connect to actual qualified saved symbols");
+Check(javaTypeEdges.All(e => e.Resolution == "ExplicitJavaTypeClause" &&
+    e.EvidencePath == "app/Consumer.java" && e.EvidenceLine > 0),
+    "Java type relationships carry exact source-line provenance");
+var javaTypeTrace = CodeAtlasPathFinder.Trace(javaTypeRelations,
+    consumerJava.Id, importedBase.Id);
+Check(javaTypeTrace.Found && javaTypeTrace.Edges.Count == 1 &&
+    javaTypeTrace.Edges[0].Kind == "Inherits",
+    "bounded path tracing follows resolved Java inheritance");
+Check(!javaTypeRelations.Nodes.Any(n => n.Name == "Fake") &&
+    !javaTypeEdges.Any(e => javaTypeRelations.Nodes.Any(n =>
+        n.Id == e.SourceId && n.Name == "Missing")),
+    "comment decoys and missing external Java types remain unlinked");
+var reversedJavaTypes = CodeAtlasIndexer.Index("java-type-run",
+    javaTypeRelationSources.Reverse().ToArray());
+Check(javaTypeRelations.SourceRevision == reversedJavaTypes.SourceRevision &&
+    javaTypeRelations.Edges.Select(e => (e.Kind, e.SourceId, e.TargetId))
+        .SequenceEqual(reversedJavaTypes.Edges.Select(e =>
+            (e.Kind, e.SourceId, e.TargetId))),
+    "Java relationship identities remain stable across source order");
+var javaTypeUnsafe = CodeAtlasIndexer.Index("java-type-unsafe", new[]
+{
+    File("site/Main.java", """
+        package site;
+        import other.Duplicate;
+        import other.Ambiguous;
+        import other.*;
+        class Duplicate {}
+        class Ambiguous {}
+        class Conflict extends Duplicate {}
+        class Wrong implements Duplicate {}
+        class Generic extends Parent<String> {}
+        class Unsupported extends Builder.factory() {}
+        class ExternalOnly extends ThirdParty {}
+        """),
+    File("site/Repeated.java", """
+        package site;
+        class Conflicted {}
+        class Conflicted {}
+        class Unresolved extends Conflicted {}
+        """),
+    File("other/Duplicate.java", """
+        package other;
+        class Duplicate {}
+        """),
+    File("other/Ambiguous.java", """
+        package other;
+        interface Ambiguous {}
+        """)
+};
+Check(!javaTypeUnsafe.Edges.Any(e =>
+    e.Kind is "Inherits" or "Implements") &&
+    javaTypeUnsafe.Diagnostics.Any(d => d.StartsWith(
+        "JAVA_TYPE_CLAUSE_UNSUPPORTED:", StringComparison.Ordinal)) &&
+    javaTypeUnsafe.Diagnostics.Any(d => d.StartsWith(
+        "JAVA_TYPE_CLAUSE_AMBIGUOUS:", StringComparison.Ordinal)),
+    "generic, computed, conflicting and duplicate Java clauses fail closed");
+
 // M8.10: Java imports can point only to uniquely declared local types.
 var javaImportSources = new[]
 {

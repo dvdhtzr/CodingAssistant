@@ -207,3 +207,10 @@ A `GraphDelta` contains base/new version, sequence number, additions, changes an
 - Uniquely indexed `const name = (args) => ...` or `const name = arg => ...` declarations may now be direct callees from the same file or through a uniquely named, directly exported, non-type import. File-level reassignment or ambiguous bindings disqualify a target, including across files.
 - Unsupported defaults, destructuring, rest arguments, generic/union/qualified parameter annotations, arrow-function caller bodies, nested callbacks, and receiver methods remain unlinked. No runtime dispatch or TypeScript language-service analysis is claimed.
 - `Calls` retains `ExplicitEcmaDirectCallSyntax` path/line evidence, deterministic graph source revision and bounded path tracing. No package installation, code execution, network fetch, sandbox elevation, approval changes or merge to `main`.
+
+## M8.15 — Explicit Java class/interface type relationships
+
+- Resolve top-level Java `class Child extends Base implements Ready` and `interface Derived extends Parent` clauses, including multiple comma-separated direct interfaces, only when their bare-name targets map uniquely to accepted source declarations.
+- Resolution considers declared Java packages and exact, non-static, non-wildcard import statements. Links are directed `Inherits`/`Implements` type-to-type edges with actual source path/line and `ExplicitJavaTypeClause` provenance. Existing bounded path tracing, replay and drift use the same graph schema.
+- Duplicate declarations, competing same-package/imported types, wrong target kinds, generics, qualified/computed bases, missing/external dependencies, wildcard-only imports, comments and strings never become guessed links. Unsupported type clauses and ambiguities report bounded partial-coverage diagnostics.
+- This is **source-level structural evidence, not javac/classpath semantic binding or proof of a successful build or runtime type relationship**. No Java compilation, shell, package installation, source execution or unqualified runtime tracing is introduced. Existing task isolation, independent QA, owner approval and `main` merge boundaries remain unchanged.
