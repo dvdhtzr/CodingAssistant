@@ -132,9 +132,6 @@ export function InterviewStudio({ token, task }: {
   const planReady = useCallback(() => {
     setExpanded(current => current === 'plan' ? 'generation' : current);
   }, []);
-  const generationComplete = useCallback(() => {
-    setExpanded(current => current === 'generation' ? 'delivery' : current);
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -511,7 +508,7 @@ export function InterviewStudio({ token, task }: {
       expanded={expanded === 'plan'} onExpand={openStage}
       onReady={planReady} onStageChange={reportPlan} />
     <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null}
-      expanded={expanded} onExpand={openStage} onGenerated={generationComplete}
+      expanded={expanded} onExpand={openStage}
       onStageChange={reportDraft} />
     <details className="mc-work-secondary">
       <summary>Project progress & technical history</summary>
