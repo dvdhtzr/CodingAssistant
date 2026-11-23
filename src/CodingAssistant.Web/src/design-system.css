@@ -793,3 +793,17 @@ input::placeholder, textarea::placeholder { color:var(--ca-faint); }
 /* a light inset for code/pre blocks in those panels */
 :root[data-theme="light"] .source-explorer pre,
 :root[data-theme="light"] .verification-disclosure pre { background:var(--ca-inset); }
+
+/* Motion-safe Mission Control default. Status changes remain visible as
+   text/color, but no page element pulses, sweeps, flashes or moves on a timer.
+   This intentionally applies regardless of OS reduced-motion settings. */
+*, *::before, *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+.activity-scan {
+  width: 100% !important;
+  transform: none !important;
+  background: #347d7a !important;
+}
