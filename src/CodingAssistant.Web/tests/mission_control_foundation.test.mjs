@@ -169,8 +169,12 @@ test('failed task names are separated from file counts and show exact persisted 
             state: 'Failed', summary: null, startedUtc: '2026-11-23T10:47:14Z',
             completedUtc: null },
         ],
-        files: [], events: [{ sequence: 3, kind: 'EngineeringRunFailed',
-          detail: 'Stopped safely: MODEL_OUTPUT_REJECTED' }],
+        files: [], events: [
+          { sequence: 2, kind: 'EngineerOutputRejected',
+            detail: 'final-step: attempt 3/3, category JSON_SYNTAX; no source saved for this attempt' },
+          { sequence: 3, kind: 'EngineeringRunFailed',
+            detail: 'Stopped safely: MODEL_OUTPUT_REJECTED' },
+        ],
       },
       plan: { status: 'Approved', current: true },
       error: '', busy: '', start: noop, cancel: noop, refresh: noop, download: noop,
@@ -179,6 +183,7 @@ test('failed task names are separated from file counts and show exact persisted 
   assert.match(html, /Assignment 6 · 0 source file\(s\) last saved by this assignment/);
   assert.match(html, /Launch Preparation and Testing/);
   assert.match(html, /Reason code: <code>MODEL_OUTPUT_REJECTED<\/code>/);
+  assert.match(html, /Last model-output diagnostic: final-step: attempt 3\/3, category JSON_SYNTAX/);
   assert.match(html, /Earlier completed source remains saved/);
   assert.doesNotMatch(html, /Task 60 saved/);
 });
