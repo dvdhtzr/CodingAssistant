@@ -144,7 +144,21 @@ export interface AtlasView {
 
 const MAX_VISIBLE = 50;
 const SKIP_METHODS = new Set(['Method', 'Constructor', 'Function']);
-const GRAPH_RADIUS = [0, 120, 230, 325, 390];
+// Leave room for labels in the fixed viewBox; the x axis has more space.
+const GRAPH_RADIUS = [0, 90, 160, 220, 258];
+
+// Each symbol keeps its place when a sibling is added. Packing nodes by
+// group.length caused every saved file to rotate the entire constellation.
+function atlasLayoutHash(identity: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < identity.length; i++)
+    hash = Math.imul(hash ^ identity.charCodeAt(i), 16777619);
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  return (hash ^ (hash >>> 16)) >>> 0;
+}
 const KIND_WEIGHT: Record<string, number> = {
   Repository: 0, Project: 1, Namespace: 2, Folder: 3,
   Class: 4, Interface: 5, Struct: 6, Enum: 7,
@@ -228,13 +242,14 @@ export function projectAtlas(snapshot: AtlasSnapshot, focusId: string | null,
   }
   const positions: Record<string, AtlasPosition> = {};
   for (const [level, group] of groupByDepth) {
-    group.sort(graphSort);
-    const radius = GRAPH_RADIUS[Math.min(level, GRAPH_RADIUS.length - 1)];
-    for (let i = 0; i < group.length; i++) {
-      const angle = -Math.PI / 2 + (2 * Math.PI * i / group.length) +
-        level * 0.19;
-      positions[group[i].id] = {
-        x: level === 0 ? 0 : Math.cos(angle) * radius,
+    const baseRadius = GRAPH_RADIUS[Math.min(level, GRAPH_RADIUS.length - 1)];
+    for (const node of group) {
+      const hash = atlasLayoutHash(node.id);
+      const angle = (hash / 0x100000000) * Math.PI * 2;
+      const lane = (atlasLayoutHash(node.id + ':lane') % 5) - 2;
+      const radius = baseRadius + (level === 0 ? 0 : lane * Math.min(level * 4, 9));
+      positions[node.id] = {
+        x: level === 0 ? 0 : Math.cos(angle) * radius * 1.45,
         y: level === 0 ? 0 : Math.sin(angle) * radius,
         depth: level,
       };
@@ -312,7 +327,7 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
   const [showMethods, setShowMethods] = useState(false);
   const [relationshipDirection, setRelationshipDirection] = useState<
     'all' | 'incoming' | 'outgoing'>('all');
-  const [followBuild, setFollowBuild] = useState(true);
+  const [followBuild, setFollowBuild] = useState(false);
   const [recentIds, setRecentIds] = useState<string[]>([]);
   const [traceFrom, setTraceFrom] = useState<string | null>(null);
   const [traceResult, setTraceResult] = useState<AtlasPathResult | null>(null);
@@ -403,8 +418,9 @@ export function CodeAtlasPanel({ token, taskId, runId, files, running,
             const next = ranked[0] ?? value.nodes.find(n =>
               n.id === added[0].parentId) ?? null;
             if (next) {
+              // Inspect the new symbol without recentering the constellation.
+              // Users can explicitly focus relationships when they choose.
               setSelected(next.id);
-              setFocus(next.id);
             }
           }
         }
