@@ -2168,6 +2168,55 @@ try
           eventsBeforeRestart + 1,
         "repeated startup recovery does not duplicate interruption events");
 
+    // Upgrade an older database that recorded an Interrupted run but lacked
+    // the final activity receipt. Recovery must be additive and idempotent.
+    var legacyInterrupted = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, legacyInterrupted.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, legacyInterrupted.Id, "timer-interface",
+        new EngineeringChangeSet("First file persisted by legacy run.",
+            [new EngineeringFileChange("index.html", "Offline browser entry point",
+                "<!doctype html><html><body>Persisted earlier</body></html>")],
+            ["Not executed"]));
+    engineeringStore.StartTask(taskBound.Id, legacyInterrupted.Id, "timer-state");
+    var priorLegacyEvents = engineeringStore.Get(
+        taskBound.Id, legacyInterrupted.Id).Events.Count;
+    using (var legacyDb = new Microsoft.Data.Sqlite.SqliteConnection(
+        "Data Source=" + Path.Combine(root, "codingassistant.db")))
+    {
+        legacyDb.Open();
+        using var tx = legacyDb.BeginTransaction();
+        using (var cmd = legacyDb.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE engineering_run_tasks SET state='Interrupted'
+                  WHERE run_id=$id AND state='Running';
+                UPDATE engineering_runs SET state='Interrupted',
+                  phase='RestartInterrupted',error_code='PROCESS_INTERRUPTED'
+                  WHERE id=$id AND state='Running';
+                """;
+            cmd.Parameters.AddWithValue("$id", legacyInterrupted.Id);
+            _ = cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+    engineeringStore.MarkInterruptedOnStartup();
+    var backfilled = engineeringStore.Get(taskBound.Id, legacyInterrupted.Id);
+    Check(backfilled.Job.State == "Interrupted" &&
+          backfilled.Job.ErrorCode == "PROCESS_INTERRUPTED" &&
+          backfilled.Events.Count == priorLegacyEvents + 1 &&
+          backfilled.Events[^1].Kind == "EngineeringRunInterrupted" &&
+          backfilled.Events[^1].Detail.Contains("Recovered missing",
+              StringComparison.Ordinal) &&
+          backfilled.Files.Count == 1 &&
+          backfilled.Files[0].Content.Contains("Persisted earlier",
+              StringComparison.Ordinal),
+        "older interrupted run gets missing receipt with no source or state mutation");
+    engineeringStore.MarkInterruptedOnStartup();
+    Check(engineeringStore.Get(taskBound.Id, legacyInterrupted.Id).Events.Count ==
+          priorLegacyEvents + 1,
+        "legacy interruption event is backfilled once");
+
     // Even an approved plan does not make an older engineering submission
     // authoritative after a newer run exists; retain historical QA safely.
     var supersedingSource = engineeringStore.Start(taskBound.Id,
