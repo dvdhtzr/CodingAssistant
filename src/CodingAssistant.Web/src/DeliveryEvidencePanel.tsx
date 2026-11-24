@@ -13,6 +13,8 @@ interface DeliveryEvidence {
   modelUse: Array<{agentId:string;model:string;state:string;recordedRequests:number}>;
   decisions: Array<{topic:string;label:string}>;
   requiredVerification: string[]; plannedRisks: string[]; approvedSpecification: string|null;
+  verification: {staticReviewStatus:string;buildStatus:string;functionalStatus:string;runtimeProfileId:string|null;runtimeQualificationStatus:string;mandatoryRuntimeChecks:string[]};
+  artifacts: Array<{path:string;sha256:string}>;
 }
 const reasons: Record<string,string> = {
   QUALIFIED_VERIFICATION_REQUIRED: 'Independent qualified build and functional verification are required.',
@@ -54,6 +56,9 @@ export function DeliveryEvidencePanel({token,taskId,runId,onClose}:{
       <p role="status"><strong>{saved.deliveryAllowed?'Delivery gate satisfied':'Delivery blocked'}</strong></p>
       <dl>
         <dt>Implementation</dt><dd>{saved.implementationComplete?'Source complete':'Incomplete or stale'}</dd>
+        <dt>Static review</dt><dd>{saved.verification.staticReviewStatus.replaceAll('_',' ').toLowerCase()}</dd>
+        <dt>Build verification</dt><dd>{saved.verification.buildStatus.replaceAll('_',' ').toLowerCase()}</dd>
+        <dt>Functional verification</dt><dd>{saved.verification.functionalStatus.replaceAll('_',' ').toLowerCase()}</dd>
         <dt>Engineering</dt><dd>{saved.engineeringComplete?'Complete':'Not verified'}</dd>
         <dt>Product acceptance</dt><dd>{saved.productAccepted?'Accepted':'Not accepted'}</dd>
       </dl>
@@ -79,6 +84,9 @@ export function DeliveryEvidencePanel({token,taskId,runId,onClose}:{
       <details><summary>Verification evidence ({saved.smoke.length} smoke records)</summary>
         <p>Smoke checks are not qualified functional tests.</p>
         <ul>{saved.smoke.map(s=><li key={s.id}>{s.status??s.state}{s.current?'':' (historical)'}</li>)}</ul>
+        <p>Runtime profile: {saved.verification.runtimeProfileId??'None'} · {saved.verification.runtimeQualificationStatus}</p>
+        <p>Mandatory profile checks — not executed:</p>
+        <ul>{saved.verification.mandatoryRuntimeChecks.map((v,i)=><li key={i}>{v}</li>)}</ul>
         <p>Approved test strategy — not an execution receipt:</p>
         <ul>{saved.requiredVerification.map((v,i)=><li key={i}>{v}</li>)}</ul>
       </details>
@@ -87,7 +95,8 @@ export function DeliveryEvidencePanel({token,taskId,runId,onClose}:{
         <ul>{saved.modelUse.map(m=><li key={m.agentId+':'+m.model+':'+m.state}>
           {m.agentId} · {m.model} · {m.state}: {m.recordedRequests}</li>)}</ul>
       </details>
-      <details><summary>Source identity</summary><code style={{overflowWrap:'anywhere'}}>{saved.sourceSha256??'No source fingerprint'}</code></details>
+      <details><summary>Source identity</summary><code style={{overflowWrap:'anywhere'}}>{saved.sourceSha256??'No source fingerprint'}</code><p>Saved source manifest — not certified for delivery:</p>
+        <ul>{saved.artifacts.map(a=><li key={a.path}>{a.path} · <code style={{overflowWrap:'anywhere'}}>{a.sha256}</code></li>)}</ul></details>
     </>}
   </section>;
 }

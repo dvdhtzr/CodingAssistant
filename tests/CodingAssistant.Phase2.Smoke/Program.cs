@@ -3871,7 +3871,11 @@ try
             "saved source completion is distinct from engineering and product completion");
         Check(evidence.GetProperty("smoke").EnumerateArray().Single().GetProperty("status").GetString()=="SMOKE_PASS_NOT_VERIFIED" &&
             evidence.GetProperty("blockers").EnumerateArray().Any(x=>x.GetString()=="QUALIFIED_VERIFICATION_REQUIRED") &&
-            evidence.GetProperty("work").GetArrayLength()==2,
+            evidence.GetProperty("work").GetArrayLength()==2 &&
+            evidence.GetProperty("artifacts").GetArrayLength()==2 &&
+            evidence.GetProperty("verification").GetProperty("buildStatus").GetString()=="NOT_VERIFIED" &&
+            evidence.GetProperty("verification").GetProperty("functionalStatus").GetString()=="NOT_VERIFIED" &&
+            evidence.GetProperty("verification").GetProperty("runtimeQualificationStatus").GetString()=="UNQUALIFIED",
             "retrospective reports actual smoke evidence and approved work without treating smoke as verification");
     }
 

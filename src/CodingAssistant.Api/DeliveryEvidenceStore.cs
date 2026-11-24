@@ -7,7 +7,10 @@ public sealed record DeliveryWork(string Id,string Title,string State,IReadOnlyL
 public sealed record DeliveryReview(string Role,string? Id,string State,string? Model,int FilesReviewed,bool Complete);
 public sealed record DeliveryRepair(string Id,string BaseRunId,string RunId,int Attempt,string State,string? ErrorCode);
 public sealed record DeliveryModelUse(string AgentId,string Model,string State,int RecordedRequests);
-public sealed record DeliverySmoke(string Id,string State,string? Status,bool Current);
+public sealed record DeliverySmoke(string Id,string RunId,string SourceSha256,string State,string? Status,bool Current);
+public sealed record DeliveryArtifact(string Path,string Sha256);
+public sealed record DeliveryVerification(string StaticReviewStatus,string BuildStatus,string FunctionalStatus,
+    string? RuntimeProfileId,string RuntimeQualificationStatus,IReadOnlyList<string> MandatoryRuntimeChecks);
 public sealed record DeliveryEvidence(string TaskId,string? RunId,string? SourceSha256,
     string? PlanSha256,string? SpecificationSha256,string? ArchitectureSha256,
     bool CurrentSource,bool ImplementationComplete,bool EngineeringComplete,bool ProductAccepted,bool DeliveryAllowed,
@@ -15,7 +18,8 @@ public sealed record DeliveryEvidence(string TaskId,string? RunId,string? Source
     IReadOnlyList<DeliveryReview> Reviews,IReadOnlyList<EngineeringIssue> Findings,
     IReadOnlyList<DeliveryRepair> Repairs,IReadOnlyList<DeliverySmoke> Smoke,
     IReadOnlyList<DeliveryModelUse> ModelUse,IReadOnlyList<DraftArchitectureChoice> Decisions,
-    IReadOnlyList<string> RequiredVerification,IReadOnlyList<string> PlannedRisks,string? ApprovedSpecification);
+    IReadOnlyList<string> RequiredVerification,IReadOnlyList<string> PlannedRisks,string? ApprovedSpecification,
+    DeliveryVerification Verification,IReadOnlyList<DeliveryArtifact> Artifacts);
 
 /// <summary>Revision-bound, owner-private delivery readiness and retrospective evidence.
 /// Deliberately fail closed: no currently supported runtime profile supplies qualified
@@ -35,6 +39,7 @@ public sealed class DeliveryEvidenceStore(TaskStore tasks)
         var repairs=new List<DeliveryRepair>();
         var smoke=new List<DeliverySmoke>();
         var models=new List<DeliveryModelUse>();
+        var artifacts=new List<DeliveryArtifact>();
         IReadOnlyList<DraftArchitectureChoice> decisions=[];
         IReadOnlyList<string> required=[];IReadOnlyList<string> risks=[];
         var runId=TaskStore.Scalar(db,tx,
@@ -97,14 +102,22 @@ public sealed class DeliveryEvidenceStore(TaskStore tasks)
             // Historical findings are not erased by a new source or omitted in a new review.
             if(findings.Any(i=>i.State is not ("StaticResolutionRecorded" or "WithdrawnByReviewer")))
                 blockers.Add("UNRESOLVED_FINDINGS");
-            using(var cmd=TaskStore.Command(db,tx,"""
-                SELECT id,state,report_json FROM engineering_source_smoke
-                WHERE task_id=@task AND run_id=@run AND source_sha256=@source AND plan_sha256=@plan
-                ORDER BY started_utc,id
-                """,("@task",taskId),("@run",run.Id),("@source",source),("@plan",run.PlanSha256)))
-            using(var reader=cmd.ExecuteReader())while(reader.Read())
-                smoke.Add(new(reader.GetString(0),reader.GetString(1),
-                    reader.IsDBNull(2)?null:JsonSerializer.Deserialize<LocalSourceSmokeResult>(reader.GetString(2))?.Status,currentSource));
+            foreach(var ancestor in lineage)
+            {
+                var fingerprint=EngineeringMessageStore.SourceFingerprint(db,tx,ancestor.Id);
+                using var cmd=TaskStore.Command(db,tx,"""
+                    SELECT id,state,report_json FROM engineering_source_smoke
+                    WHERE task_id=@task AND run_id=@run AND source_sha256=@source AND plan_sha256=@plan
+                    ORDER BY started_utc,id
+                    """,("@task",taskId),("@run",ancestor.Id),("@source",fingerprint),("@plan",ancestor.PlanSha256));
+                using var reader=cmd.ExecuteReader();
+                while(reader.Read())
+                    smoke.Add(new(reader.GetString(0),ancestor.Id,fingerprint,reader.GetString(1),
+                        reader.IsDBNull(2)?null:JsonSerializer.Deserialize<LocalSourceSmokeResult>(reader.GetString(2))?.Status,
+                        currentSource && ancestor.Id==run.Id));
+            }
+            using(var cmd=TaskStore.Command(db,tx,"SELECT path,sha256 FROM engineering_run_files WHERE run_id=@run ORDER BY path",("@run",run.Id)))
+            using(var reader=cmd.ExecuteReader())while(reader.Read())artifacts.Add(new(reader.GetString(0),reader.GetString(1)));
         }
         if(plan is not null && run is null)
             work.AddRange(plan.Outline.Tasks.Select(w=>new DeliveryWork(w.Id,w.Title,"Pending",w.AcceptanceCriteria)));
@@ -118,12 +131,18 @@ public sealed class DeliveryEvidenceStore(TaskStore tasks)
         // user confirmation, or model assertion can satisfy this mandatory gate.
         blockers.Add("QUALIFIED_VERIFICATION_REQUIRED");
         blockers.Add("PRODUCT_ACCEPTANCE_REQUIRED");
+        var profileId=decisions.SingleOrDefault(x=>x.Topic=="technology-stack")?.RuntimeProfileId;
+        var profile=RuntimeProfileRegistry.Find(profileId);
+        var verification=new DeliveryVerification(
+            !currentSource?"NOT_CURRENT":reviews.Count==2 && reviews.All(x=>x.Complete)?"STATIC_REVIEW_COMPLETE":"INCOMPLETE",
+            "NOT_VERIFIED","NOT_VERIFIED",profileId,profile?.QualificationStatus??"NO_QUALIFIED_PROFILE",
+            profile?.RequiredIndependentTests??[]);
         var specification=plan is null?null:TaskStore.Scalar(db,tx,"SELECT content FROM interview_specs WHERE task_id=@task AND version=@version AND sha256=@sha",("@task",taskId),("@version",plan.SpecificationVersion),("@sha",plan.SpecificationSha256));
         tx.Commit();
         return new(taskId,runId,source,run?.PlanSha256??plan?.PlanSha256,
             run?.SpecificationSha256??plan?.SpecificationSha256,run?.ArchitectureSha256??plan?.ArchitectureSha256,
             currentSource,implementation,false,false,false,blockers.Distinct().ToArray(),work,reviews,findings,repairs,
-            smoke,models,decisions,required,risks,specification);
+            smoke,models,decisions,required,risks,specification,verification,artifacts);
     }
 
     private static int Count(SqliteConnection db,SqliteTransaction tx,string sql,params (string Key,object Value)[] args)

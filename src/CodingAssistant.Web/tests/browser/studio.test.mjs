@@ -580,6 +580,8 @@ test('delivery readiness separates saved source from verified and accepted produ
       smoke:[{id:reviewId,state:'Recorded',status:'SMOKE_PASS_NOT_VERIFIED',current:true}],
       modelUse:[],decisions:[],requiredVerification:['Independent browser behavior'],
       plannedRisks:[],approvedSpecification:null,
+      verification:{staticReviewStatus:'INCOMPLETE',buildStatus:'NOT_VERIFIED',functionalStatus:'NOT_VERIFIED',
+        runtimeProfileId:'static-web',runtimeQualificationStatus:'UNQUALIFIED',mandatoryRuntimeChecks:['JavaScript syntax']},artifacts:[],
     }));
     page.on('request',r=>{if(r.method()==='POST' && new URL(r.url()).pathname.startsWith('/api/tasks/'))writes.push(r.url());});
     await page.goto(baseUrl+'/tests/browser/studio.html');
@@ -587,6 +589,7 @@ test('delivery readiness separates saved source from verified and accepted produ
     const evidence=page.getByRole('region',{name:'Delivery evidence'});
     await evidence.getByText('Delivery blocked',{exact:true}).waitFor();
     assert.match(await evidence.textContent(),/Source complete.*Not verified.*Not accepted/s);
+    assert.match(await evidence.textContent(),/Build verificationnot verifiedFunctional verificationnot verified/);
     await evidence.getByText('Verification evidence (1 smoke records)',{exact:true}).click();
     assert.equal(await evidence.getByText('SMOKE_PASS_NOT_VERIFIED',{exact:true}).isVisible(),true);
     assert.match(await evidence.textContent(),/Smoke checks are not qualified functional tests/);
