@@ -19,7 +19,8 @@ public sealed class QaReviewCoordinator(
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
-    public QaReviewRun Start(string taskId, StartQaReviewRequest request)
+    public QaReviewRun Start(string taskId, StartQaReviewRequest request,
+        string? agentModel = null)
     {
         if (string.IsNullOrWhiteSpace(request.EngineeringRunId) ||
             string.IsNullOrWhiteSpace(request.PlanSha256))
@@ -43,7 +44,7 @@ public sealed class QaReviewCoordinator(
         if (!architecture.ReadyForSourceGeneration ||
             architecture.ArchitectureSha256 != plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
-        var job = reviews.Start(taskId, source, plan);
+        var job = reviews.Start(taskId, source, plan, agentModel);
         var token = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = token;
@@ -93,7 +94,8 @@ public sealed class QaReviewCoordinator(
                     observation => reviews.RecordAtlasInspection(
                         review.TaskId, review.Id, file, observation),
                     previousFindings.Where(f => f.Path.Equals(file.Path,
-                        StringComparison.OrdinalIgnoreCase)).ToArray());
+                        StringComparison.OrdinalIgnoreCase)).ToArray(),
+                    AgentModel: review.Model);
                 var report = await reviewer.ReviewAsync(input, token);
                 token.ThrowIfCancellationRequested();
                 reviews.SaveFileReport(review.TaskId, review.Id, file, report);
