@@ -20,8 +20,12 @@ public sealed record AdaptivePlanContext(string TaskId,string FromAgent,int Poli
 public sealed record ReviseAdaptivePlanDraft(int ExpectedRevision,string? ExpectedWorkPlanSha256,
     IReadOnlyList<WorkPackageSchedule> Packages,string Rationale);
 public sealed record WorkPackageReadiness(string Id,string State,IReadOnlyList<string> WaitingFor);
+public sealed record AdaptivePlanSelection(int Revision,string WorkPlanSha256);
+public sealed record AdaptiveAssignment(string RunId,string WorkItemId,int Revision,string WorkPlanSha256,
+    string SourceBeforeSha256,string? SourceAfterSha256,string StartedUtc,string? CompletedUtc);
 public sealed record AdaptivePlanView(AdaptiveWorkPlan? Plan,
-    IReadOnlyList<AdaptiveWorkPlan> History,IReadOnlyList<WorkPackageReadiness> Readiness);
+    IReadOnlyList<AdaptiveWorkPlan> History,IReadOnlyList<WorkPackageReadiness> Readiness,
+    string? BoundRunId=null,IReadOnlyList<AdaptiveAssignment>? Assignments=null);
 
 /// <summary>
 /// Host-owned operational overlay on the immutable, owner-approved plan.
@@ -42,6 +46,20 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
         );
         CREATE INDEX IF NOT EXISTS engineering_work_plan_history
             ON engineering_work_plans(task_id,base_plan_sha256,revision);
+        CREATE TABLE IF NOT EXISTS engineering_work_plan_bindings(
+            run_id TEXT PRIMARY KEY REFERENCES engineering_runs(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            base_plan_sha256 TEXT NOT NULL,revision INTEGER NOT NULL,work_plan_sha256 TEXT NOT NULL,
+            FOREIGN KEY(task_id,base_plan_sha256,revision)
+                REFERENCES engineering_work_plans(task_id,base_plan_sha256,revision)
+        );
+        CREATE TABLE IF NOT EXISTS engineering_adaptive_assignments(
+            run_id TEXT NOT NULL REFERENCES engineering_runs(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            work_item_id TEXT NOT NULL,revision INTEGER NOT NULL,work_plan_sha256 TEXT NOT NULL,
+            source_before_sha256 TEXT NOT NULL,source_after_sha256 TEXT,started_utc TEXT NOT NULL,
+            completed_utc TEXT,PRIMARY KEY(run_id,work_item_id)
+        );
         """);
 
     private static string Text(string? value,int min,int max)
@@ -176,13 +194,16 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
         var latest=approved is null?null:history.LastOrDefault(x=>x.BasePlanSha256==approved.PlanSha256);
         var runId=TaskStore.Scalar(db,tx,"SELECT id FROM engineering_runs WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1",("@task",taskId));
         var run=runId is null?null:EngineeringRunStore.Find(db,tx,runId);
-        var states=States(db,tx,run?.PlanSha256==approved?.PlanSha256?runId:null);
+        var bound=run is null?null:Bound(db,tx,run.Id);
+        var boundRun=bound?.WorkPlanSha256==latest?.WorkPlanSha256 && bound is not null?runId:null;
+        var states=States(db,tx,boundRun);
         IReadOnlyList<WorkPackageReadiness> readiness=latest is null?[]:Evaluate(latest.Packages,states);
-        tx.Commit();return new(latest,history.AsReadOnly(),readiness);
+        var assignments=boundRun is null?[]:Assignments(db,tx,boundRun);
+        tx.Commit();return new(latest,history.AsReadOnly(),readiness,boundRun,assignments);
     }
 
     // Application-only scheduling authority. HTTP callers cannot impersonate
-    // Technical Lead. Active-run binding is introduced with the scheduler.
+    // Technical Lead. Active revisions are accepted only between assignments.
     public AdaptiveWorkPlan Revise(AdaptivePlanContext context,ReviseAdaptivePlanDraft draft)
     {
         EngineeringRoleCapabilities.Require(context.FromAgent,EngineeringCapability.ScheduleWork);
@@ -197,7 +218,11 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
         if(runId!=context.ExpectedRunId || sourceSha!=context.ExpectedSourceSha256)
             throw new StoreFailure("SOURCE_CHANGED");
         var run=runId is null?null:EngineeringRunStore.Find(db,tx,runId);
-        if(run?.State=="Running")throw new StoreFailure("BUILD_BUSY");
+        var bound=run is null?null:Bound(db,tx,run.Id);
+        var active=run?.State=="Running";
+        var states=States(db,tx,runId);
+        if(active && (bound is null || states.Values.Any(s=>s is not ("Pending" or "Completed"))))
+            throw new StoreFailure("BUILD_BUSY");
         var previous=Latest(db,tx,context.TaskId,plan.PlanSha256);
         if(draft.ExpectedRevision!=(previous?.Revision??0) ||
             draft.ExpectedWorkPlanSha256!=previous?.WorkPlanSha256 ||
@@ -205,7 +230,13 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
             throw new StoreFailure("STALE_WORK_PLAN");
         var architecture=DraftArchitecturePolicy.Capture(db,tx,context.TaskId,
             plan.SpecificationVersion,plan.SpecificationSha256)??throw new StoreFailure("ARCHITECTURE_CONFLICT");
+        if(active && previous?.WorkPlanSha256!=bound?.WorkPlanSha256)
+            throw new StoreFailure("STALE_WORK_PLAN");
         var packages=Validate(plan,architecture,draft.Packages,previous?.Packages);
+        if(active && bound is not null)
+            foreach(var item in bound.Packages.Where(x=>states.GetValueOrDefault(x.Id)=="Completed"))
+                if(JsonSerializer.Serialize(item)!=JsonSerializer.Serialize(packages.Single(x=>x.Id==item.Id)))
+                    throw new StoreFailure("WORK_ALREADY_COMPLETED");
         var revision=draft.ExpectedRevision+1;
         var sha=Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new{
             schema=1,context.TaskId,plan.PlanSha256,planRevision=plan.Revision,revision,
@@ -222,8 +253,125 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
             ("@sha",sha),("@run",(object?)runId??DBNull.Value),("@source",(object?)sourceSha??DBNull.Value),
             ("@policy",context.PolicyRevision),("@policySha",context.PolicySha256),
             ("@packages",JsonSerializer.Serialize(packages)),("@rationale",rationale),("@created",created));
+        if(active)
+            TaskStore.Execute(db,tx,"""
+                UPDATE engineering_work_plan_bindings SET revision=@rev,work_plan_sha256=@sha
+                WHERE task_id=@task AND run_id=@run
+                """,("@rev",revision),("@sha",sha),("@task",context.TaskId),("@run",runId!));
         EngineeringActivityStore.Record(db,tx,context.TaskId,"WorkPlanRevised","TechnicalLead",
             "AdaptiveWorkPlan",sha,revision,sourceSha256:sourceSha);
         tx.Commit();tasks.SignalEngineeringActivity(context.TaskId);return result;
+    }
+
+    internal static AdaptiveWorkPlan? Bound(SqliteConnection db,SqliteTransaction tx,string runId)
+    {
+        using var cmd=TaskStore.Command(db,tx,Columns+"""
+             WHERE (task_id,base_plan_sha256,revision,work_plan_sha256) IN
+                (SELECT task_id,base_plan_sha256,revision,work_plan_sha256
+                 FROM engineering_work_plan_bindings WHERE run_id=@run)
+            """,("@run",runId));
+        using var reader=cmd.ExecuteReader();return reader.Read()?Decode(reader):null;
+    }
+
+    internal static AdaptiveWorkPlan RequireSelected(SqliteConnection db,SqliteTransaction tx,
+        string taskId,string planSha,AdaptivePlanSelection selection)
+    {
+        var latest=Latest(db,tx,taskId,planSha);
+        if(latest is null || latest.Revision!=selection.Revision || latest.WorkPlanSha256!=selection.WorkPlanSha256)
+            throw new StoreFailure("STALE_WORK_PLAN");
+        EngineeringDelegationStore.Require(db,tx,taskId,latest.PolicyRevision,
+            latest.PolicySha256,"TechnicalLead","ScheduleWork");
+        var priorRun=TaskStore.Scalar(db,tx,"SELECT id FROM engineering_runs WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1",("@task",taskId));
+        if(priorRun!=latest.BasedOnRunId ||
+            (priorRun is null?null:EngineeringMessageStore.SourceFingerprint(db,tx,priorRun))!=latest.BasedOnSourceSha256)
+            throw new StoreFailure("SOURCE_CHANGED");
+        return latest;
+    }
+
+    internal static void Bind(SqliteConnection db,SqliteTransaction tx,EngineeringRun run,AdaptiveWorkPlan plan)
+    {
+        if(plan.TaskId!=run.TaskId || plan.BasePlanSha256!=run.PlanSha256 ||
+            plan.BasePlanRevision!=run.PlanRevision)throw new StoreFailure("STALE_WORK_PLAN");
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO engineering_work_plan_bindings(run_id,task_id,base_plan_sha256,revision,work_plan_sha256)
+            VALUES(@run,@task,@base,@rev,@sha)
+            """,("@run",run.Id),("@task",run.TaskId),("@base",plan.BasePlanSha256),
+            ("@rev",plan.Revision),("@sha",plan.WorkPlanSha256));
+    }
+
+    internal static AdaptiveWorkPlan? RequireBound(SqliteConnection db,SqliteTransaction tx,EngineeringRun run)
+    {
+        var bound=Bound(db,tx,run.Id);
+        if(bound is null)return null;
+        if(bound.TaskId!=run.TaskId || bound.BasePlanSha256!=run.PlanSha256 ||
+            bound.WorkPlanSha256!=Latest(db,tx,run.TaskId,run.PlanSha256)?.WorkPlanSha256)
+            throw new StoreFailure("STALE_WORK_PLAN");
+        EngineeringDelegationStore.Require(db,tx,run.TaskId,bound.PolicyRevision,
+            bound.PolicySha256,"TechnicalLead","ScheduleWork");
+        return bound;
+    }
+
+    internal static AdaptiveWorkPackage? Admit(SqliteConnection db,SqliteTransaction tx,
+        EngineeringRun run,string item)
+    {
+        var bound=RequireBound(db,tx,run);
+        if(bound is null)return null;
+        if(Next(bound.Packages,States(db,tx,run.Id))!=item)
+            throw new StoreFailure("WORK_NOT_READY");
+        var package=bound.Packages.Single(x=>x.Id==item);
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO engineering_adaptive_assignments(run_id,task_id,work_item_id,revision,
+                work_plan_sha256,source_before_sha256,started_utc)
+            VALUES(@run,@task,@item,@rev,@sha,@source,@utc)
+            """,("@run",run.Id),("@task",run.TaskId),("@item",item),("@rev",bound.Revision),
+            ("@sha",bound.WorkPlanSha256),("@source",EngineeringMessageStore.SourceFingerprint(db,tx,run.Id)),
+            ("@utc",DateTimeOffset.UtcNow.ToString("O")));
+        return package;
+    }
+
+    internal static void RequireWrite(SqliteConnection db,SqliteTransaction tx,EngineeringRun run,
+        string item,IReadOnlyList<EngineeringFileChange> files)
+    {
+        var bound=RequireBound(db,tx,run);
+        if(bound is null)return;
+        EngineeringRoleCapabilities.Require("SoftwareEngineer",EngineeringCapability.WriteSource);
+        var package=bound.Packages.SingleOrDefault(p=>p.Id==item)??throw new StoreFailure("WORK_NOT_READY");
+        if(package.Suspended || TaskStore.Scalar(db,tx,"""
+            SELECT source_before_sha256 FROM engineering_adaptive_assignments
+            WHERE run_id=@run AND work_item_id=@item AND revision=@rev AND work_plan_sha256=@sha
+                AND completed_utc IS NULL
+            """,("@run",run.Id),("@item",item),("@rev",bound.Revision),("@sha",bound.WorkPlanSha256))
+            !=EngineeringMessageStore.SourceFingerprint(db,tx,run.Id))
+            throw new StoreFailure("STALE_WORK_PLAN");
+        if(package.AllowedPaths is not null &&
+            files.Any(f=>!package.AllowedPaths.Contains(f.Path,StringComparer.OrdinalIgnoreCase)))
+            throw new StoreFailure("WORK_SCOPE_VIOLATION");
+    }
+
+    internal static void Complete(SqliteConnection db,SqliteTransaction tx,EngineeringRun run,string item)
+    {
+        var bound=Bound(db,tx,run.Id);
+        if(bound is null)return;
+        if(TaskStore.Execute(db,tx,"""
+            UPDATE engineering_adaptive_assignments SET source_after_sha256=@source,completed_utc=@utc
+            WHERE run_id=@run AND work_item_id=@item AND work_plan_sha256=@sha AND completed_utc IS NULL
+            """,("@source",EngineeringMessageStore.SourceFingerprint(db,tx,run.Id)),
+            ("@utc",DateTimeOffset.UtcNow.ToString("O")),("@run",run.Id),("@item",item),
+            ("@sha",bound.WorkPlanSha256))!=1)throw new StoreFailure("STALE_WORK_PLAN");
+    }
+
+    internal static IReadOnlyList<AdaptiveAssignment> Assignments(SqliteConnection db,SqliteTransaction tx,string runId)
+    {
+        var items=new List<AdaptiveAssignment>();
+        using var cmd=TaskStore.Command(db,tx,"""
+            SELECT run_id,work_item_id,revision,work_plan_sha256,source_before_sha256,
+                source_after_sha256,started_utc,completed_utc FROM engineering_adaptive_assignments
+            WHERE run_id=@run ORDER BY started_utc,work_item_id
+            """,("@run",runId));
+        using var reader=cmd.ExecuteReader();
+        while(reader.Read())items.Add(new(reader.GetString(0),reader.GetString(1),reader.GetInt32(2),
+            reader.GetString(3),reader.GetString(4),reader.IsDBNull(5)?null:reader.GetString(5),
+            reader.GetString(6),reader.IsDBNull(7)?null:reader.GetString(7)));
+        return items.AsReadOnly();
     }
 }

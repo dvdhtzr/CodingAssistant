@@ -38,9 +38,11 @@ public sealed class EngineeringRunCoordinator(
         // Resuming is an explicit owner request. Store.Resume rechecks the
         // exact latest terminal run, plan/architecture/spec binding and
         // source hashes in one transaction before copying prior completions.
+        if(request.ResumeRunId is not null && request.WorkPlan is not null)
+            throw new StoreFailure("INVALID_INPUT");
         var job = request.ResumeRunId is { } previousRunId
             ? store.Resume(taskId, plan, previousRunId, agentModel)
-            : store.Start(taskId, plan, agentModel);
+            : store.Start(taskId, plan, agentModel,request.WorkPlan);
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = cancellation;
@@ -58,15 +60,8 @@ public sealed class EngineeringRunCoordinator(
         try
         {
             var token = cancellation.Token;
-            foreach (var item in plan.Outline.Tasks)
+            async Task Implement(ImplementationWorkItem item,AdaptiveWorkPackage? package)
             {
-                token.ThrowIfCancellationRequested();
-                // Never invoke the model again for a carried-forward completed
-                // assignment; its source and status were copied atomically.
-                var saved = store.Get(job.TaskId, job.Id);
-                if (saved.Tasks.Any(t => t.Id == item.Id && t.State == "Completed"))
-                    continue;
-                store.StartTask(job.TaskId, job.Id, item.Id);
                 var prior = store.Get(job.TaskId, job.Id).Files;
                 using var providerScope = EngineeringProviderActivity.Enter(tasks,job.TaskId,
                     "SoftwareEngineer",job.Id);
@@ -74,18 +69,41 @@ public sealed class EngineeringRunCoordinator(
                     new EngineeringTaskInput(objective, spec, plan,
                         architecture, item, prior,
                         OnAtlasInspection: observation =>
-                            store.RecordAtlasInspection(job.TaskId,
-                                job.Id, item.Id, observation),
+                            store.RecordAtlasInspection(job.TaskId,job.Id,item.Id,observation),
                         OnOutputRejected: rejection =>
-                            store.RecordOutputRejection(job.TaskId,
-                                job.Id, item.Id, rejection),
-                        AgentModel: job.Model), token);
+                            store.RecordOutputRejection(job.TaskId,job.Id,item.Id,rejection),
+                        AgentModel: job.Model,AdaptivePackage:package),token);
                 token.ThrowIfCancellationRequested();
-                var committed = store.CompleteTask(job.TaskId, job.Id, item.Id, result);
-                // Notification is best effort AFTER the durable transaction.
-                // Missing SignalR messages are reconciled via atlas-events.
+                var committed=store.CompleteTask(job.TaskId,job.Id,item.Id,result);
                 await atlasNotifier.PublishAsync(committed);
             }
+            if(store.HasAdaptiveBinding(job.TaskId,job.Id))
+            {
+                while(true)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var saved=store.Get(job.TaskId,job.Id);
+                    if(saved.Tasks.All(t=>t.State=="Completed"))break;
+                    var package=store.StartNextAdaptiveTask(job.TaskId,job.Id);
+                    if(package is null)
+                    {
+                        // Suspended or dependency-blocked work remains pending.
+                        // No speculative model calls or unbounded busy loop.
+                        await Task.Delay(750,token);
+                        continue;
+                    }
+                    var item=plan.Outline.Tasks.Single(t=>t.Id==package.Id);
+                    await Implement(item,package);
+                }
+            }
+            else
+                foreach(var item in plan.Outline.Tasks)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if(store.Get(job.TaskId,job.Id).Tasks.Any(t=>t.Id==item.Id && t.State=="Completed"))continue;
+                    store.StartTask(job.TaskId,job.Id,item.Id);
+                    await Implement(item,null);
+                }
             token.ThrowIfCancellationRequested();
             store.Finish(job.TaskId, job.Id, true, null);
         }

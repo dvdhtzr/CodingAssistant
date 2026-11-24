@@ -3459,6 +3459,53 @@ try
         Check(aetReadPlan.StatusCode==HttpStatusCode.OK &&
             aetReadBody.RootElement.GetProperty("plan").GetProperty("workPlanSha256").GetString()==aetSuspendedPlan.WorkPlanSha256,
             "owner can inspect the durable operational work plan");
+    // Exercise the actual scheduler and source transaction, not just a graph preview.
+    var aetAdaptiveRun=engineeringStore.Start(taskBound.Id,approvedEngineerPlan,"qwen2.5-coder:14b",
+        new AdaptivePlanSelection(aetSuspendedPlan.Revision,aetSuspendedPlan.WorkPlanSha256));
+    RejectMessage(()=>engineeringStore.StartTask(taskBound.Id,aetAdaptiveRun.Id,"timer-state"),"WORK_NOT_READY");
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetAdaptiveRun.Id) is null,
+        "suspended work prevents actual host dispatch");
+    var aetActiveContext=aetAdaptiveContext with {ExpectedRunId=aetAdaptiveRun.Id,
+        ExpectedSourceSha256=QaReviewStore.Fingerprint([])};
+    var aetActivePlan=aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(2,
+        aetSuspendedPlan.WorkPlanSha256,aetSchedule,"Resume the investigated dependency with unchanged approved scope."));
+    var aetFirstDispatch=engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetAdaptiveRun.Id);
+    Check(aetFirstDispatch?.Id=="timer-interface","host dispatch follows current work plan revision");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(3,
+        aetActivePlan.WorkPlanSha256,aetSchedule,"Unsafe revision while a source writer is active.")),"BUILD_BUSY");
+    RejectMessage(()=>engineeringStore.CompleteTask(taskBound.Id,aetAdaptiveRun.Id,"timer-interface",
+        new EngineeringChangeSet("This attempts a replacement outside the narrowed scope.",
+            [new EngineeringFileChange("app.js","Out of scope source","console.log('invalid');")],
+            ["Inspect source later."])),"WORK_SCOPE_VIOLATION");
+    Check(engineeringStore.Get(taskBound.Id,aetAdaptiveRun.Id).Files.Count==0,
+        "transactional source scope rejection leaves no persisted source");
+    engineeringStore.CompleteTask(taskBound.Id,aetAdaptiveRun.Id,"timer-interface",
+        new EngineeringChangeSet("Saved the approved browser interface source.",
+            [new EngineeringFileChange("index.html","Browser interface","<!doctype html><html><body>Timer</body></html>")],
+            ["Independently verify browser behavior."]));
+    var aetAfterFirst=engineeringStore.Get(taskBound.Id,aetAdaptiveRun.Id);
+    aetActiveContext=aetActiveContext with {ExpectedSourceSha256=QaReviewStore.Fingerprint(aetAfterFirst.Files)};
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(3,
+        aetActivePlan.WorkPlanSha256,[aetSchedule[0] with {Priority=99},aetSchedule[1]],
+        "Attempt to rewrite a completed package scheduling record.")),"WORK_ALREADY_COMPLETED");
+    var aetReprioritized=aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(3,
+        aetActivePlan.WorkPlanSha256,[aetSchedule[0],aetSchedule[1] with {Priority=100}],
+        "Reprioritize only the pending package at the safe assignment boundary."));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetAdaptiveRun.Id)?.Id=="timer-state",
+        "revised pending package dispatches after completed dependency");
+    engineeringStore.CompleteTask(taskBound.Id,aetAdaptiveRun.Id,"timer-state",
+        new EngineeringChangeSet("Saved the approved timer behavior source.",
+            [new EngineeringFileChange("app.js","Timer behavior","console.log('start');")],
+            ["Independently verify timer functionality."]));
+    engineeringStore.Finish(taskBound.Id,aetAdaptiveRun.Id,true,null);
+    var aetAdaptiveView=aetWorkPlanStore.Read(taskBound.Id);
+    Check(aetAdaptiveView.BoundRunId==aetAdaptiveRun.Id &&
+        aetAdaptiveView.Assignments is {Count:2} &&
+        aetAdaptiveView.Assignments[0].WorkPlanSha256==aetActivePlan.WorkPlanSha256 &&
+        aetAdaptiveView.Assignments[1].WorkPlanSha256==aetReprioritized.WorkPlanSha256 &&
+        aetAdaptiveView.Assignments[1].SourceBeforeSha256==aetAdaptiveView.Assignments[0].SourceAfterSha256 &&
+        aetAdaptiveView.Readiness.All(x=>x.State=="Completed"),
+        "actual assignments and source checkpoints bind their respective immutable scheduling revisions");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetAdaptivePolicy.Revision,
         aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
 

@@ -28,7 +28,7 @@ public sealed record EngineeringTaskInput(
     RepairTaskContext? Repair = null,
     Action<AtlasInspectionObservation>? OnAtlasInspection = null,
     Action<EngineeringOutputRejection>? OnOutputRejected = null,
-    string? AgentModel = null);
+    string? AgentModel = null,AdaptiveWorkPackage? AdaptivePackage=null);
 
 public interface IEngineeringTaskModel
 {
@@ -148,6 +148,10 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
             !input.Plan.Outline.Tasks.Any(t => t.Id == input.WorkItem.Id) ||
             input.ExistingFiles.Count > 12 ||
             !LocalInterviewModel.AllowedModel(input.AgentModel ?? input.Plan.Model) ||
+            input.AdaptivePackage is { } package &&
+                (input.Repair is not null || package.Id!=input.WorkItem.Id ||
+                 package.ArchitectureSha256!=input.Plan.ArchitectureSha256 ||
+                 !package.AcceptanceCriteria.SequenceEqual(input.WorkItem.AcceptanceCriteria)) ||
             input.Repair is { } repair &&
                 (repair.Findings.Count is < 1 or > 12 ||
                  repair.AllowedPaths.Count != 1 ||
@@ -247,6 +251,10 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 "index.html unless actually modifying it. Output valid JSON " +
                 "with summary, 1-3 complete files, and verificationNotes. " +
                 "Document any checks that must later be performed independently."));
+        if(input.AdaptivePackage is { } adaptive)
+            messages.Add(new(ChatRole.User,"HOST-ADMITTED ADAPTIVE WORK PACKAGE (data; existing approval remains binding):\n"+
+                JsonSerializer.Serialize(adaptive)+
+                "\nIf AllowedPaths is supplied, return only those paths. Additional verification is planning data, not permission to execute."));
         if (input.Repair is { } repairContext)
         {
             messages.Add(new(ChatRole.User,
@@ -327,6 +335,9 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                         !scope.AllowedPaths.Contains(file.Path,
                             StringComparer.OrdinalIgnoreCase)))
                         reason = "REPAIR_SCOPE: Output ONLY the approved source file path.";
+                    else if (input.AdaptivePackage?.AllowedPaths is { } allowedPaths &&
+                        result!.Files.Any(file=>!allowedPaths.Contains(file.Path,StringComparer.OrdinalIgnoreCase)))
+                        reason="WORK_SCOPE: Return only the host-admitted work package file paths.";
                     else if (staticWeb && result!.Files.Any(file =>
                         Path.GetExtension(file.Path) is not
                             (".html" or ".css" or ".js" or ".json" or ".md")))

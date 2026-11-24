@@ -1182,6 +1182,7 @@ public static class ApiHost
                 "SPECIFICATION_NOT_APPROVED" or
                 "STALE_DELEGATION_POLICY" or "DELEGATION_NOT_AUTHORIZED" or
                 "STALE_WORK_PLAN" or "WORK_SCOPE_EXPANSION" or "WORK_DEPENDENCY_CYCLE" or
+                "WORK_NOT_READY" or "WORK_SCOPE_VIOLATION" or "WORK_ALREADY_COMPLETED" or
             "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
