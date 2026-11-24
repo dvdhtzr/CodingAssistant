@@ -1230,6 +1230,7 @@ var boundModel = new Phase2DraftModel();
 var leadModel = new Phase2TechnicalLeadPlanner();
 var softwareModel = new Phase4EngineeringModel();
 var qaModel = new Phase5QaModel();
+var aetLeadModel = new AetLeadReviewFixture();
 try
 {
     var tasks = new TaskStore(root);
@@ -1260,7 +1261,7 @@ try
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
-        qaReviewerOverride: qaModel);
+        qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -2053,6 +2054,33 @@ try
         Check(aetLeadResponse.StatusCode==HttpStatusCode.OK &&
             aetLeadBody.RootElement.GetProperty("snapshot").GetProperty("disposition").GetString()=="Approved",
             "owner can retrieve durable static lead review");
+    var aetLeadPath = "/api/tasks/"+taskBound.Id+"/lead-reviews";
+    using(var aetMissing=await Post(client,aetLeadPath,new StartQaReviewRequest(engineeringRunId,secondPlanHash)))
+        Check(aetMissing.StatusCode==HttpStatusCode.ServiceUnavailable,
+            "lead review cannot invoke an uninstalled default model");
+    using(var aetSelect=await Post(client,"/api/tasks/"+taskBound.Id+"/agent-models/LeadSoftwareEngineer",
+        new {model="qwen3.5:4b"}))
+        Check(aetSelect.StatusCode==HttpStatusCode.OK,"owner may choose installed independent reviewer model");
+    using(var aetStale=await Post(client,aetLeadPath,new StartQaReviewRequest(engineeringRunId,firstPlanHash)))
+        Check(aetStale.StatusCode==HttpStatusCode.Conflict,"lead review rejects wrong approved plan digest");
+    string aetLiveLeadId;
+    using(var aetAdmitted=await Post(client,aetLeadPath,new StartQaReviewRequest(engineeringRunId,secondPlanHash)))
+    using(var aetBody=await Body(aetAdmitted))
+    {
+        Check(aetAdmitted.StatusCode==HttpStatusCode.Accepted,"owner admits independent lead review through API");
+        aetLiveLeadId=aetBody.RootElement.GetProperty("id").GetString()!;
+    }
+    LeadReviewSnapshot? aetLiveLead=null;
+    for(int aetAttempt=0;aetAttempt<100;aetAttempt++)
+    {
+        aetLiveLead=aetLeadStore.Get(taskBound.Id,aetLiveLeadId);
+        if(aetLiveLead.Job.State!="Running") break;
+        await Task.Delay(50);
+    }
+    Check(aetLiveLead?.Job.State=="Reviewed" && aetLiveLead.Disposition=="ChangesRequested" &&
+        aetLiveLead.Reports.SelectMany(x=>x.Assessment.Findings).Any(x=>x.Severity=="Major") &&
+        QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,engineeringRunId).Files)==aetLeadJob.SourceSha256,
+        "injected reviewer executes actual owner-admitted workflow, saves a concern and leaves source unchanged");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,
@@ -3640,5 +3668,25 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
             throw new NotSupportedException("QA only allows bounded nonstreaming turns.");
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
+    }
+}
+
+sealed class AetLeadReviewFixture : ILeadSourceReviewer
+{
+    public Task<LeadFileAssessment> ReviewAsync(QaReviewInput input,CancellationToken cancellation)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        if(input.AgentModel!="qwen3.5:4b" || input.SourceRun.PlanSha256!=input.Plan.PlanSha256)
+            throw new Exception("Unexpected independent review scope");
+        if(input.File.Path!="app.js")
+            return Task.FromResult(new LeadFileAssessment("Approved","No static concern in this fixture file.",[]));
+        var lines=input.File.Content.Split('\n');
+        var line=Array.FindIndex(lines,l=>!string.IsNullOrWhiteSpace(l));
+        var evidence=lines[line].Trim();
+        if(evidence.Length>100)evidence=evidence[..100];
+        return Task.FromResult(new LeadFileAssessment("ChangesRequested","Injected static architectural review concern.",
+            [new LeadFinding("Major","Correctness",input.File.Path,line+1,evidence,
+            "The timer fixture requires independent behavior verification.",
+            "Inspect and correct the timer implementation.","Verify the timer updates in an independent check.")]));
     }
 }
