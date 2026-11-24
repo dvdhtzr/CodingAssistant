@@ -605,3 +605,14 @@
 .ca-live-rows small { font-size:.61rem; color:#a9c1ca; }
 .ca-live-rows:focus-visible,.ca-live-controls select:focus-visible {
   outline:2px solid #7ed7bc; outline-offset:2px; }
+
+.ca-coordination { border-top:1px solid var(--studio-line); padding:.65rem 0; display:grid;gap:.55rem;min-width:0; }
+.ca-coordination h3 {font-size:.85rem;margin:0;}
+.ca-coordination p,.ca-coordination li,.ca-coordination summary {font-size:.72rem;line-height:1.45;overflow-wrap:anywhere;}
+.ca-coordination p {margin:0;color:var(--studio-muted);}
+.ca-coordination button {width:100%;font-size:.72rem;white-space:normal;text-align:center;}
+.ca-coordination details {min-width:0;}
+.ca-coordination code {overflow-wrap:anywhere;font-size:.65rem;}
+.ca-coordination ol {margin:.4rem 0;padding-left:1.2rem;display:grid;gap:.4rem;}
+.ca-coordination-state {display:flex;justify-content:space-between;gap:.4rem;align-items:baseline;}
+.ca-coordination-state strong {font-size:.75rem;}

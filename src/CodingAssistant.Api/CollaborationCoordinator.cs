@@ -22,6 +22,9 @@ public sealed record CollaborationInput(string Objective,CollaborationRun Job,
     IReadOnlyList<CollaborationStep> Steps,RepairProgressReport? RepairProgress=null,
     IReadOnlyList<EngineeringIssue>? RecheckCandidates=null);
 public sealed record CollaborationAdmission(string JobId,int Sequence);
+public sealed record CollaborationPreview(string? PlanSha256,DelegationPolicy? Policy,
+    CollaborationSnapshot? Snapshot,StartCollaborationRequest? Candidate,bool CanStart,bool CanResume,
+    string Reason,InferenceCapacity Capacity);
 
 public interface ICollaborationLead
 {
@@ -176,6 +179,40 @@ public sealed class CollaborationStore(TaskStore tasks)
             reader.GetString(3),reader.IsDBNull(4)?null:reader.GetString(4),reader.GetString(5)));
         return steps.AsReadOnly();
     }
+    public CollaborationPreview Preview(string taskId)
+    {
+        var policy=new EngineeringDelegationStore(tasks).Read(taskId);
+        using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
+        var id=TaskStore.Scalar(db,tx,"SELECT id FROM engineering_collaborations WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1",("@task",taskId));
+        var snapshot=id is null?null:new CollaborationSnapshot(Find(db,tx,taskId,id),Steps(db,tx,id));
+        string? planSha=null;
+        StartCollaborationRequest? candidate=null;
+        var reason="PLAN_NOT_APPROVED";var start=false;var resume=false;
+        try
+        {
+            var plan=ImplementationPlanStore.RequireCurrentApproved(db,tx,taskId);
+            planSha=plan.PlanSha256;
+            if(policy is null || policy.Status!="Approved" || !policy.Current)
+                throw new StoreFailure("DELEGATION_NOT_AUTHORIZED");
+            foreach(var (role,operation) in new[]{("TechnicalLead","ScheduleWork"),("LeadSoftwareEngineer","ReviewCode"),("QaEngineer","ReviewAcceptance")})
+                EngineeringDelegationStore.Require(db,tx,taskId,policy.Revision,policy.PolicySha256,role,operation);
+            var runId=TaskStore.Scalar(db,tx,"SELECT id FROM engineering_runs WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1",("@task",taskId));
+            var run=runId is null?null:EngineeringRunStore.Find(db,tx,runId);
+            if(run is null || run.State!="Generated")throw new StoreFailure("BUILD_NOT_COMPLETE");
+            EngineeringRunStore.RequireBinding(db,tx,run);
+            candidate=new(run.Id,EngineeringMessageStore.SourceFingerprint(db,tx,run.Id),plan.PlanSha256,policy.Revision,policy.PolicySha256);
+            RequireNoActive(db,tx,taskId);
+            if(TaskStore.Scalar(db,tx,"SELECT 1 FROM lead_reviews WHERE task_id=@task AND state='Running' UNION SELECT 1 FROM qa_reviews WHERE task_id=@task AND state='Running'",("@task",taskId)) is not null)
+                throw new StoreFailure("BUILD_BUSY");
+            var same=snapshot?.Job.RunId==candidate.RunId && snapshot.Job.SourceSha256==candidate.SourceSha256 &&
+                snapshot.Job.PlanSha256==candidate.PlanSha256 && snapshot.Job.PolicySha256==candidate.PolicySha256;
+            resume=same && snapshot!.Job.State=="Interrupted";
+            start=!same || snapshot!.Job.State is ("Failed" or "Escalated");
+            reason=resume?"RESUME_AVAILABLE":start?"READY":snapshot!.Job.Reason??snapshot.Job.State;
+        }catch(StoreFailure e){reason=e.Code;}
+        tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,LocalInferenceScheduler.Shared.Snapshot());
+    }
+
     public CollaborationSnapshot? Latest(string taskId)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);

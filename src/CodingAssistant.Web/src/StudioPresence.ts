@@ -112,7 +112,8 @@ export function studioAgentPresence(saved: StudioEvidence | null,
     const recent = handoffs.slice().sort((a, b) =>
       b.createdUtc.localeCompare(a.createdUtc))[0];
     const job = agent.id === 'SoftwareEngineer' ? saved.engineering?.job :
-      agent.id === 'QaEngineer' ? saved.qa?.job : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job : null;
+      agent.id === 'QaEngineer' ? saved.qa?.job : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job :
+      agent.id === 'TechnicalLead' ? saved.collaboration?.job : null;
     const model = models?.find(item => item.role === agent.id)?.model ?? null;
     const stopped = job?.state === 'Failed' || job?.state === 'Interrupted' ||
       agent.id === 'SoftwareEngineer' &&
@@ -129,12 +130,12 @@ export function studioAgentPresence(saved: StudioEvidence | null,
         saved.qa?.reports.length + ' file(s) inspected · source-only QA' :
         job ? saved.qa?.reports.length + ' saved file report(s)' :
           'No source review recorded'
-      : agent.id === 'LeadSoftwareEngineer' ? detail
+      : agent.id === 'LeadSoftwareEngineer' || agent.id === 'TechnicalLead' ? detail
       : recent ? 'Last recorded: ' + friendlyEvent(recent.kind) :
         'No recorded handoff yet';
     return {
       agent, active, state,
-      status: active ? 'Working' : stopped ? 'Needs inspection' :
+      status: active ? agent.id === 'TechnicalLead' ? 'Coordinating' : 'Working' : stopped ? 'Needs inspection' :
         job ? job.state : recent ? 'Handoff recorded' : 'No work recorded',
       assignment,
       modelForNextRun: model,

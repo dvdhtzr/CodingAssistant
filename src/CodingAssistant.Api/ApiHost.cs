@@ -858,6 +858,8 @@ public static class ApiHost
         app.MapGet("/api/inference-capacity",()=>Results.Ok(LocalInferenceScheduler.Shared.Snapshot()));
         app.MapGet("/api/tasks/{id}/inference-leases",
             (string id,int? limit,TaskStore tasks)=>Safe(()=>Results.Ok(new {leases=new InferenceLeaseStore(tasks).List(id,limit??100)})));
+        app.MapGet("/api/tasks/{id}/collaboration/preview",
+            (string id,CollaborationStore db)=>Safe(()=>Results.Ok(db.Preview(id))));
         app.MapGet("/api/tasks/{id}/collaboration/latest",
             (string id,CollaborationStore db)=>Safe(()=>Results.Ok(new {snapshot=db.Latest(id)})));
         app.MapPost("/api/tasks/{id}/collaboration",

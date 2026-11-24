@@ -3,6 +3,7 @@ import { api } from './api';
 import type { AgentIdentity } from './AgentIdentityPanel';
 import type { EngineerSnapshot } from './EngineeringWorkspace';
 import type { LeadReviewSnapshot } from './LeadReviewPanel';
+import type { CollaborationSnapshot } from './CollaborationPanel';
 import type { TeamHandoff, TeamQaSnapshot } from './TeamWorkroom';
 
 export interface WorkTeamEvidence {
@@ -11,6 +12,7 @@ export interface WorkTeamEvidence {
   engineering: EngineerSnapshot | null;
   qa: TeamQaSnapshot | null;
   lead?: LeadReviewSnapshot | null;
+  collaboration?: CollaborationSnapshot | null;
   repair: { cycle: { state: string; attempt: number } } | null;
 }
 
@@ -23,7 +25,8 @@ export function workAgentStatuses(saved: WorkTeamEvidence) {
     const qaRunning = saved.qa?.job.state === 'Running' ||
       saved.repair?.cycle.state === 'QaRunning';
     const active = agent.id === 'SoftwareEngineer' ? engineerRunning :
-      agent.id === 'QaEngineer' ? qaRunning : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job.state === 'Running' : false;
+      agent.id === 'QaEngineer' ? qaRunning : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job.state === 'Running' :
+      agent.id === 'TechnicalLead' ? saved.collaboration?.job.state === 'Running' : false;
     return { agent, active,
       detail: agent.id === 'SoftwareEngineer' ? (
         saved.repair?.cycle.state === 'Running'
@@ -36,7 +39,8 @@ export function workAgentStatuses(saved: WorkTeamEvidence) {
         saved.repair?.cycle.state === 'QaRunning' ? 'Independent repair review' :
           saved.qa?.job.state === 'Running' ? 'Reviewing saved source' :
             saved.qa?.job.state ?? 'Not started'
-      ) : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.disposition ?? 'No lead review recorded' : 'No active run recorded' };
+      ) : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.disposition ?? 'No lead review recorded' :
+      agent.id === 'TechnicalLead' ? saved.collaboration?.job.state ?? 'No coordination recorded' : 'No active run recorded' };
   });
 }
 

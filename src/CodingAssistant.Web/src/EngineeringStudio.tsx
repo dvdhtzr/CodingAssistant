@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
 import { EngineeringActivityFeed } from './EngineeringActivityFeed';
 import { LeadReviewPanel, type LeadReviewSnapshot } from './LeadReviewPanel';
+import { CollaborationPanel, type CollaborationSnapshot } from './CollaborationPanel';
 import { AgentRoleModels, type AgentRoleSelection } from './AgentRoleModels';
 import { studioAgentPresence, studioRecordedActivity } from './StudioPresence';
 import { api, type TaskItem } from './api';
@@ -26,6 +27,7 @@ export interface StudioEvidence {
   engineering: EngineerSnapshot | null;
   qa: StudioQaSnapshot | null;
   lead?: LeadReviewSnapshot | null;
+  collaboration?: CollaborationSnapshot | null;
   repair: StudioRepair | null;
 }
 export interface StudioFocus {
@@ -53,6 +55,10 @@ export function studioAttention(saved: StudioEvidence | null,
     qa.job.planSha256 === eng.planSha256;
   const findings = currentQa ? qa.reports.reduce((count, report) =>
     count + (report.assessment?.findings?.length ?? 0), 0) : 0;
+  const coordination = saved.collaboration?.job;
+  if (coordination?.state === 'AwaitingOwner' && coordination.runId === eng?.id)
+    items.unshift({ stage: 'plan', kind: 'review', title: 'Technical Lead requests scoped repair',
+      detail: 'Open the Technical Lead workstation to inspect the saved coordination decision.' });
   if (saved.repair?.cycle.state === 'Failed' ||
     saved.repair?.cycle.state === 'Interrupted') {
     items.unshift({ stage: 'delivery', kind: 'warning',
@@ -153,6 +159,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
             api<{ snapshot: StudioQaSnapshot | null }>(token, root + '/qa-reviews/latest'),
             api<{ snapshot: LeadReviewSnapshot | null }>(token, root + '/lead-reviews/latest').catch(() => ({ snapshot: null })),
             api<{ snapshot: StudioRepair | null }>(token, root + '/repair-cycles/latest'),
+            api<{ snapshot: CollaborationSnapshot | null }>(token, root + '/collaboration/latest').catch(() => ({ snapshot: null })),
           ]),
           Promise.all([
             api<{ specification: DecisionInboxSnapshot['specification'];
@@ -166,9 +173,9 @@ export function EngineeringStudio({ token, task, onTeam }: {
         ]);
         if (closed) return;
         if (team.status === 'fulfilled') {
-          const [roster, handoffs, engineering, qa, lead, repair] = team.value;
+          const [roster, handoffs, engineering, qa, lead, repair, collaboration] = team.value;
           setSaved({ agents: roster.agents, handoffs: handoffs.events,
-            engineering: engineering.snapshot, qa: qa.snapshot, lead: lead.snapshot, repair: repair.snapshot });
+            engineering: engineering.snapshot, qa: qa.snapshot, lead: lead.snapshot, repair: repair.snapshot, collaboration: collaboration.snapshot });
           setTeamError(false);
         } else { setTeamError(true); }
         if (owner.status === 'fulfilled') {
@@ -197,8 +204,9 @@ export function EngineeringStudio({ token, task, onTeam }: {
   const activeQa = saved?.qa?.job.state === 'Running' || latest?.state === 'QaRunning';
   const activeEngineer = saved?.engineering?.job.state === 'Running' || latest?.state === 'Running';
   const activeLead = saved?.lead?.job.state === 'Running';
+  const coordinating = saved?.collaboration?.job.state === 'Running';
   const working = activeLead ? 'Lead Software Engineer reviewing' : activeQa ? 'QA Engineer reviewing' :
-    activeEngineer ? 'Software Engineer working' : 'No active agent run recorded';
+    activeEngineer ? 'Software Engineer working' : coordinating ? 'Technical Lead coordinating' : 'No active agent run recorded';
   const currentActivity = saved?.engineering?.tasks.find(item => item.state === 'Running');
   return <section className="ca-studio" aria-label="AI Engineering Studio">
     <header className="ca-studio-header">
@@ -215,7 +223,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
           onClick={() => roleModelsOpen ? setRoleModelsOpen(false) : openRoleModels()}>
           {roleModelsOpen ? 'Hide team models' : 'Assign team models'}
         </button>
-        <span className={'ca-studio-run-state' + (activeLead || activeQa || activeEngineer ? ' is-working' : '')}>
+        <span className={'ca-studio-run-state' + (activeLead || activeQa || activeEngineer || coordinating ? ' is-working' : '')}>
           <span aria-hidden="true" className="ca-studio-state-dot" />{working}
         </span>
       </div>
@@ -371,6 +379,8 @@ export function EngineeringStudio({ token, task, onTeam }: {
             <p className="ca-studio-role-state" data-state={inspected.state}>
               {inspected.status}</p>
             <p className="ca-studio-specialist-goal">{inspected.agent.goal}</p>
+            {inspected.agent.id === 'TechnicalLead' &&
+              <CollaborationPanel key={task.id} token={token} taskId={task.id} />}
             {inspected.agent.id === 'LeadSoftwareEngineer' &&
               <LeadReviewPanel key={task.id} token={token} taskId={task.id}
                 source={saved?.engineering ?? null} snapshot={saved?.lead ?? null} />}
