@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
+import { AgentRoleModels } from './AgentRoleModels';
 import { api, type TaskItem } from './api';
 import type { AgentIdentity } from './AgentIdentityPanel';
 import type { EngineerSnapshot } from './EngineeringWorkspace';
@@ -81,6 +82,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
   const [teamError, setTeamError] = useState(false);
   const [decisionError, setDecisionError] = useState(false);
   const [selectedStage, setSelectedStage] = useState<JourneyId>('discovery');
+  const [roleModelsOpen, setRoleModelsOpen] = useState(false);
   const [request, setRequest] = useState<{ stage: JourneyId; revision: number } | null>(null);
   const navigate = useCallback((stage: JourneyId) => {
     setSelectedStage(stage);
@@ -156,9 +158,16 @@ export function EngineeringStudio({ token, task, onTeam }: {
           activeQa ? 'Independent static review of saved source' :
             'Choose a specialist or work stage. All progress comes from saved records.'}</p>
       </div>
-      <span className={'ca-studio-run-state' + (activeQa || activeEngineer ? ' is-working' : '')}>
-        <span aria-hidden="true" className="ca-studio-state-dot" />{working}
-      </span>
+      <div className="ca-studio-header-actions">
+        <button type="button" className="outline ca-studio-model-button"
+          aria-expanded={roleModelsOpen} aria-controls="ca-studio-model-panel"
+          onClick={() => setRoleModelsOpen(value => !value)}>
+          {roleModelsOpen ? 'Hide team models' : 'Assign team models'}
+        </button>
+        <span className={'ca-studio-run-state' + (activeQa || activeEngineer ? ' is-working' : '')}>
+          <span aria-hidden="true" className="ca-studio-state-dot" />{working}
+        </span>
+      </div>
     </header>
     <div className="ca-studio-layout">
       <aside className="ca-studio-people" role="complementary" aria-label="Engineering team">
@@ -193,6 +202,10 @@ export function EngineeringStudio({ token, task, onTeam }: {
         </div>
       </aside>
       <section className="ca-studio-canvas" aria-label="Focused engineering work">
+        {roleModelsOpen && <div id="ca-studio-model-panel">
+          <AgentRoleModels token={token} taskId={task.id}
+            onClose={() => setRoleModelsOpen(false)} />
+        </div>}
         <InterviewStudio token={token} task={task}
           studioCanvas focusRequest={request} onStageSelected={setSelectedStage} />
       </section>
