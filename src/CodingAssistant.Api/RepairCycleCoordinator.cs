@@ -14,7 +14,7 @@ public sealed class RepairCycleCoordinator(
     ImplementationPlanStore plans, EngineeringRunStore engineering,
     RepairCycleStore cycles, IEngineeringTaskModel engineer,
     QaReviewCoordinator qa, QaReviewStore reviews,
-    EngineeringAtlasNotifier atlasNotifier,
+    EngineeringAtlasNotifier atlasNotifier,CollaborationCoordinator collaboration,CollaborationStore collaborationStore,
     IHostApplicationLifetime lifetime)
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
@@ -41,14 +41,14 @@ public sealed class RepairCycleCoordinator(
         _active[admitted.Id] = cancellation;
         var objective = tasks.GetTask(taskId).Task.Objective;
         _ = Task.Run(() => RunAsync(objective, specification.Content,
-            plan, architecture, admitted, qaModel, cancellation));
+            plan, architecture, admitted, qaModel, cancellation,request.ContinueCollaborationId));
         return admitted;
     }
 
     private async Task RunAsync(string objective, string specification,
         ImplementationPlan plan, DraftArchitectureReadiness architecture,
         RepairCycle cycle, string? qaModel,
-        CancellationTokenSource cancellation)
+        CancellationTokenSource cancellation,string? continueCollaborationId)
     {
         try
         {
@@ -95,6 +95,19 @@ public sealed class RepairCycleCoordinator(
             token.ThrowIfCancellationRequested();
             engineering.Finish(taskId, runId, true, null);
             cycles.SetState(taskId, cycle.Id, "Generated");
+
+            if(continueCollaborationId is not null)
+            {
+                // The owner selected continuation alongside exact repair
+                // authorization. Rebind the next session to the newly saved
+                // revision, not the previous reviewer approval.
+                var parent=collaborationStore.Get(taskId,continueCollaborationId).Job;
+                var saved=engineering.Get(taskId,runId);
+                await collaboration.StartAsync(taskId,new StartCollaborationRequest(runId,
+                    QaReviewStore.Fingerprint(saved.Files),plan.PlanSha256,parent.PolicyRevision,parent.PolicySha256),
+                    token,cycle.Id);
+                return;
+            }
 
             // Only static source inspection follows automatically. No browser,
             // Docker, shell or arbitrary generated code is ever executed here.

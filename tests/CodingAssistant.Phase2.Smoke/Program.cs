@@ -3699,6 +3699,39 @@ try
     Check(new AgentCommunicationStore(tasks).List(taskBound.Id,role:"SoftwareEngineer",direction:"inbox")
         .Any(x=>x.RunId==aetChildResumeId && x.FromAgent=="TechnicalLead" && x.Kind=="RepairRequested"),
         "actual Technical Lead repair request appears in engineer durable inbox");
+    // The owner still approves exact repair scope; collaboration continuation
+    // starts on the new immutable source and independently re-reviews it.
+    using(var aetCollabTriage=await Post(client,aetLeadProposalPath+"/"+aetCollabProposal.Id+"/triage",
+        new ClassifyRepairFindingRequest("app.js",0,"ImplementationDefect",
+            "Owner confirms the identified defect and authorizes only this file.")))
+        Check(aetCollabTriage.StatusCode==HttpStatusCode.OK,"owner records exact repair triage");
+    using(var aetBadContinuation=await Post(client,latestRepairPath,
+        new StartRepairCycleRequest(aetCollabProposal.Id,"REPAIR "+aetCollabProposal.SourceSha256,
+            [new RepairSelection("app.js",0)],Guid.NewGuid().ToString("N"))))
+        Check(aetBadContinuation.StatusCode==HttpStatusCode.NotFound,"unknown collaboration cannot attach repair continuation");
+    string aetCollabCycleId;
+    using(var aetCollabRepair=await Post(client,latestRepairPath,
+        new StartRepairCycleRequest(aetCollabProposal.Id,"REPAIR "+aetCollabProposal.SourceSha256,
+            [new RepairSelection("app.js",0)],aetCollabId)))
+    using(var aetCollabRepairBody=await Body(aetCollabRepair))
+    {
+        Check(aetCollabRepair.StatusCode==HttpStatusCode.Accepted,"exact owner repair also opts into delegated follow-up");
+        aetCollabCycleId=aetCollabRepairBody.RootElement.GetProperty("id").GetString()!;
+    }
+    CollaborationSnapshot? aetContinued=null;
+    for(var aetAttempt=0;aetAttempt<320;aetAttempt++)
+    {
+        aetContinued=aetCollabStore.Latest(taskBound.Id);
+        if(aetContinued?.Job.Id!=aetCollabId && aetContinued?.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    var aetContinuedCycle=new RepairCycleStore(tasks,engineeringStore,reviewStore,repairProposal).Get(taskBound.Id,aetCollabCycleId);
+    Check(aetContinued?.Job.State=="AwaitingOwner" && aetContinued.Job.Id!=aetCollabId &&
+        aetContinued.Job.RunId==aetContinuedCycle.Engineering.Job.Id &&
+        aetContinued.Job.SourceSha256!=aetCollabRequest.SourceSha256 &&
+        aetContinued.Steps.First().Action=="ReviewCode" && aetContinuedCycle.Cycle.State=="Generated" &&
+        qaModel.ReviewedFiles.Count==10,
+        "owner-approved repair automatically returns to independent lead review of new source; blocking finding prevents QA");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
         aetCollabPolicy.PolicySha256,"REVOKE "+aetCollabPolicy.PolicySha256));
 

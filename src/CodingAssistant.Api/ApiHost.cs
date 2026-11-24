@@ -837,7 +837,10 @@ public static class ApiHost
                     var qa = roleModels.Resolve(id, "QaEngineer", inherited);
                     var installed = await catalog.ListAsync(cancellation);
                     if (!installed.Contains(engineer, StringComparer.Ordinal) ||
-                        !installed.Contains(qa, StringComparer.Ordinal))
+                        !installed.Contains(qa, StringComparer.Ordinal) ||
+                        (request.ContinueCollaborationId is not null &&
+                            (!installed.Contains(roleModels.Resolve(id,"TechnicalLead",inherited),StringComparer.Ordinal) ||
+                             !installed.Contains(roleModels.Resolve(id,"LeadSoftwareEngineer",inherited),StringComparer.Ordinal))))
                         throw new StoreFailure("MODEL_NOT_INSTALLED");
                     return Results.Accepted($"/api/tasks/{id}/repair-cycles",
                         coordinator.Start(id, request, engineer, qa));

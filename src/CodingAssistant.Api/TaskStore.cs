@@ -308,6 +308,7 @@ public sealed class TaskStore
             "DELETE FROM agent_role_models WHERE task_id=@id",
             "DELETE FROM html_artifacts WHERE task_id=@id",
             "DELETE FROM repair_triage_decisions WHERE proposal_id IN (SELECT id FROM repair_proposals WHERE task_id=@id)",
+            "DELETE FROM engineering_collaboration_repairs WHERE task_id=@id",
             "DELETE FROM repair_cycles WHERE task_id=@id",
             "DELETE FROM repair_proposals WHERE task_id=@id",
             "DELETE FROM lead_review_files WHERE review_id IN (SELECT id FROM lead_reviews WHERE task_id=@id)",

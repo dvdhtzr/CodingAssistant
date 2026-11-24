@@ -126,6 +126,12 @@ public sealed class CollaborationStore(TaskStore tasks)
                 sequence INTEGER NOT NULL,action TEXT NOT NULL,issue_id TEXT,rationale TEXT NOT NULL,
                 reference_id TEXT,created_utc TEXT NOT NULL,PRIMARY KEY(collaboration_id,sequence)
             );
+            CREATE TABLE IF NOT EXISTS engineering_collaboration_repairs(
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                parent_id TEXT NOT NULL UNIQUE REFERENCES engineering_collaborations(id) ON DELETE CASCADE,
+                cycle_id TEXT NOT NULL UNIQUE,child_id TEXT UNIQUE REFERENCES engineering_collaborations(id),
+                PRIMARY KEY(task_id,cycle_id)
+            );
             """);
     }
     public void Recover()=>RecoverCore();
@@ -189,7 +195,33 @@ public sealed class CollaborationStore(TaskStore tasks)
             throw new StoreFailure("SOURCE_CHANGED");
         EngineeringRunStore.RequireBinding(db,tx,source);
     }
-    public CollaborationRun Start(string taskId,StartCollaborationRequest request,string model)
+    // The exact owner-authorized repair is linked inside its admission
+    // transaction. A policy approval alone is not a source repair grant.
+    internal static void BindRepair(SqliteConnection db,SqliteTransaction tx,string taskId,
+        string parentId,string cycleId,RepairProposal proposal,IReadOnlyList<RepairFindingReference> selected)
+    {
+        var parent=Find(db,tx,taskId,parentId);
+        if(parent.State!="AwaitingOwner" || parent.Reason!="EXACT_REPAIR_APPROVAL_REQUIRED" ||
+            parent.RunId!=proposal.EngineeringRunId || parent.SourceSha256!=proposal.SourceSha256 ||
+            parent.PlanSha256!=proposal.PlanSha256)
+            throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+        EngineeringDelegationStore.Require(db,tx,taskId,parent.PolicyRevision,parent.PolicySha256,"TechnicalLead","ScheduleWork");
+        EngineeringDelegationStore.Require(db,tx,taskId,parent.PolicyRevision,parent.PolicySha256,"TechnicalLead","RequestRepair");
+        EngineeringDelegationStore.Require(db,tx,taskId,parent.PolicyRevision,parent.PolicySha256,"LeadSoftwareEngineer","ReviewCode");
+        EngineeringDelegationStore.Require(db,tx,taskId,parent.PolicyRevision,parent.PolicySha256,"QaEngineer","ReviewAcceptance");
+        var step=Steps(db,tx,parentId).LastOrDefault();
+        if(step?.Action!="RequestOwnerRepair" || step.ReferenceId!=proposal.Id || step.IssueId is null)
+            throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+        var issue=EngineeringIssueStore.Read(db,tx,taskId,parent.RunId).Issues.SingleOrDefault(i=>i.Id==step.IssueId);
+        if(issue is null || issue.State!="ConfirmedDefect" ||
+            !selected.Any(f=>issue.References.Any(x=>x.ReviewId==(proposal.LeadReviewId??proposal.QaReviewId) &&
+                x.Path.Equals(f.Path,StringComparison.OrdinalIgnoreCase) && x.FindingIndex==f.Index)))
+            throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+        TaskStore.Execute(db,tx,"INSERT INTO engineering_collaboration_repairs(task_id,parent_id,cycle_id) VALUES(@task,@parent,@cycle)",
+            ("@task",taskId),("@parent",parentId),("@cycle",cycleId));
+    }
+
+    public CollaborationRun Start(string taskId,StartCollaborationRequest request,string model,string? continuationCycleId=null)
     {
         if(!LocalInterviewModel.AllowedModel(model))throw new StoreFailure("INVALID_MODEL");
         using var db=tasks.Open();using var tx=db.BeginTransaction();
@@ -208,7 +240,23 @@ public sealed class CollaborationStore(TaskStore tasks)
             VALUES(@id,@task,@run,@source,@plan,@policy,@policySha,@model,'Running',@utc,@utc)
             """,("@id",job.Id),("@task",taskId),("@run",job.RunId),("@source",job.SourceSha256),
             ("@plan",job.PlanSha256),("@policy",job.PolicyRevision),("@policySha",job.PolicySha256),("@model",model),("@utc",now));
-        EngineeringActivityStore.Record(db,tx,taskId,"CollaborationStarted","HumanOwner","Collaboration",job.Id,toAgent:"TechnicalLead",sourceSha256:job.SourceSha256);
+        if(continuationCycleId is not null)
+        {
+            var parentId=TaskStore.Scalar(db,tx,"""
+                SELECT l.parent_id FROM engineering_collaboration_repairs l JOIN repair_cycles c ON c.id=l.cycle_id
+                WHERE l.task_id=@task AND l.cycle_id=@cycle AND l.child_id IS NULL
+                AND c.task_id=@task AND c.engineering_run_id=@run AND c.state='Generated'
+                """,("@task",taskId),("@cycle",continuationCycleId),("@run",job.RunId))
+                ??throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            var parent=Find(db,tx,taskId,parentId);
+            if(parent.PolicyRevision!=job.PolicyRevision || parent.PolicySha256!=job.PolicySha256 ||
+                parent.PlanSha256!=job.PlanSha256)throw new StoreFailure("DELEGATION_NOT_AUTHORIZED");
+            if(TaskStore.Execute(db,tx,"UPDATE engineering_collaboration_repairs SET child_id=@child WHERE task_id=@task AND cycle_id=@cycle AND child_id IS NULL",
+                ("@child",job.Id),("@task",taskId),("@cycle",continuationCycleId))!=1)
+                throw new StoreFailure("IDEMPOTENCY_CONFLICT");
+        }
+        EngineeringActivityStore.Record(db,tx,taskId,"CollaborationStarted",
+            continuationCycleId is null?"HumanOwner":"TechnicalLead","Collaboration",job.Id,toAgent:"TechnicalLead",sourceSha256:job.SourceSha256);
         tx.Commit();tasks.SignalEngineeringActivity(taskId);return job;
     }
 
@@ -303,6 +351,12 @@ public sealed class CollaborationStore(TaskStore tasks)
             throw new StoreFailure("SOURCE_CHANGED");
     }
 
+    // Update the legacy cycle only when a real, linked QA review is
+    // admitted/completed. A lead rejection leaves Generated, never QaReviewed.
+    internal static string? ContinuationCycle(SqliteConnection db,SqliteTransaction tx,string taskId,string childId)
+        =>TaskStore.Scalar(db,tx,"SELECT cycle_id FROM engineering_collaboration_repairs WHERE task_id=@task AND child_id=@child",
+            ("@task",taskId),("@child",childId));
+
     internal static void RequireReviewAuthority(SqliteConnection db,SqliteTransaction tx,
         string taskId,string reviewId,string role)
     {
@@ -362,22 +416,23 @@ public sealed class CollaborationStore(TaskStore tasks)
 
 public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore store,
     ICollaborationLead lead,LeadReviewCoordinator leadReviews,LeadReviewStore leadStore,
-    QaReviewCoordinator qaReviews,QaReviewStore qaStore,RepairProposalStore proposals,
+    QaReviewCoordinator qaReviews,QaReviewStore qaStore,RepairProposalStore proposals,RepairCycleStore cycles,
     AgentRoleModelSettings models,IOllamaModelCatalog catalog,ImplementationPlanStore plans,IHostApplicationLifetime lifetime)
 {
     private readonly ConcurrentDictionary<string,CancellationTokenSource> _active=new();
-    public async Task<CollaborationRun> StartAsync(string taskId,StartCollaborationRequest request,CancellationToken token)
+    public async Task<CollaborationRun> StartAsync(string taskId,StartCollaborationRequest request,CancellationToken token,
+        string? continuationCycleId=null)
     {
         var model=models.Resolve(taskId,"TechnicalLead",plans.Read(taskId).Plan?.Model??LocalInterviewModel.DefaultModel);
         var installed=await catalog.ListAsync(token);
         if(!installed.Contains(model,StringComparer.Ordinal))throw new StoreFailure("MODEL_NOT_INSTALLED");
-        var job=store.Start(taskId,request,model);
+        var job=store.Start(taskId,request,model,continuationCycleId);
         var cancel=CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _active[job.Id]=cancel;
-        _=Task.Run(()=>RunAsync(job,cancel));
+        _=Task.Run(()=>RunAsync(job,cancel,continuationCycleId));
         return job;
     }
-    private async Task RunAsync(CollaborationRun job,CancellationTokenSource cancel)
+    private async Task RunAsync(CollaborationRun job,CancellationTokenSource cancel,string? continuationCycleId)
     {
         var token=cancel.Token;string? activeReview=null;bool activeLead=false;
         try
@@ -405,6 +460,8 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         var request=new StartQaReviewRequest(job.RunId,job.PlanSha256);
                         activeReview=activeLead?leadReviews.Start(job.TaskId,request,model,admission).Id:
                             qaReviews.Start(job.TaskId,request,model,admission).Id;
+                        if(!activeLead && continuationCycleId is not null)
+                            cycles.SetState(job.TaskId,continuationCycleId,"QaRunning",qaId:activeReview);
                         while(true)
                         {
                             token.ThrowIfCancellationRequested();
@@ -413,6 +470,9 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                                 qaStore.Get(job.TaskId,activeReview).Job.State;
                             if(state!="Running")
                             {
+                                if(!activeLead && continuationCycleId is not null)
+                                    cycles.SetState(job.TaskId,continuationCycleId,state=="Reviewed"?"QaReviewed":"Failed",
+                                        state=="Reviewed"?null:"QA_"+state.ToUpperInvariant());
                                 if(state!="Reviewed")throw new StoreFailure("INDEPENDENT_REVIEW_STOPPED");
                                 activeReview=null;break;
                             }
@@ -457,6 +517,12 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
             if(activeReview is not null)
                 try{if(activeLead)leadReviews.Cancel(job.TaskId,activeReview);else qaReviews.Cancel(job.TaskId,activeReview);}
                 catch(StoreFailure){}
+            if(continuationCycleId is not null)
+                try{
+                    if(cycles.Get(job.TaskId,continuationCycleId).Cycle.State=="QaRunning")
+                        cycles.SetState(job.TaskId,continuationCycleId,
+                            token.IsCancellationRequested?"Interrupted":"Failed","COLLABORATION_STOPPED");
+                }catch(StoreFailure){}
             _active.TryRemove(job.Id,out _);cancel.Dispose();
         }
     }

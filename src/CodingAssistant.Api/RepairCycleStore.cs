@@ -7,7 +7,7 @@ namespace CodingAssistant.Api;
 public sealed record RepairSelection(string Path, int Index);
 public sealed record StartRepairCycleRequest(
     string? ProposalId, string? Confirmation,
-    IReadOnlyList<RepairSelection>? Findings);
+    IReadOnlyList<RepairSelection>? Findings,string? ContinueCollaborationId=null);
 public sealed record RepairCycle(
     string Id, string TaskId, string ProposalId, string BaseRunId,
     string EngineeringRunId, string? QaReviewId, string BaseSourceSha256,
@@ -331,6 +331,8 @@ public sealed class RepairCycleStore(
         var cycleId = Guid.NewGuid().ToString("N");
         try
         {
+            if(request.ContinueCollaborationId is not null)
+                CollaborationStore.BindRepair(db,tx,taskId,request.ContinueCollaborationId,cycleId,proposal,selected);
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_runs (
                     id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
