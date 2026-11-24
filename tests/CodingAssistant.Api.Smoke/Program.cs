@@ -58,6 +58,31 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     };
 }
 
+// The activity display is ephemeral metadata, not a logging or approval system.
+{
+    var activity = new LocalHttpActivityLedger();
+    for (var index = 0; index < LocalHttpActivityLedger.MaxEntries + 12; index++)
+        activity.Record("GET", "/api/tasks/{id}/engineering-runs/latest",
+            200, 12.8);
+    var recent = activity.Read(after: 1, limit: 200);
+    Check(recent.Capacity == 120 && recent.Events.Count == 40 &&
+          recent.Truncated && recent.LastSequence == 132 &&
+          recent.Events[0].Sequence == 93,
+        "activity buffer has a bounded window, bounded page and explicit cursor gap");
+    Check(recent.Events.All(item => item.Route ==
+            "/api/tasks/{id}/engineering-runs/latest" &&
+          item.DurationMs == 13 && item.StatusCode == 200),
+        "activity summaries contain route templates, statuses and bounded durations");
+    activity.Record("POST",
+        "/api/tasks/real-id?sessionToken=do-not-expose",
+        403, double.PositiveInfinity);
+    var unsafeRoute = activity.Read(after: 132).Events.Single();
+    Check(unsafeRoute.Route == "API request" &&
+          unsafeRoute.DurationMs == 0 &&
+          unsafeRoute.Method == "POST" && unsafeRoute.StatusCode == 403,
+        "unsafe paths, query strings and nonfinite durations fail closed");
+}
+
 // Reproduce the Windows Visual Studio stale-wwwroot failure using a safe,
 // temporary fake bundle. The real API program rebuilds the current source
 // before selecting a static WebRoot; no old Owner session should be served.
@@ -535,6 +560,9 @@ try
         using var noToken = await unauthenticated.GetAsync("/api/tasks");
         Check(noToken.StatusCode == HttpStatusCode.Unauthorized,
             "unauthenticated owner history blocked");
+        using (var activity = await unauthenticated.GetAsync("/api/studio/http-activity"))
+            Check(activity.StatusCode == HttpStatusCode.Unauthorized,
+                "anonymous users cannot read live request activity");
         using var noAuthPost = await Post(unauthenticated, "/api/tasks", new
         {
             title = "unauthorized",
@@ -655,6 +683,29 @@ try
             "control plane cannot start the agent");
         Check(status.RootElement.GetProperty("model").GetString() == "qwen3.5:4b",
             "fixed local model reported");
+    }
+
+    using (var response = await client.GetAsync("/api/studio/http-activity"))
+    using (var body = await ReadJson(response))
+    {
+        var cursor = body.RootElement.GetProperty("lastSequence").GetInt64();
+        var items = body.RootElement.GetProperty("events").EnumerateArray().ToArray();
+        Check(response.StatusCode == HttpStatusCode.OK && cursor > 0 &&
+              items.Any(item =>
+                item.GetProperty("method").GetString() == "GET" &&
+                item.GetProperty("route").GetString() == "/api/status" &&
+                item.GetProperty("statusCode").GetInt32() == 200),
+            "authenticated activity endpoint reports real, templated HTTP completions");
+        var serialized = body.RootElement.GetRawText();
+        Check(!serialized.Contains(OwnerToken, StringComparison.Ordinal) &&
+              !serialized.Contains("sessionToken", StringComparison.Ordinal),
+            "request activity never exposes a bearer or session token");
+        using var self = await client.GetAsync(
+            "/api/studio/http-activity?after=" + cursor);
+        using var selfBody = await ReadJson(self);
+        Check(selfBody.RootElement.GetProperty("lastSequence").GetInt64() == cursor &&
+              selfBody.RootElement.GetProperty("events").GetArrayLength() == 0,
+            "watching activity never generates self-referential request traffic");
     }
 
     var requestId = Guid.NewGuid().ToString("N");
