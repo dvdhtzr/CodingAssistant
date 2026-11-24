@@ -10,6 +10,12 @@ public sealed record EngineeringIssueChallenge(string MessageId,string IssueId,
     string ArchitectureChoiceSha256,string Summary,string ToAgent,string CreatedUtc);
 public sealed record EngineeringIssueTriage(string ReviewId,string Classification,
     string Rationale,string CreatedUtc);
+public sealed record IssueDecisionContext(string TaskId,string RunId,string SourceSha256,
+    string FromAgent,int PolicyRevision,string PolicySha256);
+public sealed record IssueDecisionDraft(string IssueId,int ExpectedRevision,string ReviewId,
+    string Classification,string Rationale,string? ChallengeMessageId=null);
+public sealed record IssueDecision(int Revision,string IssueId,string ReviewId,string Classification,
+    string Rationale,string? ChallengeMessageId,int PolicyRevision,string PolicySha256,string CreatedUtc);
 public sealed record EngineeringIssue(string Id,string TaskId,string EngineeringRunId,
     string SourceSha256,string PlanSha256,string Origin,string Severity,string Category,
     string Path,int? Line,string Requirement,string Evidence,string Recommendation,
@@ -17,7 +23,8 @@ public sealed record EngineeringIssue(string Id,string TaskId,string Engineering
     bool CurrentSource,bool LatestReview,string State,string? Classification,
     string? AssignedOwner,string? RepairCycleId,int? RepairAttempt,string? RepairState,
     IReadOnlyList<EngineeringIssueTriage> TriageHistory,
-    IReadOnlyList<EngineeringIssueChallenge> Challenges);
+    IReadOnlyList<EngineeringIssueChallenge> Challenges,
+    IReadOnlyList<IssueDecision> Decisions);
 public sealed record EngineeringIssuePage(string TaskId,string? EngineeringRunId,
     bool CurrentSource,IReadOnlyList<EngineeringIssue> Issues);
 
@@ -55,6 +62,19 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
             );
             CREATE INDEX IF NOT EXISTS engineering_issue_challenge_issue
                 ON engineering_issue_challenges(task_id,issue_id);
+            CREATE TABLE IF NOT EXISTS engineering_issue_decisions (
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                issue_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),
+                run_id TEXT NOT NULL,source_sha256 TEXT NOT NULL,plan_sha256 TEXT NOT NULL,
+                review_id TEXT NOT NULL,classification TEXT NOT NULL CHECK(classification IN
+                    ('ImplementationDefect','NeedsVerification','SpecificationAmbiguity',
+                    'PlanChangeRequired','NonBlockingImprovement','Deferred')),
+                rationale TEXT NOT NULL,challenge_message_id TEXT,
+                policy_revision INTEGER NOT NULL,policy_sha256 TEXT NOT NULL,created_utc TEXT NOT NULL,
+                PRIMARY KEY(task_id,issue_id,revision)
+            );
+            CREATE INDEX IF NOT EXISTS engineering_issue_decision_run
+                ON engineering_issue_decisions(task_id,run_id);
             """);
 
     public EngineeringIssuePage Read(string taskId,string? runId=null)
@@ -184,6 +204,25 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                 list.Add(item);
             }
 
+        var arbitration=new Dictionary<string,List<IssueDecision>>(StringComparer.Ordinal);
+        using(var cmd=TaskStore.Command(db,tx,"""
+            SELECT revision,issue_id,review_id,classification,rationale,challenge_message_id,
+                policy_revision,policy_sha256,created_utc
+            FROM engineering_issue_decisions WHERE task_id=@task AND run_id=@run
+                AND source_sha256=@source AND plan_sha256=@plan ORDER BY revision
+            """,("@task",taskId),("@run",run.Id),("@source",sourceSha),("@plan",run.PlanSha256)))
+        using(var reader=cmd.ExecuteReader())
+            while(reader.Read())
+            {
+                var decision=new IssueDecision(reader.GetInt32(0),reader.GetString(1),
+                    reader.GetString(2),reader.GetString(3),reader.GetString(4),
+                    reader.IsDBNull(5)?null:reader.GetString(5),reader.GetInt32(6),
+                    reader.GetString(7),reader.GetString(8));
+                if(!arbitration.TryGetValue(decision.IssueId,out var list))
+                    arbitration[decision.IssueId]=list=[];
+                list.Add(decision);
+            }
+
         var issues=occurrences.GroupBy(f=>Key(taskId,run.Id,sourceSha,f),StringComparer.Ordinal)
             .Select(group=>{
                 var f=group.Last();
@@ -194,22 +233,96 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                 var decisions=history.Select(v=>v.Classification).Distinct().ToArray();
                 var classification=decisions.Length==1?decisions[0]:null;
                 var relatedChallenges=challenges.GetValueOrDefault(group.Key)?.ToArray() ?? [];
+                var decisionHistory=arbitration.GetValueOrDefault(group.Key)?.ToArray() ?? [];
+                var lastDecision=decisionHistory.LastOrDefault();
+                // A new review or new challenge requires fresh arbitration.
+                var effectiveDecision=lastDecision is not null &&
+                    group.Any(o=>o.Latest && o.ReviewId==lastDecision.ReviewId) &&
+                    lastDecision.ChallengeMessageId==relatedChallenges.LastOrDefault()?.MessageId
+                    ?lastDecision:null;
+                if(effectiveDecision is not null) classification=effectiveDecision.Classification;
                 var repair=group.Where(o=>o.Origin=="QaEngineer").Select(o=>
                     cycles.GetValueOrDefault((o.ReviewId,o.Path.ToUpperInvariant(),o.Index)))
                     .Where(c=>c.Id is not null).OrderByDescending(c=>c.Attempt).FirstOrDefault();
                 var state=repair.Id is not null ? repair.State switch {
                     "Running"=>"RepairInProgress","Generated" or "QaRunning" or "QaReviewed"=>"AwaitingIndependentVerification",
                     _=>"RepairStopped"
-                } : decisions.Length>1?"TriageConflict":
+                } : effectiveDecision is not null ?
+                    classification=="ImplementationDefect"?"ConfirmedDefect":
+                    classification=="Deferred"?"Deferred":"Classified"
+                    : decisions.Length>1?"TriageConflict":
                     classification=="ImplementationDefect"?"ConfirmedDefect":
                     classification is not null?"Classified":relatedChallenges.Length>0?"Challenged":"NeedsTriage";
                 return new EngineeringIssue(group.Key,taskId,run.Id,sourceSha,run.PlanSha256,
                     f.Origin,f.Severity,f.Category,f.Path,f.Line,f.Requirement,f.Evidence,
                     f.Recommendation,f.Verification,refs,current,group.Any(o=>o.Latest),state,
-                    classification,repair.Id is not null?"SoftwareEngineer":null,
-                    repair.Id,repair.Id is null?null:repair.Attempt,repair.State,history,relatedChallenges);
+                    classification,repair.Id is not null || effectiveDecision?.Classification=="ImplementationDefect"
+                        ?"SoftwareEngineer":null,
+                    repair.Id,repair.Id is null?null:repair.Attempt,repair.State,history,relatedChallenges,decisionHistory);
             }).OrderBy(x=>x.Severity switch {"Critical"=>0,"Major"=>1,"Minor"=>2,_=>3})
             .ThenBy(x=>x.Path,StringComparer.Ordinal).ThenBy(x=>x.Id,StringComparer.Ordinal).ToArray();
         return new(taskId,run.Id,current,issues);
+    }
+
+    // Application-only authority boundary. No route accepts an agent identity.
+    // Arbitration is not repair admission, execution permission or closure.
+    public IssueDecision Decide(IssueDecisionContext context,IssueDecisionDraft draft)
+    {
+        EngineeringRoleCapabilities.Require(context.FromAgent,EngineeringCapability.ScheduleWork);
+        if(draft.ExpectedRevision<0 || draft.ExpectedRevision==int.MaxValue ||
+            draft.Rationale is null || draft.Rationale.Trim().Length is <12 or >1000 ||
+            draft.Rationale.Any(char.IsControl) || draft.Classification is not
+            ("ImplementationDefect" or "NeedsVerification" or "SpecificationAmbiguity" or
+             "PlanChangeRequired" or "NonBlockingImprovement" or "Deferred"))
+            throw new StoreFailure("INVALID_INPUT");
+        using var db=tasks.Open();
+        using var tx=db.BeginTransaction();
+        EngineeringDelegationStore.Require(db,tx,context.TaskId,context.PolicyRevision,
+            context.PolicySha256,context.FromAgent,"ScheduleWork");
+        var issue=Read(db,tx,context.TaskId,context.RunId).Issues.SingleOrDefault(x=>x.Id==draft.IssueId)
+            ?? throw new StoreFailure("NOT_FOUND");
+        if(!issue.CurrentSource || issue.SourceSha256!=context.SourceSha256 ||
+            !issue.LatestReview || issue.RepairCycleId is not null ||
+            !issue.References.Any(x=>x.ReviewId==draft.ReviewId) ||
+            TaskStore.Scalar(db,tx,issue.Origin=="QaEngineer"?
+                "SELECT id FROM qa_reviews WHERE task_id=@task AND engineering_run_id=@run ORDER BY created_utc DESC,id DESC LIMIT 1":
+                "SELECT id FROM lead_reviews WHERE task_id=@task AND engineering_run_id=@run ORDER BY created_utc DESC,id DESC LIMIT 1",
+                ("@task",context.TaskId),("@run",context.RunId))!=draft.ReviewId ||
+            draft.ChallengeMessageId!=issue.Challenges.LastOrDefault()?.MessageId)
+            throw new StoreFailure("SOURCE_CHANGED");
+        // Blocking concerns cannot be waived via a classification change.
+        if(issue.Severity is "Critical" or "Major" &&
+            draft.Classification is ("Deferred" or "NonBlockingImprovement"))
+            throw new StoreFailure("INVALID_INPUT");
+        var latest=issue.Decisions.LastOrDefault();
+        var rationale=draft.Rationale.Trim();
+        if(latest is not null && latest.Revision==draft.ExpectedRevision+1 &&
+            latest.ReviewId==draft.ReviewId && latest.Classification==draft.Classification &&
+            latest.Rationale==rationale && latest.ChallengeMessageId==draft.ChallengeMessageId &&
+            latest.PolicyRevision==context.PolicyRevision && latest.PolicySha256==context.PolicySha256)
+        {
+            tx.Commit();return latest;
+        }
+        if((latest?.Revision??0)!=draft.ExpectedRevision)
+            throw new StoreFailure("IDEMPOTENCY_CONFLICT");
+        var decision=new IssueDecision(draft.ExpectedRevision+1,issue.Id,draft.ReviewId,
+            draft.Classification,rationale,draft.ChallengeMessageId,context.PolicyRevision,
+            context.PolicySha256,DateTimeOffset.UtcNow.ToString("O"));
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO engineering_issue_decisions(task_id,issue_id,revision,run_id,source_sha256,
+                plan_sha256,review_id,classification,rationale,challenge_message_id,policy_revision,
+                policy_sha256,created_utc)
+            VALUES(@task,@issue,@rev,@run,@source,@plan,@review,@classification,@rationale,@challenge,
+                @policy,@policysha,@utc)
+            """,("@task",context.TaskId),("@issue",issue.Id),("@rev",decision.Revision),
+            ("@run",context.RunId),("@source",context.SourceSha256),("@plan",issue.PlanSha256),
+            ("@review",decision.ReviewId),("@classification",decision.Classification),
+            ("@rationale",decision.Rationale),("@challenge",(object?)decision.ChallengeMessageId??DBNull.Value),
+            ("@policy",context.PolicyRevision),("@policysha",context.PolicySha256),("@utc",decision.CreatedUtc));
+        EngineeringActivityStore.Record(db,tx,context.TaskId,"IssueDecisionRecorded","TechnicalLead",
+            "EngineeringIssue",issue.Id,decision.Revision,toAgent:
+                decision.Classification=="ImplementationDefect"?"SoftwareEngineer":issue.Origin,
+                sourceSha256:context.SourceSha256);
+        tx.Commit();tasks.SignalEngineeringActivity(context.TaskId);return decision;
     }
 }

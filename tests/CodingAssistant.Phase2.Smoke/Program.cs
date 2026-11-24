@@ -2093,7 +2093,7 @@ try
         Check(aetDenied.StatusCode==HttpStatusCode.Unauthorized,"unified findings remain owner-private");
     var aetIssueId=aetIssues.Issues.Single().Id;
     var aetChallengePolicy=delegationStore.Propose(taskBound.Id,
-        new ProposeDelegationRequest(2,secondPlanHash,["SendMessage"]));
+        new ProposeDelegationRequest(2,secondPlanHash,["SendMessage","ScheduleWork"]));
     aetChallengePolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
         aetChallengePolicy.Revision,aetChallengePolicy.PolicySha256,"APPROVE "+aetChallengePolicy.PolicySha256));
     var aetChallengeContext=aetMessageContext with {
@@ -2118,6 +2118,23 @@ try
         aetChallenged.Severity=="Major" && aetChallenged.Challenges.Single().MessageId==aetChallenge.MessageId &&
         aetChallenged.Challenges.Single().ArchitectureChoiceSha256==aetArchitectureChoice,
         "engineer challenges actual finding against approved evidence without self-dismissal or downgrade");
+    var aetDecisionContext=new IssueDecisionContext(taskBound.Id,engineeringRunId,aetLeadJob.SourceSha256,
+        "TechnicalLead",aetChallengePolicy.Revision,aetChallengePolicy.PolicySha256);
+    var aetDecisionDraft=new IssueDecisionDraft(aetIssueId,0,aetLiveLeadId,"ImplementationDefect",
+        "The approved architecture does not excuse the observed defect.",aetChallenge.MessageId);
+    var aetIssueStore=new EngineeringIssueStore(tasks);
+    RejectMessage(()=>aetIssueStore.Decide(aetDecisionContext with {FromAgent="SoftwareEngineer"},
+        aetDecisionDraft),"AGENT_CAPABILITY_DENIED");
+    RejectMessage(()=>aetIssueStore.Decide(aetDecisionContext,
+        aetDecisionDraft with {Classification="Deferred"}),"INVALID_INPUT");
+    RejectMessage(()=>aetIssueStore.Decide(aetDecisionContext,
+        aetDecisionDraft with {ChallengeMessageId=null}),"SOURCE_CHANGED");
+    var aetDecision=aetIssueStore.Decide(aetDecisionContext,aetDecisionDraft);
+    Check(aetIssueStore.Decide(aetDecisionContext,aetDecisionDraft)==aetDecision &&
+        aetIssueStore.Read(taskBound.Id).Issues.Single() is {State:"ConfirmedDefect",AssignedOwner:"SoftwareEngineer"},
+        "delegated Technical Lead arbitrates exact challenged finding and assigns repair ownership");
+    RejectMessage(()=>aetIssueStore.Decide(aetDecisionContext,
+        aetDecisionDraft with {Rationale="Conflicting decision cannot overwrite history."}),"IDEMPOTENCY_CONFLICT");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetChallengePolicy.Revision,
         aetChallengePolicy.PolicySha256,"REVOKE "+aetChallengePolicy.PolicySha256));
     // Keep the generated source pinned to 14B but change QA alone.
@@ -2354,7 +2371,7 @@ try
     Check(aetCombined.Issues.Count==2 &&
         aetCombined.Issues.Single(x=>x.Origin=="QaEngineer").Classification=="NeedsVerification" &&
         aetCombined.Issues.Single(x=>x.Origin=="QaEngineer").TriageHistory.Single().ReviewId==qaReviewId &&
-        aetCombined.Issues.Single(x=>x.Origin=="LeadSoftwareEngineer").State=="Challenged",
+        aetCombined.Issues.Single(x=>x.Origin=="LeadSoftwareEngineer").State=="ConfirmedDefect",
         "unified issue view combines independent origins and actual owner triage");
 
     // R2-R5 end-to-end fixture: explicit triage, authorized source-only

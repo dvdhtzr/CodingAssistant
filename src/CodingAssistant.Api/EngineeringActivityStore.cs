@@ -83,6 +83,7 @@ public sealed class EngineeringActivityStore(TaskStore tasks)
         "ReviewRequested" => ("Team","Agent requested review"),
         "FindingRaised" => ("Team","Agent proposed a finding"),
         "FindingChallenged" => ("Team","Agent challenged a finding"),
+        "IssueDecisionRecorded" => ("Team","Technical Lead recorded issue classification; no execution authorized"),
         "RepairRequested" => ("Team","Agent requested repair; not authorized by message"),
         "CompletionRequested" => ("Team","Agent requested completion assessment"),
         _ => null
