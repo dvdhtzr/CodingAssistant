@@ -6,12 +6,18 @@ namespace CodingAssistant.Api;
 
 public sealed record EngineeringIssueReference(string ReviewId,string Path,int FindingIndex,
     string FileSha256,string Origin);
+public sealed record EngineeringIssueChallenge(string MessageId,string IssueId,
+    string ArchitectureChoiceSha256,string Summary,string ToAgent,string CreatedUtc);
+public sealed record EngineeringIssueTriage(string ReviewId,string Classification,
+    string Rationale,string CreatedUtc);
 public sealed record EngineeringIssue(string Id,string TaskId,string EngineeringRunId,
     string SourceSha256,string PlanSha256,string Origin,string Severity,string Category,
     string Path,int? Line,string Requirement,string Evidence,string Recommendation,
     string? Verification, IReadOnlyList<EngineeringIssueReference> References,
     bool CurrentSource,bool LatestReview,string State,string? Classification,
-    string? AssignedOwner,string? RepairCycleId,int? RepairAttempt,string? RepairState);
+    string? AssignedOwner,string? RepairCycleId,int? RepairAttempt,string? RepairState,
+    IReadOnlyList<EngineeringIssueTriage> TriageHistory,
+    IReadOnlyList<EngineeringIssueChallenge> Challenges);
 public sealed record EngineeringIssuePage(string TaskId,string? EngineeringRunId,
     bool CurrentSource,IReadOnlyList<EngineeringIssue> Issues);
 
@@ -27,7 +33,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
     private sealed record Occurrence(string ReviewId,string Origin,string Path,
         string FileSha256,int Index,string Severity,string Category,int? Line,
         string Requirement,string Evidence,string Recommendation,string? Verification,
-        bool Latest,string? Classification,string? CycleId,int? Attempt,string? RepairState);
+        bool Latest);
 
     private static string Key(string taskId,string runId,string sourceSha,Occurrence finding)
         => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new {
@@ -36,10 +42,33 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
             finding.Requirement,finding.Evidence,finding.Recommendation,finding.Verification
         }))).ToLowerInvariant();
 
+    internal static void Initialize(SqliteConnection db) =>
+        TaskStore.Execute(db,null,"""
+            CREATE TABLE IF NOT EXISTS engineering_issue_challenges (
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                message_id TEXT NOT NULL,
+                issue_id TEXT NOT NULL,
+                architecture_choice_sha256 TEXT NOT NULL,
+                PRIMARY KEY(task_id,message_id),
+                FOREIGN KEY(task_id,message_id) REFERENCES
+                    engineering_agent_communications(task_id,message_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS engineering_issue_challenge_issue
+                ON engineering_issue_challenges(task_id,issue_id);
+            """);
+
     public EngineeringIssuePage Read(string taskId,string? runId=null)
     {
         using var db=tasks.Open();
         using var tx=db.BeginTransaction(deferred:true);
+        var result=Read(db,tx,taskId,runId);
+        tx.Commit();
+        return result;
+    }
+
+    internal static EngineeringIssuePage Read(SqliteConnection db,SqliteTransaction tx,
+        string taskId,string? runId)
+    {
         if(TaskStore.FindTask(db,tx,taskId) is null) throw new StoreFailure("NOT_FOUND");
         var latest=TaskStore.Scalar(db,tx,"""
             SELECT id FROM engineering_runs WHERE task_id=@task
@@ -86,7 +115,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                     var finding=report.Findings[i];
                     occurrences.Add(new(id,"QaEngineer",path,fileSha,i,finding.Severity,
                         "Acceptance",null,finding.Requirement,finding.Evidence,finding.Recommendation,
-                        null,id==latestQa,null,null,null,null));
+                        null,id==latestQa));
                 }
             }
         using(var cmd=TaskStore.Command(db,tx,"""
@@ -109,21 +138,21 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                     var finding=report.Findings[i];
                     occurrences.Add(new(id,"LeadSoftwareEngineer",path,fileSha,i,finding.Severity,
                         finding.Category,finding.Line,finding.Impact,finding.Evidence,finding.Resolution,
-                        finding.Verification,id==latestLead,null,null,null,null));
+                        finding.Verification,id==latestLead));
                 }
             }
 
         // Preserve the existing exact-scope repair mechanism. A cycle only
         // relates to a finding if the selected original path/index matches.
-        var triage=new Dictionary<(string Review,string Path,int Index),string>();
+        var triage=new Dictionary<(string Review,string Path,int Index),EngineeringIssueTriage>();
         using(var cmd=TaskStore.Command(db,tx,"""
-            SELECT p.qa_review_id,d.path,d.finding_index,d.classification
+            SELECT p.qa_review_id,d.path,d.finding_index,d.classification,d.rationale,d.created_utc
             FROM repair_proposals p JOIN repair_triage_decisions d ON d.proposal_id=p.id
             WHERE p.task_id=@task AND p.engineering_run_id=@run AND p.source_sha256=@source
             """,("@task",taskId),("@run",run.Id),("@source",sourceSha)))
         using(var reader=cmd.ExecuteReader())
             while(reader.Read()) triage[(reader.GetString(0),reader.GetString(1).ToUpperInvariant(),
-                reader.GetInt32(2))]=reader.GetString(3);
+                reader.GetInt32(2))]=new(reader.GetString(0),reader.GetString(3),reader.GetString(4),reader.GetString(5));
         var cycles=new Dictionary<(string Review,string Path,int Index),(string Id,int Attempt,string State)>();
         using(var cmd=TaskStore.Command(db,tx,"""
             SELECT p.qa_review_id,c.id,c.attempt,c.state,c.findings_json
@@ -137,14 +166,34 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                     cycles[(reader.GetString(0),f.Path.ToUpperInvariant(),f.Index)]=
                         (reader.GetString(1),reader.GetInt32(2),reader.GetString(3));
 
+        var challenges=new Dictionary<string,List<EngineeringIssueChallenge>>(StringComparer.Ordinal);
+        using(var cmd=TaskStore.Command(db,tx,"""
+            SELECT c.message_id,c.issue_id,c.architecture_choice_sha256,m.summary,m.to_agent,m.created_utc
+            FROM engineering_issue_challenges c
+            JOIN engineering_agent_communications m ON m.task_id=c.task_id AND m.message_id=c.message_id
+            WHERE c.task_id=@task AND m.run_id=@run AND m.source_sha256=@source AND m.plan_sha256=@plan
+            ORDER BY m.sequence
+            """,("@task",taskId),("@run",run.Id),("@source",sourceSha),("@plan",run.PlanSha256)))
+        using(var reader=cmd.ExecuteReader())
+            while(reader.Read())
+            {
+                var item=new EngineeringIssueChallenge(reader.GetString(0),reader.GetString(1),
+                    reader.GetString(2),reader.GetString(3),reader.GetString(4),reader.GetString(5));
+                if(!challenges.TryGetValue(item.IssueId,out var list))
+                    challenges[item.IssueId]=list=[];
+                list.Add(item);
+            }
+
         var issues=occurrences.GroupBy(f=>Key(taskId,run.Id,sourceSha,f),StringComparer.Ordinal)
             .Select(group=>{
                 var f=group.Last();
                 var refs=group.Select(o=>new EngineeringIssueReference(o.ReviewId,o.Path,o.Index,o.FileSha256,o.Origin)).ToArray();
-                var decisions=group.Where(o=>o.Origin=="QaEngineer").Select(o=>
+                var history=group.Where(o=>o.Origin=="QaEngineer").Select(o=>
                     triage.GetValueOrDefault((o.ReviewId,o.Path.ToUpperInvariant(),o.Index)))
-                    .Where(v=>v is not null).Distinct().ToArray();
+                    .OfType<EngineeringIssueTriage>().Distinct().OrderBy(v=>v.CreatedUtc).ToArray();
+                var decisions=history.Select(v=>v.Classification).Distinct().ToArray();
                 var classification=decisions.Length==1?decisions[0]:null;
+                var relatedChallenges=challenges.GetValueOrDefault(group.Key)?.ToArray() ?? [];
                 var repair=group.Where(o=>o.Origin=="QaEngineer").Select(o=>
                     cycles.GetValueOrDefault((o.ReviewId,o.Path.ToUpperInvariant(),o.Index)))
                     .Where(c=>c.Id is not null).OrderByDescending(c=>c.Attempt).FirstOrDefault();
@@ -153,15 +202,14 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                     _=>"RepairStopped"
                 } : decisions.Length>1?"TriageConflict":
                     classification=="ImplementationDefect"?"ConfirmedDefect":
-                    classification is not null?"Classified":"NeedsTriage";
+                    classification is not null?"Classified":relatedChallenges.Length>0?"Challenged":"NeedsTriage";
                 return new EngineeringIssue(group.Key,taskId,run.Id,sourceSha,run.PlanSha256,
                     f.Origin,f.Severity,f.Category,f.Path,f.Line,f.Requirement,f.Evidence,
                     f.Recommendation,f.Verification,refs,current,group.Any(o=>o.Latest),state,
                     classification,repair.Id is not null?"SoftwareEngineer":null,
-                    repair.Id,repair.Id is null?null:repair.Attempt,repair.State);
+                    repair.Id,repair.Id is null?null:repair.Attempt,repair.State,history,relatedChallenges);
             }).OrderBy(x=>x.Severity switch {"Critical"=>0,"Major"=>1,"Minor"=>2,_=>3})
             .ThenBy(x=>x.Path,StringComparer.Ordinal).ThenBy(x=>x.Id,StringComparer.Ordinal).ToArray();
-        tx.Commit();
         return new(taskId,run.Id,current,issues);
     }
 }

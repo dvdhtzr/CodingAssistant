@@ -83,6 +83,7 @@ public sealed class TaskStore
         AgentCommunicationStore.Initialize(connection);
         EngineeringActivityStore.Initialize(connection);
         LeadReviewStore.Initialize(connection);
+        EngineeringIssueStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 

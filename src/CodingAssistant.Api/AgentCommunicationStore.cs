@@ -10,7 +10,8 @@ public sealed record AgentCommunicationContext(string TaskId, string RunId,
     string SourceSha256, int PolicyRevision, string PolicySha256,
     string MessageId);
 public sealed record AgentCommunicationDraft(string ToAgent, string Kind,
-    string Summary, long? ReplyTo = null, long? EvidenceSequence = null);
+    string Summary, long? ReplyTo = null, long? EvidenceSequence = null,
+    string? IssueId = null, string? ArchitectureChoiceSha256 = null);
 public sealed record AgentCommunication(long Sequence, string MessageId,
     string TaskId, string RunId, string WorkItemId, long AssignmentSequence,
     string FromAgent, string ToAgent, string Kind, string Summary,
@@ -108,7 +109,10 @@ public sealed class AgentCommunicationStore(TaskStore tasks)
             string.IsNullOrWhiteSpace(draft.Summary) ||
             draft.Summary.Any(char.IsControl) || draft.ReplyTo is <= 0 ||
             draft.EvidenceSequence is <= 0 || context.FromAgent == draft.ToAgent ||
-            !KindAllowed(context.FromAgent,draft.Kind))
+            !KindAllowed(context.FromAgent,draft.Kind) ||
+            (draft.Kind=="FindingChallenged"
+                ? string.IsNullOrWhiteSpace(draft.IssueId) || string.IsNullOrWhiteSpace(draft.ArchitectureChoiceSha256)
+                : draft.IssueId is not null || draft.ArchitectureChoiceSha256 is not null))
             throw new StoreFailure("INVALID_AGENT_MESSAGE");
         EngineeringRoleCapabilities.Require(context.FromAgent,EngineeringCapability.SendMessage);
         EngineeringRoleCapabilities.Require(draft.ToAgent,EngineeringCapability.SendMessage);
@@ -143,6 +147,25 @@ public sealed class AgentCommunicationStore(TaskStore tasks)
                 ("@run",job.Id),("@source",context.SourceSha256)) is null)
             throw new StoreFailure("INVALID_AGENT_MESSAGE");
 
+        // A challenge is an evidence-bound proposal, never a finding dismissal.
+        // The trusted invocation context already pins project, role and assignment.
+        if(draft.Kind=="FindingChallenged")
+        {
+            var issue=EngineeringIssueStore.Read(db,tx,context.TaskId,job.Id).Issues
+                .SingleOrDefault(x=>x.Id==draft.IssueId);
+            if(issue is null || !issue.CurrentSource ||
+                (draft.ToAgent!="TechnicalLead" && draft.ToAgent!=issue.Origin) ||
+                TaskStore.Scalar(db,tx,"""
+                    SELECT work_item_id FROM engineering_run_files WHERE run_id=@run AND path=@path
+                    """,("@run",job.Id),("@path",issue.Path))!=context.WorkItemId)
+                throw new StoreFailure("INVALID_AGENT_MESSAGE");
+            var architecture=DraftArchitecturePolicy.Capture(db,tx,context.TaskId,
+                job.SpecificationVersion,job.SpecificationSha256);
+            if(architecture?.Sha256!=job.ArchitectureSha256 ||
+                !architecture!.Choices.Any(c=>c.ProposalSha256==draft.ArchitectureChoiceSha256))
+                throw new StoreFailure("INVALID_AGENT_MESSAGE");
+        }
+
         var previous = Find(db,tx,context.TaskId,context.MessageId);
         if (previous is not null)
         {
@@ -154,6 +177,14 @@ public sealed class AgentCommunicationStore(TaskStore tasks)
                 previous.SourceSha256 != context.SourceSha256 ||
                 previous.PolicyRevision != context.PolicyRevision ||
                 previous.PolicySha256 != context.PolicySha256)
+                throw new StoreFailure("IDEMPOTENCY_CONFLICT");
+            if(draft.Kind=="FindingChallenged" &&
+                TaskStore.Scalar(db,tx,"""
+                    SELECT 1 FROM engineering_issue_challenges
+                    WHERE task_id=@task AND message_id=@message AND issue_id=@issue
+                    AND architecture_choice_sha256=@choice
+                    """,("@task",context.TaskId),("@message",context.MessageId),
+                    ("@issue",draft.IssueId!),("@choice",draft.ArchitectureChoiceSha256!)) is null)
                 throw new StoreFailure("IDEMPOTENCY_CONFLICT");
             tx.Commit();
             return previous;
@@ -196,6 +227,12 @@ public sealed class AgentCommunicationStore(TaskStore tasks)
             ("@plan",job.PlanSha256),("@source",context.SourceSha256),
             ("@policy",context.PolicyRevision),("@sha",context.PolicySha256),
             ("@utc",DateTimeOffset.UtcNow.ToString("O")));
+        if(draft.Kind=="FindingChallenged")
+            TaskStore.Execute(db,tx,"""
+                INSERT INTO engineering_issue_challenges(task_id,message_id,issue_id,architecture_choice_sha256)
+                VALUES(@task,@message,@issue,@choice)
+                """,("@task",context.TaskId),("@message",context.MessageId),
+                ("@issue",draft.IssueId!),("@choice",draft.ArchitectureChoiceSha256!));
         var result = Find(db,tx,context.TaskId,context.MessageId)!;
         EngineeringActivityStore.Record(db,tx,context.TaskId,draft.Kind,context.FromAgent,
             "AgentCommunication",result.MessageId,result.Sequence,toAgent:draft.ToAgent,

@@ -2091,6 +2091,35 @@ try
     using(var aetAnonymous=new HttpClient {BaseAddress=client.BaseAddress})
     using(var aetDenied=await aetAnonymous.GetAsync("/api/tasks/"+taskBound.Id+"/engineering-issues"))
         Check(aetDenied.StatusCode==HttpStatusCode.Unauthorized,"unified findings remain owner-private");
+    var aetIssueId=aetIssues.Issues.Single().Id;
+    var aetChallengePolicy=delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(2,secondPlanHash,["SendMessage"]));
+    aetChallengePolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+        aetChallengePolicy.Revision,aetChallengePolicy.PolicySha256,"APPROVE "+aetChallengePolicy.PolicySha256));
+    var aetChallengeContext=aetMessageContext with {
+        PolicyRevision=aetChallengePolicy.Revision,PolicySha256=aetChallengePolicy.PolicySha256,
+        MessageId=Guid.NewGuid().ToString("N") };
+    var aetArchitectureChoice=DraftArchitecturePolicy.Readiness(tasks,interviews,taskBound.Id)
+        .ApprovedChoices.First().ProposalSha256;
+    var aetChallengeDraft=new AgentCommunicationDraft("TechnicalLead","FindingChallenged",
+        "Please reconcile this finding with the approved architecture.",
+        IssueId:aetIssueId,ArchitectureChoiceSha256:aetArchitectureChoice);
+    RejectMessage(()=>communicationStore.Publish(aetChallengeContext,
+        aetChallengeDraft with {IssueId=new string('0',64)}),"INVALID_AGENT_MESSAGE");
+    RejectMessage(()=>communicationStore.Publish(aetChallengeContext,
+        aetChallengeDraft with {ArchitectureChoiceSha256=new string('0',64)}),"INVALID_AGENT_MESSAGE");
+    RejectMessage(()=>communicationStore.Publish(aetChallengeContext with {FromAgent="QaEngineer"},
+        aetChallengeDraft),"INVALID_AGENT_MESSAGE");
+    var aetChallenge=communicationStore.Publish(aetChallengeContext,aetChallengeDraft);
+    Check(communicationStore.Publish(aetChallengeContext,aetChallengeDraft)==aetChallenge,
+        "identical issue challenge is idempotent");
+    var aetChallenged=new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Single();
+    Check(aetChallenged.Id==aetIssueId && aetChallenged.State=="Challenged" &&
+        aetChallenged.Severity=="Major" && aetChallenged.Challenges.Single().MessageId==aetChallenge.MessageId &&
+        aetChallenged.Challenges.Single().ArchitectureChoiceSha256==aetArchitectureChoice,
+        "engineer challenges actual finding against approved evidence without self-dismissal or downgrade");
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetChallengePolicy.Revision,
+        aetChallengePolicy.PolicySha256,"REVOKE "+aetChallengePolicy.PolicySha256));
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,
@@ -2321,6 +2350,12 @@ try
         Check(decisions.StatusCode == HttpStatusCode.OK &&
               body.RootElement.GetProperty("decisions").GetArrayLength() == 1,
             "triage decision is durably readable without source mutation");
+    var aetCombined=new EngineeringIssueStore(tasks).Read(taskBound.Id);
+    Check(aetCombined.Issues.Count==2 &&
+        aetCombined.Issues.Single(x=>x.Origin=="QaEngineer").Classification=="NeedsVerification" &&
+        aetCombined.Issues.Single(x=>x.Origin=="QaEngineer").TriageHistory.Single().ReviewId==qaReviewId &&
+        aetCombined.Issues.Single(x=>x.Origin=="LeadSoftwareEngineer").State=="Challenged",
+        "unified issue view combines independent origins and actual owner triage");
 
     // R2-R5 end-to-end fixture: explicit triage, authorized source-only
     // repair, preservation of original files, and independent QA reassessment.
@@ -2371,6 +2406,10 @@ try
             "Owner explicitly confirms Start handler defect against specification")))
         Check(ownerConfirmed.StatusCode == HttpStatusCode.OK,
             "owner can confirm and classify one source-bound defect");
+    var aetRepeatIssue=new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Single(x=>x.Origin=="QaEngineer");
+    Check(aetRepeatIssue.References.Count==2 && aetRepeatIssue.State=="TriageConflict" &&
+        aetRepeatIssue.TriageHistory.Count==2,
+        "identical repeated findings deduplicate but conflicting decisions remain visible");
 
     var authorized = new StartRepairCycleRequest(selectedRepairProposal.Id,
         "REPAIR " + selectedRepairProposal.SourceSha256,
@@ -2423,6 +2462,15 @@ try
               .Single(f => f.Path == "app.js").Sha256 ==
           engineeringResult!.Files.Single(f => f.Path == "app.js").Sha256,
         "prior engineering run is unchanged after source-only repair");
+    var aetHistoricalIssues=new EngineeringIssueStore(tasks).Read(taskBound.Id,engineeringRunId);
+    var aetRepairedIssue=aetHistoricalIssues.Issues.Single(x=>x.Origin=="QaEngineer");
+    Check(!aetHistoricalIssues.CurrentSource && aetRepairedIssue.Id==aetRepeatIssue.Id &&
+        aetRepairedIssue.RepairCycleId==cycleId && aetRepairedIssue.RepairAttempt==1 &&
+        aetRepairedIssue.AssignedOwner=="SoftwareEngineer" &&
+        aetRepairedIssue.State=="AwaitingIndependentVerification",
+        "historical issue remains unclosed even after independent static repair review");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Any(x=>x.Origin=="QaEngineer"),
+        "recurring issue remains visible on repaired source");
 
     // A real Windows installation can already contain 1-3 approved repairs.
     // Exercise in-place migration of its populated SQLite CHECK constraint,
@@ -3147,7 +3195,7 @@ try
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var stalePolicy = delegationStore.Propose(taskBound.Id,
-        new ProposeDelegationRequest(2,secondPlanHash,["SendMessage"]));
+        new ProposeDelegationRequest(3,secondPlanHash,["SendMessage"]));
     stalePolicy = delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
         stalePolicy.Revision,stalePolicy.PolicySha256,"APPROVE " + stalePolicy.PolicySha256));
     Check(stalePolicy.Current && stalePolicy.EffectiveStatus == "Approved",
@@ -3183,8 +3231,8 @@ try
     Check(effectivePolicy?.Status == "Approved" && !effectivePolicy.Current &&
           effectivePolicy.EffectiveStatus == "STALE_APPROVALS",
         "architecture revision invalidates effective delegated authority");
-    Check(delegationStore.History(taskBound.Id).Count == 3 &&
-          delegationStore.History(taskBound.Id).Take(2).All(p => p.Status == "Revoked"),
+    Check(delegationStore.History(taskBound.Id).Count == 4 &&
+          delegationStore.History(taskBound.Id).Take(3).All(p => p.Status == "Revoked"),
         "delegation retains prior owner decisions");
     Check(delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
         stalePolicy.Revision,stalePolicy.PolicySha256,
