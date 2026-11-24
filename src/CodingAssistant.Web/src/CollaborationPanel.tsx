@@ -28,6 +28,89 @@ const stateLabel:Record<string,string>={
   Escalated:'Needs inspection',Failed:'Stopped safely'
 };
 
+
+interface ScopedFinding { path:string; index:number; severity:string; requirement:string;
+  evidence:string; recommendation:string }
+interface ScopedProposal { id:string; taskId:string; engineeringRunId:string; sourceSha256:string;
+  planSha256:string; leadReviewId:string|null; qaReviewId:string|null; findings:ScopedFinding[] }
+interface ScopedIssue { id:string; state:string; currentSource:boolean; latestReview:boolean;
+  references:Array<{reviewId:string;path:string;findingIndex:number}> }
+interface ScopedRepair { proposal:ScopedProposal; finding:ScopedFinding; classification:string|null }
+async function readScopedRepair(token:string,root:string,snapshot:CollaborationSnapshot):Promise<ScopedRepair> {
+  const {job,steps}=snapshot;
+  const step=steps[steps.length-1];
+  if(job.state!=='AwaitingOwner'||job.reason!=='EXACT_REPAIR_APPROVAL_REQUIRED'||
+    step?.action!=='RequestOwnerRepair'||!step.referenceId||!step.issueId)
+    throw Error('No exact repair decision is available.');
+  const [p,page]=await Promise.all([
+    api<{proposal:ScopedProposal|null}>(token,root+'/repair-proposals/latest'),
+    api<{currentSource:boolean;issues:ScopedIssue[]}>(token,root+'/engineering-issues?runId='+encodeURIComponent(job.runId))
+  ]);
+  const proposal=p.proposal;
+  if(!proposal||proposal.id!==step.referenceId||proposal.taskId!==job.taskId||
+    proposal.engineeringRunId!==job.runId||proposal.sourceSha256!==job.sourceSha256||
+    proposal.planSha256!==job.planSha256||!page.currentSource)
+    throw Error('Saved repair scope is no longer current.');
+  const issue=page.issues.find(i=>i.id===step.issueId&&i.state==='ConfirmedDefect'&&i.currentSource&&i.latestReview);
+  const review=proposal.leadReviewId??proposal.qaReviewId;
+  const findings=proposal.findings.filter(f=>issue?.references.some(r=>r.reviewId===review&&
+    r.path.toLowerCase()===f.path.toLowerCase()&&r.findingIndex===f.index));
+  if(findings.length!==1)throw Error('The requested repair needs an exact finding selection in the existing repair workflow.');
+  const finding=findings[0];
+  const triage=await api<{decisions:Array<{path:string;index:number;classification:string}>}>(token,
+    root+'/repair-proposals/'+proposal.id+'/triage');
+  return {proposal,finding,classification:triage.decisions.find(d=>d.path.toLowerCase()===finding.path.toLowerCase()&&d.index===finding.index)?.classification??null};
+}
+function ScopedRepairPanel({token,root,snapshot,disabled,onSaved}:{token:string;root:string;
+  snapshot:CollaborationSnapshot;disabled:boolean;onSaved:()=>void}) {
+  const [scope,setScope]=useState<ScopedRepair|null>(null);
+  const [error,setError]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [submitted,setSubmitted]=useState(false);
+  const jobId=snapshot.job.id;
+  const stepId=snapshot.steps[snapshot.steps.length-1]?.referenceId;
+  useEffect(()=>{
+    let closed=false;
+    setScope(null);setError('');setSubmitted(false);
+    void readScopedRepair(token,root,snapshot).then(s=>{if(!closed)setScope(s);})
+      .catch(e=>{if(!closed)setError(e instanceof Error?e.message:'Scope unavailable.');});
+    return()=>{closed=true;};
+  },[token,root,jobId,stepId]);
+  async function confirm(){
+    if(!scope||disabled||busy||submitted)return;
+    setBusy(true);setError('');
+    try{
+      const latest=await readScopedRepair(token,root,snapshot);
+      if(latest.proposal.id!==scope.proposal.id||latest.finding.path!==scope.finding.path||
+        latest.finding.index!==scope.finding.index)throw Error('Repair scope changed. Inspect it again.');
+      if(latest.classification&&latest.classification!=='ImplementationDefect')
+        throw Error('Existing owner triage does not authorize an implementation repair.');
+      const {proposal,finding}=latest;
+      if(!latest.classification)
+        await api(token,root+'/repair-proposals/'+proposal.id+'/triage',
+          {path:finding.path,index:finding.index,classification:'ImplementationDefect',
+            rationale:'Owner confirmed this exact implementation defect in team coordination.'});
+      await api(token,root+'/repair-cycles',{proposalId:proposal.id,confirmation:'REPAIR '+proposal.sourceSha256,
+        findings:[{path:finding.path,index:finding.index}],continueCollaborationId:jobId});
+      setSubmitted(true);onSaved();
+    }catch(e){setError(e instanceof Error?e.message:'Repair request rejected.');}
+    finally{setBusy(false);}
+  }
+  return <section aria-label="Exact repair authorization">
+    <h4>Owner repair decision</h4>
+    {scope?<><p><strong>{scope.finding.severity} · {scope.finding.path}</strong></p>
+      <p>{scope.finding.requirement}</p><p>{scope.finding.evidence}</p>
+      <p>{scope.finding.recommendation}</p>
+      <details><summary>Exact source fingerprint</summary><code>{scope.proposal.sourceSha256}</code></details>
+      <p>Authorize only this finding's file scope. The team will independently review the repaired source. No execution permission is granted.</p>
+      <button type="button" className="primary" disabled={disabled||busy||submitted||
+        (!!scope.classification&&scope.classification!=='ImplementationDefect')}
+        onClick={()=>void confirm()}>{submitted?'Repair admitted':'Confirm exact repair and continue'}</button>
+    </>:!error?<p role="status">Reading exact repair scope…</p>:null}
+    {error&&<p role="alert">{error}</p>}
+  </section>;
+}
+
 /** Real owner-admitted coordination, not model-generated chat or implicit approvals. */
 export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) {
   const root='/api/tasks/'+taskId;
@@ -105,6 +188,10 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('resume')}>Resume saved coordination</button>}
     {running&&<button type="button" disabled={busy||loadError} onClick={()=>void act('cancel')}>Stop coordination</button>}
+    {approved&&job?.state==='AwaitingOwner'&&job.reason==='EXACT_REPAIR_APPROVAL_REQUIRED'&&preview.snapshot&&
+      <ScopedRepairPanel key={job.id} token={token} root={root} snapshot={preview.snapshot}
+        disabled={busy||loadError||preview.candidate?.sourceSha256!==job.sourceSha256||preview.candidate?.policySha256!==job.policySha256}
+        onSaved={()=>setVersion(v=>v+1)} />}
     {job?.reason&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {!job&&!preview.canStart&&approved&&<p>{preview.reason==='BUILD_NOT_COMPLETE'?
       'Complete approved source generation before coordinating independent reviews.':preview.reason.replaceAll('_',' ').toLowerCase()}</p>}

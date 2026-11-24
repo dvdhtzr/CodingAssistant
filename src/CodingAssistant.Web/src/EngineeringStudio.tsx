@@ -35,6 +35,7 @@ export interface StudioFocus {
   title: string;
   detail: string;
   kind: 'review' | 'warning' | 'next';
+  specialistId?: string;
 }
 
 /** Never offer an approval or repair action. The existing hash-bound forms own all writes. */
@@ -57,7 +58,7 @@ export function studioAttention(saved: StudioEvidence | null,
     count + (report.assessment?.findings?.length ?? 0), 0) : 0;
   const coordination = saved.collaboration?.job;
   if (coordination?.state === 'AwaitingOwner' && coordination.runId === eng?.id)
-    items.unshift({ stage: 'plan', kind: 'review', title: 'Technical Lead requests scoped repair',
+    items.unshift({ stage: 'plan', kind: 'review', title: 'Technical Lead requests scoped repair', specialistId: 'TechnicalLead',
       detail: 'Open the Technical Lead workstation to inspect the saved coordination decision.' });
   if (saved.repair?.cycle.state === 'Failed' ||
     saved.repair?.cycle.state === 'Interrupted') {
@@ -325,7 +326,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
                 'OWNER REVIEW' : item.kind === 'warning' ? 'NEEDS INSPECTION' : 'NEXT STEP'}</span>
               <strong>{item.title}</strong>
               <p>{item.detail}</p>
-              <button type="button" onClick={() => navigate(item.stage)}>
+              <button type="button" onClick={() => {navigate(item.stage); if(item.specialistId){setInspectedAgentId(item.specialistId);setSideView('specialist');}}}>
                 Open {item.stage === 'delivery' ? 'QA & source' :
                   item.stage === 'generation' ? 'Engineering' : 'work stage'}
               </button>
