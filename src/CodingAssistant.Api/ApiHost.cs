@@ -70,6 +70,8 @@ public static class ApiHost
 
         // Fail before opening a network listener if data permissions are unsafe.
         var store = new TaskStore(settings.DataDirectory);
+        var roleModels = new AgentRoleModelSettings(store);
+        roleModels.Initialize();
         var runs = new RunStore(store);
         runs.Initialize();
         var executions = new ExecutionStore(store);
@@ -170,6 +172,7 @@ public static class ApiHost
         });
         builder.Services.AddSingleton(browserSessions);
         builder.Services.AddSingleton(store);
+        builder.Services.AddSingleton(roleModels);
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(architectureDecisions);
         builder.Services.AddSingleton(handoffs);
@@ -306,6 +309,35 @@ public static class ApiHost
             SafeAsync(async () => Results.Ok(new {
                 models = await catalog.ListAsync(cancellation)
             })));
+        // Owner-scoped model assignment is not an agent instruction or approval.
+        // ProductOwner remains explicitly selected/pinned by the interview workflow.
+        app.MapGet("/api/tasks/{id}/agent-models",
+            (string id, AgentRoleModelSettings settings, InterviewStore interview) =>
+                Safe(() => {
+                    var current = interview.Read(id);
+                    var inherited = current.Specification?.Model ??
+                        current.Model ?? LocalInterviewModel.DefaultModel;
+                    return Results.Ok(new { agents = settings.Read(id, inherited) });
+                }));
+        app.MapPost("/api/tasks/{id}/agent-models/{role}",
+            (string id, string role, SetAgentRoleModelRequest request,
+             AgentRoleModelSettings settings, InterviewStore interview,
+             IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+                SafeAsync(async () => {
+                    // Saving an explicit choice requires that exact model to be
+                    // downloaded locally; never install or silently substitute.
+                    if (request.Model is not null) {
+                        if (!LocalOllamaModelCatalog.ValidLocalName(request.Model))
+                            throw new StoreFailure("INVALID_INPUT");
+                        var installed = await catalog.ListAsync(cancellation);
+                        if (!installed.Contains(request.Model, StringComparer.Ordinal))
+                            throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    }
+                    var current = interview.Read(id);
+                    var inherited = current.Specification?.Model ??
+                        current.Model ?? LocalInterviewModel.DefaultModel;
+                    return Results.Ok(settings.Set(id, role, request.Model, inherited));
+                }));
         app.MapGet("/api/tasks", (TaskStore db) =>
             Safe(() => Results.Ok(db.ListTasks())));
         app.MapGet("/api/tasks/{id}", (string id, TaskStore db) =>
@@ -471,7 +503,7 @@ public static class ApiHost
                  TaskStore tasks, InterviewStore interviews,
                  ArchitectureDecisionStore decisions, IArchitectureAdvisor advisor,
                  MafHandoffStore handoffs, IOllamaModelCatalog catalog,
-                 CancellationToken cancellation) =>
+                 AgentRoleModelSettings roleModels, CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 if (input.SchemaVersion != ArchitectureDecisionStore.SchemaVersion ||
@@ -485,11 +517,12 @@ public static class ApiHost
                     spec.Version != input.SpecificationVersion ||
                     spec.Sha256 != input.SpecificationSha256)
                     throw new StoreFailure("SPECIFICATION_CONFLICT");
+                var chosen = roleModels.Resolve(id, "SolutionArchitect", spec.Model);
                 var models = await catalog.ListAsync(cancellation);
-                if (!models.Contains(spec.Model, StringComparer.Ordinal))
+                if (!models.Contains(chosen, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
                 var recommendation = await advisor.RecommendAsync(
-                    task.Objective, spec.Content, spec.Model,
+                    task.Objective, spec.Content, chosen,
                     input.Topic!, cancellation);
                 var created = decisions.Propose(id, new(
                     ArchitectureDecisionStore.SchemaVersion,
@@ -525,7 +558,8 @@ public static class ApiHost
             (string id, GenerateImplementationPlanRequest input,
              TaskStore tasks, InterviewStore interviews,
              ImplementationPlanStore db, IImplementationPlanner planner,
-             IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+             IOllamaModelCatalog catalog, AgentRoleModelSettings roleModels,
+             CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 if (input.SchemaVersion != ImplementationPlanStore.SchemaVersion ||
@@ -543,14 +577,15 @@ public static class ApiHost
                     throw new StoreFailure("ARCHITECTURE_CONFLICT");
                 if ((db.Read(id).Plan?.Revision ?? 0) != input.ExpectedRevision)
                     throw new StoreFailure("STALE_IMPLEMENTATION_PLAN");
+                var chosen = roleModels.Resolve(id, "TechnicalLead", spec.Model);
                 var installed = await catalog.ListAsync(cancellation);
-                if (!installed.Contains(spec.Model, StringComparer.Ordinal))
+                if (!installed.Contains(chosen, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
                 var outline = await planner.PlanAsync(task.Objective, spec.Content,
-                    architecture, spec.Model, cancellation);
+                    architecture, chosen, cancellation);
                 // Atomically recheck specification, architecture and revision
                 // *after* local inference to reject concurrent human edits.
-                var created = db.Propose(id, input, spec.Model, outline);
+                var created = db.Propose(id, input, chosen, outline);
                 return Results.Created($"/api/tasks/{id}/implementation-plan",
                     created);
             }));
@@ -571,10 +606,19 @@ public static class ApiHost
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
         app.MapPost("/api/tasks/{id}/engineering-runs",
             (string id, StartEngineeringRunRequest request,
-             EngineeringRunCoordinator coordinator) =>
-                Safe(() => Results.Accepted(
-                    $"/api/tasks/{id}/engineering-runs",
-                    coordinator.Start(id, request))));
+             EngineeringRunCoordinator coordinator, ImplementationPlanStore plans,
+             AgentRoleModelSettings roleModels, IOllamaModelCatalog catalog,
+             CancellationToken cancellation) =>
+                SafeAsync(async () => {
+                    var inherited = plans.Read(id).Plan?.Model ??
+                        LocalInterviewModel.DefaultModel;
+                    var model = roleModels.Resolve(id, "SoftwareEngineer", inherited);
+                    var installed = await catalog.ListAsync(cancellation);
+                    if (!installed.Contains(model, StringComparer.Ordinal))
+                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    return Results.Accepted($"/api/tasks/{id}/engineering-runs",
+                        coordinator.Start(id, request, model));
+                }));
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(db.Get(id, runId))));
@@ -727,10 +771,21 @@ public static class ApiHost
                 Safe(() => Results.Ok(db.Get(id, cycleId))));
         app.MapPost("/api/tasks/{id}/repair-cycles",
             (string id, StartRepairCycleRequest request,
-             RepairCycleCoordinator coordinator) =>
-                Safe(() => Results.Accepted(
-                    $"/api/tasks/{id}/repair-cycles",
-                    coordinator.Start(id, request))));
+             RepairCycleCoordinator coordinator, ImplementationPlanStore plans,
+             AgentRoleModelSettings roleModels, IOllamaModelCatalog catalog,
+             CancellationToken cancellation) =>
+                SafeAsync(async () => {
+                    var inherited = plans.Read(id).Plan?.Model ??
+                        LocalInterviewModel.DefaultModel;
+                    var engineer = roleModels.Resolve(id, "SoftwareEngineer", inherited);
+                    var qa = roleModels.Resolve(id, "QaEngineer", inherited);
+                    var installed = await catalog.ListAsync(cancellation);
+                    if (!installed.Contains(engineer, StringComparer.Ordinal) ||
+                        !installed.Contains(qa, StringComparer.Ordinal))
+                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    return Results.Accepted($"/api/tasks/{id}/repair-cycles",
+                        coordinator.Start(id, request, engineer, qa));
+                }));
         app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/cancel",
             (string id, string cycleId, RepairCycleCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
@@ -739,10 +794,19 @@ public static class ApiHost
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
         app.MapPost("/api/tasks/{id}/qa-reviews",
             (string id, StartQaReviewRequest request,
-             QaReviewCoordinator coordinator) =>
-                Safe(() => Results.Accepted(
-                    $"/api/tasks/{id}/qa-reviews",
-                    coordinator.Start(id, request))));
+             QaReviewCoordinator coordinator, ImplementationPlanStore plans,
+             AgentRoleModelSettings roleModels, IOllamaModelCatalog catalog,
+             CancellationToken cancellation) =>
+                SafeAsync(async () => {
+                    var inherited = plans.Read(id).Plan?.Model ??
+                        LocalInterviewModel.DefaultModel;
+                    var model = roleModels.Resolve(id, "QaEngineer", inherited);
+                    var installed = await catalog.ListAsync(cancellation);
+                    if (!installed.Contains(model, StringComparer.Ordinal))
+                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    return Results.Accepted($"/api/tasks/{id}/qa-reviews",
+                        coordinator.Start(id, request, model));
+                }));
         app.MapGet("/api/tasks/{id}/qa-reviews/{reviewId}",
             (string id, string reviewId, QaReviewStore db) =>
                 Safe(() => Results.Ok(db.Get(id, reviewId))));
