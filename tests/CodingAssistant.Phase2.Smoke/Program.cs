@@ -1795,6 +1795,7 @@ try
         break;
     }
     Check(engineeringResult?.Job.State == "Generated" &&
+          engineeringResult.Job.Model == "qwen2.5-coder:14b" &&
           engineeringResult.Tasks.Count == 2 &&
           engineeringResult.Tasks.All(t => t.State == "Completed") &&
           engineeringResult.Files.Count == 2 &&
@@ -1914,6 +1915,7 @@ try
         break;
     }
     Check(qaResult?.Job.State == "Reviewed" &&
+          qaResult.Job.Model == "qwen2.5-coder:14b" &&
           qaResult.Reports.Count == 2 &&
           qaResult.Reports.Sum(report =>
               report.Assessment.Findings.Count) == 1 &&
@@ -2915,7 +2917,7 @@ finally
 sealed class Phase2Catalog : IOllamaModelCatalog
 {
     public Task<IReadOnlyList<string>> ListAsync(CancellationToken cancellation) =>
-        Task.FromResult<IReadOnlyList<string>>(new[] { "qwen3.5:4b" });
+        Task.FromResult<IReadOnlyList<string>>(new[] { "qwen3.5:4b", "qwen2.5-coder:14b" });
 }
 sealed class Phase2Advisor : IArchitectureAdvisor
 {
