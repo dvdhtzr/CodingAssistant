@@ -115,18 +115,21 @@ public sealed class RepairProposalStore(TaskStore tasks)
         return reader.Read() ? Read(reader) : null;
     }
 
-    public RepairProposal Propose(string taskId, CreateRepairProposalRequest request)
+    public RepairProposal Propose(string taskId, CreateRepairProposalRequest request,
+        CollaborationAdmission? admission=null,string? issueId=null)
     {
         ValidateId(taskId);
         if((request.QaReviewId is null)==(request.LeadReviewId is null))
             throw new StoreFailure("INVALID_INPUT");
-        if(request.LeadReviewId is not null) return ProposeLead(taskId,request.LeadReviewId);
+        if(request.LeadReviewId is not null) return ProposeLead(taskId,request.LeadReviewId,admission,issueId);
         ValidateId(request.QaReviewId);
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
         _ = TaskStore.FindTask(db, tx, taskId) ??
             throw new StoreFailure("NOT_FOUND");
 
+        if(admission is not null)CollaborationStore.RequireAction(db,tx,taskId,admission,
+            "RequestOwnerRepair",issueId??throw new StoreFailure("INVALID_STATE"));
         QaReviewRun review;
         using (var command = TaskStore.Command(db, tx, """
             SELECT id,task_id,engineering_run_id,source_sha256,plan_revision,
@@ -235,7 +238,9 @@ public sealed class RepairProposalStore(TaskStore tasks)
             if (reader.Read())
             {
                 var existing = Read(reader);
-                return existing;
+                reader.Close();
+                if(admission is not null)CollaborationStore.LinkAction(db,tx,admission,existing.Id);
+                tx.Commit();return existing;
             }
         }
 
@@ -269,16 +274,19 @@ public sealed class RepairProposalStore(TaskStore tasks)
         {
             throw new StoreFailure("BUILD_BUSY");
         }
+        if(admission is not null)CollaborationStore.LinkAction(db,tx,admission,proposal.Id);
         tx.Commit();
         return proposal;
     }
 
-    private RepairProposal ProposeLead(string taskId,string reviewId)
+    private RepairProposal ProposeLead(string taskId,string reviewId,CollaborationAdmission? admission,string? issueId)
     {
         ValidateId(reviewId);
         using var db=tasks.Open();
         using var tx=db.BeginTransaction();
         if(TaskStore.FindTask(db,tx,taskId) is null) throw new StoreFailure("NOT_FOUND");
+        if(admission is not null)CollaborationStore.RequireAction(db,tx,taskId,admission,
+            "RequestOwnerRepair",issueId??throw new StoreFailure("INVALID_STATE"));
         string runId,sourceSha,planSha,state;
         using(var cmd=TaskStore.Command(db,tx,"""
             SELECT engineering_run_id,source_sha256,plan_sha256,state
@@ -326,7 +334,12 @@ public sealed class RepairProposalStore(TaskStore tasks)
         using(var cmd=TaskStore.Command(db,tx,Columns+" WHERE task_id=@task AND lead_review_id=@review",
             ("@task",taskId),("@review",reviewId)))
         using(var reader=cmd.ExecuteReader())
-            if(reader.Read()) return Read(reader);
+            if(reader.Read())
+            {
+                var existing=Read(reader);reader.Close();
+                if(admission is not null)CollaborationStore.LinkAction(db,tx,admission,existing.Id);
+                tx.Commit();return existing;
+            }
         var now=DateTimeOffset.UtcNow.ToString("O");
         var proposal=new RepairProposal(Guid.NewGuid().ToString("N"),taskId,null,runId,sourceSha,
             run.PlanRevision,run.PlanSha256,run.SpecificationVersion,run.SpecificationSha256,run.ArchitectureSha256,
@@ -339,6 +352,7 @@ public sealed class RepairProposalStore(TaskStore tasks)
             ("@revision",run.PlanRevision),("@plan",run.PlanSha256),("@sv",run.SpecificationVersion),
             ("@spec",run.SpecificationSha256),("@arch",run.ArchitectureSha256),
             ("@findings",JsonSerializer.Serialize(findings)),("@now",now));
+        if(admission is not null)CollaborationStore.LinkAction(db,tx,admission,proposal.Id);
         tx.Commit();return proposal;
     }
 

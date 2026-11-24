@@ -99,6 +99,7 @@ public sealed class LeadReviewStore(TaskStore tasks)
         var job=Find(db,tx,taskId,reviewId);
         if(job.State!="Running") throw new StoreFailure("INVALID_STATE");
         RequireSource(db,tx,job);
+        CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"LeadSoftwareEngineer");
         // Re-read persisted source, not the caller's evidence text.
         var content=TaskStore.Scalar(db,tx,"SELECT content FROM engineering_run_files WHERE run_id=@run AND path=@path AND sha256=@sha",
             ("@run",job.EngineeringRunId),("@path",file.Path),("@sha",file.Sha256));
@@ -116,6 +117,7 @@ public sealed class LeadReviewStore(TaskStore tasks)
         var job=Find(db,tx,taskId,reviewId);
         if(job.State!="Running") throw new StoreFailure("INVALID_STATE");
         RequireSource(db,tx,job);
+        CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"LeadSoftwareEngineer");
         Activity(db,tx,job,"LeadAtlasInspected");tx.Commit();tasks.SignalEngineeringActivity(taskId);
     }
     public void Finish(string taskId,string reviewId,string state,string? error=null)
@@ -127,6 +129,7 @@ public sealed class LeadReviewStore(TaskStore tasks)
         if(state=="Reviewed")
         {
             RequireSource(db,tx,job);
+            CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"LeadSoftwareEngineer");
             var count=TaskStore.Scalar(db,tx,"SELECT COUNT(*) FROM lead_review_files WHERE review_id=@id",("@id",reviewId));
             var expected=TaskStore.Scalar(db,tx,"SELECT COUNT(*) FROM engineering_run_files WHERE run_id=@id",("@id",job.EngineeringRunId));
             if(count!=expected || count=="0") throw new StoreFailure("BUILD_NOT_COMPLETE");

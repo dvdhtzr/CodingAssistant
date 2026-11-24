@@ -338,6 +338,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireSource(db, tx, job);
+        CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"QaEngineer");
         var sha = TaskStore.Scalar(db, tx, """
             SELECT sha256 FROM engineering_run_files
             WHERE run_id=@run AND path=@path
@@ -399,6 +400,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireSource(db, tx, job);
+        CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"QaEngineer");
         var sha = TaskStore.Scalar(db, tx, """
             SELECT sha256 FROM engineering_run_files
             WHERE run_id=@run AND path=@path
@@ -456,6 +458,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         if (success)
         {
             RequireSource(db, tx, job);
+        CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"QaEngineer");
             var expected = TaskStore.Scalar(db, tx, """
                 SELECT COUNT(*) FROM engineering_run_files WHERE run_id=@run
                 """, ("@run", job.EngineeringRunId));

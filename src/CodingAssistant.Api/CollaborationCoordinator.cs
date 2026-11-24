@@ -207,6 +207,12 @@ public sealed class CollaborationStore(TaskStore tasks)
         tx.Commit();tasks.SignalEngineeringActivity(taskId);return job;
     }
 
+    private static bool Permitted(SqliteConnection db,SqliteTransaction tx,CollaborationRun job,string role,string operation)
+    {
+        try{EngineeringDelegationStore.Require(db,tx,job.TaskId,job.PolicyRevision,job.PolicySha256,role,operation);return true;}
+        catch(StoreFailure){return false;}
+    }
+
     private static CollaborationInput Input(SqliteConnection db,SqliteTransaction tx,CollaborationRun job)
     {
         RequireCurrent(db,tx,job);
@@ -226,7 +232,9 @@ public sealed class CollaborationStore(TaskStore tasks)
         {
             if(latestIssues.Any(i=>i.State is "NeedsTriage" or "Challenged" or "TriageConflict"))
                 actions.Add("ClassifyIssue");
-            if(latestIssues.Any(i=>i.State=="ConfirmedDefect"))actions.Add("RequestOwnerRepair");
+            if(latestIssues.Any(i=>i.State=="ConfirmedDefect") &&
+                Permitted(db,tx,job,"TechnicalLead","RequestRepair"))
+                actions.Add("RequestOwnerRepair");
             var leadConcern=issues.Any(i=>i.Origin=="LeadSoftwareEngineer" &&
                 i.Severity is ("Critical" or "Major") &&
                 i.State is not ("StaticResolutionRecorded" or "WithdrawnByReviewer"));
@@ -289,6 +297,41 @@ public sealed class CollaborationStore(TaskStore tasks)
             throw new StoreFailure("SOURCE_CHANGED");
     }
 
+    internal static void RequireReviewAuthority(SqliteConnection db,SqliteTransaction tx,
+        string taskId,string reviewId,string role)
+    {
+        var action=role=="LeadSoftwareEngineer"?"ReviewCode":"ReviewAcceptance";
+        var id=TaskStore.Scalar(db,tx,"""
+            SELECT c.id FROM engineering_collaborations c JOIN engineering_collaboration_steps s
+                ON s.collaboration_id=c.id
+            WHERE c.task_id=@task AND s.reference_id=@review AND s.action=@action
+            """,("@task",taskId),("@review",reviewId),("@action",action));
+        if(id is null)return; // Owner-admitted independent review.
+        var job=Find(db,tx,taskId,id);RequireCurrent(db,tx,job);
+        EngineeringDelegationStore.Require(db,tx,taskId,job.PolicyRevision,job.PolicySha256,role,action);
+    }
+
+    internal static void RequireAction(SqliteConnection db,SqliteTransaction tx,string taskId,
+        CollaborationAdmission admission,string action,string issueId)
+    {
+        var job=Find(db,tx,taskId,admission.JobId);RequireCurrent(db,tx,job);
+        if(!Input(db,tx,job).AllowedActions.Contains(action) ||
+            TaskStore.Scalar(db,tx,"""
+                SELECT issue_id FROM engineering_collaboration_steps WHERE collaboration_id=@id
+                AND sequence=@seq AND action=@action AND reference_id IS NULL
+                """,("@id",job.Id),("@seq",admission.Sequence),("@action",action))!=issueId)
+            throw new StoreFailure("INVALID_STATE");
+        if(action=="RequestOwnerRepair")
+            EngineeringDelegationStore.Require(db,tx,taskId,job.PolicyRevision,job.PolicySha256,"TechnicalLead","RequestRepair");
+    }
+
+    internal static void LinkAction(SqliteConnection db,SqliteTransaction tx,CollaborationAdmission admission,string referenceId)
+    {
+        if(TaskStore.Execute(db,tx,"UPDATE engineering_collaboration_steps SET reference_id=@ref WHERE collaboration_id=@id AND sequence=@seq AND reference_id IS NULL",
+            ("@ref",referenceId),("@id",admission.JobId),("@seq",admission.Sequence))!=1)
+            throw new StoreFailure("INVALID_STATE");
+    }
+
     public void LinkDecision(string taskId,string id,int sequence,string referenceId)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
@@ -314,12 +357,12 @@ public sealed class CollaborationStore(TaskStore tasks)
 public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore store,
     ICollaborationLead lead,LeadReviewCoordinator leadReviews,LeadReviewStore leadStore,
     QaReviewCoordinator qaReviews,QaReviewStore qaStore,RepairProposalStore proposals,
-    AgentRoleModelSettings models,IOllamaModelCatalog catalog,IHostApplicationLifetime lifetime)
+    AgentRoleModelSettings models,IOllamaModelCatalog catalog,ImplementationPlanStore plans,IHostApplicationLifetime lifetime)
 {
     private readonly ConcurrentDictionary<string,CancellationTokenSource> _active=new();
     public async Task<CollaborationRun> StartAsync(string taskId,StartCollaborationRequest request,CancellationToken token)
     {
-        var model=models.Resolve(taskId,"TechnicalLead",LocalInterviewModel.DefaultModel);
+        var model=models.Resolve(taskId,"TechnicalLead",plans.Read(taskId).Plan?.Model??LocalInterviewModel.DefaultModel);
         var installed=await catalog.ListAsync(token);
         if(!installed.Contains(model,StringComparer.Ordinal))throw new StoreFailure("MODEL_NOT_INSTALLED");
         var job=store.Start(taskId,request,model);
@@ -377,16 +420,17 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         var result=new EngineeringIssueStore(tasks).Decide(new(job.TaskId,job.RunId,job.SourceSha256,
                             "TechnicalLead",job.PolicyRevision,job.PolicySha256),
                             new(issue.Id,issue.Decisions.LastOrDefault()?.Revision??0,review,
-                                decision.Classification!,step.Rationale,issue.Challenges.LastOrDefault()?.MessageId));
-                        store.LinkDecision(job.TaskId,job.Id,step.Sequence,result.IssueId+":"+result.Revision);
+                                decision.Classification!,step.Rationale,issue.Challenges.LastOrDefault()?.MessageId),
+                            new CollaborationAdmission(job.Id,step.Sequence));
                         break;
                     }
                     case "RequestOwnerRepair":
                     {
                         var issue=input.Issues.Single(x=>x.Id==step.IssueId);
                         var review=issue.References.Last().ReviewId;
-                        var proposal=proposals.Propose(job.TaskId,issue.Origin=="QaEngineer"?new(review):new(null,review));
-                        store.LinkDecision(job.TaskId,job.Id,step.Sequence,proposal.Id);
+                        var proposal=proposals.Propose(job.TaskId,issue.Origin=="QaEngineer"?new(review):new(null,review),
+                            new CollaborationAdmission(job.Id,step.Sequence),issue.Id);
+                        PublishRepairRequest(job,issue,step.Rationale);
                         store.Finish(job.TaskId,job.Id,"AwaitingOwner","EXACT_REPAIR_APPROVAL_REQUIRED");return;
                     }
                     case "AwaitQualifiedVerification":
@@ -409,6 +453,27 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
             _active.TryRemove(job.Id,out _);cancel.Dispose();
         }
     }
+    private void PublishRepairRequest(CollaborationRun job,EngineeringIssue issue,string rationale)
+    {
+        // Direct message is a real Technical Lead decision, bound to an
+        // existing assignment. A carried-forward file may lack a fresh
+        // assignment receipt; never manufacture one merely for the UI.
+        using var db=tasks.Open();
+        var assignment=TaskStore.Scalar(db,null,"""
+            SELECT CAST(m.sequence AS TEXT) FROM engineering_messages m
+            JOIN engineering_run_files f ON f.run_id=m.run_id AND f.work_item_id=m.work_item_id
+            WHERE m.task_id=@task AND m.run_id=@run AND m.kind='TaskAssignment' AND f.path=@path
+            """,("@task",job.TaskId),("@run",job.RunId),("@path",issue.Path));
+        var item=TaskStore.Scalar(db,null,"SELECT work_item_id FROM engineering_run_files WHERE run_id=@run AND path=@path",
+            ("@run",job.RunId),("@path",issue.Path));
+        if(assignment is null || item is null)return;
+        var policy=new EngineeringDelegationStore(tasks).Read(job.TaskId);
+        if(policy is null || !policy.Operations.Contains("SendMessage",StringComparer.Ordinal))return;
+        new AgentCommunicationStore(tasks).Publish(new(job.TaskId,job.RunId,item,long.Parse(assignment),
+            "TechnicalLead",job.SourceSha256,job.PolicyRevision,job.PolicySha256,Guid.NewGuid().ToString("N")),
+            new("SoftwareEngineer","RepairRequested",rationale));
+    }
+
     public CollaborationSnapshot Cancel(string taskId,string id)
     {
         var current=store.Get(taskId,id);

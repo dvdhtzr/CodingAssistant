@@ -289,7 +289,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
 
     // Application-only authority boundary. No route accepts an agent identity.
     // Arbitration is not repair admission, execution permission or closure.
-    public IssueDecision Decide(IssueDecisionContext context,IssueDecisionDraft draft)
+    public IssueDecision Decide(IssueDecisionContext context,IssueDecisionDraft draft,CollaborationAdmission? admission=null)
     {
         EngineeringRoleCapabilities.Require(context.FromAgent,EngineeringCapability.ScheduleWork);
         if(draft.ExpectedRevision<0 || draft.ExpectedRevision==int.MaxValue ||
@@ -302,6 +302,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
         using var tx=db.BeginTransaction();
         EngineeringDelegationStore.Require(db,tx,context.TaskId,context.PolicyRevision,
             context.PolicySha256,context.FromAgent,"ScheduleWork");
+        if(admission is not null)CollaborationStore.RequireAction(db,tx,context.TaskId,admission,"ClassifyIssue",draft.IssueId);
         var issue=Read(db,tx,context.TaskId,context.RunId).Issues.SingleOrDefault(x=>x.Id==draft.IssueId)
             ?? throw new StoreFailure("NOT_FOUND");
         if(!issue.CurrentSource || issue.SourceSha256!=context.SourceSha256 ||
@@ -324,6 +325,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
             latest.Rationale==rationale && latest.ChallengeMessageId==draft.ChallengeMessageId &&
             latest.PolicyRevision==context.PolicyRevision && latest.PolicySha256==context.PolicySha256)
         {
+            if(admission is not null)CollaborationStore.LinkAction(db,tx,admission,latest.IssueId+":"+latest.Revision);
             tx.Commit();return latest;
         }
         if((latest?.Revision??0)!=draft.ExpectedRevision)
@@ -346,6 +348,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
             "EngineeringIssue",issue.Id,decision.Revision,toAgent:
                 decision.Classification=="ImplementationDefect"?"SoftwareEngineer":issue.Origin,
                 sourceSha256:context.SourceSha256);
+        if(admission is not null)CollaborationStore.LinkAction(db,tx,admission,decision.IssueId+":"+decision.Revision);
         tx.Commit();tasks.SignalEngineeringActivity(context.TaskId);return decision;
     }
 }

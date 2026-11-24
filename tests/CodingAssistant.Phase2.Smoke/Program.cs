@@ -3640,7 +3640,7 @@ try
         aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
 
     var aetCollabPolicy=delegationStore.Propose(taskBound.Id,
-        new ProposeDelegationRequest(4,secondPlanHash,["ScheduleWork","ReviewCode","ReviewAcceptance"]));
+        new ProposeDelegationRequest(4,secondPlanHash,["ScheduleWork","ReviewCode","ReviewAcceptance","RequestRepair","SendMessage"]));
     aetCollabPolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
         aetCollabPolicy.PolicySha256,"APPROVE "+aetCollabPolicy.PolicySha256));
     var aetCollabRequest=new StartCollaborationRequest(aetChildResumeId,QaReviewStore.Fingerprint(aetChildDone!.Files),
@@ -3679,6 +3679,9 @@ try
     Check(aetCollabProposal.Id==aetCollabResult!.Steps.Last().ReferenceId &&
         aetCollabProposal.LeadReviewId==aetCollabResult.Steps.First().ReferenceId,
         "actual independent review and repair proposal references are durable");
+    Check(new AgentCommunicationStore(tasks).List(taskBound.Id,role:"SoftwareEngineer",direction:"inbox")
+        .Any(x=>x.RunId==aetChildResumeId && x.FromAgent=="TechnicalLead" && x.Kind=="RepairRequested"),
+        "actual Technical Lead repair request appears in engineer durable inbox");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
         aetCollabPolicy.PolicySha256,"REVOKE "+aetCollabPolicy.PolicySha256));
 
