@@ -52,7 +52,8 @@ public static class ApiHost
         IEngineeringTaskModel? engineeringModelOverride = null,
         IQaSourceReviewer? qaReviewerOverride = null,
         ILocalSourceSmokeRunner? sourceSmokeOverride = null,
-        IAtlasCommitArchiveDownloader? atlasArchiveOverride = null)
+        IAtlasCommitArchiveDownloader? atlasArchiveOverride = null,
+        ILeadSourceReviewer? leadReviewerOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -102,6 +103,8 @@ public static class ApiHost
             atlasArchiveOverride ?? new PublicGitHubCommitArchiveDownloader());
         atlasImports.Initialize();
         engineeringRuns.MarkInterruptedOnStartup();
+        var leadReviews = new LeadReviewStore(store);
+        leadReviews.MarkInterruptedOnStartup();
         var qaReviews = new QaReviewStore(store, implementationPlans);
         qaReviews.Initialize();
         qaReviews.MarkInterruptedOnStartup();
@@ -182,6 +185,9 @@ public static class ApiHost
         builder.Services.AddSingleton(atlasImports);
         builder.Services.AddSingleton<IEngineeringTaskModel>(softwareEngineer);
         builder.Services.AddSingleton<EngineeringRunCoordinator>();
+        builder.Services.AddSingleton(leadReviews);
+        builder.Services.AddSingleton<ILeadSourceReviewer>(leadReviewerOverride ?? new MafLeadSoftwareEngineer());
+        builder.Services.AddSingleton<LeadReviewCoordinator>();
         builder.Services.AddSingleton(qaReviews);
         builder.Services.AddSingleton(repairProposals);
         builder.Services.AddSingleton(repairTriage);
@@ -831,6 +837,29 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/cancel",
             (string id, string cycleId, RepairCycleCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
+        app.MapGet("/api/tasks/{id}/lead-reviews/latest",
+            (string id, LeadReviewStore db) =>
+                Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
+        app.MapPost("/api/tasks/{id}/lead-reviews",
+            (string id, StartQaReviewRequest request,
+             LeadReviewCoordinator coordinator, ImplementationPlanStore plans,
+             AgentRoleModelSettings roleModels, IOllamaModelCatalog catalog,
+             CancellationToken cancellation) =>
+                SafeAsync(async () => {
+                    var inherited = plans.Read(id).Plan?.Model ?? LocalInterviewModel.DefaultModel;
+                    var model = roleModels.Resolve(id, "LeadSoftwareEngineer", inherited);
+                    var installed = await catalog.ListAsync(cancellation);
+                    if (!installed.Contains(model, StringComparer.Ordinal))
+                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    return Results.Accepted($"/api/tasks/{id}/lead-reviews",
+                        coordinator.Start(id,request,model));
+                }));
+        app.MapGet("/api/tasks/{id}/lead-reviews/{reviewId}",
+            (string id,string reviewId,LeadReviewStore db) =>
+                Safe(() => Results.Ok(db.Get(id,reviewId))));
+        app.MapPost("/api/tasks/{id}/lead-reviews/{reviewId}/cancel",
+            (string id,string reviewId,LeadReviewCoordinator coordinator) =>
+                Safe(() => Results.Ok(coordinator.Cancel(id,reviewId))));
         app.MapGet("/api/tasks/{id}/qa-reviews/latest",
             (string id, QaReviewStore db) =>
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));

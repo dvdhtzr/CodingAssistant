@@ -82,6 +82,7 @@ public sealed class TaskStore
         EngineeringDelegationStore.Initialize(connection);
         AgentCommunicationStore.Initialize(connection);
         EngineeringActivityStore.Initialize(connection);
+        LeadReviewStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 
@@ -262,6 +263,8 @@ public sealed class TaskStore
             """, ("@id", id));
         if (runningDraft is not null)
             throw new StoreFailure("BUILD_BUSY");
+        if (Scalar(db, tx, "SELECT 1 FROM lead_reviews WHERE task_id=@id AND state='Running' LIMIT 1", ("@id",id)) is not null)
+            throw new StoreFailure("BUILD_BUSY");
         var runningQa = Scalar(db, tx, """
             SELECT 1 FROM qa_reviews WHERE task_id=@id AND state='Running'
             LIMIT 1
@@ -302,6 +305,8 @@ public sealed class TaskStore
             "DELETE FROM repair_triage_decisions WHERE proposal_id IN (SELECT id FROM repair_proposals WHERE task_id=@id)",
             "DELETE FROM repair_cycles WHERE task_id=@id",
             "DELETE FROM repair_proposals WHERE task_id=@id",
+            "DELETE FROM lead_review_files WHERE review_id IN (SELECT id FROM lead_reviews WHERE task_id=@id)",
+            "DELETE FROM lead_reviews WHERE task_id=@id",
             "DELETE FROM qa_review_files WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_review_events WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_reviews WHERE task_id=@id",
