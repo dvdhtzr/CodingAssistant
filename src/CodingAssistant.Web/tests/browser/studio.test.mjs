@@ -347,7 +347,8 @@ test('stale architecture shows a clear recovery action and never enables old cho
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
     const canvas = page.getByRole('region', { name: 'Focused engineering work' });
-    await canvas.getByRole('heading', { name: 'Solution Architecture' }).waitFor();
+    await canvas.getByRole('button', { name: /Solution Architecture/ }).first().click();
+    await canvas.locator('#journey-panel-architecture').waitFor({ state: 'visible' });
     const recovery = canvas.locator('.architect-recovery');
     await recovery.getByText('2 architecture recommendations need refreshing').waitFor();
     assert.equal(await canvas.locator('fieldset.architect-options').count(), 0,
