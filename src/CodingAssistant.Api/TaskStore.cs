@@ -88,6 +88,7 @@ public sealed class TaskStore
         AdaptiveWorkPlanStore.Initialize(connection);
         CollaborationStore.Initialize(connection);
         InferenceLeaseStore.Initialize(connection);
+        SourceSmokeEvidenceStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 
@@ -263,6 +264,8 @@ public sealed class TaskStore
         _ = FindTask(db, tx, id) ?? throw new StoreFailure("NOT_FOUND");
 
         CollaborationStore.RequireNoActive(db,tx,id);
+        if(Scalar(db,tx,"SELECT 1 FROM engineering_source_smoke WHERE task_id=@id AND state='Running'",("@id",id)) is not null)
+            throw new StoreFailure("BUILD_BUSY");
         var runningDraft = Scalar(db, tx, """
             SELECT 1 FROM project_drafts
             WHERE task_id=@id AND state='Running' LIMIT 1

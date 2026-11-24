@@ -1269,6 +1269,7 @@ var qaModel = new Phase5QaModel();
 var aetLeadModel = new AetLeadReviewFixture();
 var aetIssueVerifier = new AetIssueVerifierFixture();
 var aetCollaborationLead=new AetCollaborationLeadFixture();
+var aetSmokeRunner=new AetSmokeFixture();
 try
 {
     var tasks = new TaskStore(root);
@@ -1300,7 +1301,7 @@ try
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
         qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel,
-        issueVerifierOverride: aetIssueVerifier,collaborationLeadOverride:aetCollaborationLead);
+        issueVerifierOverride: aetIssueVerifier,collaborationLeadOverride:aetCollaborationLead,sourceSmokeOverride:aetSmokeRunner);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -1494,7 +1495,7 @@ try
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
         qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel,
-        issueVerifierOverride: aetIssueVerifier,collaborationLeadOverride:aetCollaborationLead);
+        issueVerifierOverride: aetIssueVerifier,collaborationLeadOverride:aetCollaborationLead,sourceSmokeOverride:aetSmokeRunner);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -3812,6 +3813,46 @@ try
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
         aetCollabPolicy.PolicySha256,"REVOKE "+aetCollabPolicy.PolicySha256));
 
+    // Smoke evidence must stay distinct from qualified runtime verification.
+    var aetSmokeRun=engineeringStore.Start(taskBound.Id,approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id,aetSmokeRun.Id,"timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id,aetSmokeRun.Id,"timer-interface",
+        new EngineeringChangeSet("Saved complete local browser entry.",
+            [new EngineeringFileChange("index.html","Entry","<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
+            ["Independently verify browser interaction."]));
+    engineeringStore.StartTask(taskBound.Id,aetSmokeRun.Id,"timer-state");
+    engineeringStore.CompleteTask(taskBound.Id,aetSmokeRun.Id,"timer-state",
+        new EngineeringChangeSet("Saved linked local JavaScript behavior.",
+            [new EngineeringFileChange("app.js","Timer behavior","document.getElementById('start').addEventListener('click',()=>{});")],
+            ["Independently verify timer behavior."]));
+    engineeringStore.Finish(taskBound.Id,aetSmokeRun.Id,true,null);
+    var aetScopeRoot=engineeringPath+"/"+aetSmokeRun.Id;
+    string aetSmokeScope;
+    using(var aetScopeResponse=await client.GetAsync(aetScopeRoot+"/verification-scope"))
+    using(var aetScopeBody=await Body(aetScopeResponse))
+    {
+        Check(aetScopeResponse.StatusCode==HttpStatusCode.OK &&
+            aetScopeBody.RootElement.GetProperty("status").GetString()=="SCOPE_CANDIDATE",
+            "existing exact smoke scope can be admitted without runtime qualification");
+        aetSmokeScope=aetScopeBody.RootElement.GetProperty("scopeSha256").GetString()!;
+    }
+    using(var aetNoConsent=await Post(client,aetScopeRoot+"/source-smoke",new StartSourceSmokeRequest(aetSmokeScope,false)))
+        Check(aetNoConsent.StatusCode==HttpStatusCode.Conflict && aetSmokeRunner.Calls==0,
+            "durable smoke ledger does not bypass explicit isolation acknowledgement");
+    string aetSmokeEvidenceId;
+    using(var aetSmoke=await Post(client,aetScopeRoot+"/source-smoke",new StartSourceSmokeRequest(aetSmokeScope,true)))
+    using(var aetSmokeBody=await Body(aetSmoke))
+    {
+        Check(aetSmoke.StatusCode==HttpStatusCode.OK && !aetSmokeBody.RootElement.GetProperty("verified").GetBoolean() &&
+            aetSmokeBody.RootElement.GetProperty("current").GetBoolean() && aetSmokeRunner.Calls==1,
+            "authenticated injected smoke result remains explicitly not verified");
+        aetSmokeEvidenceId=aetSmokeBody.RootElement.GetProperty("evidenceId").GetString()!;
+    }
+    var aetSmokeStore=new SourceSmokeEvidenceStore(tasks);
+    Check(aetSmokeStore.List(taskBound.Id,aetSmokeRun.Id).Single() is
+        {State:"Recorded",Current:true,Verified:false,Report.Status:"SMOKE_PASS_NOT_VERIFIED"} aetSavedSmoke &&
+        aetSavedSmoke.Id==aetSmokeEvidenceId,"actual smoke result survives reread and preserves exact source scope");
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var stalePolicy = delegationStore.Propose(taskBound.Id,
@@ -3881,6 +3922,8 @@ try
     Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId).Issues
         .Single(x=>x.Id==aetLeadRepairedIssue.Id).Verifications.All(x=>!x.Current),
         "architecture revision invalidates previously recorded issue verification");
+    Check(aetSmokeStore.List(taskBound.Id,aetSmokeRun.Id).Single() is {Current:false,Verified:false},
+        "architecture revision makes historical smoke evidence stale without deleting it");
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
@@ -4404,5 +4447,22 @@ sealed class AetCollaborationLeadFixture:ICollaborationLead
             new("RequestOwnerRepair","Request exact owner authorization rather than silently edit the source.",
                 input.Issues.Single(x=>x.State=="ConfirmedDefect").Id);
         return Task.FromResult(decision);
+    }
+}
+
+sealed class AetSmokeFixture:ILocalSourceSmokeRunner
+{
+    public int Calls{get;private set;}
+    public Task<LocalSourceSmokeResult> RunAsync(byte[] sourceZip,CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();Calls++;
+        using var zip=new ZipArchive(new MemoryStream(sourceZip),ZipArchiveMode.Read);
+        if(zip.Entries.Select(e=>e.FullName).Order().SequenceEqual(new[]{"app.js","index.html"})==false)
+            throw new Exception("Smoke received incorrect source archive");
+        var checks=new[]{"exact_source_hashes","non_root","no_host_mounts","root_write_denied","network_denied",
+            "javascript_syntax","local_assets_linked","browser_rendered","source_integrity_unchanged"}
+            .ToDictionary(x=>x,_=>true);
+        return Task.FromResult(new LocalSourceSmokeResult("SMOKE_PASS_NOT_VERIFIED",9,9,true,
+            "DISABLED_CONTAINER_ONLY",null,checks));
     }
 }

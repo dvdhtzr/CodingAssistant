@@ -75,6 +75,7 @@ public static class ApiHost
         var store = new TaskStore(settings.DataDirectory);
         _=LocalInferenceScheduler.Shared;
         new InferenceLeaseStore(store).Recover();
+        new SourceSmokeEvidenceStore(store).Recover();
         var roleModels = new AgentRoleModelSettings(store);
         roleModels.Initialize();
         var runs = new RunStore(store);
@@ -778,6 +779,8 @@ public static class ApiHost
         // snapshot; no ZIP download, no arbitrary file/command input.
         // Chromium inner sandbox is disabled ONLY inside restricted Docker.
         // This is a smoke test, never project VERIFIED or runtime QUALIFIED.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/source-smoke-evidence",
+            (string id,string runId,TaskStore tasks)=>Safe(()=>Results.Ok(new {evidence=new SourceSmokeEvidenceStore(tasks).List(id,runId)})));
         app.MapPost("/api/tasks/{id}/engineering-runs/{runId}/source-smoke",
             (string id, string runId, StartSourceSmokeRequest request,
              SourceSmokeCoordinator coordinator,
