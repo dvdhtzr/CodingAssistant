@@ -155,7 +155,7 @@ public sealed class EngineeringRunStore(
         reader.GetString(9), reader.IsDBNull(10) ? null : reader.GetString(10),
         reader.GetString(11), reader.GetString(12));
 
-    private static EngineeringRun? Find(SqliteConnection db, SqliteTransaction? tx,
+    internal static EngineeringRun? Find(SqliteConnection db, SqliteTransaction? tx,
         string runId)
     {
         using var cmd = TaskStore.Command(db, tx, """

@@ -49,20 +49,7 @@ public sealed class EngineeringMessageStore(TaskStore tasks)
             ? EngineeringCapability.WriteSource : EngineeringCapability.ScheduleWork);
         EngineeringRoleCapabilities.Require(from, EngineeringCapability.SendMessage);
         EngineeringRunStore.RequireBinding(db, tx, job);
-        var hashes = new List<string[]>();
-        using (var command = TaskStore.Command(db, tx, """
-            SELECT path,sha256 FROM engineering_run_files
-            WHERE run_id=@run ORDER BY path COLLATE BINARY
-            """, ("@run", job.Id)))
-        using (var reader = command.ExecuteReader())
-            while (reader.Read())
-                hashes.Add([reader.GetString(0), reader.GetString(1)]);
-        // Use the same path/hash canonicalization as independent QA.
-        // The empty assignment snapshot is hashed, not claimed to be reviewed.
-        var input = string.Join("\n", hashes.OrderBy(f => f[0],
-            StringComparer.OrdinalIgnoreCase).Select(f => f[0] + "\t" + f[1]));
-        var sourceSha = Convert.ToHexString(SHA256.HashData(
-            Encoding.UTF8.GetBytes(input))).ToLowerInvariant();
+        var sourceSha = SourceFingerprint(db, tx, job.Id);
         TaskStore.Execute(db, tx, """
             INSERT INTO engineering_messages(task_id,run_id,work_item_id,kind,
                 from_agent,to_agent,plan_revision,plan_sha256,spec_version,
@@ -75,6 +62,24 @@ public sealed class EngineeringMessageStore(TaskStore tasks)
             ("@plan", job.PlanSha256), ("@version", job.SpecificationVersion),
             ("@spec", job.SpecificationSha256), ("@arch", job.ArchitectureSha256),
             ("@source", sourceSha), ("@utc", DateTimeOffset.UtcNow.ToString("O")));
+    }
+
+    internal static string SourceFingerprint(SqliteConnection db, SqliteTransaction tx, string runId)
+    {
+        var hashes = new List<string[]>();
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT path,sha256 FROM engineering_run_files
+            WHERE run_id=@run ORDER BY path COLLATE BINARY
+            """, ("@run", runId)))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                hashes.Add([reader.GetString(0), reader.GetString(1)]);
+        // Use the same path/hash canonicalization as independent QA.
+        // The empty assignment snapshot is hashed, not claimed to be reviewed.
+        var input = string.Join("\n", hashes.OrderBy(f => f[0],
+            StringComparer.OrdinalIgnoreCase).Select(f => f[0] + "\t" + f[1]));
+        return Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(input))).ToLowerInvariant();
     }
 
     public IReadOnlyList<EngineeringMessage> List(string taskId, long after = 0)

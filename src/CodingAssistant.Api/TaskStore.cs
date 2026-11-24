@@ -80,6 +80,7 @@ public sealed class TaskStore
             """);
         EngineeringMessageStore.Initialize(connection);
         EngineeringDelegationStore.Initialize(connection);
+        AgentCommunicationStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 

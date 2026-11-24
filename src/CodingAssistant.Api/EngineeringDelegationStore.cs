@@ -104,7 +104,7 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             new { schemaVersion = 1, taskId, revision, planRevision = plan.Revision,
                 plan.PlanSha256, plan.SpecificationVersion, plan.SpecificationSha256,
                 plan.ArchitectureSha256, operations }))).ToLowerInvariant();
-        if (previous is not null && previous.Status is "Approved" or "Proposed")
+        if (previous is not null && previous.Status is ("Approved" or "Proposed"))
             TaskStore.Execute(db, tx, """
                 UPDATE engineering_delegation SET status='Superseded'
                 WHERE task_id=@task AND revision=@revision

@@ -393,6 +393,12 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/engineering-delegation/revoke",
             (string id, ApproveDelegationRequest input, TaskStore tasks) =>
                 Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Revoke(id, input))));
+        app.MapGet("/api/tasks/{id}/agent-communications",
+            (string id, long? after, string? role, string? direction, TaskStore tasks) =>
+                Safe(() => Results.Ok(new {
+                    messages = new AgentCommunicationStore(tasks).List(
+                        id, after ?? 0, role, direction ?? "all")
+                })));
         app.MapGet("/api/tasks/{id}/engineering-messages",
             (string id, long? after, TaskStore tasks) =>
                 Safe(() => Results.Ok(new {

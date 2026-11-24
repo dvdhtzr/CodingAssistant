@@ -1881,6 +1881,63 @@ try
     Check(new EngineeringMessageStore(tasks).List(taskBound.Id, receipts[1].Sequence)
           .SequenceEqual(receipts.Skip(2)),
         "durable message cursor replays without duplication");
+    // Exercise the same application-only publication boundary future role
+    // invocations use. This is injected test data, not a live model result.
+    var delegationStore = new EngineeringDelegationStore(tasks);
+    var messagePolicy = delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(1, secondPlanHash, ["SendMessage"]));
+    var approvedMessagePolicy = delegationStore.Approve(taskBound.Id,
+        new ApproveDelegationRequest(messagePolicy.Revision,messagePolicy.PolicySha256,
+            "APPROVE " + messagePolicy.PolicySha256));
+    var communicationStore = new AgentCommunicationStore(tasks);
+    var context = new AgentCommunicationContext(taskBound.Id,engineeringRunId,
+        receipts[2].WorkItemId,receipts[2].Sequence,"SoftwareEngineer",
+        receipts[3].SourceSha256,approvedMessagePolicy.Revision,
+        approvedMessagePolicy.PolicySha256,Guid.NewGuid().ToString("N"));
+    var draft = new AgentCommunicationDraft("SolutionArchitect",
+        "ClarificationRequested","Please clarify the approved storage approach.",
+        EvidenceSequence: receipts[3].Sequence);
+    var sent = communicationStore.Publish(context,draft);
+    Check(communicationStore.Publish(context,draft) == sent &&
+          new AgentCommunicationStore(tasks).List(taskBound.Id,role:"SolutionArchitect",
+              direction:"inbox").Single() == sent &&
+          communicationStore.List(taskBound.Id,role:"SoftwareEngineer",
+              direction:"outbox").Single() == sent,
+        "durable inbox/outbox deduplicates identical host message and survives reopen");
+    void RejectMessage(Action action, string expected)
+    {
+        try { action(); Check(false,"message should fail closed: " + expected); }
+        catch (StoreFailure error) { Check(error.Code == expected,"message rejected: " + expected); }
+    }
+    RejectMessage(() => communicationStore.Publish(context,draft with { Summary = "Changed" }),
+        "IDEMPOTENCY_CONFLICT");
+    RejectMessage(() => communicationStore.Publish(context with {
+        MessageId = Guid.NewGuid().ToString("N"), SourceSha256 = new string('0',64)
+    },draft),"STALE_SOURCE_RUN");
+    RejectMessage(() => communicationStore.Publish(context with {
+        MessageId = Guid.NewGuid().ToString("N"), TaskId = new string('0',32)
+    },draft),"NOT_FOUND");
+    RejectMessage(() => communicationStore.Publish(context,draft with { Kind = "VerificationCompleted" }),
+        "INVALID_AGENT_MESSAGE");
+    var replyContext = context with {
+        FromAgent = "SolutionArchitect", MessageId = Guid.NewGuid().ToString("N")
+    };
+    var reply = communicationStore.Publish(replyContext,new AgentCommunicationDraft(
+        "SoftwareEngineer","ClarificationProvided","Follow the approved architecture.",sent.Sequence));
+    Check(reply.Depth == 1 && reply.AssignmentSequence == sent.AssignmentSequence,
+        "replies preserve assignment correlation and bounded depth");
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
+        approvedMessagePolicy.Revision,approvedMessagePolicy.PolicySha256,
+        "REVOKE " + approvedMessagePolicy.PolicySha256));
+    RejectMessage(() => communicationStore.Publish(context with {
+        MessageId = Guid.NewGuid().ToString("N")
+    },draft),"DELEGATION_NOT_AUTHORIZED");
+    using (var response = await client.GetAsync(
+        "/api/tasks/" + taskBound.Id + "/agent-communications?role=SoftwareEngineer&direction=inbox"))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("messages").GetArrayLength() == 1,
+            "authenticated agent inbox reports actual persisted reply");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,
