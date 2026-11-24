@@ -62,6 +62,10 @@ public sealed class EngineeringMessageStore(TaskStore tasks)
             ("@plan", job.PlanSha256), ("@version", job.SpecificationVersion),
             ("@spec", job.SpecificationSha256), ("@arch", job.ArchitectureSha256),
             ("@source", sourceSha), ("@utc", DateTimeOffset.UtcNow.ToString("O")));
+        var sequence = long.Parse(TaskStore.Scalar(db,tx,"SELECT last_insert_rowid()")!);
+        EngineeringActivityStore.Record(db,tx,job.TaskId,
+            completed ? "TaskCompleted" : "TaskAssignment",from,"EngineeringMessage",
+            job.Id,sequence,toAgent:to,sourceSha256:sourceSha,model:job.Model);
     }
 
     internal static string SourceFingerprint(SqliteConnection db, SqliteTransaction tx, string runId)

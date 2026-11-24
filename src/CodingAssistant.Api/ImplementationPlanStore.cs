@@ -202,7 +202,10 @@ public sealed class ImplementationPlanStore(TaskStore tasks, InterviewStore inte
             ("@archSha", request.ArchitectureSha256!),
             ("@model", model), ("@outline", JsonSerializer.Serialize(safe)),
             ("@sha", sha), ("@created", created));
+        EngineeringActivityStore.Record(db,tx,taskId,"PlanProposed","TechnicalLead",
+            "ImplementationPlan",sha,revision,toAgent:"HumanOwner",model:model);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return Read(taskId).Plan!;
     }
 
@@ -231,7 +234,10 @@ public sealed class ImplementationPlanStore(TaskStore tasks, InterviewStore inte
             WHERE task_id=@id AND revision=@revision AND status='Proposed'
             """, ("@id", taskId), ("@revision", plan.Revision),
             ("@approved", approved));
+        EngineeringActivityStore.Record(db,tx,taskId,"PlanApproved","HumanOwner",
+            "ImplementationPlan",plan.PlanSha256,plan.Revision,toAgent:"TechnicalLead");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return Read(taskId).Plan!;
     }
 

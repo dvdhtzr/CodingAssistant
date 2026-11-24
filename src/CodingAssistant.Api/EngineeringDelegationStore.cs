@@ -174,7 +174,10 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             ("@spec",plan.SpecificationSha256),("@arch",plan.ArchitectureSha256),
             ("@ops",JsonSerializer.Serialize(operations)),("@sha",sha),("@now",now));
         var result = Effective(Latest(db, tx, taskId)!,plan,true);
+        EngineeringActivityStore.Record(db,tx,taskId,"DelegationProposed","HumanOwner",
+            "DelegationPolicy",sha,revision);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return result;
     }
 
@@ -193,7 +196,10 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             UPDATE engineering_delegation SET status='Approved',approved_utc=@now
             WHERE task_id=@task AND revision=@revision
             """, ("@task",taskId),("@revision",policy.Revision),("@now",now));
+        EngineeringActivityStore.Record(db,tx,taskId,"DelegationApproved","HumanOwner",
+            "DelegationPolicy",policy.PolicySha256,policy.Revision);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return policy with { Status = "Approved", ApprovedUtc = now,
             Current = true, EffectiveStatus = "Approved" };
     }
@@ -213,7 +219,10 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             """, ("@task",taskId),("@revision",policy.Revision));
         var result = Effective(policy with { Status = "Revoked" },
             CurrentPlan(db,tx,taskId),true);
+        EngineeringActivityStore.Record(db,tx,taskId,"DelegationRevoked","HumanOwner",
+            "DelegationPolicy",policy.PolicySha256,policy.Revision);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return result;
     }
 

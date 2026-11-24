@@ -73,7 +73,7 @@ public sealed class MafHandoffStore(TaskStore tasks, InterviewStore interviews)
             """, ("@id", taskId), ("@version", spec.Version));
         if (current != spec.Sha256)
             throw new StoreFailure("SPECIFICATION_CONFLICT");
-        TaskStore.Execute(db, tx, """
+        var recorded = TaskStore.Execute(db, tx, """
             INSERT OR IGNORE INTO maf_handoffs (
                 task_id,kind,topic,from_agent,to_agent,specification_version,
                 specification_sha256,revision,model,created_utc)
@@ -83,7 +83,11 @@ public sealed class MafHandoffStore(TaskStore tasks, InterviewStore interviews)
             ("@sha", spec.Sha256), ("@revision", revision),
             ("@model", roleModel ?? spec.Model),
             ("@utc", DateTimeOffset.UtcNow.ToString("O")));
+        if (recorded == 1)
+            EngineeringActivityStore.Record(db,tx,taskId,kind,from,
+                "MafHandoff",spec.Sha256,revision,toAgent:to,model:roleModel ?? spec.Model);
         tx.Commit();
+        if (recorded == 1) tasks.SignalEngineeringActivity(taskId);
     }
 
     public IReadOnlyList<MafHandoffEvent> List(string taskId)

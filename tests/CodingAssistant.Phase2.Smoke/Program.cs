@@ -1881,6 +1881,33 @@ try
     Check(new EngineeringMessageStore(tasks).List(taskBound.Id, aetReceipts[1].Sequence)
           .SequenceEqual(aetReceipts.Skip(2)),
         "durable message cursor replays without duplication");
+    var aetActivityPath = "/api/tasks/" + taskBound.Id + "/engineering-activity";
+    var aetActivity = new EngineeringActivityStore(tasks).Read(taskBound.Id);
+    Check(aetActivity.Events.Select(e => e.Sequence).SequenceEqual(
+              Enumerable.Range(1,aetActivity.Events.Count).Select(i => (long)i)) &&
+          aetActivity.Events.Count(e => e.Kind == "TaskAssignment") == 2 &&
+          aetActivity.Events.Count(e => e.Kind == "TaskCompleted") == 2 &&
+          aetActivity.Events.Last(e => e.Kind == "TaskCompleted").SourceSha256 ==
+              QaReviewStore.Fingerprint(engineeringResult!.Files),
+        "project activity replays contiguous actual assignment and source evidence");
+    var aetFirstPage = new EngineeringActivityStore(tasks).Read(taskBound.Id,0,2);
+    Check(aetFirstPage.Events.Count == 2 &&
+          new EngineeringActivityStore(tasks).Read(taskBound.Id,
+              aetFirstPage.Events[^1].Sequence).Events.First().Sequence == 3,
+        "activity cursor replays a bounded page without gaps");
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(aetActivityPath))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "engineering activity requires owner authentication");
+    using (var invalidActivity = await client.GetAsync(aetActivityPath + "?after=-1"))
+        Check(invalidActivity.StatusCode == HttpStatusCode.BadRequest,
+            "negative activity cursor fails closed");
+    using (var response = await client.GetAsync(aetActivityPath + "?limit=2"))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("taskId").GetString() == taskBound.Id &&
+              body.RootElement.GetProperty("events").GetArrayLength() == 2,
+            "activity endpoint is scoped to one project and bounded page");
     // Exercise the same application-only publication boundary future role
     // invocations use. This is injected test data, not a live model result.
     var delegationStore = new EngineeringDelegationStore(tasks);
@@ -1954,6 +1981,12 @@ try
         Check(response.StatusCode == HttpStatusCode.OK &&
               body.RootElement.GetProperty("messages").GetArrayLength() == 4,
             "authenticated agent inbox reports actual persisted replies");
+    var aetProposalActivity = new EngineeringActivityStore(tasks).Read(taskBound.Id,
+        aetActivity.LastSequence).Events.Where(e => e.Origin == "AgentProposal").ToArray();
+    Check(aetProposalActivity.Length == 9 &&
+          aetProposalActivity.Count(e => e.ReferenceId == aetSent.MessageId) == 1 &&
+          aetProposalActivity.All(e => !e.Label.Contains("approved storage approach")),
+        "activity distinguishes agent proposals from observations, deduplicates and omits raw text");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,

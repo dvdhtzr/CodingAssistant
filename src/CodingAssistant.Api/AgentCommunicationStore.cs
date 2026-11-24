@@ -197,7 +197,11 @@ public sealed class AgentCommunicationStore(TaskStore tasks)
             ("@policy",context.PolicyRevision),("@sha",context.PolicySha256),
             ("@utc",DateTimeOffset.UtcNow.ToString("O")));
         var result = Find(db,tx,context.TaskId,context.MessageId)!;
+        EngineeringActivityStore.Record(db,tx,context.TaskId,draft.Kind,context.FromAgent,
+            "AgentCommunication",result.MessageId,result.Sequence,toAgent:draft.ToAgent,
+            sourceSha256:context.SourceSha256,agentProposal:true);
         tx.Commit();
+        tasks.SignalEngineeringActivity(context.TaskId);
         return result;
     }
 

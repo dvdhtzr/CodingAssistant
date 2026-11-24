@@ -197,6 +197,12 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 FROM qa_review_events WHERE qa_id=@id),@kind,@detail,@now)
             """, ("@id", reviewId), ("@kind", kind), ("@detail", detail),
             ("@now", DateTimeOffset.UtcNow.ToString("O")));
+        var job = Find(db,tx,reviewId);
+        if (job is not null)
+            EngineeringActivityStore.Record(db,tx,job.TaskId,kind,"QaEngineer",
+                "QaReview",reviewId,long.Parse(TaskStore.Scalar(db,tx,
+                    "SELECT MAX(sequence) FROM qa_review_events WHERE qa_id=@id",
+                    ("@id",reviewId))!),sourceSha256:job.SourceSha256,model:job.Model);
     }
 
     public QaReviewRun Start(string taskId,
@@ -264,6 +270,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 " saved source-inspection activity record(s) from this " +
                 "engineering run; no build or tests executed");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return review;
     }
 
@@ -360,6 +367,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             source.Path + " static review saved (" +
             valid.Findings.Count + " possible issue(s); not tested)");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     /// <summary>
@@ -431,6 +439,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             fileKey + " source " + observation.SourceRevision[..12] +
             " (" + observation.ResultCount + " static result(s); not tested)");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public void Finish(string taskId, string reviewId, bool success, string? code)
@@ -475,6 +484,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 : "Independent source review stopped safely: " +
                     (code ?? "REVIEW_FAILED"));
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public void Interrupt(string taskId, string reviewId)
@@ -496,6 +506,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 "Owner stopped independent static source review");
         }
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public IReadOnlyList<MafHandoffEvent> Handoffs(string taskId)

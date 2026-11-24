@@ -363,7 +363,10 @@ public sealed class RepairCycleStore(
         {
             throw new StoreFailure("BUILD_BUSY");
         }
+        EngineeringActivityStore.Record(db,tx,taskId,"RepairRunAdmitted","SoftwareEngineer",
+            "RepairCycle",cycleId,sourceSha256:proposal.SourceSha256);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return new RepairCycle(cycleId, taskId, proposal.Id, baseRun.Id,
             runId, null, proposal.SourceSha256, "Running", attempt, null,
             selected.AsReadOnly(), now, now);
@@ -403,7 +406,11 @@ public sealed class RepairCycleStore(
             ("@qa", (object?)qaId ?? DBNull.Value),
             ("@now", DateTimeOffset.UtcNow.ToString("O")),
             ("@id", cycleId), ("@task", taskId));
+        EngineeringActivityStore.Record(db,tx,taskId,"Repair"+state,
+            state is "QaRunning" or "QaReviewed" ? "QaEngineer" : "SoftwareEngineer",
+            "RepairCycle",cycleId);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     private static void CheckId(string? id)

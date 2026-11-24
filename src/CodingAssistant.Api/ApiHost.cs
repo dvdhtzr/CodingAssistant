@@ -215,6 +215,8 @@ public static class ApiHost
         });
         builder.Services.AddSingleton<RunNotifier>();
         builder.Services.AddSingleton<EngineeringAtlasNotifier>();
+        builder.Services.AddSingleton<EngineeringActivityStore>();
+        builder.Services.AddHostedService<EngineeringActivityNotifier>();
 
         var app = builder.Build();
         app.Use(async (context, next) =>
@@ -397,6 +399,9 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/engineering-delegation/revoke",
             (string id, ApproveDelegationRequest input, TaskStore tasks) =>
                 Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Revoke(id, input))));
+        app.MapGet("/api/tasks/{id}/engineering-activity",
+            (string id, long? after, int? limit, EngineeringActivityStore activity) =>
+                Safe(() => Results.Ok(activity.Read(id,after ?? 0,limit ?? 200))));
         app.MapGet("/api/tasks/{id}/agent-communications",
             (string id, long? after, string? role, string? direction, TaskStore tasks) =>
                 Safe(() => Results.Ok(new {

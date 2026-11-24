@@ -204,6 +204,14 @@ public sealed class EngineeringRunStore(
                 @kind,@detail,@now)
             """, ("@run", runId), ("@kind", kind), ("@detail", detail),
             ("@now", DateTimeOffset.UtcNow.ToString("O")));
+        if (kind is "EngineeringTaskStarted" or "EngineeringTaskCompleted")
+            return; // The richer atomic assignment receipt supplies this activity.
+        var job = Find(db,tx,runId);
+        if (job is not null)
+            EngineeringActivityStore.Record(db,tx,job.TaskId,kind,"SoftwareEngineer",
+                "EngineeringRun",runId,long.Parse(TaskStore.Scalar(db,tx,
+                    "SELECT MAX(sequence) FROM engineering_run_events WHERE run_id=@run",
+                    ("@run",runId))!),model:job.Model);
     }
 
     public EngineeringRun Start(string taskId, ImplementationPlan approved,
@@ -255,6 +263,7 @@ public sealed class EngineeringRunStore(
             "Owner-approved plan v" + approved.Revision +
             " assigned to SoftwareEngineer; unverified source only");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return candidate;
     }
 
@@ -415,6 +424,7 @@ public sealed class EngineeringRunStore(
             savedCount + " saved file(s) from run " + sourceRunId +
             "; remaining assignments unverified");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return job;
     }
 
@@ -512,6 +522,7 @@ public sealed class EngineeringRunStore(
             "SoftwareEngineer received approved task " + workItemId);
         EngineeringMessageStore.Record(db, tx, job, workItemId, completed: false);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     /// <summary>
@@ -551,6 +562,7 @@ public sealed class EngineeringRunStore(
             observation.SourceRevision[..12] + " (" +
             observation.ResultCount + " results)");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     /// <summary>
@@ -604,6 +616,7 @@ public sealed class EngineeringRunStore(
             workItemId + ": attempt " + rejection.Attempt + "/3, category " +
             rejection.Category + "; no source saved for this attempt");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public AtlasSourceEvent? CompleteTask(string taskId, string runId, string workItemId,
@@ -714,6 +727,7 @@ public sealed class EngineeringRunStore(
             " complete source file replacement(s) persisted (not tested)");
         EngineeringMessageStore.Record(db, tx, job, workItemId, completed: true);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return atlasEvent;
     }
 
@@ -766,6 +780,7 @@ public sealed class EngineeringRunStore(
             success ? "All planned tasks saved as unverified source, not executed" :
                 "Stopped safely: " + (reason ?? "GENERATION_FAILED"));
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public void Interrupt(string taskId, string runId)
@@ -792,6 +807,7 @@ public sealed class EngineeringRunStore(
                 "Owner stopped unverified source generation");
         }
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public byte[] Zip(string taskId, string runId)

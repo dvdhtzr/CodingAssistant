@@ -81,6 +81,7 @@ public sealed class TaskStore
         EngineeringMessageStore.Initialize(connection);
         EngineeringDelegationStore.Initialize(connection);
         AgentCommunicationStore.Initialize(connection);
+        EngineeringActivityStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 
@@ -116,6 +117,13 @@ public sealed class TaskStore
             return;
         var privateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         File.SetUnixFileMode(_databasePath, privateFile);
+    }
+
+    internal event Action<string>? EngineeringActivityChanged;
+    internal void SignalEngineeringActivity(string taskId)
+    {
+        try { EngineeringActivityChanged?.Invoke(taskId); }
+        catch (Exception) { /* Best-effort hint; durable history already committed. */ }
     }
 
     internal SqliteConnection Open()
