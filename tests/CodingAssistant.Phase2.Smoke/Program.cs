@@ -1926,6 +1926,22 @@ try
         "SoftwareEngineer","ClarificationProvided","Follow the approved architecture.",sent.Sequence));
     Check(reply.Depth == 1 && reply.AssignmentSequence == sent.AssignmentSequence,
         "replies preserve assignment correlation and bounded depth");
+    RejectMessage(() => communicationStore.Publish(context with {
+        MessageId = Guid.NewGuid().ToString("N")
+    },draft with { EvidenceSequence = long.MaxValue }),"INVALID_AGENT_MESSAGE");
+    var lastReply = reply;
+    for (var depth = 2; depth <= AgentCommunicationStore.MaxReplyDepth; depth++)
+    {
+        lastReply = communicationStore.Publish(context with {
+            FromAgent = lastReply.ToAgent, MessageId = Guid.NewGuid().ToString("N")
+        },new AgentCommunicationDraft(lastReply.FromAgent,"ClarificationProvided",
+            "Acknowledged the approved architecture.",lastReply.Sequence));
+        Check(lastReply.Depth == depth,"reply depth is computed by host");
+    }
+    RejectMessage(() => communicationStore.Publish(context with {
+        FromAgent = lastReply.ToAgent, MessageId = Guid.NewGuid().ToString("N")
+    },new AgentCommunicationDraft(lastReply.FromAgent,"ClarificationProvided",
+        "Another reply.",lastReply.Sequence)),"AGENT_CONVERSATION_LIMIT");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
         approvedMessagePolicy.Revision,approvedMessagePolicy.PolicySha256,
         "REVOKE " + approvedMessagePolicy.PolicySha256));
@@ -1936,8 +1952,8 @@ try
         "/api/tasks/" + taskBound.Id + "/agent-communications?role=SoftwareEngineer&direction=inbox"))
     using (var body = await Body(response))
         Check(response.StatusCode == HttpStatusCode.OK &&
-              body.RootElement.GetProperty("messages").GetArrayLength() == 1,
-            "authenticated agent inbox reports actual persisted reply");
+              body.RootElement.GetProperty("messages").GetArrayLength() == 4,
+            "authenticated agent inbox reports actual persisted replies");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,
@@ -2993,6 +3009,12 @@ try
 
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
+    var stalePolicy = delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(2,secondPlanHash,["SendMessage"]));
+    stalePolicy = delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+        stalePolicy.Revision,stalePolicy.PolicySha256,"APPROVE " + stalePolicy.PolicySha256));
+    Check(stalePolicy.Current && stalePolicy.EffectiveStatus == "Approved",
+        "delegation explicitly active before architecture revision");
     var boundStore = new ProjectDraftStore(tasks);
     var changedJob = boundStore.Start(taskBound.Id,
         specBound.Version, specBound.Sha256, specBound.Model, architectureSha);
@@ -3020,6 +3042,17 @@ try
           boundStore.Get(taskBound.Id, changedJob.Id).Job.ErrorCode ==
             "ARCHITECTURE_CONFLICT",
         "stale decision cannot be reported as generated successfully");
+    var effectivePolicy = delegationStore.Read(taskBound.Id);
+    Check(effectivePolicy?.Status == "Approved" && !effectivePolicy.Current &&
+          effectivePolicy.EffectiveStatus == "STALE_APPROVALS",
+        "architecture revision invalidates effective delegated authority");
+    Check(delegationStore.History(taskBound.Id).Count == 3 &&
+          delegationStore.History(taskBound.Id).Take(2).All(p => p.Status == "Revoked"),
+        "delegation retains prior owner decisions");
+    Check(delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
+        stalePolicy.Revision,stalePolicy.PolicySha256,
+        "REVOKE " + stalePolicy.PolicySha256)).Status == "Revoked",
+        "owner may revoke stale delegation without reapproving architecture");
     using (var unready = await client.GetAsync(architecturePath))
     using (var body = await Body(unready))
         Check(body.RootElement.GetProperty("status").GetString() == "INCOMPLETE",

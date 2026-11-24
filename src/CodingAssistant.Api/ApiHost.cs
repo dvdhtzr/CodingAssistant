@@ -384,6 +384,10 @@ public static class ApiHost
             (string id, TaskStore tasks) => Safe(() => Results.Ok(new {
                 policy = new EngineeringDelegationStore(tasks).Read(id)
             })));
+        app.MapGet("/api/tasks/{id}/engineering-delegation/history",
+            (string id, TaskStore tasks) => Safe(() => Results.Ok(new {
+                history = new EngineeringDelegationStore(tasks).History(id)
+            })));
         app.MapPost("/api/tasks/{id}/engineering-delegation/propose",
             (string id, ProposeDelegationRequest input, TaskStore tasks) =>
                 Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Propose(id, input))));

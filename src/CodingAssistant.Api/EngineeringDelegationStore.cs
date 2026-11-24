@@ -12,7 +12,8 @@ public sealed record DelegationPolicy(string TaskId, int Revision,
     int PlanRevision, string PlanSha256, int SpecificationVersion,
     string SpecificationSha256, string ArchitectureSha256,
     IReadOnlyList<string> Operations, string PolicySha256, string Status,
-    string CreatedUtc, string? ApprovedUtc);
+    string CreatedUtc, string? ApprovedUtc, bool Current = false,
+    string EffectiveStatus = "UNKNOWN");
 
 /// <summary>Versioned, owner-approved opt-in for future autonomous routine
 /// actions. This is an additional permission gate, never an alternative
@@ -75,12 +76,65 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             throw new StoreFailure("STALE_DELEGATION_POLICY");
     }
 
+    private static ImplementationPlan? CurrentPlan(SqliteConnection db,
+        SqliteTransaction tx, string taskId)
+    {
+        try { return ImplementationPlanStore.RequireCurrentApproved(db, tx, taskId); }
+        catch (StoreFailure) { return null; }
+    }
+
+    private static DelegationPolicy Effective(DelegationPolicy policy,
+        ImplementationPlan? plan, bool latest)
+    {
+        var current = latest && plan is not null &&
+            policy.PlanRevision == plan.Revision &&
+            policy.PlanSha256 == plan.PlanSha256 &&
+            policy.SpecificationVersion == plan.SpecificationVersion &&
+            policy.SpecificationSha256 == plan.SpecificationSha256 &&
+            policy.ArchitectureSha256 == plan.ArchitectureSha256;
+        return policy with { Current = current,
+            EffectiveStatus = !current && policy.Status is ("Approved" or "Proposed")
+                ? "STALE_APPROVALS" : policy.Status };
+    }
+
     public DelegationPolicy? Read(string taskId)
     {
         using var db = tasks.Open();
-        if (TaskStore.FindTask(db, null, taskId) is null)
+        using var tx = db.BeginTransaction();
+        if (TaskStore.FindTask(db, tx, taskId) is null)
             throw new StoreFailure("NOT_FOUND");
-        return Latest(db, null, taskId);
+        var policy = Latest(db, tx, taskId);
+        var result = policy is null ? null : Effective(policy, CurrentPlan(db, tx, taskId), true);
+        tx.Commit();
+        return result;
+    }
+
+    public IReadOnlyList<DelegationPolicy> History(string taskId)
+    {
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        if (TaskStore.FindTask(db, tx, taskId) is null)
+            throw new StoreFailure("NOT_FOUND");
+        var plan = CurrentPlan(db, tx, taskId);
+        var history = new List<DelegationPolicy>();
+        using (var cmd = TaskStore.Command(db, tx, """
+            SELECT task_id,revision,plan_revision,plan_sha256,spec_version,
+                spec_sha256,architecture_sha256,operations_json,policy_sha256,
+                status,created_utc,approved_utc
+            FROM engineering_delegation WHERE task_id=@task ORDER BY revision
+            """, ("@task",taskId)))
+        using (var reader = cmd.ExecuteReader())
+            while (reader.Read())
+                history.Add(new DelegationPolicy(reader.GetString(0),reader.GetInt32(1),
+                    reader.GetInt32(2),reader.GetString(3),reader.GetInt32(4),
+                    reader.GetString(5),reader.GetString(6),
+                    JsonSerializer.Deserialize<string[]>(reader.GetString(7))!,
+                    reader.GetString(8),reader.GetString(9),reader.GetString(10),
+                    reader.IsDBNull(11) ? null : reader.GetString(11)));
+        var result = history.Select((item,index) =>
+            Effective(item,plan,index == history.Count-1)).ToArray();
+        tx.Commit();
+        return result;
     }
 
     public DelegationPolicy Propose(string taskId, ProposeDelegationRequest input)
@@ -119,7 +173,7 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             ("@plan",plan.PlanSha256),("@sv",plan.SpecificationVersion),
             ("@spec",plan.SpecificationSha256),("@arch",plan.ArchitectureSha256),
             ("@ops",JsonSerializer.Serialize(operations)),("@sha",sha),("@now",now));
-        var result = Latest(db, tx, taskId)!;
+        var result = Effective(Latest(db, tx, taskId)!,plan,true);
         tx.Commit();
         return result;
     }
@@ -140,7 +194,8 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             WHERE task_id=@task AND revision=@revision
             """, ("@task",taskId),("@revision",policy.Revision),("@now",now));
         tx.Commit();
-        return policy with { Status = "Approved", ApprovedUtc = now };
+        return policy with { Status = "Approved", ApprovedUtc = now,
+            Current = true, EffectiveStatus = "Approved" };
     }
 
     public DelegationPolicy Revoke(string taskId, ApproveDelegationRequest input)
@@ -156,8 +211,10 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             UPDATE engineering_delegation SET status='Revoked'
             WHERE task_id=@task AND revision=@revision
             """, ("@task",taskId),("@revision",policy.Revision));
+        var result = Effective(policy with { Status = "Revoked" },
+            CurrentPlan(db,tx,taskId),true);
         tx.Commit();
-        return policy with { Status = "Revoked" };
+        return result;
     }
 
     // Called inside the same transaction as a future autonomous action.
