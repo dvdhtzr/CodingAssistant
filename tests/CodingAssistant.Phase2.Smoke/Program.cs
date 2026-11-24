@@ -1753,11 +1753,11 @@ try
         Check(denied.StatusCode == HttpStatusCode.BadRequest,
             "delegation cannot authorize generated code execution");
     string policySha;
-    using (var proposal = await Post(client, delegationPath + "/propose",
+    using (var aetDelegationProposal = await Post(client, delegationPath + "/propose",
         new ProposeDelegationRequest(0, secondPlanHash, ["SendMessage","ScheduleWork"])))
-    using (var body = await Body(proposal))
+    using (var body = await Body(aetDelegationProposal))
     {
-        Check(proposal.StatusCode == HttpStatusCode.OK &&
+        Check(aetDelegationProposal.StatusCode == HttpStatusCode.OK &&
               body.RootElement.GetProperty("status").GetString() == "Proposed",
             "delegation proposal grants no authority");
         policySha = body.RootElement.GetProperty("policySha256").GetString()!;
@@ -1869,17 +1869,17 @@ try
           engineeringResult.Events.Any(e => e.Kind == "EngineeringTaskStarted") &&
           engineeringResult.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 2,
         "each approved engineer task persists source and exact durable event history");
-    var receipts = new EngineeringMessageStore(tasks).List(taskBound.Id);
-    Check(receipts.Count == 4 &&
-          receipts.Select(m => m.Kind).SequenceEqual(
+    var aetReceipts = new EngineeringMessageStore(tasks).List(taskBound.Id);
+    Check(aetReceipts.Count == 4 &&
+          aetReceipts.Select(m => m.Kind).SequenceEqual(
               ["TaskAssignment","TaskCompleted","TaskAssignment","TaskCompleted"]) &&
-          receipts.All(m => m.RunId == engineeringRunId && m.PlanSha256 == secondPlanHash) &&
-          receipts[0].FromAgent == "TechnicalLead" &&
-          receipts[1].FromAgent == "SoftwareEngineer" &&
-          receipts[3].SourceSha256 == QaReviewStore.Fingerprint(engineeringResult!.Files),
+          aetReceipts.All(m => m.RunId == engineeringRunId && m.PlanSha256 == secondPlanHash) &&
+          aetReceipts[0].FromAgent == "TechnicalLead" &&
+          aetReceipts[1].FromAgent == "SoftwareEngineer" &&
+          aetReceipts[3].SourceSha256 == QaReviewStore.Fingerprint(engineeringResult!.Files),
         "assignment and completion receipts bind actual saved revisions");
-    Check(new EngineeringMessageStore(tasks).List(taskBound.Id, receipts[1].Sequence)
-          .SequenceEqual(receipts.Skip(2)),
+    Check(new EngineeringMessageStore(tasks).List(taskBound.Id, aetReceipts[1].Sequence)
+          .SequenceEqual(aetReceipts.Skip(2)),
         "durable message cursor replays without duplication");
     // Exercise the same application-only publication boundary future role
     // invocations use. This is injected test data, not a live model result.
@@ -1890,64 +1890,64 @@ try
         new ApproveDelegationRequest(messagePolicy.Revision,messagePolicy.PolicySha256,
             "APPROVE " + messagePolicy.PolicySha256));
     var communicationStore = new AgentCommunicationStore(tasks);
-    var context = new AgentCommunicationContext(taskBound.Id,engineeringRunId,
-        receipts[2].WorkItemId,receipts[2].Sequence,"SoftwareEngineer",
-        receipts[3].SourceSha256,approvedMessagePolicy.Revision,
+    var aetMessageContext = new AgentCommunicationContext(taskBound.Id,engineeringRunId,
+        aetReceipts[2].WorkItemId,aetReceipts[2].Sequence,"SoftwareEngineer",
+        aetReceipts[3].SourceSha256,approvedMessagePolicy.Revision,
         approvedMessagePolicy.PolicySha256,Guid.NewGuid().ToString("N"));
-    var draft = new AgentCommunicationDraft("SolutionArchitect",
+    var aetMessageDraft = new AgentCommunicationDraft("SolutionArchitect",
         "ClarificationRequested","Please clarify the approved storage approach.",
-        EvidenceSequence: receipts[3].Sequence);
-    var sent = communicationStore.Publish(context,draft);
-    Check(communicationStore.Publish(context,draft) == sent &&
+        EvidenceSequence: aetReceipts[3].Sequence);
+    var aetSent = communicationStore.Publish(aetMessageContext,aetMessageDraft);
+    Check(communicationStore.Publish(aetMessageContext,aetMessageDraft) == aetSent &&
           new AgentCommunicationStore(tasks).List(taskBound.Id,role:"SolutionArchitect",
-              direction:"inbox").Single() == sent &&
+              direction:"inbox").Single() == aetSent &&
           communicationStore.List(taskBound.Id,role:"SoftwareEngineer",
-              direction:"outbox").Single() == sent,
+              direction:"outbox").Single() == aetSent,
         "durable inbox/outbox deduplicates identical host message and survives reopen");
     void RejectMessage(Action action, string expected)
     {
         try { action(); Check(false,"message should fail closed: " + expected); }
         catch (StoreFailure error) { Check(error.Code == expected,"message rejected: " + expected); }
     }
-    RejectMessage(() => communicationStore.Publish(context,draft with { Summary = "Changed" }),
+    RejectMessage(() => communicationStore.Publish(aetMessageContext,aetMessageDraft with { Summary = "Changed" }),
         "IDEMPOTENCY_CONFLICT");
-    RejectMessage(() => communicationStore.Publish(context with {
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
         MessageId = Guid.NewGuid().ToString("N"), SourceSha256 = new string('0',64)
-    },draft),"STALE_SOURCE_RUN");
-    RejectMessage(() => communicationStore.Publish(context with {
+    },aetMessageDraft),"STALE_SOURCE_RUN");
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
         MessageId = Guid.NewGuid().ToString("N"), TaskId = new string('0',32)
-    },draft),"NOT_FOUND");
-    RejectMessage(() => communicationStore.Publish(context,draft with { Kind = "VerificationCompleted" }),
+    },aetMessageDraft),"NOT_FOUND");
+    RejectMessage(() => communicationStore.Publish(aetMessageContext,aetMessageDraft with { Kind = "VerificationCompleted" }),
         "INVALID_AGENT_MESSAGE");
-    var replyContext = context with {
+    var aetReplyContext = aetMessageContext with {
         FromAgent = "SolutionArchitect", MessageId = Guid.NewGuid().ToString("N")
     };
-    var reply = communicationStore.Publish(replyContext,new AgentCommunicationDraft(
-        "SoftwareEngineer","ClarificationProvided","Follow the approved architecture.",sent.Sequence));
-    Check(reply.Depth == 1 && reply.AssignmentSequence == sent.AssignmentSequence,
+    var aetReply = communicationStore.Publish(aetReplyContext,new AgentCommunicationDraft(
+        "SoftwareEngineer","ClarificationProvided","Follow the approved architecture.",aetSent.Sequence));
+    Check(aetReply.Depth == 1 && aetReply.AssignmentSequence == aetSent.AssignmentSequence,
         "replies preserve assignment correlation and bounded depth");
-    RejectMessage(() => communicationStore.Publish(context with {
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
         MessageId = Guid.NewGuid().ToString("N")
-    },draft with { EvidenceSequence = long.MaxValue }),"INVALID_AGENT_MESSAGE");
-    var lastReply = reply;
-    for (var depth = 2; depth <= AgentCommunicationStore.MaxReplyDepth; depth++)
+    },aetMessageDraft with { EvidenceSequence = long.MaxValue }),"INVALID_AGENT_MESSAGE");
+    var aetLastReply = aetReply;
+    for (var aetDepth = 2; aetDepth <= AgentCommunicationStore.MaxReplyDepth; aetDepth++)
     {
-        lastReply = communicationStore.Publish(context with {
-            FromAgent = lastReply.ToAgent, MessageId = Guid.NewGuid().ToString("N")
-        },new AgentCommunicationDraft(lastReply.FromAgent,"ClarificationProvided",
-            "Acknowledged the approved architecture.",lastReply.Sequence));
-        Check(lastReply.Depth == depth,"reply depth is computed by host");
+        aetLastReply = communicationStore.Publish(aetMessageContext with {
+            FromAgent = aetLastReply.ToAgent, MessageId = Guid.NewGuid().ToString("N")
+        },new AgentCommunicationDraft(aetLastReply.FromAgent,"ClarificationProvided",
+            "Acknowledged the approved architecture.",aetLastReply.Sequence));
+        Check(aetLastReply.Depth == aetDepth,"reply depth is computed by host");
     }
-    RejectMessage(() => communicationStore.Publish(context with {
-        FromAgent = lastReply.ToAgent, MessageId = Guid.NewGuid().ToString("N")
-    },new AgentCommunicationDraft(lastReply.FromAgent,"ClarificationProvided",
-        "Another reply.",lastReply.Sequence)),"AGENT_CONVERSATION_LIMIT");
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
+        FromAgent = aetLastReply.ToAgent, MessageId = Guid.NewGuid().ToString("N")
+    },new AgentCommunicationDraft(aetLastReply.FromAgent,"ClarificationProvided",
+        "Another reply.",aetLastReply.Sequence)),"AGENT_CONVERSATION_LIMIT");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
         approvedMessagePolicy.Revision,approvedMessagePolicy.PolicySha256,
         "REVOKE " + approvedMessagePolicy.PolicySha256));
-    RejectMessage(() => communicationStore.Publish(context with {
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
         MessageId = Guid.NewGuid().ToString("N")
-    },draft),"DELEGATION_NOT_AUTHORIZED");
+    },aetMessageDraft),"DELEGATION_NOT_AUTHORIZED");
     using (var response = await client.GetAsync(
         "/api/tasks/" + taskBound.Id + "/agent-communications?role=SoftwareEngineer&direction=inbox"))
     using (var body = await Body(response))
