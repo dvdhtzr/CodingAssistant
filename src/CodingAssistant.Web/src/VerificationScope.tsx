@@ -13,6 +13,8 @@ export interface SourceSmokeResponse {
   reason: string | null;
   checks: Record<string, boolean>;
   verified: false;
+  evidenceId?: string;
+  current?: boolean;
 }
 
 export function smokeMatchesScope(
@@ -21,7 +23,7 @@ export function smokeMatchesScope(
   return result !== null && scope.status === 'SCOPE_CANDIDATE' &&
     result.engineeringRunId === scope.engineeringRunId &&
     result.scopeSha256 === scope.scopeSha256 &&
-    result.verified === false &&
+    result.verified === false && result.current !== false &&
     result.browserSandbox === 'DISABLED_CONTAINER_ONLY' &&
     ['SMOKE_PASS_NOT_VERIFIED','SMOKE_TEST_FAILED','BLOCKED']
       .includes(result.status) &&
@@ -36,6 +38,28 @@ export function smokeMatchesScope(
       (result.containerRemoved && result.passed === 9 &&
        Object.keys(result.checks).length === 9 &&
        Object.values(result.checks).every(Boolean)));
+}
+
+interface SavedSmokeEvidence {
+  id: string; taskId: string; runId: string; sourceSha256: string;
+  scopeSha256: string; planSha256: string; state: string;
+  current: boolean; verified: false;
+  report: Omit<SourceSmokeResponse, 'engineeringRunId' | 'scopeSha256' | 'verified' | 'evidenceId' | 'current'> | null;
+}
+
+function savedSmokeForScope(evidence: SavedSmokeEvidence[], scope: VerificationScope): SourceSmokeResponse | null {
+  if (!Array.isArray(evidence) || scope.status !== 'SCOPE_CANDIDATE') return null;
+  // Never resurrect a previous pass when the latest attempt was interrupted.
+  const row = evidence[0];
+  if (!row || !row.current || row.verified !== false || row.state !== 'Recorded' ||
+      row.taskId !== scope.taskId || row.runId !== scope.engineeringRunId ||
+      row.sourceSha256 !== scope.sourceFingerprint || row.planSha256 !== scope.planSha256 ||
+      row.scopeSha256 !== scope.scopeSha256 || !row.report) return null;
+  const result: SourceSmokeResponse = {
+    ...row.report, engineeringRunId: row.runId, scopeSha256: row.scopeSha256,
+    verified: false, current: true, evidenceId: row.id,
+  };
+  return smokeMatchesScope(result, scope) ? result : null;
 }
 
 export interface ProjectSourceReadinessReport {
@@ -291,13 +315,16 @@ export function EngineeringVerificationScope({ token, run, files }: {
       if (pending) return;
       pending = true;
       try {
-        const [value, source] = await Promise.all([
+        const [value, source, history] = await Promise.all([
           api<VerificationScope>(token,
             '/api/tasks/' + run.taskId + '/engineering-runs/' +
             run.id + '/verification-scope'),
           api<ProjectSourceReadinessReport>(token,
             '/api/tasks/' + run.taskId + '/engineering-runs/' +
             run.id + '/source-readiness'),
+          api<{ evidence: SavedSmokeEvidence[] }>(token,
+            '/api/tasks/' + run.taskId + '/engineering-runs/' +
+            run.id + '/source-smoke-evidence').catch(() => null),
         ]);
         if (!closed) {
           if (!scopeMatchesRun(value, run, files))
@@ -314,6 +341,7 @@ export function EngineeringVerificationScope({ token, run, files }: {
             throw new Error('Source readiness binding mismatch');
           setScope(value);
           setReadiness(source);
+          if (history) setSmoke(savedSmokeForScope(history.evidence, value));
           setError('');
         }
       } catch {
@@ -374,7 +402,7 @@ export function EngineeringVerificationScope({ token, run, files }: {
         Running your saved source in an isolated container; no ZIP download
         is needed.</p>}
       {smokeError && <p role="alert">{smokeError}</p>}
-      {smoke && <div className="verification-smoke-result" role="status">
+      {smoke && !smokeBusy && smokeMatchesScope(smoke, scope) && <div className="verification-smoke-result" role="status">
         <strong>{smoke.status === 'SMOKE_PASS_NOT_VERIFIED'
           ? 'Smoke checks passed — not fully verified'
           : smoke.status === 'SMOKE_TEST_FAILED'
@@ -390,6 +418,7 @@ export function EngineeringVerificationScope({ token, run, files }: {
                 {name.replaceAll('_', ' ')}
               </li>)}
           </ul>}
+        {smoke.evidenceId && <small>Saved smoke evidence · {smoke.evidenceId.slice(0, 12)}</small>}
         <p>QA result: smoke-only, NOT VERIFIED. A passing render
           does not establish that every button or requirement works.</p>
       </div>}
