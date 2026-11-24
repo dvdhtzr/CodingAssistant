@@ -231,7 +231,7 @@ if (OperatingSystem.IsWindows())
         var settingsForRoles = new AgentRoleModelSettings(tasksForRoles);
         settingsForRoles.Initialize();
         var initial = settingsForRoles.Read(roleTask.Id, "qwen3-coder:30b");
-        Check(initial.Count == 5 &&
+        Check(initial.Count == 6 &&
               initial.Single(x => x.Role == "ProductOwner").Model ==
                 "qwen3-coder:30b" &&
               initial.Single(x => x.Role == "SolutionArchitect").Model ==
@@ -241,12 +241,14 @@ if (OperatingSystem.IsWindows())
               initial.Single(x => x.Role == "SoftwareEngineer").Model ==
                 "qwen2.5-coder:14b" &&
               initial.Single(x => x.Role == "QaEngineer").Model ==
-                "qwen2.5-coder:14b",
-            "five separate team roles with 14b coder preferred only for engineer and QA");
+                "qwen2.5-coder:14b" &&
+              initial.Single(x => x.Role == "LeadSoftwareEngineer").Model == "qwen3-coder:30b",
+            "six separate team roles with 14b coder preferred only for engineer and QA");
         settingsForRoles.Set(roleTask.Id, "QaEngineer", "gemma4:latest",
             "qwen3-coder:30b");
         settingsForRoles.Set(roleTask.Id, "SoftwareEngineer", "qwen3.5:4b",
             "qwen3-coder:30b");
+        settingsForRoles.Set(roleTask.Id, "LeadSoftwareEngineer", "qwen3.5:4b", "qwen3-coder:30b");
         var persisted = new AgentRoleModelSettings(tasksForRoles)
             .Read(roleTask.Id, "qwen3-coder:30b");
         Check(persisted.Single(x => x.Role == "QaEngineer").Model ==
@@ -254,7 +256,8 @@ if (OperatingSystem.IsWindows())
               persisted.Single(x => x.Role == "SoftwareEngineer").Model ==
                 "qwen3.5:4b" &&
               persisted.Single(x => x.Role == "TechnicalLead").Model ==
-                "qwen3-coder:30b",
+                "qwen3-coder:30b" &&
+              persisted.Single(x => x.Role == "LeadSoftwareEngineer").Model == "qwen3.5:4b",
             "agent assignment survives a new settings instance without cross-role leakage");
         settingsForRoles.Set(roleTask.Id, "QaEngineer", null, "qwen3-coder:30b");
         Check(settingsForRoles.Resolve(roleTask.Id, "QaEngineer",
@@ -1666,13 +1669,15 @@ try
         {
             var roles = json.RootElement.GetProperty("agents").EnumerateArray().ToArray();
             Check(choices.StatusCode == HttpStatusCode.OK &&
-                  roles.Length == 5 &&
+                  roles.Length == 6 &&
                   roles.Single(x => x.GetProperty("role").GetString() ==
                     "SoftwareEngineer").GetProperty("model").GetString() ==
                     "qwen2.5-coder:14b" &&
                   roles.Single(x => x.GetProperty("role").GetString() ==
                     "QaEngineer").GetProperty("model").GetString() ==
-                    "qwen2.5-coder:14b",
+                    "qwen2.5-coder:14b" &&
+                  roles.Single(x => x.GetProperty("role").GetString() ==
+                    "LeadSoftwareEngineer").GetProperty("model").GetString() == "qwen3-coder:30b",
                 "role defaults prefer 14b coder, independently of the interview model");
         }
         using (var missing = await Post(interviewClient,
