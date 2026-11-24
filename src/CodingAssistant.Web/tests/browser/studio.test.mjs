@@ -50,7 +50,7 @@ const done = (route, body, status = 200) => route.fulfill({
 });
 
 function mockApi(page, { architectureOutdated = false,
-  specificationStatus = 'Approved' } = {}) {
+  specificationStatus = 'Approved', activityEvents = [] } = {}) {
   const selections = [
     { role: 'ProductOwner', model: 'qwen3-coder:30b',
       overridden: false, source: 'Interview selection' },
@@ -100,6 +100,12 @@ function mockApi(page, { architectureOutdated = false,
       });
     }
     if (method !== 'GET') return done(route, { error: 'UNEXPECTED_MUTATION' }, 405);
+    if (path.endsWith('/engineering-activity')) {
+      const params = new URL(route.request().url()).searchParams;
+      const cursor = Number(params.get('after') ?? 0);
+      return done(route, { taskId:id,lastSequence:activityEvents.at(-1)?.sequence ?? 0,
+        events:activityEvents.filter(event => event.sequence > cursor).slice(0,200) });
+    }
     if (path.endsWith('/agent-models')) return done(route, { agents: selections });
     if (path === '/api/agents/roster') return done(route, { agents });
     if (path.endsWith('/agent-handoffs')) return done(route, { events: [{
@@ -429,5 +435,41 @@ test('narrow Studio has no page-level horizontal scrolling and keeps QA availabl
     const y1 = await canvas.boundingBox(), y2 = await context.boundingBox();
     assert.ok(y1 && y2 && y2.y >= y1.y + y1.height - 4,
       'mobile places attention after focused work');
+  } finally { await page.close(); }
+});
+
+
+test('live activity replays committed evidence and pauses presentation without project writes', async () => {
+  const page = await browser.newPage({ viewport: { width:1500,height:900 } });
+  const writes = [];
+  const activityEvents = [{
+    sequence:1,taskId:id,category:'Team',kind:'TaskAssignment',
+    label:'Approved assignment dispatched',origin:'HostObservation',
+    agentId:'TechnicalLead',toAgent:'SoftwareEngineer',referenceType:'EngineeringMessage',
+    referenceId:runId,referenceSequence:1,sourceSha256:sha,model:'qwen2.5-coder:14b',
+    createdUtc:time,
+  }];
+  try {
+    await mockApi(page,{ activityEvents });
+    page.on('request',request => {
+      if (request.method()==='POST' && new URL(request.url()).pathname.startsWith('/api/tasks/'))
+        writes.push(new URL(request.url()).pathname);
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const feed = page.getByRole('region',{name:'Live engineering activity'});
+    await feed.getByText('Approved assignment dispatched').waitFor();
+    await page.getByRole('button',{name:'Activity',exact:true}).click();
+    await feed.getByRole('button',{name:'Pause activity feed'}).click();
+    activityEvents.push({ ...activityEvents[0],sequence:2,category:'Diagnostics',
+      kind:'EngineerOutputRejected',label:'Engineer output rejected; source unchanged',
+      agentId:'SoftwareEngineer',toAgent:null,referenceSequence:2 });
+    await feed.getByText(/1 new event/).waitFor();
+    assert.equal(await feed.getByText('Engineer output rejected; source unchanged').count(),0);
+    await feed.getByRole('button',{name:'Resume activity feed'}).click();
+    await feed.getByText('Engineer output rejected; source unchanged').waitFor();
+    await feed.getByRole('combobox',{name:'Activity category'}).selectOption('Diagnostics');
+    assert.equal(await feed.getByText('Approved assignment dispatched').count(),0);
+    assert.equal(await feed.getByText('Engineer output rejected; source unchanged').count(),1);
+    assert.deepEqual(writes,[]);
   } finally { await page.close(); }
 });

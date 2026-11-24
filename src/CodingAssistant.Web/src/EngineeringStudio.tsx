@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
+import { EngineeringActivityFeed } from './EngineeringActivityFeed';
 import { AgentRoleModels, type AgentRoleSelection } from './AgentRoleModels';
 import { studioAgentPresence, studioRecordedActivity } from './StudioPresence';
 import { api, type TaskItem } from './api';
@@ -294,6 +295,8 @@ export function EngineeringStudio({ token, task, onTeam }: {
             disabled={!inspected}
             onClick={() => setSideView('specialist')}>Specialist</button>
         </div>
+        <EngineeringActivityFeed key={task.id} token={token} taskId={task.id}
+          compact={sideView !== 'activity'} />
         {sideView === 'attention' && <section aria-label="Owner decisions">
           <div className="ca-studio-context-heading">
             <span className="ca-studio-eyebrow">YOUR ATTENTION</span>

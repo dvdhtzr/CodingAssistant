@@ -8,6 +8,7 @@ import { createServer } from 'vite';
 let vite;
 let EngineeringStudio;
 let studioAttention;
+let mergeActivityPage;
 
 before(async () => {
   vite = await createServer({
@@ -17,6 +18,7 @@ before(async () => {
   });
   ({ EngineeringStudio, studioAttention } =
     await vite.ssrLoadModule('/src/EngineeringStudio.tsx'));
+  ({ mergeActivityPage } = await vite.ssrLoadModule('/src/EngineeringActivityFeed.tsx'));
 });
 after(async () => { await vite?.close(); });
 
@@ -96,4 +98,26 @@ test('stage navigation preserves focused controls without automating scroll or a
   assert.match(css, /animation: none !important/);
   assert.match(css, /overflow-anchor: none/);
   assert.match(css, /@media \(max-width: 800px\)/);
+});
+
+
+test('activity replay is project scoped, ordered, deduplicated and bounded', () => {
+  const event = sequence => ({ taskId: task.id, sequence });
+  const first = mergeActivityPage(task.id,{ cursor:0, events:[] },
+    { taskId:task.id,lastSequence:2,events:[event(1),event(2)] });
+  assert.equal(first.cursor,2);
+  const next = mergeActivityPage(task.id,first,
+    { taskId:task.id,lastSequence:3,events:[event(2),event(3)] });
+  assert.deepEqual(next.events.map(e => e.sequence),[1,2,3]);
+  assert.throws(() => mergeActivityPage(task.id,next,
+    { taskId:task.id,lastSequence:5,events:[event(5)] }),/sequence gap/);
+  assert.throws(() => mergeActivityPage(task.id,next,
+    { taskId:'other',lastSequence:3,events:[] }),/scope changed/);
+  const many = mergeActivityPage(task.id,next,{
+    taskId:task.id,lastSequence:203,
+    events:Array.from({length:200},(_,i) => event(i+4)),
+  });
+  assert.equal(many.cursor,203);
+  assert.equal(many.events.length,120);
+  assert.equal(many.events[0].sequence,84);
 });
