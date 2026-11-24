@@ -379,3 +379,35 @@
 .ca-studio-qa-heading + .engineering-workspace .qa-repair-progress > p {
   margin: .22rem 0 .55rem;
 }
+
+/* Per-agent model assignments are an explicit owner interaction; never
+   reconfigure an in-progress MAF invocation when a preference changes. */
+.ca-studio-header-actions { display:flex;align-items:center;gap:.65rem;flex-wrap:wrap;justify-content:flex-end; }
+.ca-studio-model-button { font-size:.75rem;padding:.55rem .75rem;white-space:nowrap; }
+.ca-role-models {
+  display:grid;gap:.85rem;min-width:0;background:#172936;
+  border:1px solid #466978;border-radius:11px;padding:1.15rem;margin:0 0 1rem;
+}
+.ca-role-models-header { display:flex;justify-content:space-between;gap:.75rem;align-items:flex-start;flex-wrap:wrap; }
+.ca-role-models h2 { font-size:1.15rem;letter-spacing:-.02em;margin:.32rem 0; }
+.ca-role-models-header p { color:#b0c7cc;line-height:1.45;font-size:.77rem;margin:.4rem 0 0;max-width:650px; }
+.ca-role-models-header button { font-size:.75rem;flex:none; }
+.ca-role-models-tools { display:flex;align-items:center;gap:.65rem;flex-wrap:wrap; }
+.ca-role-models-tools button { padding:.48rem .7rem;font-size:.72rem; }
+.ca-role-models-tools span { font-size:.7rem;color:#a9c2cb; }
+.ca-role-model-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.65rem; }
+.ca-role-model-card { display:grid;align-content:start;gap:.35rem;min-width:0;padding:.8rem;border:1px solid #365364;border-radius:8px;background:#132331; }
+.ca-role-model-card label { display:grid;gap:.12rem;margin:0;color:#e4f2f1; }
+.ca-role-model-card label strong { font-size:.79rem; }
+.ca-role-model-card label small,.ca-role-model-current small { display:block;font-size:.66rem;color:#a3bbc7;font-weight:400; }
+.ca-role-model-card select { width:100%;min-width:0;max-width:100%;padding:.6rem .48rem;border-radius:7px;background:#0e1b2a;border:1px solid #4b7580;color:#e7f5f3;font-size:.76rem; }
+.ca-role-model-current { font-size:.72rem;line-height:1.5;overflow-wrap:anywhere;margin:.3rem 0; }
+.ca-role-model-card .ca-role-model-ok,.ca-role-model-card .ca-role-model-missing { font-size:.67rem;line-height:1.4; }
+.ca-role-model-ok { color:#a5e1c0; }
+.ca-role-model-missing { color:#ffd3a2; }
+.ca-role-model-install { padding:.8rem;border:1px solid #796349;background:#302b28;border-radius:8px;color:#f4d3a4;font-size:.76rem;line-height:1.6;margin:0;overflow-wrap:anywhere; }
+.ca-role-model-install code { color:#ffdfbc;user-select:text; }
+@media(max-width:800px) {
+  .ca-studio-header-actions { justify-content:flex-start; }
+  .ca-role-model-grid { grid-template-columns:1fr; }
+}
