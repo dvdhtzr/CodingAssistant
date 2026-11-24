@@ -231,8 +231,14 @@ test('owner can assign independent local models without initiating or modifying 
     assert.equal(await qaSelect.inputValue(), 'qwen3-coder:30b');
     assert.equal(await engineerSelect.inputValue(), '__default__',
       'selecting a QA model must not change the Software Engineer model');
-    await page.locator('aside.ca-studio-people').getByRole('button', { name: /QA Engineer/ })
-      .getByText('Next · qwen3-coder:30b').waitFor();
+    // The running QA model stays pinned to its saved run, while the new-work
+    // assignment changes independently in its inspector.
+    const qaPresence = page.locator('aside.ca-studio-people')
+      .getByRole('button', { name: /QA Engineer/ });
+    assert.match(await qaPresence.textContent(), /Running · qwen3-coder:30b/);
+    await qaPresence.click();
+    await page.locator('.ca-studio-specialist-facts > strong').first()
+      .getByText('qwen3-coder:30b', { exact: true }).waitFor();
     assert.deepEqual(writes, ['/api/tasks/' + id + '/agent-models/QaEngineer'],
       'model selection writes only the specific preference; never starts a run');
     await controls.getByRole('button', { name: 'Close models' }).click();
