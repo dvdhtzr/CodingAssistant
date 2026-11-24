@@ -681,6 +681,8 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(db.Get(id, runId))));
+        app.MapGet("/api/tasks/{id}/delivery-evidence",
+            (string id,TaskStore tasks)=>Safe(()=>Results.Ok(new DeliveryEvidenceStore(tasks).Read(id))));
         // M7: import only a public, exact-commit GitHub source archive.
         // No repo scripts, assembly loading, shell or untrusted execution.
         app.MapGet("/api/tasks/{id}/atlas-imports",

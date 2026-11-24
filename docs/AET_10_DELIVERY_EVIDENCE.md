@@ -1,0 +1,5 @@
+# AET-10 — Delivery evidence foundation
+
+The authenticated delivery-evidence projection reads one SQLite snapshot, binds the current plan and source, records work package status, independent review coverage, issues, repair lineage, actual smoke reports, approved architectural choices and project-level inference receipt counts. Counts are recorded requests, not tokens or GPU metrics. No source archive is certified by this projection. Existing source inspection/export remains unchanged.
+
+Implementation completion is separate from engineering completion and product acceptance. The current planning-only runtime registry and smoke lane cannot supply qualified independent functional verification; engineering completion, product acceptance and delivery remain blocked. No positive acceptance record or release artifact may be manufactured until qualified evidence is available. Historical findings remain visible and cannot be silently dropped. This is the first AET-10 increment, not full milestone acceptance.

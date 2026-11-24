@@ -3853,6 +3853,28 @@ try
         {State:"Recorded",Current:true,Verified:false,Report.Status:"SMOKE_PASS_NOT_VERIFIED"} aetSavedSmoke &&
         aetSavedSmoke.Id==aetSmokeEvidenceId,"actual smoke result survives reread and preserves exact source scope");
 
+    // AET-10: the actual persisted smoke pass is not delivery evidence.
+    var deliveryPath="/api/tasks/"+taskBound.Id+"/delivery-evidence";
+    using(var deliveryAnonymous=new HttpClient {BaseAddress=client.BaseAddress})
+    using(var deliveryDenied=await deliveryAnonymous.GetAsync(deliveryPath))
+        Check(deliveryDenied.StatusCode==HttpStatusCode.Unauthorized,"delivery evidence is owner private");
+    using(var deliveryResponse=await client.GetAsync(deliveryPath))
+    using(var deliveryBody=await Body(deliveryResponse))
+    {
+        var evidence=deliveryBody.RootElement;
+        Check(deliveryResponse.StatusCode==HttpStatusCode.OK &&
+            evidence.GetProperty("runId").GetString()==aetSmokeRun.Id &&
+            evidence.GetProperty("implementationComplete").GetBoolean() &&
+            !evidence.GetProperty("engineeringComplete").GetBoolean() &&
+            !evidence.GetProperty("productAccepted").GetBoolean() &&
+            !evidence.GetProperty("deliveryAllowed").GetBoolean(),
+            "saved source completion is distinct from engineering and product completion");
+        Check(evidence.GetProperty("smoke").EnumerateArray().Single().GetProperty("status").GetString()=="SMOKE_PASS_NOT_VERIFIED" &&
+            evidence.GetProperty("blockers").EnumerateArray().Any(x=>x.GetString()=="QUALIFIED_VERIFICATION_REQUIRED") &&
+            evidence.GetProperty("work").GetArrayLength()==2,
+            "retrospective reports actual smoke evidence and approved work without treating smoke as verification");
+    }
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var stalePolicy = delegationStore.Propose(taskBound.Id,
