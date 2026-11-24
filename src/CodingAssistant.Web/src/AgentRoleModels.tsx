@@ -16,8 +16,8 @@ const readable: Record<string, string> = {
   QaEngineer: 'QA Engineer',
 };
 
-export function AgentRoleModels({ token, taskId, onClose }: {
-  token: string; taskId: string; onClose: () => void;
+export function AgentRoleModels({ token, taskId, onClose, onSaved }: {
+  token: string; taskId: string; onClose: () => void; onSaved?: () => void;
 }) {
   const [assignments, setAssignments] = useState<AgentRoleSelection[] | null>(null);
   const [installed, setInstalled] = useState<string[]>([]);
@@ -56,6 +56,7 @@ export function AgentRoleModels({ token, taskId, onClose }: {
       setAssignments(previous => previous?.map(item =>
         item.role === role ? next : item) ?? null);
       setNotice(readable[role] + ' will use ' + next.model + ' on new work.');
+      onSaved?.();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message :
         'Could not save model assignment.');
