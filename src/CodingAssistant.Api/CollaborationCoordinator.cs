@@ -493,6 +493,7 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                 {
                     case "ReviewCode":
                     case "ReviewAcceptance":
+                    {
                         activeLead=step.Action=="ReviewCode";
                         var role=activeLead?"LeadSoftwareEngineer":"QaEngineer";
                         var model=models.Resolve(job.TaskId,role,job.Model);
@@ -520,6 +521,7 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                             await Task.Delay(250,token);
                         }
                         break;
+                    }
                     case "RecheckIssue":
                     {
                         var issue=input.RecheckCandidates!.Single(i=>i.Id==step.IssueId);
