@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
 import { AgentRoleModels, type AgentRoleSelection } from './AgentRoleModels';
 import { studioAgentPresence, studioRecordedActivity } from './StudioPresence';
@@ -90,10 +90,23 @@ export function EngineeringStudio({ token, task, onTeam }: {
   const [inspectedAgentId, setInspectedAgentId] = useState<string | null>(null);
   const [sideView, setSideView] = useState<'attention' | 'activity' | 'specialist'>('attention');
   const [request, setRequest] = useState<{ stage: JourneyId; revision: number } | null>(null);
+  const canvasRef = useRef<HTMLElement | null>(null);
   const navigate = useCallback((stage: JourneyId) => {
     setSelectedStage(stage);
     setRequest(previous => ({ stage, revision: (previous?.revision ?? 0) + 1 }));
+    // This is a locally scrollable canvas: never leave the next stage halfway
+    // down a previous stage, and never change the document's scroll position.
+    if (canvasRef.current) canvasRef.current.scrollTop = 0;
   }, []);
+  const openRoleModels = useCallback(() => {
+    setRoleModelsOpen(true);
+    if (canvasRef.current) canvasRef.current.scrollTop = 0;
+  }, []);
+  useEffect(() => {
+    // Also covers stage transitions initiated INSIDE the original work forms
+    // (e.g. owner approval), without reacting to polling or status refreshes.
+    if (canvasRef.current) canvasRef.current.scrollTop = 0;
+  }, [selectedStage]);
 
   useEffect(() => {
     setInspectedAgentId(null);
@@ -194,7 +207,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
       <div className="ca-studio-header-actions">
         <button type="button" className="outline ca-studio-model-button"
           aria-expanded={roleModelsOpen} aria-controls="ca-studio-model-panel"
-          onClick={() => setRoleModelsOpen(value => !value)}>
+          onClick={() => roleModelsOpen ? setRoleModelsOpen(false) : openRoleModels()}>
           {roleModelsOpen ? 'Hide team models' : 'Assign team models'}
         </button>
         <span className={'ca-studio-run-state' + (activeQa || activeEngineer ? ' is-working' : '')}>
@@ -207,7 +220,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
         <div className="ca-studio-rail-heading">
           <span className="ca-studio-eyebrow">YOUR TEAM</span>
           <button type="button" className="ca-studio-rail-models"
-            onClick={() => setRoleModelsOpen(true)}>Models</button>
+            onClick={openRoleModels}>Models</button>
         </div>
         {teamError && <p role="status" className="ca-studio-muted">
           Team refresh unavailable. Previously saved evidence remains visible.</p>}
@@ -258,7 +271,8 @@ export function EngineeringStudio({ token, task, onTeam }: {
             onClick={onTeam}>Full team details</button>
         </div>
       </aside>
-      <section className="ca-studio-canvas" aria-label="Focused engineering work">
+      <section ref={canvasRef} className="ca-studio-canvas"
+        aria-label="Focused engineering work">
         {roleModelsOpen && <div id="ca-studio-model-panel">
           <AgentRoleModels token={token} taskId={task.id}
             onClose={() => setRoleModelsOpen(false)}
@@ -374,7 +388,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
                   navigate(stages[inspected.agent.id]); }}>Open role work</button>
               {inspected.agent.id !== 'ProductOwner' &&
                 <button type="button" className="ca-studio-text-action"
-                  onClick={() => setRoleModelsOpen(true)}>Change model</button>}
+                  onClick={openRoleModels}>Change model</button>}
             </div>
             <div className="ca-studio-specialist-activity">
               <span className="ca-studio-eyebrow">SPECIALIST RECORDS</span>
