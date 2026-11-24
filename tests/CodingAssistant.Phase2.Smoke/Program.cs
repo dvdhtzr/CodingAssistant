@@ -2075,6 +2075,30 @@ try
               e.Model == "qwen2.5-coder:14b") &&
           aetProviderEvents[0].ReferenceId == aetProviderEvents[1].ReferenceId,
         "provider lifecycle metadata correlates start and result without model content");
+    var aetLeaseStore=new InferenceLeaseStore(tasks);
+    var aetLeaseHistory=aetLeaseStore.List(taskBound.Id);
+    Check(aetLeaseHistory.Count==2 && aetLeaseHistory.Any(x=>x.State=="ResponseAccepted") &&
+        aetLeaseHistory.Any(x=>x.State=="Stopped") &&
+        aetLeaseHistory.All(x=>x.FinishedUtc is not null && x.ReferenceId==engineeringRunId),
+        "actual scoped provider lifecycle has durable terminal lease receipts");
+    using(EngineeringProviderActivity.Enter(tasks,taskBound.Id,"SoftwareEngineer",engineeringRunId))
+    using(var abandoned=EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+        MafAgentPurpose.SoftwareEngineer,CancellationToken.None))
+    {
+        var active=aetLeaseStore.List(taskBound.Id).Single(x=>x.State=="Active");
+        new InferenceLeaseStore(tasks).Recover();
+        new InferenceLeaseStore(tasks).Recover();
+        try{abandoned!.Complete();Check(false,"interrupted lease cannot accept late result");}
+        catch(StoreFailure e)when(e.Code=="INFERENCE_LEASE_INTERRUPTED")
+        {Check(true,"late provider result is rejected after recovery");}
+        Check(aetLeaseStore.List(taskBound.Id).Single(x=>x.Id==active.Id).State=="Interrupted",
+            "startup reconciliation is idempotent and does not fabricate completion or replay work");
+    }
+    using(var aetLeaseResponse=await client.GetAsync("/api/tasks/"+taskBound.Id+"/inference-leases"))
+    using(var aetLeaseBody=await Body(aetLeaseResponse))
+        Check(aetLeaseResponse.StatusCode==HttpStatusCode.OK &&
+            aetLeaseBody.RootElement.GetProperty("leases").GetArrayLength()==3,
+            "owner can inspect recovered provider work receipts");
     // Persist a separate, read-only lead review against the exact generated revision.
     var aetLeadStore = new LeadReviewStore(tasks);
     var aetLeadPlan = new ImplementationPlanStore(tasks,interviews).Read(taskBound.Id).Plan!;

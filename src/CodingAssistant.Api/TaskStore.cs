@@ -87,6 +87,7 @@ public sealed class TaskStore
         IssueVerificationStore.Initialize(connection);
         AdaptiveWorkPlanStore.Initialize(connection);
         CollaborationStore.Initialize(connection);
+        InferenceLeaseStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 

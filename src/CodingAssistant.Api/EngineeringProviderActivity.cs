@@ -54,7 +54,7 @@ public static class EngineeringProviderActivity
         var scope = Current.Value;
         if (scope is null || Role(purpose) != scope.AgentId ||
             !LocalInterviewModel.AllowedModel(model)) return null;
-        return new ProviderRequest(scope.Tasks,scope.TaskId,scope.AgentId,
+        return new ProviderRequest(scope.Tasks,scope.TaskId,scope.AgentId,scope.ReferenceId,
             scope.ReferenceId + ":" + Guid.NewGuid().ToString("N"),
             scope.SourceSha256,model,cancellation);
     }
@@ -68,42 +68,39 @@ public static class EngineeringProviderActivity
         private int _finished;
 
         internal ProviderRequest(TaskStore tasks,string taskId,string agentId,
-            string referenceId,string? sourceSha256,string model,CancellationToken cancellation)
+            string workReferenceId,string referenceId,string? sourceSha256,string model,CancellationToken cancellation)
         {
             _tasks=tasks; _taskId=taskId; _agentId=agentId; _referenceId=referenceId;
             _sourceSha256=sourceSha256; _model=model; _cancellation=cancellation;
-            Emit("OllamaRequestStarted");
+            using var db=_tasks.Open();using var tx=db.BeginTransaction();
+            InferenceLeaseStore.Start(db,tx,_referenceId,_taskId,_agentId,workReferenceId,_sourceSha256,_model);
+            EngineeringActivityStore.Record(db,tx,_taskId,"OllamaRequestStarted",_agentId,
+                "OllamaRequest",_referenceId,sourceSha256:_sourceSha256,model:_model);
+            tx.Commit();_tasks.SignalEngineeringActivity(_taskId);
         }
-
-        private void Emit(string kind)
+        private bool Finish(string state,string kind)
         {
-            try
-            {
-                using var db = _tasks.Open();
-                using var tx = db.BeginTransaction();
-                EngineeringActivityStore.Record(db,tx,_taskId,kind,_agentId,
-                    "OllamaRequest",_referenceId,sourceSha256:_sourceSha256,model:_model);
-                tx.Commit();
-                _tasks.SignalEngineeringActivity(_taskId);
-            }
-            catch (Exception)
-            {
-                // Observability failure never alters transport validation or
-                // fabricates a response. Missing metadata stays missing.
-            }
+            using var db=_tasks.Open();using var tx=db.BeginTransaction();
+            if(!InferenceLeaseStore.Finish(db,tx,_referenceId,_taskId,state))return false;
+            EngineeringActivityStore.Record(db,tx,_taskId,kind,_agentId,
+                "OllamaRequest",_referenceId,sourceSha256:_sourceSha256,model:_model);
+            tx.Commit();_tasks.SignalEngineeringActivity(_taskId);return true;
         }
-
         public void Complete()
         {
-            if (Interlocked.Exchange(ref _finished,1)==0)
-                Emit("OllamaResponseAccepted");
+            if(Interlocked.Exchange(ref _finished,1)==0 &&
+                !Finish("ResponseAccepted","OllamaResponseAccepted"))
+                throw new StoreFailure("INFERENCE_LEASE_INTERRUPTED");
         }
-
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _finished,1)==0)
-                Emit(_cancellation.IsCancellationRequested
-                    ? "OllamaRequestCancelled" : "OllamaRequestStopped");
+            if(Interlocked.Exchange(ref _finished,1)==0)
+                try
+                {
+                    if(_cancellation.IsCancellationRequested)Finish("Cancelled","OllamaRequestCancelled");
+                    else Finish("Stopped","OllamaRequestStopped");
+                }
+                catch(Exception){/* Never mask original failure. Recovery retains uncertain work. */}
         }
     }
 }

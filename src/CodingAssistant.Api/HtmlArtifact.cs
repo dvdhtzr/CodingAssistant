@@ -73,6 +73,8 @@ public sealed class LocalHtmlPreviewGenerator : IHtmlPreviewGenerator
         {
             Content = body
         };
+        using var slot=await LocalInferenceScheduler.Shared.AcquireAsync(cancellation);
+        cancellation.ThrowIfCancellationRequested();
         HttpResponseMessage response;
         try
         {
@@ -81,6 +83,7 @@ public sealed class LocalHtmlPreviewGenerator : IHtmlPreviewGenerator
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
+            if(cancellation.IsCancellationRequested)throw new OperationCanceledException(cancellation);
             throw new StoreFailure("LOCAL_MODEL_UNAVAILABLE");
         }
         using (response)

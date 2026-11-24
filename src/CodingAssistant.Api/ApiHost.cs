@@ -73,6 +73,8 @@ public static class ApiHost
 
         // Fail before opening a network listener if data permissions are unsafe.
         var store = new TaskStore(settings.DataDirectory);
+        _=LocalInferenceScheduler.Shared;
+        new InferenceLeaseStore(store).Recover();
         var roleModels = new AgentRoleModelSettings(store);
         roleModels.Initialize();
         var runs = new RunStore(store);
@@ -851,6 +853,8 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/repair-progress",
             (string id,string runId,TaskStore tasks)=>Safe(()=>Results.Ok(new RepairProgressStore(tasks).Read(id,runId))));
         app.MapGet("/api/inference-capacity",()=>Results.Ok(LocalInferenceScheduler.Shared.Snapshot()));
+        app.MapGet("/api/tasks/{id}/inference-leases",
+            (string id,int? limit,TaskStore tasks)=>Safe(()=>Results.Ok(new {leases=new InferenceLeaseStore(tasks).List(id,limit??100)})));
         app.MapGet("/api/tasks/{id}/collaboration/latest",
             (string id,CollaborationStore db)=>Safe(()=>Results.Ok(new {snapshot=db.Latest(id)})));
         app.MapPost("/api/tasks/{id}/collaboration",
@@ -1187,7 +1191,7 @@ public static class ApiHost
         {
             "NOT_FOUND" => StatusCodes.Status404NotFound,
             "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" or
-                "INFERENCE_QUEUE_FULL" or "INFERENCE_QUEUE_TIMEOUT" =>
+                "INFERENCE_QUEUE_FULL" or "INFERENCE_QUEUE_TIMEOUT" or "INFERENCE_LEASE_INTERRUPTED" =>
                 StatusCodes.Status503ServiceUnavailable,
             "REPAIR_NOT_AUTHORIZED" or "REPAIR_LIMIT_REACHED" or
                 "REPAIR_SCOPE_TOO_LARGE" or "REPAIR_SCOPE_VIOLATION" or

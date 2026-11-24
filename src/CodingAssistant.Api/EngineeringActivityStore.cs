@@ -60,6 +60,7 @@ public sealed class EngineeringActivityStore(TaskStore tasks)
         "OllamaResponseAccepted" => ("Engineering","Local response accepted by transport; not source verification"),
         "OllamaRequestCancelled" => ("Diagnostics","Local Ollama request cancelled"),
         "OllamaRequestStopped" => ("Diagnostics","Local Ollama request failed or response rejected"),
+        "OllamaRequestInterrupted" => ("Diagnostics","Previous provider lease interrupted at startup; no response assumed"),
         "LeadReviewAdmitted" => ("Engineering","Independent lead source review admitted"),
         "LeadFileReviewed" => ("Engineering","Independent architecture review saved; not tested"),
         "LeadAtlasInspected" => ("Engineering","Lead reviewer read-only Code Atlas inspection"),
