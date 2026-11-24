@@ -304,7 +304,8 @@ test('activity view shows only actual saved handoffs, source and QA receipts', a
     assert.match(await timeline.textContent(), /QA source review started/);
     assert.match(await timeline.textContent(), /Engineer saved a source revision/);
     assert.match(await timeline.textContent(), /Technical Lead → Software Engineer/);
-    await receipts.last().getByRole('button', { name: 'Inspect work' }).click();
+    await receipts.filter({ hasText: 'Technical Lead → Software Engineer' })
+      .getByRole('button', { name: 'Inspect work' }).click();
     assert.equal(await page.locator('#journey-panel-plan').isVisible(), true);
     assert.deepEqual(writes, [], 'inspecting saved activity must not mutate source or approvals');
     await page.getByRole('button', { name: /Attention/ }).click();
