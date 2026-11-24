@@ -44,9 +44,13 @@ export function StudioLiveActivity({ token, active, recorded, onInspect }: {
 
   useEffect(() => {
     setRecent([]);
-    setConnection('loading');
     setSkipped(false);
+    setConnection('loading');
+  }, [token]);
+
+  useEffect(() => {
     if (!active || paused) return;
+    setConnection('loading');
     let closed = false;
     let pending = false;
     let cursor = 0;
