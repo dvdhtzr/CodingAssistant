@@ -476,3 +476,92 @@ test('live activity replays committed evidence and pauses presentation without p
     assert.deepEqual(writes,[]);
   } finally { await page.close(); }
 });
+
+
+test('Technical Lead workstation requires explicit exact-source repair approval and rejects stale scope', async () => {
+  for (const stale of [false, true]) {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+    const jobId = '2'.repeat(32), proposalId = '3'.repeat(32), issueId = '4'.repeat(64);
+    const policySha256 = '5'.repeat(64), sourceSha256 = '6'.repeat(64);
+    const candidate = { runId, sourceSha256, planSha256: sha, policyRevision: 1, policySha256 };
+    const snapshot = {
+      job: { ...candidate, id: jobId, taskId: id, model: 'qwen3-coder:30b',
+        state: 'AwaitingOwner', reason: 'EXACT_REPAIR_APPROVAL_REQUIRED' },
+      steps: [{ sequence: 1, action: 'RequestOwnerRepair', issueId,
+        referenceId: proposalId, rationale: 'Confirmed missing accessible page heading.',
+        createdUtc: time }],
+    };
+    const finding = { path: 'index.html', index: 0, severity: 'Major',
+      requirement: 'Provide an accessible page heading',
+      evidence: 'The saved source has no heading', recommendation: 'Add a heading' };
+    const proposal = { id: proposalId, taskId: id, engineeringRunId: runId,
+      sourceSha256, planSha256: sha, leadReviewId: reviewId, qaReviewId: null,
+      findings: [finding, { ...finding, index: 1, requirement: 'Unrelated finding' }] };
+    const preview = { planSha256: sha, candidate, snapshot,
+      policy: { revision: 1, policySha256, status: 'Approved', current: true,
+        operations: ['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','SendMessage'] },
+      canStart: false, canResume: false, reason: snapshot.job.reason,
+      capacity: { capacity: 1, active: 0, waiting: 0 } };
+    const writes = [];
+    let sourceChanged = false;
+    let classified = false;
+    try {
+      await mockApi(page);
+      await page.route('**/api/tasks/' + id + '/**', route => {
+        const path = new URL(route.request().url()).pathname;
+        const method = route.request().method();
+        if (method === 'GET') {
+          if (path.endsWith('/collaboration/latest')) return done(route, { snapshot });
+          if (path.endsWith('/collaboration/preview')) return done(route, preview);
+          if (path.endsWith('/repair-proposals/latest')) return done(route, { proposal:
+            sourceChanged ? { ...proposal, sourceSha256: '7'.repeat(64) } : proposal });
+          if (path.endsWith('/engineering-issues')) return done(route, {
+            currentSource: true, issues: [{ id: issueId, state: 'ConfirmedDefect',
+              currentSource: true, latestReview: true,
+              references: [{ reviewId, path: finding.path, findingIndex: finding.index }] }],
+          });
+          if (path.endsWith('/repair-proposals/' + proposalId + '/triage'))
+            return done(route, { decisions: classified ? [
+              { path: finding.path, index: finding.index, classification: 'ImplementationDefect' },
+            ] : [] });
+          return route.fallback();
+        }
+        if (method === 'POST') {
+          writes.push({ path, body: route.request().postDataJSON() });
+          if (path.endsWith('/repair-proposals/' + proposalId + '/triage')) {
+            classified = true;
+            return done(route, { classification: 'ImplementationDefect' });
+          }
+          if (path.endsWith('/repair-cycles')) return done(route, { cycleId: '8'.repeat(32) }, 202);
+        }
+        return route.fallback();
+      });
+      await page.goto(baseUrl + '/tests/browser/studio.html');
+      await page.locator('aside.ca-studio-people')
+        .getByRole('button', { name: /Technical Lead/ }).click();
+      const panel = page.getByRole('region', { name: 'Exact repair authorization' });
+      const confirm = panel.getByRole('button', { name: 'Confirm exact repair and continue' });
+      await confirm.waitFor();
+      assert.equal(await confirm.isEnabled(), true);
+      assert.match(await panel.textContent(), /Provide an accessible page heading/);
+      assert.match(await panel.textContent(), /No execution permission is granted/);
+      assert.doesNotMatch(await panel.textContent(), /Unrelated finding/);
+      assert.deepEqual(writes, [], 'inspection must never authorize or start repair');
+      sourceChanged = stale;
+      await confirm.click();
+      if (stale) {
+        await panel.getByRole('alert').getByText('Saved repair scope is no longer current.').waitFor();
+        assert.deepEqual(writes, [], 'changed source must block all mutation');
+      } else {
+        await panel.getByRole('button', { name: 'Repair admitted' }).waitFor();
+        assert.deepEqual(writes.map(w => w.path), [
+          '/api/tasks/' + id + '/repair-proposals/' + proposalId + '/triage',
+          '/api/tasks/' + id + '/repair-cycles',
+        ]);
+        assert.equal(writes[0].body.classification, 'ImplementationDefect');
+        assert.deepEqual(writes[1].body, { proposalId, confirmation: 'REPAIR ' + sourceSha256,
+          findings: [{ path: finding.path, index: finding.index }], continueCollaborationId: jobId });
+      }
+    } finally { await page.close(); }
+  }
+});
