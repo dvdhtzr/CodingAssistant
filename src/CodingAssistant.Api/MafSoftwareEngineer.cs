@@ -27,7 +27,8 @@ public sealed record EngineeringTaskInput(
     IReadOnlyList<EngineeringSourceFile> ExistingFiles,
     RepairTaskContext? Repair = null,
     Action<AtlasInspectionObservation>? OnAtlasInspection = null,
-    Action<EngineeringOutputRejection>? OnOutputRejected = null);
+    Action<EngineeringOutputRejection>? OnOutputRejected = null,
+    string? AgentModel = null);
 
 public interface IEngineeringTaskModel
 {
@@ -146,7 +147,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
             input.Architecture.ArchitectureSha256 != input.Plan.ArchitectureSha256 ||
             !input.Plan.Outline.Tasks.Any(t => t.Id == input.WorkItem.Id) ||
             input.ExistingFiles.Count > 12 ||
-            !LocalInterviewModel.AllowedModel(input.Plan.Model) ||
+            !LocalInterviewModel.AllowedModel(input.AgentModel ?? input.Plan.Model) ||
             input.Repair is { } repair &&
                 (repair.Findings.Count is < 1 or > 12 ||
                  repair.AllowedPaths.Count != 1 ||
@@ -156,7 +157,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                      f.Path, StringComparer.OrdinalIgnoreCase))))
             throw new StoreFailure("INVALID_INPUT");
 
-        using var client = _factory.Create(input.Plan.Model,
+        using var client = _factory.Create(input.AgentModel ?? input.Plan.Model,
             MafAgentPurpose.SoftwareEngineer);
         var atlasInspectionAllowed = input.ExistingFiles.Count > 0;
         AIAgent agent = new ChatClientAgent(client,
