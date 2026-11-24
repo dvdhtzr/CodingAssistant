@@ -3470,7 +3470,7 @@ try
     Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetAdaptiveRun.Id) is null,
         "suspended work prevents actual host dispatch");
     var aetActiveContext=aetAdaptiveContext with {ExpectedRunId=aetAdaptiveRun.Id,
-        ExpectedSourceSha256=QaReviewStore.Fingerprint([])};
+        ExpectedSourceSha256=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Array.Empty<byte>())).ToLowerInvariant()};
     var aetActivePlan=aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(2,
         aetSuspendedPlan.WorkPlanSha256,aetSchedule,"Resume the investigated dependency with unchanged approved scope."));
     var aetFirstDispatch=engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetAdaptiveRun.Id);
