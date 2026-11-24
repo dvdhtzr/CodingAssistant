@@ -317,7 +317,7 @@ public static class ApiHost
                     var current = interview.Read(id);
                     var inherited = current.Specification?.Model ??
                         current.Model ?? LocalInterviewModel.DefaultModel;
-                    return Results.Ok(new { agents = settings.Read(id, inherited) });
+                    return Results.Ok(new { agents = settings.Read(id, inherited, current.Model) });
                 }));
         app.MapPost("/api/tasks/{id}/agent-models/{role}",
             (string id, string role, SetAgentRoleModelRequest request,
