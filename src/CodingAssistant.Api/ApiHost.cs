@@ -530,7 +530,7 @@ public static class ApiHost
                     input.Topic, recommendation.RecommendedOptionId,
                     recommendation.Rationale, recommendation.Options,
                     input.ExpectedRevision));
-                handoffs.RecordProposal(id, input.Topic!, spec, created.Revision);
+                handoffs.RecordProposal(id, input.Topic!, spec, created.Revision, chosen);
                 return Results.Created(
                     $"/api/tasks/{id}/architecture-decisions/{created.Topic}/history",
                     created);
