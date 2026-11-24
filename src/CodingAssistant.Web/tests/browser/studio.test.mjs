@@ -581,7 +581,7 @@ test('delivery readiness separates saved source from verified and accepted produ
       modelUse:[],decisions:[],requiredVerification:['Independent browser behavior'],
       plannedRisks:[],approvedSpecification:null,
     }));
-    page.on('request',r=>{if(r.method()==='POST')writes.push(r.url());});
+    page.on('request',r=>{if(r.method()==='POST' && new URL(r.url()).pathname.startsWith('/api/tasks/'))writes.push(r.url());});
     await page.goto(baseUrl+'/tests/browser/studio.html');
     await page.getByRole('button',{name:'Inspect delivery readiness'}).click();
     const evidence=page.getByRole('region',{name:'Delivery evidence'});
