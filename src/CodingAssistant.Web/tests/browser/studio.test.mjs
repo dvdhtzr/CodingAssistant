@@ -217,8 +217,8 @@ test('owner can assign independent local models without initiating or modifying 
     const controls = page.getByRole('region', {
       name: 'Per-agent local model assignments',
     });
-    await controls.getByText('qwen2.5-coder:14b', { exact: false }).first().waitFor();
     const qaSelect = controls.getByRole('combobox', { name: 'QA Engineer model' });
+    await qaSelect.waitFor();
     const engineerSelect = controls.getByRole('combobox', {
       name: 'Software Engineer model',
     });
