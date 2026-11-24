@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
-import { AgentRoleModels } from './AgentRoleModels';
+import { AgentRoleModels, type AgentRoleSelection } from './AgentRoleModels';
+import { studioAgentPresence, studioRecordedActivity } from './StudioPresence';
 import { api, type TaskItem } from './api';
 import type { AgentIdentity } from './AgentIdentityPanel';
 import type { EngineerSnapshot } from './EngineeringWorkspace';
 import { buildDecisionInbox, type DecisionInboxSnapshot } from './OwnerDecisionInbox';
-import { workAgentStatuses, type WorkTeamEvidence } from './WorkTeamStrip';
 import type { JourneyId } from './ProjectJourney';
 import type { TeamHandoff, TeamQaSnapshot } from './TeamWorkroom';
 
 interface StudioQaSnapshot extends TeamQaSnapshot {
+  job: TeamQaSnapshot['job'] & { model?: string };
   reports: Array<{ path: string; reviewedUtc: string;
     assessment?: { findings?: Array<{ severity: string; requirement: string }> } }>;
   events?: Array<{ sequence: number; kind: string; detail: string; createdUtc: string }>;
@@ -83,11 +84,41 @@ export function EngineeringStudio({ token, task, onTeam }: {
   const [decisionError, setDecisionError] = useState(false);
   const [selectedStage, setSelectedStage] = useState<JourneyId>('discovery');
   const [roleModelsOpen, setRoleModelsOpen] = useState(false);
+  const [models, setModels] = useState<AgentRoleSelection[] | null>(null);
+  const [modelsFailed, setModelsFailed] = useState(false);
+  const [modelVersion, setModelVersion] = useState(0);
+  const [inspectedAgentId, setInspectedAgentId] = useState<string | null>(null);
+  const [sideView, setSideView] = useState<'attention' | 'activity' | 'specialist'>('attention');
   const [request, setRequest] = useState<{ stage: JourneyId; revision: number } | null>(null);
   const navigate = useCallback((stage: JourneyId) => {
     setSelectedStage(stage);
     setRequest(previous => ({ stage, revision: (previous?.revision ?? 0) + 1 }));
   }, []);
+
+  useEffect(() => {
+    setInspectedAgentId(null);
+    setSideView('attention');
+    setModels(null);
+  }, [task.id]);
+
+  useEffect(() => {
+    let closed = false;
+    let pending = false;
+    async function load() {
+      if (closed || pending) return;
+      pending = true;
+      try {
+        const result = await api<{ agents: AgentRoleSelection[] }>(token,
+          '/api/tasks/' + task.id + '/agent-models');
+        if (!closed) { setModels(result.agents); setModelsFailed(false); }
+      } catch {
+        if (!closed) setModelsFailed(true);
+      } finally { pending = false; }
+    }
+    void load();
+    const interval = window.setInterval(() => void load(), 15000);
+    return () => { closed = true; window.clearInterval(interval); };
+  }, [token, task.id, modelVersion]);
 
   useEffect(() => {
     let closed = false;
@@ -122,7 +153,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
           setSaved({ agents: roster.agents, handoffs: handoffs.events,
             engineering: engineering.snapshot, qa: qa.snapshot, repair: repair.snapshot });
           setTeamError(false);
-        } else { setSaved(null); setTeamError(true); }
+        } else { setTeamError(true); }
         if (owner.status === 'fulfilled') {
           const [interview, architecture, plan] = owner.value;
           setDecisions({ specification: interview.specification,
@@ -130,7 +161,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
             ownerAnswers: interview.messages.filter(message => message.role === 'owner').length,
             decisions: architecture.decisions, plan: plan.plan });
           setDecisionError(false);
-        } else { setDecisions(null); setDecisionError(true); }
+        } else { setDecisionError(true); }
       } finally { loading = false; }
     }
     void load();
@@ -138,11 +169,13 @@ export function EngineeringStudio({ token, task, onTeam }: {
     return () => { closed = true; window.clearInterval(interval); };
   }, [token, task.id]);
 
-  const status = useMemo(() => saved ? workAgentStatuses(saved as WorkTeamEvidence) : [],
-    [saved]);
+  const status = useMemo(() => studioAgentPresence(saved, models), [saved, models]);
+  const activity = useMemo(() => studioRecordedActivity(saved), [saved]);
+  const inspected = status.find(item => item.agent.id === inspectedAgentId) ??
+    status.find(item => item.active) ?? status[0];
+  const relatedActivity = inspected ? activity.filter(item =>
+    item.roleIds.includes(inspected.agent.id)) : [];
   const attention = useMemo(() => studioAttention(saved, decisions), [saved, decisions]);
-  const handoffs = useMemo(() => saved?.handoffs.slice()
-    .sort((a, b) => b.createdUtc.localeCompare(a.createdUtc)).slice(0, 3) ?? [], [saved]);
   const latest = saved?.repair?.cycle;
   const activeQa = saved?.qa?.job.state === 'Running' || latest?.state === 'QaRunning';
   const activeEngineer = saved?.engineering?.job.state === 'Running' || latest?.state === 'Running';
@@ -173,76 +206,190 @@ export function EngineeringStudio({ token, task, onTeam }: {
       <aside className="ca-studio-people" role="complementary" aria-label="Engineering team">
         <div className="ca-studio-rail-heading">
           <span className="ca-studio-eyebrow">YOUR TEAM</span>
-          <button type="button" className="ca-studio-text-action" onClick={onTeam}>Team details</button>
+          <button type="button" className="ca-studio-rail-models"
+            onClick={() => setRoleModelsOpen(true)}>Models</button>
         </div>
         {teamError && <p role="status" className="ca-studio-muted">
-          Team records are unavailable. Work controls remain accessible.</p>}
-        {!saved && !teamError && <p className="ca-studio-muted">Loading saved team…</p>}
-        {status.map(({ agent, active, detail }) => {
-          const stage = stages[agent.id];
-          return <button key={agent.id} type="button" className={'ca-studio-person' +
-            (active ? ' is-working' : '') + (stage === selectedStage ? ' is-selected' : '')}
-            onClick={() => stage && navigate(stage)} disabled={!stage}
-            aria-pressed={stage === selectedStage} data-agent={agent.id}>
+          Team refresh unavailable. Previously saved evidence remains visible.</p>}
+        {!saved && !teamError && <p className="ca-studio-muted">Reading saved team…</p>}
+        {status.map(item => {
+          const stage = stages[item.agent.id];
+          return <button key={item.agent.id} type="button"
+            className={'ca-studio-person' +
+              (item.active ? ' is-working' : '') +
+              (stage === selectedStage ? ' is-selected' : '')}
+            onClick={() => {
+              if (stage) navigate(stage);
+              setInspectedAgentId(item.agent.id);
+              setSideView('specialist');
+            }}
+            disabled={!stage}
+            aria-pressed={stage === selectedStage}
+            data-agent={item.agent.id} data-activity={item.state}>
             <span className="ca-studio-avatar" aria-hidden="true">
-              {agent.role.split(' ').map(word => word[0]).join('').slice(0, 2)}
+              {item.agent.role.split(' ').map(word => word[0]).join('').slice(0, 2)}
             </span>
             <span className="ca-studio-person-copy">
-              <strong>{agent.role}</strong>
-              <small>{active ? detail : agent.id === 'SoftwareEngineer' ||
-                agent.id === 'QaEngineer' ? detail : 'Available for planned work'}</small>
+              <strong>{item.agent.role}</strong>
+              <small className="ca-studio-person-status">{item.status}</small>
+              <small className="ca-studio-person-model" title={
+                item.modelForCurrentRun ? 'Model recorded on the active job' :
+                  'Model selected for new work'}>
+                {item.modelForCurrentRun ? 'Running · ' + item.modelForCurrentRun :
+                  item.modelForNextRun ? 'Next · ' + item.modelForNextRun :
+                    'Model not loaded'}
+              </small>
             </span>
-            <span className={'ca-studio-person-dot' + (active ? ' is-active' : '')}
-              aria-label={active ? 'Recorded running activity' : 'No active run recorded'} />
+            <span className={'ca-studio-person-dot' + (item.active ? ' is-active' : '')}
+              aria-label={item.active ? 'Recorded running activity' :
+                item.state === 'stopped' ? 'Recorded stopped work' :
+                  'No active run recorded'} />
           </button>;
         })}
+        {modelsFailed && <p role="status" className="ca-studio-muted">
+          Model assignments could not be refreshed.</p>}
         <div className="ca-studio-rail-footer">
-          <span className="ca-studio-eyebrow">SOURCE OF TRUTH</span>
-          <p>Saved work, approvals and handoffs. No simulated agent activity.</p>
+          <span className="ca-studio-eyebrow">RECORDED WORK ONLY</span>
+          <p>{activity.length} saved event{activity.length === 1 ? '' : 's'} in
+            recent source, QA and handoff ledgers.</p>
+          <button type="button" className="ca-studio-text-action"
+            onClick={() => setSideView('activity')}>View activity</button>
+          <button type="button" className="ca-studio-text-action"
+            onClick={onTeam}>Full team details</button>
         </div>
       </aside>
       <section className="ca-studio-canvas" aria-label="Focused engineering work">
         {roleModelsOpen && <div id="ca-studio-model-panel">
           <AgentRoleModels token={token} taskId={task.id}
-            onClose={() => setRoleModelsOpen(false)} />
+            onClose={() => setRoleModelsOpen(false)}
+            onSaved={() => setModelVersion(value => value + 1)} />
         </div>}
         <InterviewStudio token={token} task={task}
           studioCanvas focusRequest={request} onStageSelected={setSelectedStage} />
       </section>
-      <aside className="ca-studio-context" role="complementary" aria-label="Owner attention and handoffs">
-        <div className="ca-studio-context-heading">
-          <span className="ca-studio-eyebrow">YOUR ATTENTION</span>
-          <strong>{attention.length ? 'Next decisions' : 'No pending decisions'}</strong>
+      <aside className="ca-studio-context" role="complementary"
+        aria-label="Owner attention and handoffs">
+        <div role="group" className="ca-studio-side-tabs" aria-label="Team context view">
+          <button type="button" aria-pressed={sideView === 'attention'}
+            onClick={() => setSideView('attention')}>Attention
+            {attention.length > 0 && <span> {attention.length}</span>}
+          </button>
+          <button type="button" aria-pressed={sideView === 'activity'}
+            onClick={() => setSideView('activity')}>Activity</button>
+          <button type="button" aria-pressed={sideView === 'specialist'}
+            disabled={!inspected}
+            onClick={() => setSideView('specialist')}>Specialist</button>
         </div>
-        {decisionError && <p role="status" className="ca-studio-muted">
-          Approval records could not be read. No approval status is assumed.</p>}
-        {!decisions && !decisionError && <p className="ca-studio-muted">
-          Reading saved approvals…</p>}
-        {attention.length ? <ul className="ca-studio-attention-list">
-          {attention.map((item, index) => <li key={item.stage + ':' + item.title + ':' + index}
-            data-kind={item.kind}>
-            <span className="ca-studio-attention-type">{item.kind === 'review' ?
-              'OWNER REVIEW' : item.kind === 'warning' ? 'NEEDS INSPECTION' : 'NEXT STEP'}</span>
-            <strong>{item.title}</strong>
-            <p>{item.detail}</p>
-            <button type="button" onClick={() => navigate(item.stage)}>
-              Open {item.stage === 'delivery' ? 'QA & source' :
-                item.stage === 'generation' ? 'Engineering' : 'work stage'}
-            </button>
-          </li>)}
-        </ul> : decisions && <p className="ca-studio-muted">
-          No current approval is waiting. Generated files still require independent verification.</p>}
-        <div className="ca-studio-handoffs">
-          <span className="ca-studio-eyebrow">RECORDED HANDOFFS</span>
-          {handoffs.length ? <ol>{handoffs.map((event, i) => <li
-            key={event.createdUtc + ':' + event.kind + ':' + i}>
-            <span>{event.fromAgent} → {event.toAgent}</span>
-            <small>{event.kind}{event.current ? '' : ' · historical'}</small>
-          </li>)}</ol> : <p className="ca-studio-muted">
-            {saved ? 'No handoffs recorded for this project.' : 'No verified handoff data.'}</p>}
-        </div>
-        <p className="ca-studio-verification">Source generation and static QA do not
-          establish a verified build. Execution requires separate host qualification and approval.</p>
+        {sideView === 'attention' && <section aria-label="Owner decisions">
+          <div className="ca-studio-context-heading">
+            <span className="ca-studio-eyebrow">YOUR ATTENTION</span>
+            <strong>{attention.length ? 'Next decisions' : 'No pending decisions'}</strong>
+          </div>
+          {decisionError && <p role="status" className="ca-studio-muted">
+            Approval refresh unavailable. Existing approvals are not changed.</p>}
+          {!decisions && !decisionError && <p className="ca-studio-muted">
+            Reading saved approvals…</p>}
+          {attention.length ? <ul className="ca-studio-attention-list">
+            {attention.map((item, index) => <li key={item.stage + ':' + item.title + ':' + index}
+              data-kind={item.kind}>
+              <span className="ca-studio-attention-type">{item.kind === 'review' ?
+                'OWNER REVIEW' : item.kind === 'warning' ? 'NEEDS INSPECTION' : 'NEXT STEP'}</span>
+              <strong>{item.title}</strong>
+              <p>{item.detail}</p>
+              <button type="button" onClick={() => navigate(item.stage)}>
+                Open {item.stage === 'delivery' ? 'QA & source' :
+                  item.stage === 'generation' ? 'Engineering' : 'work stage'}
+              </button>
+            </li>)}
+          </ul> : decisions && <p className="ca-studio-muted">
+            No current approvals are waiting. Source still requires independent verification.</p>}
+          <div className="ca-studio-activity-teaser">
+            <span className="ca-studio-eyebrow">LAST SAVED WORK</span>
+            {activity.length ? <p><strong>{activity[0].title}</strong>
+              <small>{activity[0].detail}</small></p> :
+              <p className="ca-studio-muted">No recorded work yet.</p>}
+            <button type="button" className="ca-studio-text-action"
+              onClick={() => setSideView('activity')}>Explore activity</button>
+          </div>
+        </section>}
+        {sideView === 'activity' && <section aria-label="Recorded team activity">
+          <div className="ca-studio-context-heading">
+            <span className="ca-studio-eyebrow">TEAM COLLABORATION</span>
+            <strong>Recorded activity</strong>
+            <p className="ca-studio-muted">Saved handoffs, engineering task receipts and
+              independent QA events. Not a simulated agent conversation.</p>
+          </div>
+          {activity.length ? <ol className="ca-studio-event-list">
+            {activity.slice(0, 12).map(entry => <li key={entry.id}
+              data-historical={entry.historical}>
+              <span className="ca-studio-event-time">
+                <time dateTime={entry.at}>{new Date(entry.at).toLocaleTimeString([], {
+                  hour: 'numeric', minute: '2-digit' })}</time>
+                {entry.historical && <span>Historical</span>}
+              </span>
+              <strong>{entry.title}</strong>
+              <p>{entry.detail}</p>
+              <button type="button" className="ca-studio-text-action"
+                onClick={() => navigate(entry.stage)}>Inspect work</button>
+            </li>)}
+          </ol> : <p className="ca-studio-muted">No activity receipts have been saved.</p>}
+          {activity.length > 12 && <p className="ca-studio-muted">
+            Showing 12 most recent receipts. Full history is available in Team.</p>}
+          <button type="button" className="ca-studio-text-action"
+            onClick={onTeam}>Open complete team ledger</button>
+        </section>}
+        {sideView === 'specialist' && <section aria-label="Selected specialist">
+          {inspected ? <>
+            <div className="ca-studio-specialist-head">
+              <span className="ca-studio-avatar" aria-hidden="true">
+                {inspected.agent.role.split(' ').map(word => word[0]).join('').slice(0, 2)}
+              </span>
+              <div><span className="ca-studio-eyebrow">SELECTED SPECIALIST</span>
+                <h2>{inspected.agent.role}</h2></div>
+            </div>
+            <p className="ca-studio-role-state" data-state={inspected.state}>
+              {inspected.status}</p>
+            <p className="ca-studio-specialist-goal">{inspected.agent.goal}</p>
+            <div className="ca-studio-specialist-facts">
+              <span>MODEL FOR NEW WORK</span>
+              <strong>{inspected.modelForNextRun ?? 'Model preference unavailable'}</strong>
+              {inspected.modelForCurrentRun && <>
+                <span>MODEL PINNED TO ACTIVE WORK</span>
+                <strong>{inspected.modelForCurrentRun}</strong>
+              </>}
+              <span>CURRENT SAVED EVIDENCE</span>
+              <p>{inspected.assignment}</p>
+              <span>RECORDED HANDOFFS</span>
+              <p>{inspected.handoffCount} saved</p>
+            </div>
+            <details className="ca-studio-specialist-story">
+              <summary>Working style & background</summary>
+              <p>{inspected.agent.workingStyle}</p>
+              <p>{inspected.agent.backstory}</p>
+              <small>Fictional role background, not a record of actual work.</small>
+            </details>
+            <div className="ca-studio-specialist-actions">
+              <button type="button" className="ca-studio-text-action"
+                onClick={() => { if (stages[inspected.agent.id])
+                  navigate(stages[inspected.agent.id]); }}>Open role work</button>
+              {inspected.agent.id !== 'ProductOwner' &&
+                <button type="button" className="ca-studio-text-action"
+                  onClick={() => setRoleModelsOpen(true)}>Change model</button>}
+            </div>
+            <div className="ca-studio-specialist-activity">
+              <span className="ca-studio-eyebrow">SPECIALIST RECORDS</span>
+              {relatedActivity.length ? <ol>{relatedActivity.slice(0, 4).map(item =>
+                <li key={item.id}><strong>{item.title}</strong>
+                  <small>{item.detail}</small></li>)}</ol> :
+                <p className="ca-studio-muted">No work receipts involving this specialist.</p>}
+            </div>
+            <p className="ca-studio-verification">Executable tools: {inspected.agent.canExecuteCode ?
+              'Requires host authorization' : 'Not authorized'}.
+              Identity and personality do not grant execution rights.</p>
+          </> : <p className="ca-studio-muted">Select a team member to inspect.</p>}
+        </section>}
+        <p className="ca-studio-verification">Saved source and static QA are not
+          independently built or verified. Runtime testing requires separate approval.</p>
       </aside>
     </div>
   </section>;
