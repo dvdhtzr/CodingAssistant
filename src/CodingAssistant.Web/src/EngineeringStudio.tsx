@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
+import { DeliveryEvidencePanel } from './DeliveryEvidencePanel';
 import { EngineeringActivityFeed } from './EngineeringActivityFeed';
 import { LeadReviewPanel, type LeadReviewSnapshot } from './LeadReviewPanel';
 import { CollaborationPanel, type CollaborationSnapshot } from './CollaborationPanel';
@@ -98,7 +99,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
   const [modelsFailed, setModelsFailed] = useState(false);
   const [modelVersion, setModelVersion] = useState(0);
   const [inspectedAgentId, setInspectedAgentId] = useState<string | null>(null);
-  const [sideView, setSideView] = useState<'attention' | 'activity' | 'specialist'>('attention');
+  const [sideView, setSideView] = useState<'attention' | 'activity' | 'specialist' | 'delivery'>('attention');
   const [request, setRequest] = useState<{ stage: JourneyId; revision: number } | null>(null);
   const canvasRef = useRef<HTMLElement | null>(null);
   const navigate = useCallback((stage: JourneyId) => {
@@ -333,6 +334,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
             </li>)}
           </ul> : decisions && <p className="ca-studio-muted">
             No current approvals are waiting. Source still requires independent verification.</p>}
+          <button type="button" className="ca-studio-text-action" onClick={()=>setSideView('delivery')}>Inspect delivery readiness</button>
           <div className="ca-studio-activity-teaser">
             <span className="ca-studio-eyebrow">LAST SAVED WORK</span>
             {activity.length ? <p><strong>{activity[0].title}</strong>
@@ -342,6 +344,8 @@ export function EngineeringStudio({ token, task, onTeam }: {
               onClick={() => setSideView('activity')}>Explore activity</button>
           </div>
         </section>}
+        {sideView === 'delivery' && <DeliveryEvidencePanel key={task.id} token={token} taskId={task.id}
+          runId={saved?.engineering?.job.id??null} onClose={()=>setSideView('attention')} />}
         {sideView === 'activity' && <section aria-label="Recorded team activity">
           <div className="ca-studio-context-heading">
             <span className="ca-studio-eyebrow">TEAM COLLABORATION</span>

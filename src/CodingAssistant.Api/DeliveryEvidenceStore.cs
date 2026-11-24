@@ -7,15 +7,15 @@ public sealed record DeliveryWork(string Id,string Title,string State,IReadOnlyL
 public sealed record DeliveryReview(string Role,string? Id,string State,string? Model,int FilesReviewed,bool Complete);
 public sealed record DeliveryRepair(string Id,string BaseRunId,string RunId,int Attempt,string State,string? ErrorCode);
 public sealed record DeliveryModelUse(string AgentId,string Model,string State,int RecordedRequests);
-public sealed record DeliverySmoke(string Id,string State,string? Status);
+public sealed record DeliverySmoke(string Id,string State,string? Status,bool Current);
 public sealed record DeliveryEvidence(string TaskId,string? RunId,string? SourceSha256,
     string? PlanSha256,string? SpecificationSha256,string? ArchitectureSha256,
-    bool ImplementationComplete,bool EngineeringComplete,bool ProductAccepted,bool DeliveryAllowed,
+    bool CurrentSource,bool ImplementationComplete,bool EngineeringComplete,bool ProductAccepted,bool DeliveryAllowed,
     IReadOnlyList<string> Blockers,IReadOnlyList<DeliveryWork> Work,
     IReadOnlyList<DeliveryReview> Reviews,IReadOnlyList<EngineeringIssue> Findings,
     IReadOnlyList<DeliveryRepair> Repairs,IReadOnlyList<DeliverySmoke> Smoke,
     IReadOnlyList<DeliveryModelUse> ModelUse,IReadOnlyList<DraftArchitectureChoice> Decisions,
-    IReadOnlyList<string> RequiredVerification,IReadOnlyList<string> PlannedRisks);
+    IReadOnlyList<string> RequiredVerification,IReadOnlyList<string> PlannedRisks,string? ApprovedSpecification);
 
 /// <summary>Revision-bound, owner-private delivery readiness and retrospective evidence.
 /// Deliberately fail closed: no currently supported runtime profile supplies qualified
@@ -45,18 +45,18 @@ public sealed class DeliveryEvidenceStore(TaskStore tasks)
         catch(StoreFailure e){blockers.Add(e.Code);}
         if(plan is not null)
         {
-            decisions=DraftArchitecturePolicy.Capture(db,tx,taskId,plan.SpecificationVersion,plan.SpecificationSha256)!.Choices;
+            decisions=DraftArchitecturePolicy.Capture(db,tx,taskId,plan.SpecificationVersion,plan.SpecificationSha256)?.Choices??[];
             required=plan.Outline.TestStrategy;
             risks=plan.Outline.Risks;
         }
         string? source=null;
-        var implementation=false;
+        var implementation=false;var currentSource=false;
         if(run is null)blockers.Add("NO_SOURCE_RUN");
         else
         {
             source=EngineeringMessageStore.SourceFingerprint(db,tx,run.Id);
             var bindingCurrent=false;
-            try{EngineeringRunStore.RequireBinding(db,tx,run);bindingCurrent=true;}
+            try{EngineeringRunStore.RequireBinding(db,tx,run);bindingCurrent=true;currentSource=run.State=="Generated";}
             catch(StoreFailure e){blockers.Add(e.Code);}
             var lineage=new List<EngineeringRun>();
             var seen=new HashSet<string>(StringComparer.Ordinal);
@@ -104,7 +104,7 @@ public sealed class DeliveryEvidenceStore(TaskStore tasks)
                 """,("@task",taskId),("@run",run.Id),("@source",source),("@plan",run.PlanSha256)))
             using(var reader=cmd.ExecuteReader())while(reader.Read())
                 smoke.Add(new(reader.GetString(0),reader.GetString(1),
-                    reader.IsDBNull(2)?null:JsonSerializer.Deserialize<LocalSourceSmokeResult>(reader.GetString(2))?.Status));
+                    reader.IsDBNull(2)?null:JsonSerializer.Deserialize<LocalSourceSmokeResult>(reader.GetString(2))?.Status,currentSource));
         }
         if(plan is not null && run is null)
             work.AddRange(plan.Outline.Tasks.Select(w=>new DeliveryWork(w.Id,w.Title,"Pending",w.AcceptanceCriteria)));
@@ -118,11 +118,12 @@ public sealed class DeliveryEvidenceStore(TaskStore tasks)
         // user confirmation, or model assertion can satisfy this mandatory gate.
         blockers.Add("QUALIFIED_VERIFICATION_REQUIRED");
         blockers.Add("PRODUCT_ACCEPTANCE_REQUIRED");
+        var specification=plan is null?null:TaskStore.Scalar(db,tx,"SELECT content FROM interview_specs WHERE task_id=@task AND version=@version AND sha256=@sha",("@task",taskId),("@version",plan.SpecificationVersion),("@sha",plan.SpecificationSha256));
         tx.Commit();
         return new(taskId,runId,source,run?.PlanSha256??plan?.PlanSha256,
             run?.SpecificationSha256??plan?.SpecificationSha256,run?.ArchitectureSha256??plan?.ArchitectureSha256,
-            implementation,false,false,false,blockers.Distinct().ToArray(),work,reviews,findings,repairs,
-            smoke,models,decisions,required,risks);
+            currentSource,implementation,false,false,false,blockers.Distinct().ToArray(),work,reviews,findings,repairs,
+            smoke,models,decisions,required,risks,specification);
     }
 
     private static int Count(SqliteConnection db,SqliteTransaction tx,string sql,params (string Key,object Value)[] args)

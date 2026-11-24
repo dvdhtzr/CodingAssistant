@@ -565,3 +565,32 @@ test('Technical Lead workstation requires explicit exact-source repair approval 
     } finally { await page.close(); }
   }
 });
+
+
+test('delivery readiness separates saved source from verified and accepted product without writes', async () => {
+  const page=await browser.newPage({viewport:{width:1600,height:900}});
+  const writes=[];
+  try {
+    await mockApi(page);
+    await page.route('**/api/tasks/'+id+'/delivery-evidence', route=>done(route,{
+      runId,sourceSha256:sha,currentSource:true,implementationComplete:true,
+      engineeringComplete:false,productAccepted:false,deliveryAllowed:false,
+      blockers:['QUALIFIED_VERIFICATION_REQUIRED','PRODUCT_ACCEPTANCE_REQUIRED'],
+      work:[],reviews:[],findings:[],repairs:[],
+      smoke:[{id:reviewId,state:'Recorded',status:'SMOKE_PASS_NOT_VERIFIED',current:true}],
+      modelUse:[],decisions:[],requiredVerification:['Independent browser behavior'],
+      plannedRisks:[],approvedSpecification:null,
+    }));
+    page.on('request',r=>{if(r.method()==='POST')writes.push(r.url());});
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect delivery readiness'}).click();
+    const evidence=page.getByRole('region',{name:'Delivery evidence'});
+    await evidence.getByText('Delivery blocked',{exact:true}).waitFor();
+    assert.match(await evidence.textContent(),/Source complete.*Not verified.*Not accepted/s);
+    await evidence.getByText('Verification evidence (1 smoke records)',{exact:true}).click();
+    assert.equal(await evidence.getByText('SMOKE_PASS_NOT_VERIFIED',{exact:true}).isVisible(),true);
+    assert.match(await evidence.textContent(),/Smoke checks are not qualified functional tests/);
+    await evidence.getByRole('button',{name:'Back to attention'}).click();
+    assert.deepEqual(writes,[]);
+  } finally {await page.close();}
+});

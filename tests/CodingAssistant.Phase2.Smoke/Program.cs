@@ -3910,6 +3910,17 @@ try
           boundStore.Get(taskBound.Id, changedJob.Id).Job.ErrorCode ==
             "ARCHITECTURE_CONFLICT",
         "stale decision cannot be reported as generated successfully");
+    using(var staleDelivery=await client.GetAsync(deliveryPath))
+    using(var staleDeliveryBody=await Body(staleDelivery))
+    {
+        var evidence=staleDeliveryBody.RootElement;
+        Check(staleDelivery.StatusCode==HttpStatusCode.OK &&
+            !evidence.GetProperty("currentSource").GetBoolean() &&
+            !evidence.GetProperty("implementationComplete").GetBoolean() &&
+            !evidence.GetProperty("deliveryAllowed").GetBoolean() &&
+            !evidence.GetProperty("smoke").EnumerateArray().Single().GetProperty("current").GetBoolean(),
+            "architecture revision invalidates delivery and marks prior smoke evidence historical");
+    }
     var effectivePolicy = delegationStore.Read(taskBound.Id);
     Check(effectivePolicy?.Status == "Approved" && !effectivePolicy.Current &&
           effectivePolicy.EffectiveStatus == "STALE_APPROVALS",
