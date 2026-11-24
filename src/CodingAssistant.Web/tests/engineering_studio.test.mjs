@@ -36,7 +36,7 @@ test('Engineering Studio makes team, focused work and attention distinct accessi
   assert.match(html, /aria-label="Owner attention and handoffs"/);
   assert.match(html, /Your team at work/);
   assert.match(html, /No active agent run recorded/);
-  assert.match(html, /No simulated agent activity/);
+  assert.match(html, /RECORDED WORK ONLY/);
   assert.match(html, /PROJECT WORK|WORK \/ CURRENT STEP/);
   assert.doesNotMatch(html, /Agent collaboration board/);
 });
@@ -75,7 +75,8 @@ test('decision lane navigates to original approval forms and never approves by i
   const studio = readFileSync('src/EngineeringStudio.tsx', 'utf8');
   assert.doesNotMatch(studio, /POST|method: 'POST'|\/approve|\/repair-proposals/);
   assert.match(studio, /buildDecisionInbox/);
-  assert.match(studio, /workAgentStatuses/);
+  assert.match(studio, /studioAgentPresence/);
+  assert.match(studio, /studioRecordedActivity/);
 });
 
 test('stage navigation preserves focused controls without automating scroll or adding privilege', () => {
