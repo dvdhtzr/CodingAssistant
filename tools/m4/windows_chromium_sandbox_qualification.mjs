@@ -22,6 +22,11 @@ const IMAGE_ID=/^sha256:[0-9a-f]{64}$/;
 export const OFFICIAL_SECCOMP_GIT_BLOB='fddc05fb520affb145404e6f6f647ca96af8087d';
 const SECCOMP_LOCATION=fileURLToPath(new URL(
   './profiles/playwright-chromium-seccomp.json',import.meta.url));
+const FIXTURE_SECCOMP_LOCATION=fileURLToPath(new URL(
+  './profiles/m47-fixed-chromium-chroot-seccomp.json',import.meta.url));
+export const FIXTURE_SECCOMP_VARIANT='m47-fixed-chromium-chroot-v1';
+const FIXTURE_RULE=Object.freeze({names:['chroot'],action:'SCMP_ACT_ALLOW',args:[],
+  comment:'Owner-approved M4.7 fixed fixture only: permit Chromium namespace chroot; no capability grant',includes:{},excludes:{}});
 function fail(message){throw Error(message);}
 export function validateChromiumSeccompBytes(bytes){
   if(!Buffer.isBuffer(bytes)||bytes.length<1000||bytes.length>18000)
@@ -42,12 +47,32 @@ export function validateChromiumSeccompBytes(bytes){
   return {sha256:createHash('sha256').update(canonical).digest('hex'),
     upstreamGitBlob:blob};
 }
+// Pin the derived profile by exact canonical bytes reconstructed from the
+// independently byte-pinned upstream original and ONE constant approved rule.
+export function validateFixtureSeccompBytes(original,derived){
+  const upstream=validateChromiumSeccompBytes(original);
+  if(!Buffer.isBuffer(derived)||derived.length<1000||derived.length>24000)
+    fail('Fixed fixture seccomp bytes outside approved bounds');
+  const policy=JSON.parse(original.toString('utf8'));
+  policy.syscalls.push(FIXTURE_RULE);
+  const expected=Buffer.from(JSON.stringify(policy,null,2)+'\n');
+  const canonical=Buffer.from(derived.toString('utf8').replace(/\r\n/g,'\n'));
+  if(!expected.equals(canonical))
+    fail('Fixed fixture policy differs from approved single chroot adjustment');
+  return {sha256:createHash('sha256').update(canonical).digest('hex'),
+    upstreamGitBlob:upstream.upstreamGitBlob,upstreamSha256:upstream.sha256,
+    variant:FIXTURE_SECCOMP_VARIANT};
+}
 export function checkedChromiumSeccomp(){
   const stat=fs.lstatSync(SECCOMP_LOCATION);
   if(!stat.isFile()||stat.isSymbolicLink()||stat.size>18000)
     fail('Official seccomp profile absent or not a regular file');
-  const verified=validateChromiumSeccompBytes(fs.readFileSync(SECCOMP_LOCATION));
-  return {...verified,path:fs.realpathSync(SECCOMP_LOCATION)};
+  const derivedStat=fs.lstatSync(FIXTURE_SECCOMP_LOCATION);
+  if(!derivedStat.isFile()||derivedStat.isSymbolicLink()||derivedStat.size>24000)
+    fail('Fixed fixture seccomp profile absent or not a regular file');
+  const verified=validateFixtureSeccompBytes(fs.readFileSync(SECCOMP_LOCATION),
+    fs.readFileSync(FIXTURE_SECCOMP_LOCATION));
+  return {...verified,path:fs.realpathSync(FIXTURE_SECCOMP_LOCATION)};
 }
 function json(docker,args,what){
   const r=docker(args,8000);
@@ -56,7 +81,8 @@ function json(docker,args,what){
   try{return JSON.parse(r.stdout.trim());}
   catch{fail(what+' malformed');}
 }
-// Use official Playwright profile, pinned and default-deny; keep all Docker
+// Use owner-approved fixture-only derivative of the pinned default-deny
+// Playwright profile; keep all Docker
 // restrictions and do NOT turn off the Chromium renderer sandbox.
 export function sandboxDockerArgs(id,name){
   if(!IMAGE_ID.test(id)||!NAME.test(name))
@@ -120,7 +146,8 @@ export function runSandboxCompatibility({
     status:'BLOCKED',recordedAtUtc:new Date().toISOString(),
     imageTag:IMAGE_TAG,imageId:null,registryDigest:null,
     fixedGuestSha256:createHash('sha256').update(SOURCE).digest('hex'),
-    seccompSha256:null,seccompUpstreamGitBlob:null,
+    seccompSha256:null,seccompUpstreamGitBlob:null,seccompUpstreamSha256:null,
+    seccompVariant:null,
     checks:null,passedChecks:0,requiredChecks:CASES.length,
     browser:null,containerRemoved:false,
     modelInvoked:false,generatedSourceExecuted:false,sourceMounted:false,
@@ -149,6 +176,8 @@ export function runSandboxCompatibility({
     const checkedProfile=checkedChromiumSeccomp();
     report.seccompSha256=checkedProfile.sha256;
     report.seccompUpstreamGitBlob=checkedProfile.upstreamGitBlob;
+    report.seccompUpstreamSha256=checkedProfile.upstreamSha256;
+    report.seccompVariant=checkedProfile.variant;
     const collision=docker(['ps','-a','--filter','name=^/'+name+'$',
       '--format','{{.ID}}'],8000);
     if(collision.status!==0||collision.stdout.trim())
@@ -214,6 +243,7 @@ export function main(argv=process.argv.slice(2),options={}){
   process.stdout.write('  fixed isolation and browser checks: '+
     report.passedChecks+'/'+report.requiredChecks+'\n');
   process.stdout.write('  container removed: '+report.containerRemoved+'\n');
+  if(report.seccompVariant)process.stdout.write('  seccomp fixture policy: '+report.seccompVariant+'\n');
   if(report.browser)
     process.stdout.write('  Chromium: '+report.browser.binary+
       '; fixed DOM: '+report.browser.dom+

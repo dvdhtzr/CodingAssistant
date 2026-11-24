@@ -5,6 +5,7 @@ import {spawnSync} from 'node:child_process';
 import {
   sandboxDockerArgs,parseSandboxReport,runSandboxCompatibility,main,
   OFFICIAL_SECCOMP_GIT_BLOB,checkedChromiumSeccomp,validateChromiumSeccompBytes,
+  validateFixtureSeccompBytes,FIXTURE_SECCOMP_VARIANT,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
   CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,
@@ -117,8 +118,9 @@ test('exact upstream Playwright seccomp profile is pinned and fails on tampering
     'fddc05fb520affb145404e6f6f647ca96af8087d');
   assert.equal(attested.upstreamGitBlob,OFFICIAL_SECCOMP_GIT_BLOB);
   assert.match(attested.sha256,/^[0-9a-f]{64}$/);
-  assert.match(attested.path,/playwright-chromium-seccomp\.json$/);
-  const original=fs.readFileSync(attested.path);
+  assert.match(attested.path,/m47-fixed-chromium-chroot-seccomp\.json$/);
+  assert.equal(attested.variant,FIXTURE_SECCOMP_VARIANT);
+  const original=fs.readFileSync(new URL('../tools/m4/profiles/playwright-chromium-seccomp.json',import.meta.url));
   const normalized=Buffer.from(original.toString('utf8').replace(/\r\n/g,'\n'));
   assert.deepEqual(validateChromiumSeccompBytes(original),
     validateChromiumSeccompBytes(normalized));
@@ -197,6 +199,9 @@ test('simulated positive Windows run never sets untrusted execution permission',
   assert.equal(result.passedChecks,11);
   assert.equal(result.containerRemoved,true);
   assert.deepEqual(result.browser,BROWSER);
+  assert.equal(result.seccompVariant,FIXTURE_SECCOMP_VARIANT);
+  assert.equal(result.seccompSha256,checkedChromiumSeccomp().sha256);
+  assert.equal(result.seccompUpstreamSha256,checkedChromiumSeccomp().upstreamSha256);
   for(const prop of [
     'modelInvoked','generatedSourceExecuted','sourceMounted',
     'untrustedBrowserQualified','staticWebRuntimeQualified',
@@ -284,4 +289,32 @@ test('crash details distinguish kernel resource limits from sandbox startup with
   assert.equal(crashDetail({status:null,stderr:'FATAL:zygote_host_impl_linux.cc:126 SECRET'}),'ZYGOTE_FATAL');
   assert.equal(crashDetail({status:null,stderr:'SECRET'}),'NO_FATAL_LOG');
   assert.equal(crashDetail({status:0},{pids:0},{pids:1}),'NONE');
+});
+
+test('owner-approved fixture policy differs by exactly one unconditional chroot syscall rule',()=>{
+  const original=fs.readFileSync(new URL('../tools/m4/profiles/playwright-chromium-seccomp.json',import.meta.url));
+  const checked=checkedChromiumSeccomp();
+  const derived=fs.readFileSync(checked.path);
+  const p=JSON.parse(original.toString('utf8')), q=JSON.parse(derived.toString('utf8'));
+  const extra=q.syscalls.pop();
+  assert.deepEqual(q,p);
+  assert.deepEqual(extra.names,['chroot']);
+  assert.equal(extra.action,'SCMP_ACT_ALLOW');
+  assert.deepEqual(extra.args,[]);
+  assert.deepEqual(extra.includes,{});
+  assert.deepEqual(extra.excludes,{});
+  assert.equal(p.defaultAction,'SCMP_ACT_ERRNO');
+  assert.equal(validateFixtureSeccompBytes(original,derived).sha256,checked.sha256);
+  assert.deepEqual(validateFixtureSeccompBytes(original,Buffer.from(derived.toString('utf8').replace(/\r?\n/g,'\r\n'))),validateFixtureSeccompBytes(original,derived));
+  for(const mutate of [
+    x=>x.defaultAction='SCMP_ACT_ALLOW',
+    x=>x.syscalls.at(-1).names.push('mount'),
+    x=>x.syscalls.at(-1).names=['pivot_root'],
+    x=>x.syscalls.splice(0,1),
+    x=>x.syscalls.pop(),
+  ]){
+    const changed=JSON.parse(derived.toString('utf8'));mutate(changed);
+    assert.throws(()=>validateFixtureSeccompBytes(original,Buffer.from(JSON.stringify(changed,null,2)+'\n')));
+  }
+  assert.throws(()=>validateFixtureSeccompBytes(Buffer.from(original.toString('utf8')+' '),derived));
 });

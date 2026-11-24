@@ -20,7 +20,7 @@ remain: local Windows Docker Desktop Linux engine only, immutable image
 ID and trusted registry digest, no image downloads/builds, network
 disabled, read-only root, no host mounts/ports/secrets/sockets,
 non-root 1000:1000, all capabilities dropped, no-new-privileges,
-the **byte-pinned official Playwright seccomp profile** (default-deny
+the **byte-pinned fixture-only derivative of the official Playwright seccomp profile** (default-deny
 with its documented clone/setns/unshare namespace exceptions), finite
 CPU/PID/memory/runtime limits, private IPC, disposable /tmp and
 shared-memory limits.
@@ -101,13 +101,13 @@ security finding. Complete #76/#92/#111 using integrated cases tied
 to that actual workflow, with actionable application-specific evidence.
 
 Reference: https://playwright.dev/docs/docker
-## One command on Windows after GitHub CI green and PR merge
+## One command on Windows after GitHub CI green
 
 From the existing CodingAssistant checkout, with Docker Desktop
 running in Linux-container mode:
 
 ~~~powershell
-git switch main
+git switch feature/autonomous-engineering-team
 git pull --ff-only
 node tools/m4/windows_chromium_sandbox_qualification.mjs --run
 ~~~
@@ -122,7 +122,8 @@ Expected success, *only if independently observed on the owner host*:
 M4.7 WINDOWS_SANDBOX_COMPATIBILITY_PASS
   fixed isolation and browser checks: 11/11
   container removed: true
-  Chromium: HEADLESS_SHELL; fixed DOM: PASS; sandbox status: PASS
+  seccomp fixture policy: m47-fixed-chromium-chroot-v1
+  Chromium: FULL_CHROMIUM; fixed DOM: PASS; sandbox status: PASS
   generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED
 ~~~
 
@@ -161,3 +162,7 @@ The DOM check now requires the changed output element, not merely the marker in 
 ## SIGABRT follow-up
 
 The owner confirmed both full-Chromium invocations abort with SIGABRT. The fixed guest now records bounded, allowlisted fatal-site categories, PID/memory cgroup event deltas and a fixed unprivileged user namespace probe. This distinguishes resource exhaustion from namespace/zygote failure without changing the sandbox, raising limits or exposing raw browser logs. Diagnostic observations are not additional pass criteria and cannot override any of the eleven checks. No generated source is executed.
+
+## Owner-approved fixed-fixture chroot adjustment
+
+On November 24, 2026 the owner-host result reported 9/11, FULL_CHROMIUM, SIGABRT, USER_NAMESPACE_OK and ZYGOTE_FATAL for both invocations. The upstream policy only allows chroot with CAP_SYS_CHROOT at the outer container level; Chromium may need the call within its own user namespace. The owner explicitly approved a single-system-call adjustment for the fixed fixture only. The separate m47-fixed-chromium-chroot-seccomp.json adds exactly one unconditional SCMP_ACT_ALLOW rule for chroot, leaves the original upstream file unchanged, and grants no capability. Its bytes must equal the canonical reconstruction from the independently pinned upstream original plus that one constant rule; all deviations fail closed. Evidence records the variant, derived SHA-256 and original SHA-256 and Git blob. No generated-source runner or registry uses this derivative. All other Docker arguments and eleven compatibility checks remain unchanged. The hypothesis is not confirmed until the real owner-host probe succeeds; even then, generated execution remains unauthorized.
