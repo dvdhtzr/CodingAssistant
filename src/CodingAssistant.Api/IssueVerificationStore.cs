@@ -67,14 +67,14 @@ public sealed class IssueVerificationStore(TaskStore tasks)
             reader.GetString(3),reader.GetString(4),reader.GetString(5));
     }
 
-    public IssueVerificationInput Prepare(string taskId,VerifyEngineeringIssueRequest request)
+    public IssueVerificationInput Prepare(string taskId,VerifyEngineeringIssueRequest request,CollaborationAdmission? admission=null)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
-        var input=Prepare(db,tx,taskId,request);tx.Commit();return input;
+        var input=Prepare(db,tx,taskId,request,admission);tx.Commit();return input;
     }
 
     private static IssueVerificationInput Prepare(SqliteConnection db,SqliteTransaction tx,
-        string taskId,VerifyEngineeringIssueRequest request)
+        string taskId,VerifyEngineeringIssueRequest request,CollaborationAdmission? admission=null)
     {
         var task=TaskStore.FindTask(db,tx,taskId)??throw new StoreFailure("NOT_FOUND");
         if(string.IsNullOrWhiteSpace(request.IssueId) ||
@@ -92,6 +92,16 @@ public sealed class IssueVerificationStore(TaskStore tasks)
             EngineeringMessageStore.SourceFingerprint(db,tx,candidate.Id)!=request.CandidateSourceSha256)
             throw new StoreFailure("SOURCE_CHANGED");
         EngineeringRunStore.RequireBinding(db,tx,candidate);
+        if(admission is not null)
+        {
+            CollaborationStore.RequireAction(db,tx,taskId,admission,"RecheckIssue",issue.Id);
+            var collaboration=CollaborationStore.Find(db,tx,taskId,admission.JobId);
+            if(collaboration.RunId!=candidate.Id || collaboration.SourceSha256!=request.CandidateSourceSha256 ||
+                CollaborationStore.ContinuationCycle(db,tx,taskId,collaboration.Id)!=issue.RepairCycleId)
+                throw new StoreFailure("SOURCE_CHANGED");
+            EngineeringDelegationStore.Require(db,tx,taskId,collaboration.PolicyRevision,collaboration.PolicySha256,
+                issue.Origin,issue.Origin=="LeadSoftwareEngineer"?"ReviewCode":"ReviewAcceptance");
+        }
         var challenge=issue.Challenges.LastOrDefault();
         if(candidate.Id==request.OriginalRunId)
         {
@@ -99,9 +109,10 @@ public sealed class IssueVerificationStore(TaskStore tasks)
         }
         else if(issue.RepairCycleId is null || TaskStore.Scalar(db,tx,"""
             SELECT id FROM repair_cycles WHERE id=@id AND task_id=@task
-                AND base_run_id=@base AND engineering_run_id=@candidate AND state='QaReviewed'
+                AND base_run_id=@base AND engineering_run_id=@candidate
+                AND (state='QaReviewed' OR (@lead=1 AND state='Generated'))
             """,("@id",issue.RepairCycleId),("@task",taskId),("@base",request.OriginalRunId),
-            ("@candidate",candidate.Id)) is null)
+            ("@candidate",candidate.Id),("@lead",admission is not null && issue.Origin=="LeadSoftwareEngineer"?1:0)) is null)
             throw new StoreFailure("INVALID_STATE");
         var before=File(db,tx,request.OriginalRunId,issue.Path);
         var after=File(db,tx,candidate.Id,issue.Path);
@@ -158,14 +169,14 @@ public sealed class IssueVerificationStore(TaskStore tasks)
     // The caller is the trusted reviewer invocation, not an HTTP payload.
     // Re-admission after inference prevents stale results from being saved.
     public IssueVerification Record(string taskId,IssueVerificationInput input,string agentId,
-        string model,IssueVerificationAssessment assessment)
+        string model,IssueVerificationAssessment assessment,CollaborationAdmission? admission=null)
     {
         if(agentId!=input.Issue.Origin || !EngineeringRoleCapabilities.Allows(agentId,
             agentId=="LeadSoftwareEngineer"?EngineeringCapability.ReviewCode:EngineeringCapability.ReviewAcceptance))
             throw new StoreFailure("AGENT_CAPABILITY_DENIED");
         if(!LocalInterviewModel.AllowedModel(model)) throw new StoreFailure("INVALID_MODEL");
         using var db=tasks.Open();using var tx=db.BeginTransaction();
-        var fresh=Prepare(db,tx,taskId,input.Request);
+        var fresh=Prepare(db,tx,taskId,input.Request,admission);
         if(fresh.Issue.Id!=input.Issue.Id || fresh.Issue.Origin!=agentId ||
             fresh.After.Sha256!=input.After.Sha256 || fresh.Before.Sha256!=input.Before.Sha256 ||
             fresh.ChallengeMessageId!=input.ChallengeMessageId ||
@@ -189,6 +200,7 @@ public sealed class IssueVerificationStore(TaskStore tasks)
             ("@binding",result.BindingSha256));
         EngineeringActivityStore.Record(db,tx,taskId,"IssueStaticRecheckRecorded",agentId,
             "EngineeringIssue",result.IssueId,sourceSha256:result.CandidateSourceSha256,model:model);
+        if(admission is not null)CollaborationStore.LinkAction(db,tx,admission,result.Id);
         tx.Commit();tasks.SignalEngineeringActivity(taskId);return result;
     }
 

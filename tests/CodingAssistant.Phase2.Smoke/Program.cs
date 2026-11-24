@@ -3729,9 +3729,13 @@ try
     Check(aetContinued?.Job.State=="AwaitingOwner" && aetContinued.Job.Id!=aetCollabId &&
         aetContinued.Job.RunId==aetContinuedCycle.Engineering.Job.Id &&
         aetContinued.Job.SourceSha256!=aetCollabRequest.SourceSha256 &&
-        aetContinued.Steps.First().Action=="ReviewCode" && aetContinuedCycle.Cycle.State=="Generated" &&
+        aetContinued.Steps.Select(s=>s.Action).SequenceEqual(["ReviewCode","RecheckIssue","ClassifyIssue","RequestOwnerRepair"]) &&
+        aetContinuedCycle.Cycle.State=="Generated" &&
         qaModel.ReviewedFiles.Count==10,
-        "owner-approved repair automatically returns to independent lead review of new source; blocking finding prevents QA");
+        "owner-approved repair automatically returns to independent lead review and specific recheck of new source; blocking finding prevents QA");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,aetChildResumeId).Issues
+        .Single(i=>i.Origin=="LeadSoftwareEngineer").Verifications.Single().Id==aetContinued!.Steps[1].ReferenceId,
+        "original finding retains actual independent recheck evidence from automatic collaboration");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
         aetCollabPolicy.PolicySha256,"REVOKE "+aetCollabPolicy.PolicySha256));
 
@@ -4318,6 +4322,9 @@ sealed class AetCollaborationLeadFixture:ICollaborationLead
         token.ThrowIfCancellationRequested();Calls++;
         var decision=input.AllowedActions.Contains("ReviewCode")?
             new CollaborationDecision("ReviewCode","Request independent review of the exact generated source."):
+            input.AllowedActions.Contains("RecheckIssue")?
+            new("RecheckIssue","Independently recheck the original finding against the repaired source.",
+                input.RecheckCandidates!.Single().Id):
             input.AllowedActions.Contains("ClassifyIssue")?
             new("ClassifyIssue","The actual source concern needs a scoped correction.",
                 input.Issues.Single(x=>x.State=="NeedsTriage").Id,"ImplementationDefect"):

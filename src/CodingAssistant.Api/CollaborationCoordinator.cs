@@ -19,7 +19,8 @@ public sealed record CollaborationDecision(string Action,string Rationale,string
     string? Classification=null);
 public sealed record CollaborationInput(string Objective,CollaborationRun Job,
     IReadOnlyList<string> AllowedActions,IReadOnlyList<EngineeringIssue> Issues,
-    IReadOnlyList<CollaborationStep> Steps,RepairProgressReport? RepairProgress=null);
+    IReadOnlyList<CollaborationStep> Steps,RepairProgressReport? RepairProgress=null,
+    IReadOnlyList<EngineeringIssue>? RecheckCandidates=null);
 public sealed record CollaborationAdmission(string JobId,int Sequence);
 
 public interface ICollaborationLead
@@ -59,6 +60,12 @@ public sealed class MafCollaborationLead(IMafChatClientFactory? factory=null):IC
                 else if(result.Classification is not null || issue.State!="ConfirmedDefect")
                     throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             }
+            else if(result.Action=="RecheckIssue")
+            {
+                if(result.Classification is not null ||
+                    input.RecheckCandidates?.Any(i=>i.Id==result.IssueId)!=true)
+                    throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            }
             else if(result.IssueId is not null || result.Classification is not null)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             return result with {Rationale=result.Rationale.Trim()};
@@ -76,6 +83,8 @@ public sealed class MafCollaborationLead(IMafChatClientFactory? factory=null):IC
             No write, execution, approval or delivery privilege. Never claim tests ran.
             Classify actual current findings against evidence. RequestOwnerRepair only
             requests owner confirmation of exact source scope; it does not authorize repair.
+            RecheckIssue asks the originating independent reviewer to compare the specific
+            prior finding with the new candidate source. Never assume omission means resolution.
             AwaitQualifiedVerification means static evidence is not a functional pass.
             Escalate for insufficient evidence, unresolved requirements or unsafe progress.
             Return only JSON:
@@ -89,9 +98,11 @@ public sealed class MafCollaborationLead(IMafChatClientFactory? factory=null):IC
             new(ChatRole.User,"PROJECT OBJECTIVE (data): "+input.Objective),
             new(ChatRole.User,"HOST ALLOWED ACTIONS (data): "+JsonSerializer.Serialize(input.AllowedActions)),
             new(ChatRole.User,"CURRENT ISSUE EVIDENCE (data): "+JsonSerializer.Serialize(issues)),
+            new(ChatRole.User,"PRIOR FINDINGS REQUIRING INDEPENDENT RECHECK (data): "+
+                JsonSerializer.Serialize(input.RecheckCandidates?.Select(i=>new {i.Id,i.Origin,i.Path,i.Severity,i.Category,i.Requirement,i.Evidence,i.Recommendation}))),
             new(ChatRole.User,"ACTUAL PRIOR DECISIONS (data): "+JsonSerializer.Serialize(input.Steps.TakeLast(8))),
             new(ChatRole.User,"HOST REPAIR PROGRESS (data): "+JsonSerializer.Serialize(new {
-                input.RepairProgress?.StrategyChangeRequired,input.RepairProgress?.Reason,
+                strategyChangeRequired=input.RepairProgress?.StrategyChangeRequired,reason=input.RepairProgress?.Reason,
                 attempts=input.RepairProgress?.Attempts.TakeLast(4).Select(a=>new {
                     a.CycleId,a.State,a.RecurringExactFinding,a.IndependentStaticResolution})
             }))
@@ -308,9 +319,38 @@ public sealed class CollaborationStore(TaskStore tasks)
                     actions.Add("AwaitQualifiedVerification");
             }
         }
+        var recheckCandidates=new List<EngineeringIssue>();
+        var cycleId=ContinuationCycle(db,tx,job.TaskId,job.Id);
+        if(cycleId is not null)
+        {
+            var original=TaskStore.Scalar(db,tx,"SELECT base_run_id FROM repair_cycles WHERE task_id=@task AND id=@cycle",
+                ("@task",job.TaskId),("@cycle",cycleId))??throw new StoreFailure("INVALID_STATE");
+            var prior=EngineeringIssueStore.Read(db,tx,job.TaskId,original).Issues
+                .Where(i=>i.RepairCycleId==cycleId).ToArray();
+            foreach(var issue in prior)
+            {
+                var reviewComplete=issue.Origin=="LeadSoftwareEngineer"?lead=="Reviewed":qa=="Reviewed";
+                if(reviewComplete && !issue.Verifications.Any(v=>v.Current && v.CandidateRunId==job.RunId))
+                    recheckCandidates.Add(issue);
+            }
+            // No later stage may skip an available prior-finding recheck.
+            if(recheckCandidates.Count>0)
+            {
+                actions.Clear();actions.Add("RecheckIssue");
+            }
+            // A recheck that still sees a blocking finding, or lacks evidence,
+            // prevents acceptance even if a general review omitted it.
+            if(prior.Any(i=>i.Severity is ("Critical" or "Major") &&
+                i.Verifications.LastOrDefault(v=>v.Current && v.CandidateRunId==job.RunId)?.Assessment.Outcome
+                    is ("StillPresent" or "InsufficientEvidence")))
+            {
+                actions.Remove("ReviewAcceptance");
+                actions.Remove("AwaitQualifiedVerification");
+            }
+        }
         actions.Add("Escalate");
         var task=TaskStore.FindTask(db,tx,job.TaskId)??throw new StoreFailure("NOT_FOUND");
-        return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress);
+        return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress,recheckCandidates);
     }
     public CollaborationInput Prepare(string taskId,string id)
     {
@@ -417,7 +457,8 @@ public sealed class CollaborationStore(TaskStore tasks)
 public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore store,
     ICollaborationLead lead,LeadReviewCoordinator leadReviews,LeadReviewStore leadStore,
     QaReviewCoordinator qaReviews,QaReviewStore qaStore,RepairProposalStore proposals,RepairCycleStore cycles,
-    AgentRoleModelSettings models,IOllamaModelCatalog catalog,ImplementationPlanStore plans,IHostApplicationLifetime lifetime)
+    AgentRoleModelSettings models,IOllamaModelCatalog catalog,ImplementationPlanStore plans,
+    IEngineeringIssueVerifier verifier,IHostApplicationLifetime lifetime)
 {
     private readonly ConcurrentDictionary<string,CancellationTokenSource> _active=new();
     public async Task<CollaborationRun> StartAsync(string taskId,StartCollaborationRequest request,CancellationToken token,
@@ -479,6 +520,23 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                             await Task.Delay(250,token);
                         }
                         break;
+                    case "RecheckIssue":
+                    {
+                        var issue=input.RecheckCandidates!.Single(i=>i.Id==step.IssueId);
+                        var model=models.Resolve(job.TaskId,issue.Origin,plans.Read(job.TaskId).Plan?.Model??job.Model);
+                        if(!(await catalog.ListAsync(token)).Contains(model,StringComparer.Ordinal))
+                            throw new StoreFailure("MODEL_NOT_INSTALLED");
+                        var verifyStore=new IssueVerificationStore(tasks);
+                        var request=new VerifyEngineeringIssueRequest(issue.EngineeringRunId,issue.Id,job.RunId,job.SourceSha256);
+                        var admission=new CollaborationAdmission(job.Id,step.Sequence);
+                        var evidence=verifyStore.Prepare(job.TaskId,request,admission);
+                        IssueVerificationAssessment result;
+                        using(EngineeringProviderActivity.Enter(tasks,job.TaskId,issue.Origin,issue.Id,job.SourceSha256))
+                            result=await verifier.VerifyAsync(evidence,model,token);
+                        token.ThrowIfCancellationRequested();
+                        verifyStore.Record(job.TaskId,evidence,issue.Origin,model,result,admission);
+                        break;
+                    }
                     case "ClassifyIssue":
                     {
                         var issue=input.Issues.Single(x=>x.Id==step.IssueId);
