@@ -66,8 +66,8 @@ export function StudioLiveActivity({ token, active, recorded, onInspect }: {
         if (result.events.length) {
           setRecent(previous => {
             const already = new Set(previous.map(item => item.sequence));
-            return [...previous, ...result.events.filter(item =>
-              !already.has(item.sequence))].slice(-48);
+            const added = result.events.filter(item => !already.has(item.sequence));
+            return added.length ? [...previous, ...added].slice(-48) : previous;
           });
         }
         setConnection('ok');
@@ -129,7 +129,7 @@ export function StudioLiveActivity({ token, active, recorded, onInspect }: {
           {paused ? 'Resume feed' : 'Pause feed'}
         </button>
       </div>
-      {tab === 'traffic' && <div className="ca-live-activity-body"
+      {tab === 'traffic' && <div className="ca-live-activity-body" role="region"
         aria-label="Authenticated API request summaries">
         <p className="ca-live-activity-note">Recent authenticated local API requests.
           An HTTP 200 means the request completed—not that an agent finished work.
@@ -149,7 +149,7 @@ export function StudioLiveActivity({ token, active, recorded, onInspect }: {
           'System activity could not be retrieved. The project workflow is unaffected.' :
           'No recent request summaries. The studio is not running background work.'}</p>}
       </div>}
-      {tab === 'agents' && <div className="ca-live-activity-body"
+      {tab === 'agents' && <div className="ca-live-activity-body" role="region"
         aria-label="Persisted agent event summaries">
         <p className="ca-live-activity-note">Saved source tasks, independent QA reviews,
           and agent handoffs. Historical events are not evidence of current activity.</p>
