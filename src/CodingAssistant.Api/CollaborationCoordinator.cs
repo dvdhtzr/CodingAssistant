@@ -271,6 +271,81 @@ public sealed class CollaborationStore(TaskStore tasks)
         tx.Commit();tasks.SignalEngineeringActivity(taskId);return job;
     }
 
+    // Resume is an explicit exact-source owner admission. Preserve the
+    // interrupted session and its step history; do not replay old actions.
+    public CollaborationRun Resume(string taskId,string id,StartCollaborationRequest request)
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        RequireNoActive(db,tx,taskId);
+        var prior=Find(db,tx,taskId,id);
+        if(prior.State!="Interrupted" || prior.RunId!=request.RunId ||
+            prior.SourceSha256!=request.SourceSha256 || prior.PlanSha256!=request.PlanSha256 ||
+            prior.PolicyRevision!=request.PolicyRevision || prior.PolicySha256!=request.PolicySha256 ||
+            TaskStore.Scalar(db,tx,"SELECT id FROM engineering_collaborations WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1",("@task",taskId))!=id)
+            throw new StoreFailure("RESUME_NOT_AVAILABLE");
+        if(TaskStore.Scalar(db,tx,"SELECT 1 FROM lead_reviews WHERE task_id=@task AND state='Running' UNION SELECT 1 FROM qa_reviews WHERE task_id=@task AND state='Running'",("@task",taskId)) is not null)
+            throw new StoreFailure("BUILD_BUSY");
+        var job=prior with {State="Running",Reason=null,UpdatedUtc=DateTimeOffset.UtcNow.ToString("O")};
+        RequireCurrent(db,tx,job);
+        foreach(var (role,operation) in new[]{("LeadSoftwareEngineer","ReviewCode"),("QaEngineer","ReviewAcceptance")})
+            EngineeringDelegationStore.Require(db,tx,taskId,job.PolicyRevision,job.PolicySha256,role,operation);
+
+        // Reconcile only the cycle and exact QA receipt linked to this
+        // session. A partial or unknown review is never marked reviewed.
+        var cycleId=ContinuationCycle(db,tx,taskId,id);
+        if(cycleId is not null)
+        {
+            string? state=null,qaId=null;
+            using(var cmd=TaskStore.Command(db,tx,"SELECT state,qa_review_id FROM repair_cycles WHERE task_id=@task AND id=@cycle AND engineering_run_id=@run",
+                ("@task",taskId),("@cycle",cycleId),("@run",job.RunId)))
+            using(var reader=cmd.ExecuteReader())
+                if(reader.Read()){state=reader.GetString(0);qaId=reader.IsDBNull(1)?null:reader.GetString(1);}
+            if(state is "Interrupted" or "QaRunning")
+            {
+                // The review may have committed before the cycle's UI state
+                // was updated. Recover its identity from the atomic admission.
+                var linked=Steps(db,tx,id).LastOrDefault(s=>s.Action=="ReviewAcceptance" && s.ReferenceId is not null)?.ReferenceId;
+                if(linked is null || (qaId is not null && qaId!=linked))
+                    throw new StoreFailure("RESUME_NOT_AVAILABLE");
+                var qaState=TaskStore.Scalar(db,tx,"SELECT state FROM qa_reviews WHERE id=@qa AND task_id=@task AND engineering_run_id=@run AND source_sha256=@source",
+                    ("@qa",linked),("@task",taskId),("@run",job.RunId),("@source",job.SourceSha256));
+                if(qaState is not ("Reviewed" or "Interrupted"))throw new StoreFailure("RESUME_NOT_AVAILABLE");
+                TaskStore.Execute(db,tx,"UPDATE repair_cycles SET state=@state,qa_review_id=@qa,error_code=NULL,updated_utc=@utc WHERE id=@cycle",
+                    ("@state",qaState=="Reviewed"?"QaReviewed":"Generated"),
+                    ("@qa",qaState=="Reviewed"?(object)linked:DBNull.Value),("@utc",job.UpdatedUtc),("@cycle",cycleId));
+            }
+            else if(state is not ("Generated" or "QaReviewed"))throw new StoreFailure("RESUME_NOT_AVAILABLE");
+        }
+        var seq=Steps(db,tx,id).Count+1;
+        TaskStore.Execute(db,tx,"UPDATE engineering_collaborations SET state='Running',reason=NULL,updated_utc=@utc WHERE id=@id AND state='Interrupted'",
+            ("@utc",job.UpdatedUtc),("@id",id));
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO engineering_collaboration_steps(collaboration_id,sequence,action,rationale,reference_id,created_utc)
+            VALUES(@id,@seq,'ResumeInterrupted','Owner resumed exact interrupted coordination checkpoint',@id,@utc)
+            """,("@id",id),("@seq",seq),("@utc",job.UpdatedUtc));
+        EngineeringActivityStore.Record(db,tx,taskId,"CollaborationResumed","HumanOwner","Collaboration",id,seq,
+            toAgent:"TechnicalLead",sourceSha256:job.SourceSha256);
+        tx.Commit();tasks.SignalEngineeringActivity(taskId);return job;
+    }
+
+    public string? ContinuationCycle(string taskId,string id)
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
+        _=Find(db,tx,taskId,id);
+        var cycle=ContinuationCycle(db,tx,taskId,id);tx.Commit();return cycle;
+    }
+
+    private static bool RetryInterrupted(SqliteConnection db,SqliteTransaction tx,CollaborationRun job,string action,string? state)
+    {
+        if(state!="Interrupted")return false;
+        var table=action=="ReviewCode"?"lead_reviews":"qa_reviews";
+        var review=TaskStore.Scalar(db,tx,"SELECT id FROM "+table+" WHERE task_id=@task AND engineering_run_id=@run AND source_sha256=@source ORDER BY created_utc DESC,id DESC LIMIT 1",
+            ("@task",job.TaskId),("@run",job.RunId),("@source",job.SourceSha256));
+        var steps=Steps(db,tx,job.Id);
+        var interrupted=steps.LastOrDefault(s=>s.Action==action && s.ReferenceId==review);
+        return interrupted is not null && steps.Any(s=>s.Action=="ResumeInterrupted" && s.Sequence>interrupted.Sequence);
+    }
+
     private static bool Permitted(SqliteConnection db,SqliteTransaction tx,CollaborationRun job,string role,string operation)
     {
         try{EngineeringDelegationStore.Require(db,tx,job.TaskId,job.PolicyRevision,job.PolicySha256,role,operation);return true;}
@@ -292,7 +367,7 @@ public sealed class CollaborationStore(TaskStore tasks)
             """,("@task",job.TaskId),("@run",job.RunId),("@source",job.SourceSha256));
         var latestIssues=issues.Where(i=>i.LatestReview).ToArray();
         var progress=RepairProgressStore.Read(db,tx,job.TaskId,job.RunId);
-        if(lead is null)actions.Add("ReviewCode");
+        if(lead is null || RetryInterrupted(db,tx,job,"ReviewCode",lead))actions.Add("ReviewCode");
         else if(lead=="Reviewed")
         {
             if(latestIssues.Any(i=>i.State is "NeedsTriage" or "Challenged" or "TriageConflict"))
@@ -313,7 +388,7 @@ public sealed class CollaborationStore(TaskStore tasks)
                 """,("@task",job.TaskId),("@run",job.RunId)) is not null;
             if(!leadConcern && !leadUncertain)
             {
-                if(qa is null)actions.Add("ReviewAcceptance");
+                if(qa is null || RetryInterrupted(db,tx,job,"ReviewAcceptance",qa))actions.Add("ReviewAcceptance");
                 else if(qa=="Reviewed" && !latestIssues.Any(i=>i.State is
                     "NeedsTriage" or "Challenged" or "TriageConflict" or "ConfirmedDefect"))
                     actions.Add("AwaitQualifiedVerification");
@@ -473,6 +548,20 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
         _=Task.Run(()=>RunAsync(job,cancel,continuationCycleId));
         return job;
     }
+    public async Task<CollaborationRun> ResumeAsync(string taskId,string id,StartCollaborationRequest request,CancellationToken token)
+    {
+        if(_active.ContainsKey(id))throw new StoreFailure("BUILD_BUSY");
+        var prior=store.Get(taskId,id).Job;
+        if(!(await catalog.ListAsync(token)).Contains(prior.Model,StringComparer.Ordinal))
+            throw new StoreFailure("MODEL_NOT_INSTALLED");
+        var job=store.Resume(taskId,id,request);
+        var cycleId=store.ContinuationCycle(taskId,id);
+        var cancel=CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
+        _active[job.Id]=cancel;
+        _=Task.Run(()=>RunAsync(job,cancel,cycleId));
+        return job;
+    }
+
     private async Task RunAsync(CollaborationRun job,CancellationTokenSource cancel,string? continuationCycleId)
     {
         var token=cancel.Token;string? activeReview=null;bool activeLead=false;

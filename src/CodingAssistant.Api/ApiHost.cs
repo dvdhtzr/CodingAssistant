@@ -861,6 +861,14 @@ public static class ApiHost
             (string id,StartCollaborationRequest request,CollaborationCoordinator coordinator,CancellationToken cancellation)=>
                 SafeAsync(async()=>Results.Accepted($"/api/tasks/{id}/collaboration/latest",
                     await coordinator.StartAsync(id,request,cancellation))));
+        app.MapPost("/api/tasks/{id}/collaboration/{jobId}/resume",
+            (string id,string jobId,StartCollaborationRequest request,CollaborationCoordinator coordinator,CancellationToken cancellation)=>
+                SafeAsync(async()=>Results.Accepted($"/api/tasks/{id}/collaboration/latest",
+                    await coordinator.ResumeAsync(id,jobId,request,cancellation))));
+        app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/resume-collaboration",
+            (string id,string cycleId,StartCollaborationRequest request,CollaborationCoordinator coordinator,CancellationToken cancellation)=>
+                SafeAsync(async()=>Results.Accepted($"/api/tasks/{id}/collaboration/latest",
+                    await coordinator.StartAsync(id,request,cancellation,cycleId))));
         app.MapPost("/api/tasks/{id}/collaboration/{jobId}/cancel",
             (string id,string jobId,CollaborationCoordinator coordinator)=>Safe(()=>Results.Ok(coordinator.Cancel(id,jobId))));
         app.MapGet("/api/tasks/{id}/adaptive-work-plan",

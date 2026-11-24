@@ -3728,14 +3728,25 @@ try
     using(var aetAnonymousCollab=new HttpClient{BaseAddress=client.BaseAddress})
     using(var aetDeniedCollab=await Post(aetAnonymousCollab,aetCollabPath,aetCollabRequest))
         Check(aetDeniedCollab.StatusCode==HttpStatusCode.Unauthorized,"collaboration admission remains owner-private");
+    var aetCollabStore=new CollaborationStore(tasks);
+    // Crash after persisting an intent but before any independent review is
+    // admitted. Its unlinked intent must survive, not be treated as work done.
+    var aetInterruptedCollab=aetCollabStore.Start(taskBound.Id,aetCollabRequest,"qwen3.5:4b");
+    var aetInterruptedStep=aetCollabStore.Record(taskBound.Id,aetInterruptedCollab.Id,
+        new CollaborationDecision("ReviewCode","Request review before simulated process interruption."));
+    aetCollabStore.Recover();aetCollabStore.Recover();
+    Check(aetCollabStore.Get(taskBound.Id,aetInterruptedCollab.Id).Job.State=="Interrupted" &&
+        aetInterruptedStep.ReferenceId is null,"interrupted coordination retains unexecuted intent");
+    using(var aetStaleResume=await Post(client,aetCollabPath+"/"+aetInterruptedCollab.Id+"/resume",
+        aetCollabRequest with {SourceSha256=new string('0',64)}))
+        Check(aetStaleResume.StatusCode==HttpStatusCode.Conflict,"stale source cannot resume collaboration");
     string aetCollabId;
-    using(var aetCollabStarted=await Post(client,aetCollabPath,aetCollabRequest))
+    using(var aetCollabStarted=await Post(client,aetCollabPath+"/"+aetInterruptedCollab.Id+"/resume",aetCollabRequest))
     using(var aetCollabBody=await Body(aetCollabStarted))
     {
-        Check(aetCollabStarted.StatusCode==HttpStatusCode.Accepted,"owner admits exact delegated collaboration session");
+        Check(aetCollabStarted.StatusCode==HttpStatusCode.Accepted,"owner resumes exact interrupted collaboration session");
         aetCollabId=aetCollabBody.RootElement.GetProperty("id").GetString()!;
     }
-    var aetCollabStore=new CollaborationStore(tasks);
     CollaborationSnapshot? aetCollabResult=null;
     for(var aetAttempt=0;aetAttempt<240;aetAttempt++)
     {
@@ -3745,8 +3756,10 @@ try
     }
     Check(aetCollabResult?.Job.State=="AwaitingOwner" &&
         aetCollabResult.Job.Reason=="EXACT_REPAIR_APPROVAL_REQUIRED" &&
-        aetCollabResult.Steps.Select(x=>x.Action).SequenceEqual(["ReviewCode","ClassifyIssue","RequestOwnerRepair"]) &&
-        aetCollabResult.Steps.All(x=>x.ReferenceId is not null) &&
+        aetCollabId==aetInterruptedCollab.Id &&
+        aetCollabResult.Steps.Select(x=>x.Action).SequenceEqual(["ReviewCode","ResumeInterrupted","ReviewCode","ClassifyIssue","RequestOwnerRepair"]) &&
+        aetCollabResult.Steps[0].ReferenceId is null &&
+        aetCollabResult.Steps.Skip(1).All(x=>x.ReferenceId is not null) &&
         aetCollaborationLead.Calls==3,
         "actual lead decision loop independently reviews, classifies and requests exact repair without bypassing owner gate");
     Check(engineeringStore.Latest(taskBound.Id)!.Job.Id==aetChildResumeId &&
@@ -3754,7 +3767,7 @@ try
         "blocking lead finding prevents premature QA, source mutation and functional claims");
     var aetCollabProposal=new RepairProposalStore(tasks).Latest(taskBound.Id)!;
     Check(aetCollabProposal.Id==aetCollabResult!.Steps.Last().ReferenceId &&
-        aetCollabProposal.LeadReviewId==aetCollabResult.Steps.First().ReferenceId,
+        aetCollabProposal.LeadReviewId==aetCollabResult.Steps[2].ReferenceId,
         "actual independent review and repair proposal references are durable");
     Check(new AgentCommunicationStore(tasks).List(taskBound.Id,role:"SoftwareEngineer",direction:"inbox")
         .Any(x=>x.RunId==aetChildResumeId && x.FromAgent=="TechnicalLead" && x.Kind=="RepairRequested"),

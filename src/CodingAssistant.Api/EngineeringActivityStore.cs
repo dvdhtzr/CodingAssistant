@@ -90,6 +90,7 @@ public sealed class EngineeringActivityStore(TaskStore tasks)
         "IssueDecisionRecorded" => ("Team","Technical Lead recorded issue classification; no execution authorized"),
         "WorkPlanRevised" => ("Team","Technical Lead revised operational work schedule within approved scope"),
         "CollaborationStarted" => ("Team","Owner admitted delegated engineering coordination"),
+        "CollaborationResumed" => ("Team","Owner resumed exact interrupted collaboration checkpoint"),
         "CollaborationDecisionRecorded" => ("Team","Technical Lead selected an evidence-bound next action"),
         "CollaborationStopped" => ("Engineering","Coordination session ended; inspect recorded outcome"),
         "IssueStaticRecheckRecorded" => ("Engineering","Independent finding recheck recorded; no functional tests executed"),

@@ -22,3 +22,12 @@ is automatically replayed. Existing source checkpoints remain authoritative.
 Safe overlapping project work and broader work-lease integration remain.
 The gate is process-local; other applications and separate API processes
 are outside its capacity guarantee. Fixtures do not certify live hardware.
+
+An interrupted coordination session can be explicitly resumed by its owner
+with the same exact run/source/plan/policy binding. Resume appends a durable
+checkpoint marker. Unlinked intents are not completed work; linked completed
+review receipts are not dispatched again. A linked interrupted review can
+be attempted once per new explicit resume. A generated repair whose
+continuation was never admitted has a separate exact-source resume endpoint;
+the unique durable child link prevents duplicate admission. No owner consent
+or generated execution permission is inferred from a restart.
