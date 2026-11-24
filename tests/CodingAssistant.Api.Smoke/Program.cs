@@ -218,6 +218,76 @@ if (OperatingSystem.IsWindows())
         "cloud and malformed identifiers never become local inference targets");
 }
 
+// Per-role model configuration is durable and does not alter approved contracts.
+{
+    var local = Path.Combine(Path.GetTempPath(),
+        "ca-role-models-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var tasksForRoles = new TaskStore(local);
+        var roleTask = tasksForRoles.CreateTask(new CreateTaskRequest(
+            "Model assignments", "Use independent local MAF models.",
+            Guid.NewGuid().ToString("N")));
+        var settingsForRoles = new AgentRoleModelSettings(tasksForRoles);
+        settingsForRoles.Initialize();
+        var initial = settingsForRoles.Read(roleTask.Id, "qwen3-coder:30b");
+        Check(initial.Count == 5 &&
+              initial.Single(x => x.Role == "ProductOwner").Model ==
+                "qwen3-coder:30b" &&
+              initial.Single(x => x.Role == "SolutionArchitect").Model ==
+                "qwen3-coder:30b" &&
+              initial.Single(x => x.Role == "TechnicalLead").Model ==
+                "qwen3-coder:30b" &&
+              initial.Single(x => x.Role == "SoftwareEngineer").Model ==
+                "qwen2.5-coder:14b" &&
+              initial.Single(x => x.Role == "QaEngineer").Model ==
+                "qwen2.5-coder:14b",
+            "five separate team roles with 14b coder preferred only for engineer and QA");
+        settingsForRoles.Set(roleTask.Id, "QaEngineer", "gemma4:latest",
+            "qwen3-coder:30b");
+        settingsForRoles.Set(roleTask.Id, "SoftwareEngineer", "qwen3.5:4b",
+            "qwen3-coder:30b");
+        var persisted = new AgentRoleModelSettings(tasksForRoles)
+            .Read(roleTask.Id, "qwen3-coder:30b");
+        Check(persisted.Single(x => x.Role == "QaEngineer").Model ==
+                "gemma4:latest" &&
+              persisted.Single(x => x.Role == "SoftwareEngineer").Model ==
+                "qwen3.5:4b" &&
+              persisted.Single(x => x.Role == "TechnicalLead").Model ==
+                "qwen3-coder:30b",
+            "agent assignment survives a new settings instance without cross-role leakage");
+        settingsForRoles.Set(roleTask.Id, "QaEngineer", null, "qwen3-coder:30b");
+        Check(settingsForRoles.Resolve(roleTask.Id, "QaEngineer",
+                "qwen3-coder:30b") == "qwen2.5-coder:14b",
+            "restoring QA default does not change Software Engineer");
+        try
+        {
+            settingsForRoles.Set(roleTask.Id, "ProductOwner", "gemma4:latest",
+                "qwen3-coder:30b");
+            throw new Exception("Product Owner interview model changed silently");
+        }
+        catch (StoreFailure error) when (error.Code == "INVALID_AGENT_ROLE")
+        {
+            Check(true, "existing Product Owner interview pin remains authoritative");
+        }
+        try
+        {
+            settingsForRoles.Set(roleTask.Id, "QaEngineer", "cloud/model",
+                "qwen3-coder:30b");
+            throw new Exception("Cloud model accepted for QA");
+        }
+        catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+        {
+            Check(true, "per-role model settings reject cloud and malformed identifiers");
+        }
+    }
+    finally
+    {
+        try { Directory.Delete(local, recursive: true); }
+        catch (IOException) { /* Windows AV may briefly hold SQLite handles. */ }
+    }
+}
+
 // Regression: MAF must use the SAME guided-answer schema as the parser.
 // Without the choice property Ollama's structured-output mode cannot return
 // radio or checkbox options even if the Product Owner requests them.
