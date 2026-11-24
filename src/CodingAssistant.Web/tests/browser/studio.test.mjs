@@ -357,6 +357,9 @@ test('stale architecture shows a clear recovery action and never enables old cho
     await canvas.locator('#journey-panel-architecture').waitFor({ state: 'visible' });
     const recovery = canvas.locator('.architect-recovery');
     await recovery.getByText('2 architecture recommendations need refreshing').waitFor();
+    // The summary can render before the separately loaded archived choices.
+    // Wait for both actual archived controls, then retain the strict counts.
+    await canvas.locator('details.architect-archived').nth(1).waitFor({ state: 'visible' });
     assert.equal(await canvas.locator('fieldset.architect-options').count(), 0,
       'historical options must not look like selectable disabled controls');
     assert.equal(await canvas.locator('input[type="radio"][name^="architecture-"]').count(), 0);
