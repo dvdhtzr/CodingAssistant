@@ -102,6 +102,9 @@ export function parseSandboxReport(raw){
      !BROWSER_CODES.includes(b.dom) ||
      !BROWSER_CODES.includes(b.sandbox))
     fail('Unrecognized browser diagnostic categories');
+  if(checks.sandboxed_chromium_fixed_dom && b.dom!=='PASS' ||
+     checks.chromium_sandbox_status_adequate && (b.sandbox!=='PASS'||b.binary!=='FULL_CHROMIUM'))
+    fail('Positive browser observations require matching browser evidence');
   return {cases:Object.fromEntries(CASES.map(name=>[name,checks[name]])),
     browser:{binary:b.binary,dom:b.dom,sandbox:b.sandbox}};
 }

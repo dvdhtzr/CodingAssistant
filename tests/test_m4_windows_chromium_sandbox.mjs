@@ -7,7 +7,7 @@ import {
   OFFICIAL_SECCOMP_GIT_BLOB,checkedChromiumSeccomp,validateChromiumSeccompBytes,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
-  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,
+  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,
 } from '../tools/m4/windows_chromium_sandbox_guest.mjs';
 
 const NAME='ca-win-m47-012345abcdef';
@@ -17,7 +17,7 @@ const META={Id:ID,RepoDigests:[DIGEST],Os:'linux',Architecture:'amd64'};
 const INFO={OSType:'linux',OperatingSystem:'Docker Desktop',
   PidsLimit:true,MemoryLimit:true};
 const GOOD=Object.fromEntries(CASES.map(key=>[key,true]));
-const BROWSER={binary:'HEADLESS_SHELL',dom:'PASS',sandbox:'PASS'};
+const BROWSER={binary:'FULL_CHROMIUM',dom:'PASS',sandbox:'PASS'};
 function envelope(cases=GOOD,browser=BROWSER){
   return {schemaVersion:1,cases,browser};
 }
@@ -154,6 +154,8 @@ test('strict report rejects malformed, oversized, unknown, and forged categories
     JSON.stringify({...envelope(),cases:{...GOOD,extra:true}}),
     JSON.stringify({...envelope(),cases:{...GOOD,non_root_uid:'true'}}),
     JSON.stringify({...envelope(),browser:{...BROWSER,dom:'raw log'}}),
+    JSON.stringify(envelope(GOOD,{...BROWSER,binary:'HEADLESS_SHELL'})),
+    JSON.stringify(envelope(GOOD,{...BROWSER,dom:'CHROMIUM_CRASH_SIGTRAP'})),
     JSON.stringify({...envelope(),browser:{...BROWSER,path:'/home/user'}}),
     JSON.stringify({...envelope(),browser:{...BROWSER,sandbox:0}}),
     '{unclosed',
@@ -171,7 +173,10 @@ test('Chrome error categorizer emits only allowlisted codes and no stderr',()=>{
       'CHROMIUM_SANDBOX_REJECTED'],
     [{stderr:'no usable sandbox!'},'CHROMIUM_SANDBOX_REJECTED'],
     [{stderr:'Resource temporarily unavailable'},'CHROMIUM_RESOURCE_EXHAUSTED'],
-    [{signal:'SIGSYS',stderr:'SECRET'},'CHROMIUM_CRASH'],
+    [{signal:'SIGSYS',stderr:'SECRET'},'CHROMIUM_CRASH_SIGSYS'],
+    [{signal:'SIGTRAP',stderr:'SECRET'},'CHROMIUM_CRASH_SIGTRAP'],
+    [{signal:'SIGABRT',stderr:'SECRET'},'CHROMIUM_CRASH_SIGABRT'],
+    [{signal:'SIGTRAP',stderr:'chrome_crashpad_handler: --database is required SECRET'},'CHROMIUM_CRASHPAD_ERROR'],
     [{status:1,stderr:'SECRET'},'CHROMIUM_EXIT_NONZERO'],
   ];
   for(const [input,expected] of cases){
@@ -257,4 +262,13 @@ test('no arguments is NOT_RUN and never contacts Docker',()=>{
     });
   assert.equal(processResult.status,0,processResult.stderr);
   assert.match(processResult.stdout,/NOT_RUN/);
+});
+
+test('rendered fixture must change actual output; script source is not a pass',()=>{
+  assert.equal(fixedDomPassed('<output id="result">PENDING</output><script>document.querySelector("#result").textContent="CA_M47_SANDBOXED_DOM_OK"</script>'),false);
+  assert.equal(fixedDomPassed('<script>const x=\'<output id="result">CA_M47_SANDBOXED_DOM_OK</output>\'</script>'),false);
+  assert.equal(fixedDomPassed('<output id="result">CA_M47_SANDBOXED_DOM_OK</output>'),true);
+  assert.equal(sandboxStatusPassed('<script>const status="You are adequately sandboxed."</script>'),false);
+  assert.equal(sandboxStatusPassed('<p>You are not adequately sandboxed!</p>'),false);
+  assert.equal(sandboxStatusPassed('<p>You are adequately sandboxed.</p>'),true);
 });

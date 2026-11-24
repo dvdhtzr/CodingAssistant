@@ -19,7 +19,9 @@ export const BROWSER_CODES=Object.freeze([
   'CHROMIUM_TIMEOUT','CHROMIUM_SPAWN_ENOENT','CHROMIUM_SPAWN_EACCES',
   'CHROMIUM_SPAWN_ERROR','CHROMIUM_SHARED_LIBRARY_ERROR',
   'CHROMIUM_SANDBOX_REJECTED','CHROMIUM_RESOURCE_EXHAUSTED',
-  'CHROMIUM_CRASH','CHROMIUM_EXIT_NONZERO',
+  'CHROMIUM_CRASH','CHROMIUM_CRASH_SIGSYS','CHROMIUM_CRASH_SIGTRAP',
+  'CHROMIUM_CRASH_SIGSEGV','CHROMIUM_CRASH_SIGABRT','CHROMIUM_CRASH_SIGKILL',
+  'CHROMIUM_CRASHPAD_ERROR','CHROMIUM_PROFILE_ERROR','CHROMIUM_EXIT_NONZERO',
   'CHROMIUM_FIXED_DOM_MISSING','CHROMIUM_SANDBOX_STATUS_UNPROVEN',
 ]);
 // Deliberately absent: --no-sandbox, --disable-setuid-sandbox,
@@ -28,7 +30,7 @@ export const BROWSER_ARGS=Object.freeze([
   '--headless','--disable-gpu','--disable-dev-shm-usage',
   '--disable-background-networking','--disable-crash-reporter',
   '--no-first-run','--no-default-browser-check',
-  '--user-data-dir=/tmp/ca-m47-browser','--dump-dom',
+  '--dump-dom',
 ]);
 function denied(fn){try{fn();return false;}catch{return true;}}
 function child(command){
@@ -52,16 +54,18 @@ function browserExecutable(){
     const names=fs.readdirSync('/ms-playwright')
       .filter(n=>/^chromium(?:_headless_shell)?-\d+$/.test(n)).sort();
     const candidates=[];
+    // The full browser implements chrome://sandbox WebUI; old standalone
+    // headless shell is not an equivalent status-page verifier.
+    for(const name of names.filter(n=>n.startsWith('chromium-')))
+      for(const rel of ['chrome-linux64/chrome','chrome-linux/chrome'])
+        candidates.push({kind:'FULL_CHROMIUM',
+          executable:path.posix.join('/ms-playwright',name,rel)});
     for(const name of names.filter(n=>n.startsWith('chromium_headless_shell-')))
       for(const rel of [
         'chrome-headless-shell-linux64/chrome-headless-shell',
         'chrome-linux/headless_shell',
       ])candidates.push({kind:'HEADLESS_SHELL',
         executable:path.posix.join('/ms-playwright',name,rel)});
-    for(const name of names.filter(n=>n.startsWith('chromium-')))
-      for(const rel of ['chrome-linux64/chrome','chrome-linux/chrome'])
-        candidates.push({kind:'FULL_CHROMIUM',
-          executable:path.posix.join('/ms-playwright',name,rel)});
     return candidates.find(item=>fs.existsSync(item.executable)) ??
       {kind:'BINARY_NOT_FOUND',executable:null};
   }catch{return {kind:'DISCOVERY_FAILED',executable:null};}
@@ -72,34 +76,59 @@ export function classifyBrowser(proc){
   if(proc.error?.code==='EACCES')return 'CHROMIUM_SPAWN_EACCES';
   if(proc.error)return 'CHROMIUM_SPAWN_ERROR';
   const stderr=String(proc.stderr??'').slice(0,8192);
+  if(/crashpad.*(?:database|permission denied|read-only file system)|--database is required/i.test(stderr))
+    return 'CHROMIUM_CRASHPAD_ERROR';
+  if(/(?:profile|user data directory|SingletonLock).*(?:permission denied|read-only|failed|in use)|failed to create.*(?:profile|user data directory)/i.test(stderr))
+    return 'CHROMIUM_PROFILE_ERROR';
   if(/error while loading shared libraries|cannot open shared object/i.test(stderr))
     return 'CHROMIUM_SHARED_LIBRARY_ERROR';
   if(/no usable sandbox|failed to move to new namespace|failed to create.*namespace|operation not permitted|sandbox.*(fail|denied)/i.test(stderr))
     return 'CHROMIUM_SANDBOX_REJECTED';
   if(/resource temporarily unavailable|no space left on device|out of memory/i.test(stderr))
     return 'CHROMIUM_RESOURCE_EXHAUSTED';
+  if(['SIGSYS','SIGTRAP','SIGSEGV','SIGABRT','SIGKILL'].includes(proc.signal))
+    return 'CHROMIUM_CRASH_'+proc.signal;
   if(proc.signal)return 'CHROMIUM_CRASH';
   return 'CHROMIUM_EXIT_NONZERO';
+}
+// Only observed rendered output counts, not a marker embedded in script source.
+export function fixedDomPassed(html){
+  return typeof html==='string' && /<output\s+id=["']result["']\s*>\s*CA_M47_SANDBOXED_DOM_OK\s*<\/output>/i
+    .test(html.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi,''));
+}
+export function sandboxStatusPassed(html){
+  if(typeof html!=='string')return false;
+  const body=html.replace(/<(script|style|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,' ')
+    .replace(/<!--[^]*?-->/g,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+  return /you are adequately sandboxed/i.test(body) &&
+    !/you are not adequately sandboxed/i.test(body);
 }
 function runBrowser(browser,url,kind){
   if(!browser.executable)
     return {passed:false,code:browser.kind};
-  const result=spawnSync(browser.executable,[...BROWSER_ARGS,url],{
+  if(kind==='status' && browser.kind!=='FULL_CHROMIUM')
+    return {passed:false,code:'CHROMIUM_SANDBOX_STATUS_UNPROVEN'};
+  // Explicitly create private, writable directories in the existing bounded
+  // guest tmpfs. Never mount the host or make the root filesystem writable.
+  const home=fs.mkdtempSync('/tmp/ca-m47-'+kind+'-');
+  const dirs=Object.fromEntries(['config','cache','runtime','profile'].map(name=>{
+    const dir=path.join(home,name);fs.mkdirSync(dir,{mode:0o700});return [name,dir];
+  }));
+  const result=spawnSync(browser.executable,[...BROWSER_ARGS,'--user-data-dir='+dirs.profile,url],{
     encoding:'utf8',timeout:23000,maxBuffer:32768,
-    env:{HOME:'/tmp',PATH:process.env.PATH,XDG_CONFIG_HOME:'/tmp/config',
-      XDG_CACHE_HOME:'/tmp/cache',XDG_RUNTIME_DIR:'/tmp'},
+    env:{HOME:home,PATH:process.env.PATH,XDG_CONFIG_HOME:dirs.config,
+      XDG_CACHE_HOME:dirs.cache,XDG_RUNTIME_DIR:dirs.runtime},
   });
   if(result.status!==0)
     return {passed:false,code:classifyBrowser(result)};
   if(typeof result.stdout!=='string'||result.stdout.length>32768)
     return {passed:false,code:'CHROMIUM_FIXED_DOM_MISSING'};
   if(kind==='dom'){
-    const passed=result.stdout.includes('CA_M47_SANDBOXED_DOM_OK');
+    const passed=fixedDomPassed(result.stdout);
     return {passed,code:passed?'PASS':'CHROMIUM_FIXED_DOM_MISSING'};
   }
-  const body=result.stdout.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
   // Ambiguous status-page responses are BLOCKED, not accepted as sandboxed.
-  const passed=/you are adequately sandboxed/i.test(body);
+  const passed=sandboxStatusPassed(result.stdout);
   return {passed,code:passed?'PASS':'CHROMIUM_SANDBOX_STATUS_UNPROVEN'};
 }
 export async function runFixedCompatibility(){

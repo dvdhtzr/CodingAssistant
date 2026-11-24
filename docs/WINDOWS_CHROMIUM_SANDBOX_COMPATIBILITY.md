@@ -151,3 +151,9 @@ disabled regardless of the fixed compatibility result.
 CI only validates command policy, exact guest source and result schema,
 browser flag omissions, simulated Docker/cleanup negatives and local
 Node syntax. CI does **not** run this guest inside Docker Desktop.
+
+## November 24 follow-up — full Chromium and stronger observations
+
+Owner-host evidence again reports 9/11 with HEADLESS_SHELL and CHROMIUM_CRASH for both browser checks; cleanup is confirmed. The generic crash category did not establish the cause. The probe now prefers the cached full Chromium binary for its internal WebUI, creates separate private HOME/XDG/profile directories inside the same disposable tmpfs, and distinguishes allowlisted crash signals, Crashpad and profile errors. No Docker privileges, mounts, limits or seccomp policy change. The headless shell cannot establish a positive internal sandbox status.
+
+The DOM check now requires the changed output element, not merely the marker in the script text. Script/style/template content is excluded from the internal status assertion. A positive browser Boolean with a conflicting diagnostic is rejected. The unchanged 11/11 requirement and cleanup gate still apply; this is a targeted compatibility/measurement correction, not a confirmed host fix or qualification. A subsequent BLOCKED report is actionable by its narrower category.
