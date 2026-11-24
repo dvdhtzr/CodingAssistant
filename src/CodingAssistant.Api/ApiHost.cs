@@ -839,6 +839,8 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/cancel",
             (string id, string cycleId, RepairCycleCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
+        app.MapGet("/api/tasks/{id}/adaptive-work-plan",
+            (string id,TaskStore tasks)=>Safe(()=>Results.Ok(new AdaptiveWorkPlanStore(tasks).Read(id))));
         app.MapGet("/api/tasks/{id}/engineering-issues",
             (string id,string? runId,TaskStore tasks) =>
                 Safe(() => Results.Ok(new EngineeringIssueStore(tasks).Read(id,runId))));
@@ -1179,6 +1181,7 @@ public static class ApiHost
                 "SMOKE_BUSY" or "SMOKE_ISOLATION_ACK_REQUIRED" or
                 "SPECIFICATION_NOT_APPROVED" or
                 "STALE_DELEGATION_POLICY" or "DELEGATION_NOT_AUTHORIZED" or
+                "STALE_WORK_PLAN" or "WORK_SCOPE_EXPANSION" or "WORK_DEPENDENCY_CYCLE" or
             "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or

@@ -3412,10 +3412,60 @@ try
         qaModel.ReviewedFiles.Count==10,
         "lead static correctness assessment cannot claim functional verification; actual QA reviewed two more files");
 
+    // Adaptive scheduling preserves the exact approved scope and required
+    // dependencies, while allowing safe priority and suspension decisions.
+    var aetAdaptivePolicy=delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(3,secondPlanHash,["ScheduleWork"]));
+    aetAdaptivePolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+        aetAdaptivePolicy.Revision,aetAdaptivePolicy.PolicySha256,"APPROVE "+aetAdaptivePolicy.PolicySha256));
+    var aetAdaptiveContext=new AdaptivePlanContext(taskBound.Id,"TechnicalLead",
+        aetAdaptivePolicy.Revision,aetAdaptivePolicy.PolicySha256,secondPlanHash,
+        aetLeadRepairResult!.Engineering.Job.Id,QaReviewStore.Fingerprint(aetLeadRepairResult.Engineering.Files));
+    var aetWorkPlanStore=new AdaptiveWorkPlanStore(tasks);
+    var aetSchedule=new WorkPackageSchedule[] {
+        new("timer-interface",[],5,false,"Medium",["index.html"]),
+        new("timer-state",["timer-interface"],90,false,"High",["app.js"])
+    };
+    var aetPlanDraft=new ReviseAdaptivePlanDraft(0,null,aetSchedule,"Prioritize state only after the required interface dependency.");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext with {FromAgent="SoftwareEngineer"},
+        aetPlanDraft),"AGENT_CAPABILITY_DENIED");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext,
+        aetPlanDraft with {Packages=[aetSchedule[0],aetSchedule[1] with {DependsOn=[]}]}),"INVALID_WORK_PLAN");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext,
+        aetPlanDraft with {Packages=[aetSchedule[0] with {DependsOn=["timer-state"]},aetSchedule[1]]}),"WORK_DEPENDENCY_CYCLE");
+    var aetOperationalPlan=aetWorkPlanStore.Revise(aetAdaptiveContext,aetPlanDraft);
+    var aetEmptyStates=new Dictionary<string,string>();
+    Check(AdaptiveWorkPlanStore.Next(aetOperationalPlan.Packages,aetEmptyStates)=="timer-interface" &&
+        AdaptiveWorkPlanStore.Evaluate(aetOperationalPlan.Packages,aetEmptyStates)
+            .Single(x=>x.Id=="timer-state").State=="WaitingForDependency" &&
+        aetOperationalPlan.Packages.All(x=>x.ArchitectureSha256==architectureSha),
+        "adaptive priority cannot bypass mandatory dependency or approved architecture");
+    var aetWriterStates=new Dictionary<string,string>{{"timer-interface","Running"}};
+    Check(AdaptiveWorkPlanStore.Next(aetOperationalPlan.Packages,aetWriterStates) is null,
+        "adaptive readiness never dispatches another writer while one is running");
+    var aetSuspendDraft=new ReviseAdaptivePlanDraft(1,aetOperationalPlan.WorkPlanSha256,
+        [aetSchedule[0] with {Suspended=true},aetSchedule[1]],"Suspend pending work while a dependency is investigated.");
+    var aetSuspendedPlan=aetWorkPlanStore.Revise(aetAdaptiveContext,aetSuspendDraft);
+    Check(AdaptiveWorkPlanStore.Next(aetSuspendedPlan.Packages,aetEmptyStates) is null &&
+        aetWorkPlanStore.Read(taskBound.Id).History.Count==2,
+        "revisioned suspension blocks dependent work and preserves history");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext,
+        new ReviseAdaptivePlanDraft(2,aetSuspendedPlan.WorkPlanSha256,
+            [aetSchedule[0] with {AllowedPaths=null},aetSchedule[1]],"Attempt to widen an already narrowed source scope.")),
+        "WORK_SCOPE_EXPANSION");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext,aetPlanDraft),"STALE_WORK_PLAN");
+    using(var aetReadPlan=await client.GetAsync("/api/tasks/"+taskBound.Id+"/adaptive-work-plan"))
+    using(var aetReadBody=await Body(aetReadPlan))
+        Check(aetReadPlan.StatusCode==HttpStatusCode.OK &&
+            aetReadBody.RootElement.GetProperty("plan").GetProperty("workPlanSha256").GetString()==aetSuspendedPlan.WorkPlanSha256,
+            "owner can inspect the durable operational work plan");
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetAdaptivePolicy.Revision,
+        aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var stalePolicy = delegationStore.Propose(taskBound.Id,
-        new ProposeDelegationRequest(3,secondPlanHash,["SendMessage"]));
+        new ProposeDelegationRequest(4,secondPlanHash,["SendMessage"]));
     stalePolicy = delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
         stalePolicy.Revision,stalePolicy.PolicySha256,"APPROVE " + stalePolicy.PolicySha256));
     Check(stalePolicy.Current && stalePolicy.EffectiveStatus == "Approved",
@@ -3451,8 +3501,8 @@ try
     Check(effectivePolicy?.Status == "Approved" && !effectivePolicy.Current &&
           effectivePolicy.EffectiveStatus == "STALE_APPROVALS",
         "architecture revision invalidates effective delegated authority");
-    Check(delegationStore.History(taskBound.Id).Count == 4 &&
-          delegationStore.History(taskBound.Id).Take(3).All(p => p.Status == "Revoked"),
+    Check(delegationStore.History(taskBound.Id).Count == 5 &&
+          delegationStore.History(taskBound.Id).Take(4).All(p => p.Status == "Revoked"),
         "delegation retains prior owner decisions");
     Check(delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
         stalePolicy.Revision,stalePolicy.PolicySha256,

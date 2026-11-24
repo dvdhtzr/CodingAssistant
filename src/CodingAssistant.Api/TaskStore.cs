@@ -85,6 +85,7 @@ public sealed class TaskStore
         LeadReviewStore.Initialize(connection);
         EngineeringIssueStore.Initialize(connection);
         IssueVerificationStore.Initialize(connection);
+        AdaptiveWorkPlanStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 

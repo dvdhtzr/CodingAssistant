@@ -84,6 +84,7 @@ public sealed class EngineeringActivityStore(TaskStore tasks)
         "FindingRaised" => ("Team","Agent proposed a finding"),
         "FindingChallenged" => ("Team","Agent challenged a finding"),
         "IssueDecisionRecorded" => ("Team","Technical Lead recorded issue classification; no execution authorized"),
+        "WorkPlanRevised" => ("Team","Technical Lead revised operational work schedule within approved scope"),
         "IssueStaticRecheckRecorded" => ("Engineering","Independent finding recheck recorded; no functional tests executed"),
         "RepairRequested" => ("Team","Agent requested repair; not authorized by message"),
         "CompletionRequested" => ("Team","Agent requested completion assessment"),
