@@ -421,6 +421,24 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
 // no rights to use executable tools or load skills merely by naming them.
 {
     var roster = EngineeringAgentRoster.All;
+    Check(EngineeringRoleCapabilities.Allows("SoftwareEngineer",
+              EngineeringCapability.WriteSource) &&
+          !EngineeringRoleCapabilities.Allows("LeadSoftwareEngineer",
+              EngineeringCapability.WriteSource) &&
+          !EngineeringRoleCapabilities.Allows("QaEngineer",
+              EngineeringCapability.WriteSource) &&
+          !EngineeringRoleCapabilities.Allows("Unknown",
+              EngineeringCapability.SendMessage),
+        "host capability policy denies reviewer and unknown source writes");
+    try
+    {
+        EngineeringRoleCapabilities.Require("QaEngineer", EngineeringCapability.WriteSource);
+        Check(false, "QA source write must be rejected");
+    }
+    catch (StoreFailure error)
+    {
+        Check(error.Code == "AGENT_CAPABILITY_DENIED", "QA source write denied");
+    }
     Check(roster.Count == 5 &&
           roster.Select(a => a.Id).Distinct().Count() == 5 &&
           roster.All(a => a.Goal.Length > 25 &&
@@ -1723,6 +1741,16 @@ try
             "authenticated roster exposes distinct fourth MAF role and no tool rights");
     }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
+    var messagesPath = "/api/tasks/" + taskBound.Id + "/engineering-messages";
+    using (var response = await client.GetAsync(messagesPath))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("messages").GetArrayLength() == 0,
+            "new project has no fabricated engineering messages");
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(messagesPath))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "engineering messages require owner authentication");
     using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await anonymous.GetAsync(engineeringPath + "/latest"))
         Check(denied.StatusCode == HttpStatusCode.Unauthorized,

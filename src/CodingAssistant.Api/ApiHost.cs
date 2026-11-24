@@ -379,6 +379,11 @@ public static class ApiHost
         // All steps are planning-only; none can launch the M1 execution plane.
         app.MapGet("/api/tasks/{id}/interview", (string id, InterviewStore db) =>
             Safe(() => Results.Ok(db.Read(id))));
+        app.MapGet("/api/tasks/{id}/engineering-messages",
+            (string id, long? after, TaskStore tasks) =>
+                Safe(() => Results.Ok(new {
+                    messages = new EngineeringMessageStore(tasks).List(id, after ?? 0)
+                })));
         app.MapGet("/api/tasks/{id}/agent-handoffs",
             (string id, MafHandoffStore db, ImplementationPlanStore plans,
              EngineeringRunStore engineers, QaReviewStore qa) =>

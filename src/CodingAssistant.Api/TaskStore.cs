@@ -78,6 +78,7 @@ public sealed class TaskStore
               PRIMARY KEY(task_id,version)
             );
             """);
+        EngineeringMessageStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 

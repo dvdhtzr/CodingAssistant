@@ -510,6 +510,7 @@ public sealed class EngineeringRunStore(
             """, ("@run", runId), ("@item", workItemId), ("@now", now));
         Event(db, tx, runId, "EngineeringTaskStarted",
             "SoftwareEngineer received approved task " + workItemId);
+        EngineeringMessageStore.Record(db, tx, job, workItemId, completed: false);
         tx.Commit();
     }
 
@@ -711,6 +712,7 @@ public sealed class EngineeringRunStore(
         Event(db, tx, runId, "EngineeringTaskCompleted",
             workItemId + ": " + safe.Files.Count +
             " complete source file replacement(s) persisted (not tested)");
+        EngineeringMessageStore.Record(db, tx, job, workItemId, completed: true);
         tx.Commit();
         return atlasEvent;
     }
