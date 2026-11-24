@@ -7,7 +7,7 @@ import {
   OFFICIAL_SECCOMP_GIT_BLOB,checkedChromiumSeccomp,validateChromiumSeccompBytes,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
-  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,
+  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,
 } from '../tools/m4/windows_chromium_sandbox_guest.mjs';
 
 const NAME='ca-win-m47-012345abcdef';
@@ -17,7 +17,8 @@ const META={Id:ID,RepoDigests:[DIGEST],Os:'linux',Architecture:'amd64'};
 const INFO={OSType:'linux',OperatingSystem:'Docker Desktop',
   PidsLimit:true,MemoryLimit:true};
 const GOOD=Object.fromEntries(CASES.map(key=>[key,true]));
-const BROWSER={binary:'FULL_CHROMIUM',dom:'PASS',sandbox:'PASS'};
+const BROWSER={binary:'FULL_CHROMIUM',dom:'PASS',sandbox:'PASS',
+  domDetail:'NONE',sandboxDetail:'NONE',namespaceProbe:'USER_NAMESPACE_OK'};
 function envelope(cases=GOOD,browser=BROWSER){
   return {schemaVersion:1,cases,browser};
 }
@@ -155,6 +156,8 @@ test('strict report rejects malformed, oversized, unknown, and forged categories
     JSON.stringify({...envelope(),cases:{...GOOD,non_root_uid:'true'}}),
     JSON.stringify({...envelope(),browser:{...BROWSER,dom:'raw log'}}),
     JSON.stringify(envelope(GOOD,{...BROWSER,binary:'HEADLESS_SHELL'})),
+    JSON.stringify(envelope(GOOD,{...BROWSER,domDetail:'raw secret'})),
+    JSON.stringify(envelope(GOOD,{...BROWSER,namespaceProbe:'raw secret'})),
     JSON.stringify(envelope(GOOD,{...BROWSER,dom:'CHROMIUM_CRASH_SIGTRAP'})),
     JSON.stringify({...envelope(),browser:{...BROWSER,path:'/home/user'}}),
     JSON.stringify({...envelope(),browser:{...BROWSER,sandbox:0}}),
@@ -271,4 +274,14 @@ test('rendered fixture must change actual output; script source is not a pass',(
   assert.equal(sandboxStatusPassed('<script>const status="You are adequately sandboxed."</script>'),false);
   assert.equal(sandboxStatusPassed('<p>You are not adequately sandboxed!</p>'),false);
   assert.equal(sandboxStatusPassed('<p>You are adequately sandboxed.</p>'),true);
+});
+
+test('crash details distinguish kernel resource limits from sandbox startup without returning raw logs',()=>{
+  assert.equal(crashDetail({status:null,stderr:'SECRET'},{pids:1},{pids:2}),'PID_LIMIT_HIT');
+  assert.equal(crashDetail({status:null},{oom:0},{oom:1}),'MEMORY_LIMIT_HIT');
+  assert.equal(crashDetail({status:null,stderr:'FATAL:sandbox/linux/services/credentials.cc:137] Check failed: Permission denied (13) SECRET'}),'NAMESPACE_CREDENTIALS_FATAL');
+  assert.equal(crashDetail({status:null,stderr:'pthread_create: Resource temporarily unavailable SECRET'}),'THREAD_CREATION_FATAL');
+  assert.equal(crashDetail({status:null,stderr:'FATAL:zygote_host_impl_linux.cc:126 SECRET'}),'ZYGOTE_FATAL');
+  assert.equal(crashDetail({status:null,stderr:'SECRET'}),'NO_FATAL_LOG');
+  assert.equal(crashDetail({status:0},{pids:0},{pids:1}),'NONE');
 });

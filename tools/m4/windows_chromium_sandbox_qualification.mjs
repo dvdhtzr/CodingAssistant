@@ -10,7 +10,7 @@ import {
   shellDocker,writePrivateEvidence,classifyGuestFailure,
 } from './windows_docker_qualification.mjs';
 import {
-  CASES,BROWSER_CODES,BROWSER_KINDS,BROWSER_ARGS,
+  CASES,BROWSER_CODES,BROWSER_KINDS,BROWSER_ARGS,CRASH_DETAILS,NAMESPACE_CODES,
 } from './windows_chromium_sandbox_guest.mjs';
 
 const SOURCE=fs.readFileSync(
@@ -97,16 +97,19 @@ export function parseSandboxReport(raw){
        typeof checks[name]==='boolean'))
     fail('Guest must report every exact Boolean case');
   if(!b||Array.isArray(b)||typeof b!=='object'||
-     Object.keys(b).length!==3 ||
+     Object.keys(b).length!==6 ||
      !BROWSER_KINDS.includes(b.binary) ||
      !BROWSER_CODES.includes(b.dom) ||
-     !BROWSER_CODES.includes(b.sandbox))
+     !BROWSER_CODES.includes(b.sandbox) ||
+     !CRASH_DETAILS.includes(b.domDetail) || !CRASH_DETAILS.includes(b.sandboxDetail) ||
+     !NAMESPACE_CODES.includes(b.namespaceProbe))
     fail('Unrecognized browser diagnostic categories');
   if(checks.sandboxed_chromium_fixed_dom && b.dom!=='PASS' ||
      checks.chromium_sandbox_status_adequate && (b.sandbox!=='PASS'||b.binary!=='FULL_CHROMIUM'))
     fail('Positive browser observations require matching browser evidence');
   return {cases:Object.fromEntries(CASES.map(name=>[name,checks[name]])),
-    browser:{binary:b.binary,dom:b.dom,sandbox:b.sandbox}};
+    browser:{binary:b.binary,dom:b.dom,sandbox:b.sandbox,
+      domDetail:b.domDetail,sandboxDetail:b.sandboxDetail,namespaceProbe:b.namespaceProbe}};
 }
 export function runSandboxCompatibility({
   platform=process.platform,env=process.env,docker=shellDocker,
@@ -215,6 +218,8 @@ export function main(argv=process.argv.slice(2),options={}){
     process.stdout.write('  Chromium: '+report.browser.binary+
       '; fixed DOM: '+report.browser.dom+
       '; sandbox status: '+report.browser.sandbox+'\n');
+  if(report.browser)process.stdout.write('  diagnostics: namespace='+report.browser.namespaceProbe+
+    '; DOM='+report.browser.domDetail+'; sandbox='+report.browser.sandboxDetail+'\n');
   if(report.reason)process.stdout.write('  blocker: '+report.reason+'\n');
   process.stdout.write('  generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED\n');
   process.stdout.write('Evidence: '+evidence+'\n');
