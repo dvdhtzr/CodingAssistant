@@ -173,7 +173,7 @@ public sealed class RepairCycleStore(
     }
 
     public RepairCycle Start(string taskId, StartRepairCycleRequest request,
-        ImplementationPlan plan)
+        ImplementationPlan plan, string? agentModel = null)
     {
         CheckId(taskId);
         CheckId(request.ProposalId);
@@ -328,7 +328,7 @@ public sealed class RepairCycleStore(
                 ("@sv", baseRun.SpecificationVersion),
                 ("@spec", baseRun.SpecificationSha256),
                 ("@arch", baseRun.ArchitectureSha256),
-                ("@model", baseRun.Model), ("@now", now));
+                ("@model", agentModel ?? baseRun.Model), ("@now", now));
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_tasks
                     (run_id,work_item_id,ordinal,title,state)
