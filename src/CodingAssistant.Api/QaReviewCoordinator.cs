@@ -96,6 +96,8 @@ public sealed class QaReviewCoordinator(
                     previousFindings.Where(f => f.Path.Equals(file.Path,
                         StringComparison.OrdinalIgnoreCase)).ToArray(),
                     AgentModel: review.Model);
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,review.TaskId,
+                    "QaEngineer",review.Id,review.SourceSha256);
                 var report = await reviewer.ReviewAsync(input, token);
                 token.ThrowIfCancellationRequested();
                 reviews.SaveFileReport(review.TaskId, review.Id, file, report);

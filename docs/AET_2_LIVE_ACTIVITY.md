@@ -17,5 +17,7 @@ records from before this migration remain visible in the original views.
 
 This is operational telemetry, not a claim of streaming model output,
 functional verification, a new execution authorization or completed
-autonomous collaboration. Model-provider timing and actual independent
-review will be extended at subsequent increments.
+autonomous collaboration. Real loopback Ollama request start, transport acceptance, failure and
+cancellation are recorded through invocation-scoped provider metadata.
+This does not stream private reasoning or claim generated source is valid.
+Resource timing and inference scheduling remain AET-7 work.

@@ -68,6 +68,8 @@ public sealed class EngineeringRunCoordinator(
                     continue;
                 store.StartTask(job.TaskId, job.Id, item.Id);
                 var prior = store.Get(job.TaskId, job.Id).Files;
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,job.TaskId,
+                    "SoftwareEngineer",job.Id);
                 var result = await engineer.ImplementAsync(
                     new EngineeringTaskInput(objective, spec, plan,
                         architecture, item, prior,

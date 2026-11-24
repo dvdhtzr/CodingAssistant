@@ -62,6 +62,8 @@ public sealed class RepairCycleCoordinator(
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             token.ThrowIfCancellationRequested();
             engineering.StartTask(taskId, runId, workItemId);
+            using var providerScope = EngineeringProviderActivity.Enter(tasks,taskId,
+                "SoftwareEngineer",runId,cycle.BaseSourceSha256);
             var changes = await engineer.ImplementAsync(
                 new EngineeringTaskInput(objective, specification, plan,
                     architecture, item, files,

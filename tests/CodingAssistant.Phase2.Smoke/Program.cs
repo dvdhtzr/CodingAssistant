@@ -1987,6 +1987,32 @@ try
           aetProposalActivity.Count(e => e.ReferenceId == aetSent.MessageId) == 1 &&
           aetProposalActivity.All(e => !e.Label.Contains("approved storage approach")),
         "activity distinguishes agent proposals from observations, deduplicates and omits raw text");
+    // Exercise the observation boundary with injected metadata only. CI has no
+    // real Ollama inference and must not claim provider or model qualification.
+    var aetBeforeProvider = new EngineeringActivityStore(tasks).Read(taskBound.Id).LastSequence;
+    Check(EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+        MafAgentPurpose.SoftwareEngineer,CancellationToken.None) is null,
+        "provider telemetry cannot attribute an unscoped request");
+    using (EngineeringProviderActivity.Enter(tasks,taskBound.Id,"SoftwareEngineer",engineeringRunId))
+    {
+        Check(EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+            MafAgentPurpose.QaEngineer,CancellationToken.None) is null,
+            "provider telemetry rejects mismatched role attribution");
+        using (var observed = EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+            MafAgentPurpose.SoftwareEngineer,CancellationToken.None))
+            observed!.Complete();
+        using (var stopped = EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+            MafAgentPurpose.SoftwareEngineer,CancellationToken.None)) { }
+    }
+    var aetProviderEvents = new EngineeringActivityStore(tasks).Read(taskBound.Id,
+        aetBeforeProvider).Events;
+    Check(aetProviderEvents.Select(e => e.Kind).SequenceEqual(
+              ["OllamaRequestStarted","OllamaResponseAccepted",
+               "OllamaRequestStarted","OllamaRequestStopped"]) &&
+          aetProviderEvents.All(e => e.AgentId == "SoftwareEngineer" &&
+              e.Model == "qwen2.5-coder:14b") &&
+          aetProviderEvents[0].ReferenceId == aetProviderEvents[1].ReferenceId,
+        "provider lifecycle metadata correlates start and result without model content");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,

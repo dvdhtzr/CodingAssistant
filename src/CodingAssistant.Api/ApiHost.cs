@@ -464,6 +464,8 @@ public static class ApiHost
                         snapshot.LastSequence + 1, "owner",
                         InterviewStore.ValidOwnerMessage(input.Message),
                         DateTimeOffset.UtcNow.ToString("O")));
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
+                    "ProductOwner",id);
                 var reply = await model.AskAsync(
                     task.Objective, context, selected, cancellation);
                 return Results.Ok(db.CommitTurn(
@@ -489,6 +491,8 @@ public static class ApiHost
                 var localNames = await catalog.ListAsync(cancellation);
                 if (!localNames.Contains(selectedModel, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
+                    "ProductOwner",id);
                 var content = await model.DraftAsync(
                     task.Objective, snapshot.Messages, selectedModel,
                     cancellation);
@@ -555,6 +559,8 @@ public static class ApiHost
                 var models = await catalog.ListAsync(cancellation);
                 if (!models.Contains(chosen, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
+                    "SolutionArchitect",id);
                 var recommendation = await advisor.RecommendAsync(
                     task.Objective, spec.Content, chosen,
                     input.Topic!, cancellation);
@@ -615,6 +621,8 @@ public static class ApiHost
                 var installed = await catalog.ListAsync(cancellation);
                 if (!installed.Contains(chosen, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
+                    "TechnicalLead",id);
                 var outline = await planner.PlanAsync(task.Objective, spec.Content,
                     architecture, chosen, cancellation);
                 // Atomically recheck specification, architecture and revision

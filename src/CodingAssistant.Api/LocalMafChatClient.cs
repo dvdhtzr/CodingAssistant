@@ -94,6 +94,9 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             Content = new StringContent(JsonSerializer.Serialize(chat),
                 Encoding.UTF8, "application/json")
         };
+        // The actual transport boundary, not an estimate of model progress.
+        using var activity = EngineeringProviderActivity.StartProvider(model,purpose,
+            cancellationToken);
         try
         {
             using var response = await client.SendAsync(request,
@@ -107,8 +110,10 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             try
             {
-                return new ChatResponse(new ChatMessage(
+                var accepted = new ChatResponse(new ChatMessage(
                     ChatRole.Assistant, ReadAssistantContent(payload, purpose)));
+                activity?.Complete();
+                return accepted;
             }
             catch (StoreFailure error) when (
                 (purpose is MafAgentPurpose.Specification or
