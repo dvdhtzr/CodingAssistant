@@ -93,7 +93,9 @@ export function AgentRoleModels({ token, taskId, onClose }: {
           </label>
           {choice.role === 'ProductOwner'
             ? <p className="ca-role-model-current">Interview model: <code>{choice.model}</code>
-              <small>Selected and pinned in Product Discovery.</small>
+              <small>{choice.source === 'Pinned interview model'
+                ? 'Selected and pinned in Product Discovery.'
+                : 'Select this role\'s model when you start Product Discovery.'}</small>
             </p>
             : <select id={'agent-model-' + choice.role}
                 aria-label={readable[choice.role] + ' model'}
@@ -101,7 +103,7 @@ export function AgentRoleModels({ token, taskId, onClose }: {
                 disabled={!!busy || !installed.length}
                 onChange={event => void assign(choice.role, event.target.value)}>
                 <option value="__default__">Default: {choice.source === 'Preferred coding model'
-                  ? 'qwen2.5-coder:14b' : 'project interview model'}</option>
+                  ? 'qwen2.5-coder:14b' : 'approved specification model'}</option>
                 {installed.map(model => <option value={model} key={model}>{model}</option>)}
               </select>}
           <small className={available ? 'ca-role-model-ok' : 'ca-role-model-missing'}>
