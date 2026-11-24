@@ -20,7 +20,8 @@ public sealed record QaReviewInput(
     EngineeringSourceFile File, IReadOnlyList<EngineeringSourceFile> AllFiles,
     IReadOnlyList<EngineeringRunEvent>? EngineeringEvents = null,
     Action<AtlasInspectionObservation>? OnAtlasInspection = null,
-    IReadOnlyList<RepairFindingReference>? RepairFocus = null);
+    IReadOnlyList<RepairFindingReference>? RepairFocus = null,
+    string? AgentModel = null);
 
 public interface IQaSourceReviewer
 {
@@ -112,10 +113,10 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
             input.AllFiles.Count is < 1 or > EngineeringRunStore.MaxDistinctFiles ||
             !input.AllFiles.Any(f => f.Path == input.File.Path &&
                 f.Sha256 == input.File.Sha256) ||
-            !LocalInterviewModel.AllowedModel(input.Plan.Model))
+            !LocalInterviewModel.AllowedModel(input.AgentModel ?? input.Plan.Model))
             throw new StoreFailure("INVALID_INPUT");
 
-        using var client = _factory.Create(input.Plan.Model, MafAgentPurpose.QaEngineer);
+        using var client = _factory.Create(input.AgentModel ?? input.Plan.Model, MafAgentPurpose.QaEngineer);
         AIAgent agent = new ChatClientAgent(client,
             instructions: EngineeringAgentRoster.Instructions("QaEngineer") +
                 "\n" + Policy + "\n" + QaAtlasInspectionPolicy,
