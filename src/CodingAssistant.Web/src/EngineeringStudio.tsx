@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
 import { EngineeringActivityFeed } from './EngineeringActivityFeed';
+import { LeadReviewPanel, type LeadReviewSnapshot } from './LeadReviewPanel';
 import { AgentRoleModels, type AgentRoleSelection } from './AgentRoleModels';
 import { studioAgentPresence, studioRecordedActivity } from './StudioPresence';
 import { api, type TaskItem } from './api';
@@ -24,6 +25,7 @@ export interface StudioEvidence {
   handoffs: TeamHandoff[];
   engineering: EngineerSnapshot | null;
   qa: StudioQaSnapshot | null;
+  lead?: LeadReviewSnapshot | null;
   repair: StudioRepair | null;
 }
 export interface StudioFocus {
@@ -73,7 +75,7 @@ export function studioAttention(saved: StudioEvidence | null,
 
 const stages: Record<string, JourneyId> = {
   ProductOwner: 'discovery', SolutionArchitect: 'architecture',
-  TechnicalLead: 'plan', SoftwareEngineer: 'generation', QaEngineer: 'delivery',
+  TechnicalLead: 'plan', SoftwareEngineer: 'generation', LeadSoftwareEngineer: 'delivery', QaEngineer: 'delivery',
 };
 
 export function EngineeringStudio({ token, task, onTeam }: {
@@ -149,6 +151,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
             api<{ events: TeamHandoff[] }>(token, root + '/agent-handoffs'),
             api<{ snapshot: EngineerSnapshot | null }>(token, root + '/engineering-runs/latest'),
             api<{ snapshot: StudioQaSnapshot | null }>(token, root + '/qa-reviews/latest'),
+            api<{ snapshot: LeadReviewSnapshot | null }>(token, root + '/lead-reviews/latest').catch(() => ({ snapshot: null })),
             api<{ snapshot: StudioRepair | null }>(token, root + '/repair-cycles/latest'),
           ]),
           Promise.all([
@@ -163,9 +166,9 @@ export function EngineeringStudio({ token, task, onTeam }: {
         ]);
         if (closed) return;
         if (team.status === 'fulfilled') {
-          const [roster, handoffs, engineering, qa, repair] = team.value;
+          const [roster, handoffs, engineering, qa, lead, repair] = team.value;
           setSaved({ agents: roster.agents, handoffs: handoffs.events,
-            engineering: engineering.snapshot, qa: qa.snapshot, repair: repair.snapshot });
+            engineering: engineering.snapshot, qa: qa.snapshot, lead: lead.snapshot, repair: repair.snapshot });
           setTeamError(false);
         } else { setTeamError(true); }
         if (owner.status === 'fulfilled') {
@@ -193,7 +196,8 @@ export function EngineeringStudio({ token, task, onTeam }: {
   const latest = saved?.repair?.cycle;
   const activeQa = saved?.qa?.job.state === 'Running' || latest?.state === 'QaRunning';
   const activeEngineer = saved?.engineering?.job.state === 'Running' || latest?.state === 'Running';
-  const working = activeQa ? 'QA Engineer reviewing' :
+  const activeLead = saved?.lead?.job.state === 'Running';
+  const working = activeLead ? 'Lead Software Engineer reviewing' : activeQa ? 'QA Engineer reviewing' :
     activeEngineer ? 'Software Engineer working' : 'No active agent run recorded';
   const currentActivity = saved?.engineering?.tasks.find(item => item.state === 'Running');
   return <section className="ca-studio" aria-label="AI Engineering Studio">
@@ -211,7 +215,7 @@ export function EngineeringStudio({ token, task, onTeam }: {
           onClick={() => roleModelsOpen ? setRoleModelsOpen(false) : openRoleModels()}>
           {roleModelsOpen ? 'Hide team models' : 'Assign team models'}
         </button>
-        <span className={'ca-studio-run-state' + (activeQa || activeEngineer ? ' is-working' : '')}>
+        <span className={'ca-studio-run-state' + (activeLead || activeQa || activeEngineer ? ' is-working' : '')}>
           <span aria-hidden="true" className="ca-studio-state-dot" />{working}
         </span>
       </div>
@@ -367,6 +371,9 @@ export function EngineeringStudio({ token, task, onTeam }: {
             <p className="ca-studio-role-state" data-state={inspected.state}>
               {inspected.status}</p>
             <p className="ca-studio-specialist-goal">{inspected.agent.goal}</p>
+            {inspected.agent.id === 'LeadSoftwareEngineer' &&
+              <LeadReviewPanel key={task.id} token={token} taskId={task.id}
+                source={saved?.engineering ?? null} snapshot={saved?.lead ?? null} />}
             <div className="ca-studio-specialist-facts">
               <span>MODEL FOR NEW WORK</span>
               <strong>{inspected.modelForNextRun ?? 'Model preference unavailable'}</strong>

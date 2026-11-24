@@ -30,12 +30,12 @@ export interface StudioAgentPresence {
 
 const stageOf: Record<string, JourneyId> = {
   ProductOwner: 'discovery', SolutionArchitect: 'architecture',
-  TechnicalLead: 'plan', SoftwareEngineer: 'generation', QaEngineer: 'delivery',
+  TechnicalLead: 'plan', SoftwareEngineer: 'generation', LeadSoftwareEngineer: 'delivery', QaEngineer: 'delivery',
 };
 const roleName: Record<string, string> = {
   ProductOwner: 'Product Owner', SolutionArchitect: 'Solution Architect',
   TechnicalLead: 'Technical Lead', SoftwareEngineer: 'Software Engineer',
-  QaEngineer: 'QA Engineer', HumanOwner: 'You',
+  LeadSoftwareEngineer: 'Lead Software Engineer', QaEngineer: 'QA Engineer', HumanOwner: 'You',
 };
 
 const namedEvent: Record<string, string> = {
@@ -112,7 +112,7 @@ export function studioAgentPresence(saved: StudioEvidence | null,
     const recent = handoffs.slice().sort((a, b) =>
       b.createdUtc.localeCompare(a.createdUtc))[0];
     const job = agent.id === 'SoftwareEngineer' ? saved.engineering?.job :
-      agent.id === 'QaEngineer' ? saved.qa?.job : null;
+      agent.id === 'QaEngineer' ? saved.qa?.job : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job : null;
     const model = models?.find(item => item.role === agent.id)?.model ?? null;
     const stopped = job?.state === 'Failed' || job?.state === 'Interrupted' ||
       agent.id === 'SoftwareEngineer' &&
@@ -129,6 +129,7 @@ export function studioAgentPresence(saved: StudioEvidence | null,
         saved.qa?.reports.length + ' file(s) inspected · source-only QA' :
         job ? saved.qa?.reports.length + ' saved file report(s)' :
           'No source review recorded'
+      : agent.id === 'LeadSoftwareEngineer' ? detail
       : recent ? 'Last recorded: ' + friendlyEvent(recent.kind) :
         'No recorded handoff yet';
     return {

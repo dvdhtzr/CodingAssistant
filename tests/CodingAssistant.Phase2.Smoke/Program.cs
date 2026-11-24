@@ -2034,6 +2034,25 @@ try
               e.Model == "qwen2.5-coder:14b") &&
           aetProviderEvents[0].ReferenceId == aetProviderEvents[1].ReferenceId,
         "provider lifecycle metadata correlates start and result without model content");
+    // Persist a separate, read-only lead review against the exact generated revision.
+    var aetLeadStore = new LeadReviewStore(tasks);
+    var aetLeadPlan = new ImplementationPlanStore(tasks,interviews).Read(taskBound.Id).Plan!;
+    var aetLeadSnapshot = engineeringStore.Get(taskBound.Id,engineeringRunId);
+    var aetLeadJob = aetLeadStore.Start(taskBound.Id,aetLeadSnapshot,aetLeadPlan,"qwen3.5:4b");
+    foreach(var aetLeadFile in aetLeadSnapshot.Files)
+        aetLeadStore.Save(taskBound.Id,aetLeadJob.Id,aetLeadFile,
+            new LeadFileAssessment("Approved","No static concerns in this injected fixture.",[]));
+    aetLeadStore.Finish(taskBound.Id,aetLeadJob.Id,"Reviewed");
+    var aetLeadSaved = new LeadReviewStore(tasks).Get(taskBound.Id,aetLeadJob.Id);
+    Check(aetLeadSaved.Current && aetLeadSaved.Disposition=="Approved" &&
+        aetLeadSaved.Reports.Count==aetLeadSnapshot.Files.Count &&
+        QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,engineeringRunId).Files)==aetLeadJob.SourceSha256,
+        "independent lead review persists exact revision without altering source");
+    using(var aetLeadResponse=await client.GetAsync("/api/tasks/"+taskBound.Id+"/lead-reviews/latest"))
+    using(var aetLeadBody=await Body(aetLeadResponse))
+        Check(aetLeadResponse.StatusCode==HttpStatusCode.OK &&
+            aetLeadBody.RootElement.GetProperty("snapshot").GetProperty("disposition").GetString()=="Approved",
+            "owner can retrieve durable static lead review");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,
