@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { InterviewStudio } from './InterviewStudio';
+import { StudioLiveActivity } from './StudioLiveActivity';
 import { AgentRoleModels, type AgentRoleSelection } from './AgentRoleModels';
 import { studioAgentPresence, studioRecordedActivity } from './StudioPresence';
 import { api, type TaskItem } from './api';
@@ -75,8 +76,8 @@ const stages: Record<string, JourneyId> = {
   TechnicalLead: 'plan', SoftwareEngineer: 'generation', QaEngineer: 'delivery',
 };
 
-export function EngineeringStudio({ token, task, onTeam }: {
-  token: string; task: TaskItem; onTeam: () => void;
+export function EngineeringStudio({ token, task, onTeam, active = true }: {
+  token: string; task: TaskItem; onTeam: () => void; active?: boolean;
 }) {
   const [saved, setSaved] = useState<StudioEvidence | null>(null);
   const [decisions, setDecisions] = useState<DecisionInboxSnapshot | null>(null);
@@ -215,6 +216,8 @@ export function EngineeringStudio({ token, task, onTeam }: {
         </span>
       </div>
     </header>
+    <StudioLiveActivity token={token} active={active}
+      recorded={activity} onInspect={navigate} />
     <div className="ca-studio-layout">
       <aside className="ca-studio-people" role="complementary" aria-label="Engineering team">
         <div className="ca-studio-rail-heading">
