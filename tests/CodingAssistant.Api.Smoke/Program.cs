@@ -228,8 +228,31 @@ if (OperatingSystem.IsWindows())
         var roleTask = tasksForRoles.CreateTask(new CreateTaskRequest(
             "Model assignments", "Use independent local MAF models.",
             Guid.NewGuid().ToString("N")));
+        // Simulate a database created by the original five-role release.
+        using (var legacyDb = new SqliteConnection(new SqliteConnectionStringBuilder {
+            DataSource=Path.Combine(local,"codingassistant.db"),Pooling=false }.ToString()))
+        {
+            legacyDb.Open();
+            using var legacyCommand=legacyDb.CreateCommand();
+            legacyCommand.CommandText="""
+                CREATE TABLE agent_role_models (
+                    task_id TEXT NOT NULL REFERENCES tasks(id),
+                    agent_id TEXT NOT NULL CHECK(agent_id IN
+                        ('SolutionArchitect','TechnicalLead','SoftwareEngineer','QaEngineer')),
+                    model TEXT NOT NULL,updated_utc TEXT NOT NULL,
+                    PRIMARY KEY(task_id,agent_id)
+                );
+                INSERT INTO agent_role_models VALUES(@task,'QaEngineer','gemma4:latest','2026-11-21T00:00:00Z');
+                """;
+            legacyCommand.Parameters.AddWithValue("@task",roleTask.Id);
+            legacyCommand.ExecuteNonQuery();
+        }
         var settingsForRoles = new AgentRoleModelSettings(tasksForRoles);
         settingsForRoles.Initialize();
+        Check(settingsForRoles.Resolve(roleTask.Id,"QaEngineer","qwen3-coder:30b")=="gemma4:latest",
+            "five-role database migrates without losing existing owner assignment");
+        settingsForRoles.Initialize();
+        settingsForRoles.Set(roleTask.Id,"QaEngineer",null,"qwen3-coder:30b");
         var initial = settingsForRoles.Read(roleTask.Id, "qwen3-coder:30b");
         Check(initial.Count == 6 &&
               initial.Single(x => x.Role == "ProductOwner").Model ==
