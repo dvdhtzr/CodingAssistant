@@ -1658,6 +1658,59 @@ try
                     .Select(m => m.GetString()).SequenceEqual(
                         new[] { "gemma4:latest", "qwen2.5-coder:3b", "qwen3.5:4b" }),
                 "authenticated catalog returns current installed local models");
+        // Authenticated per-role selection: exact installed models only, and
+        // Product Owner remains bound to the existing interview picker.
+        using (var choices = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/agent-models"))
+        using (var json = await ReadJson(choices))
+        {
+            var roles = json.RootElement.GetProperty("agents").EnumerateArray().ToArray();
+            Check(choices.StatusCode == HttpStatusCode.OK &&
+                  roles.Length == 5 &&
+                  roles.Single(x => x.GetProperty("role").GetString() ==
+                    "SoftwareEngineer").GetProperty("model").GetString() ==
+                    "qwen2.5-coder:14b" &&
+                  roles.Single(x => x.GetProperty("role").GetString() ==
+                    "QaEngineer").GetProperty("model").GetString() ==
+                    "qwen2.5-coder:14b",
+                "role defaults prefer 14b coder, independently of the interview model");
+        }
+        using (var missing = await Post(interviewClient,
+            $"/api/tasks/{id}/agent-models/QaEngineer",
+            new { model = "qwen2.5-coder:14b" }))
+            Check(missing.StatusCode == HttpStatusCode.ServiceUnavailable,
+                "model assignment cannot save an undownloaded Ollama tag");
+        using (var cloud = await Post(interviewClient,
+            $"/api/tasks/{id}/agent-models/SoftwareEngineer",
+            new { model = "cloud/model" }))
+            Check(cloud.StatusCode == HttpStatusCode.BadRequest,
+                "model assignment cannot use a cloud or proxy name");
+        using (var pinned = await Post(interviewClient,
+            $"/api/tasks/{id}/agent-models/ProductOwner",
+            new { model = "gemma4:latest" }))
+            Check(pinned.StatusCode == HttpStatusCode.BadRequest,
+                "team settings cannot silently replace the saved Product Owner model");
+        using (var chosen = await Post(interviewClient,
+            $"/api/tasks/{id}/agent-models/QaEngineer",
+            new { model = "qwen2.5-coder:3b" }))
+        using (var json = await ReadJson(chosen))
+            Check(chosen.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("model").GetString() ==
+                    "qwen2.5-coder:3b",
+                "QA can use its own downloaded coder without modifying any agent's work");
+        using (var selected = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/agent-models"))
+        using (var json = await ReadJson(selected))
+        {
+            var roles = json.RootElement.GetProperty("agents").EnumerateArray().ToArray();
+            Check(roles.Single(x => x.GetProperty("role").GetString() ==
+                    "QaEngineer").GetProperty("model").GetString() ==
+                    "qwen2.5-coder:3b" &&
+                  roles.Single(x => x.GetProperty("role").GetString() ==
+                    "SoftwareEngineer").GetProperty("model").GetString() ==
+                    "qwen2.5-coder:14b",
+                "role changes are persisted independently through authenticated API");
+        }
         using (var anonymous = new HttpClient(new SocketsHttpHandler {
             UseProxy = false
         }) { BaseAddress = interviewClient.BaseAddress })
