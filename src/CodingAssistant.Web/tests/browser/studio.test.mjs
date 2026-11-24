@@ -49,7 +49,8 @@ const done = (route, body, status = 200) => route.fulfill({
   status, contentType: 'application/json', body: JSON.stringify(body),
 });
 
-function mockApi(page) {
+function mockApi(page, { architectureOutdated = false,
+  specificationStatus = 'Approved' } = {}) {
   const selections = [
     { role: 'ProductOwner', model: 'qwen3-coder:30b',
       overridden: false, source: 'Interview selection' },
@@ -80,6 +81,24 @@ function mockApi(page) {
           ? 'Preferred coding model' : 'Inherited interview model';
       return done(route, row);
     }
+    if (method === 'POST' && path.endsWith('/architecture-decisions/recommend')) {
+      const input = route.request().postDataJSON();
+      return done(route, {
+        topic: input.topic, revision: input.expectedRevision + 1,
+        specificationSha256: spec, specificationCurrent: true,
+        recommendedOptionId: 'option-1',
+        rationale: 'Current approved requirements assessed',
+        options: [
+          { id: 'option-1', label: 'Static Web',
+            benefit: 'Simple operation', tradeoff: 'Limited dynamic features',
+            runtimeProfileId: null },
+          { id: 'option-2', label: 'Server Application',
+            benefit: 'Dynamic content', tradeoff: 'Higher maintenance',
+            runtimeProfileId: null },
+        ],
+        proposalSha256: arch, status: 'Proposed', selectedOptionId: null,
+      });
+    }
     if (method !== 'GET') return done(route, { error: 'UNEXPECTED_MUTATION' }, 405);
     if (path.endsWith('/agent-models')) return done(route, { agents: selections });
     if (path === '/api/agents/roster') return done(route, { agents });
@@ -104,13 +123,15 @@ function mockApi(page) {
         { sequence: 2, role: 'owner', content: 'A local history site.', createdUtc: time },
       ],
       specification: { version: 1, model: 'qwen3-coder:30b', content: 'Build historic',
-        sha256: spec, status: 'Approved', createdUtc: time, approvedUtc: time },
+        sha256: spec, status: specificationStatus, createdUtc: time, approvedUtc: time },
     });
     if (path === '/api/models') return done(route, { models: ['qwen3-coder:30b'] });
     if (path === '/api/runtime-profiles') return done(route, { profiles: [] });
     if (path.endsWith('/architecture-decisions')) return done(route, {
       decisions: ['technology-stack', 'architecture-style'].map(topic => ({
-        topic, revision: 1, specificationSha256: spec, specificationCurrent: true,
+        topic, revision: 1,
+        specificationSha256: architectureOutdated ? 'a'.repeat(64) : spec,
+        specificationCurrent: !architectureOutdated && specificationStatus === 'Approved',
         recommendedOptionId: 'option-1', rationale: 'Owner-approved project decisions',
         options: [{ id: 'option-1', label: 'Static Web', benefit: 'Local-first',
           tradeoff: 'No executable runtime', runtimeProfileId: null }],
@@ -310,6 +331,79 @@ test('activity view shows only actual saved handoffs, source and QA receipts', a
     assert.deepEqual(writes, [], 'inspecting saved activity must not mutate source or approvals');
     await page.getByRole('button', { name: /Attention/ }).click();
     await page.getByText('Repair cycle 6 stopped').waitFor();
+  } finally { await page.close(); }
+});
+
+test('stale architecture shows a clear recovery action and never enables old choices', async () => {
+  const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+  const writes = [];
+  try {
+    await mockApi(page, { architectureOutdated: true });
+    page.on('request', request => {
+      if (request.method() === 'POST' &&
+          new URL(request.url()).pathname.startsWith('/api/tasks/'))
+        writes.push({ path: new URL(request.url()).pathname,
+          data: request.postDataJSON() });
+    });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    const canvas = page.getByRole('region', { name: 'Focused engineering work' });
+    await canvas.getByRole('heading', { name: 'Solution Architecture' }).waitFor();
+    const recovery = canvas.locator('.architect-recovery');
+    await recovery.getByText('2 architecture recommendations need refreshing').waitFor();
+    assert.equal(await canvas.locator('fieldset.architect-options').count(), 0,
+      'historical options must not look like selectable disabled controls');
+    assert.equal(await canvas.locator('input[type="radio"][name^="architecture-"]').count(), 0);
+    assert.equal(await canvas.locator('details.architect-archived').count(), 2);
+    const stack = canvas.getByRole('button', {
+      name: 'Refresh technology stack recommendations',
+    });
+    assert.equal(await stack.isEnabled(), true,
+      'approved spec must offer a working refresh instead of a dead decision');
+    // The previous stage may have left the center scrolled far down.
+    await canvas.evaluate(el => { el.scrollTop = 340; });
+    assert.ok(await canvas.evaluate(el => el.scrollTop) > 0);
+    await page.locator('aside.ca-studio-people')
+      .getByRole('button', { name: /Solution Architect/ }).click();
+    assert.equal(await canvas.evaluate(el => el.scrollTop), 0,
+      'choosing a role resets only the center canvas, without jumping the document');
+    await stack.click();
+    await canvas.getByText('Current approved requirements assessed').waitFor();
+    assert.equal(await canvas.locator('fieldset.architect-options').count(), 1);
+    assert.equal(await canvas.locator('fieldset.architect-options input[type="radio"]').count(), 2);
+    assert.equal(await canvas.locator('details.architect-archived').count(), 1,
+      'other stale topic remains historical until separately refreshed');
+    assert.deepEqual(writes.map(w => w.path), [
+      '/api/tasks/' + id + '/architecture-decisions/recommend',
+    ], 'refresh requests a new proposal but never authorizes it');
+    assert.equal(writes[0].data.specificationSha256, spec);
+    assert.equal(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0), 0);
+  } finally { await page.close(); }
+});
+
+test('unapproved specification offers enabled recovery navigation, not disabled architecture buttons', async () => {
+  const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+  const writes = [];
+  try {
+    await mockApi(page, { architectureOutdated: true, specificationStatus: 'Draft' });
+    page.on('request', request => {
+      if (request.method() === 'POST' &&
+          new URL(request.url()).pathname.startsWith('/api/tasks/'))
+        writes.push(new URL(request.url()).pathname);
+    });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    const canvas = page.getByRole('region', { name: 'Focused engineering work' });
+    await canvas.getByRole('button', { name: /Solution Architecture/ }).first().click();
+    const recovery = canvas.locator('.architect-recovery');
+    await recovery.getByText('The current specification needs approval').waitFor();
+    assert.equal(await canvas.locator('fieldset.architect-options').count(), 0);
+    await canvas.evaluate(el => { el.scrollTop = 350; });
+    const open = recovery.getByRole('button', { name: 'Review current specification' });
+    assert.equal(await open.isEnabled(), true);
+    await open.click();
+    await canvas.locator('#journey-panel-specification').waitFor({ state: 'visible' });
+    assert.equal(await canvas.evaluate(el => el.scrollTop), 0,
+      'returning to specification presents its current action from the top');
+    assert.deepEqual(writes, [], 'navigation never approves old requirements');
   } finally { await page.close(); }
 });
 
