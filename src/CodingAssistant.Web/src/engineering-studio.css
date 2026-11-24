@@ -519,3 +519,60 @@
   .ca-studio-person { flex-basis:170px; }
   .ca-studio-side-tabs { max-width:420px; }
 }
+
+/* Source-aware recovery: stale proposals remain historical evidence, never
+   interactive decisions. Recovery calls-to-action remain easy to find. */
+.ca-studio .architect-stage { min-width: 0; }
+.ca-studio .architect-recovery {
+  border: 1px solid #64847c;
+  border-left: 3px solid #87b9a1;
+  border-radius: 9px;
+  background: #1a3035;
+  padding: .95rem 1rem;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1rem; margin: .85rem 0 1.25rem; flex-wrap: wrap;
+}
+.ca-studio .architect-recovery strong { color: #e7f4ef; font-size: .85rem; }
+.ca-studio .architect-recovery p {
+  color: #b8d1d0; font-size: .78rem; line-height: 1.5;
+  margin: .45rem 0 0; max-width: 700px;
+}
+.ca-studio .architect-recovery button {
+  flex: 0 0 auto; padding: .65rem .9rem;
+  background: #3b685d; color: #f4fff8; border: 1px solid #6baa97;
+  font-size: .77rem; font-weight: 750;
+}
+.ca-studio .architect-recovery button:hover:not(:disabled) { background: #477c6e; }
+.ca-studio .architect-stale-note {
+  border-left: 3px solid #c39d64;
+  background: #272b31; color: #e1caa6;
+  padding: .65rem .85rem; margin: .8rem 0;
+  border-radius: 0 6px 6px 0;
+  font-size: .77rem; line-height: 1.55;
+}
+.ca-studio .architect-archived {
+  background: #162430;
+  border: 1px solid #374b5b;
+  border-radius: 8px;
+  margin: .95rem 0;
+}
+.ca-studio .architect-archived > summary {
+  padding: .8rem .9rem; color: #bad1d9;
+  cursor: pointer; font-weight: 700; font-size: .78rem;
+}
+.ca-studio .architect-archived-list { padding: 0 .85rem .75rem; }
+.ca-studio .architect-archived-list .architect-option {
+  background: #14222d; border-color: #2c4554;
+}
+.ca-studio .architect-archived-list .architect-option span { display: block; width: 100%; }
+.ca-studio .architect-decision .architect-unblock {
+  border-color: #4d9386; font-size:.78rem;
+  padding: .7rem 1rem; min-height: 40px;
+}
+.ca-studio .architect-decision .architect-unblock:hover:not(:disabled) {
+  border-color: #9acdbb;
+}
+@media (max-width: 800px) {
+  .ca-studio .architect-recovery { display:grid; }
+  .ca-studio .architect-recovery button { width:100%; }
+}
