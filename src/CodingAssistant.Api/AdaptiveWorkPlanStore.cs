@@ -1,16 +1,23 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 
 namespace CodingAssistant.Api;
 
+public sealed record WorkSubpackageSchedule(string Id,string Objective,
+    IReadOnlyList<int> AcceptanceCriteriaIndices,IReadOnlyList<string> AllowedPaths);
+public sealed record AdaptiveWorkSubpackage(string Id,int Ordinal,string Objective,
+    IReadOnlyList<string> AcceptanceCriteria,IReadOnlyList<string> AllowedPaths);
 public sealed record WorkPackageSchedule(string WorkItemId,IReadOnlyList<string> DependsOn,
     int Priority,bool Suspended,string Risk,IReadOnlyList<string>? AllowedPaths=null,
-    IReadOnlyList<string>? AdditionalVerification=null);
+    IReadOnlyList<string>? AdditionalVerification=null,
+    IReadOnlyList<WorkSubpackageSchedule>? Subpackages=null);
 public sealed record AdaptiveWorkPackage(string Id,string Title,string Objective,
     IReadOnlyList<string> AcceptanceCriteria,IReadOnlyList<string> DependsOn,int Priority,
     bool Suspended,string Risk,IReadOnlyList<string>? AllowedPaths,
-    string ArchitectureSha256,IReadOnlyList<string> VerificationRequirements);
+    string ArchitectureSha256,IReadOnlyList<string> VerificationRequirements,
+    IReadOnlyList<AdaptiveWorkSubpackage>? Subpackages=null);
 public sealed record AdaptiveWorkPlan(string TaskId,int BasePlanRevision,string BasePlanSha256,
     int Revision,string WorkPlanSha256,string? BasedOnRunId,string? BasedOnSourceSha256,
     int PolicyRevision,string PolicySha256,IReadOnlyList<AdaptiveWorkPackage> Packages,
@@ -23,9 +30,15 @@ public sealed record WorkPackageReadiness(string Id,string State,IReadOnlyList<s
 public sealed record AdaptivePlanSelection(int Revision,string WorkPlanSha256);
 public sealed record AdaptiveAssignment(string RunId,string WorkItemId,int Revision,string WorkPlanSha256,
     string SourceBeforeSha256,string? SourceAfterSha256,string StartedUtc,string? CompletedUtc);
+public sealed record AdaptiveSubpackageReceipt(string WorkItemId,string SubpackageId,int Ordinal,
+    int Revision,string WorkPlanSha256,string SourceBeforeSha256,string? SourceAfterSha256,
+    string StartedUtc,string? CompletedUtc,string? CarriedFromRunId);
+internal sealed record PartialWorkCheckpoint(string WorkItemId,IReadOnlyList<string> AllowedPaths,
+    IReadOnlyList<AdaptiveSubpackageReceipt> Receipts);
 public sealed record AdaptivePlanView(AdaptiveWorkPlan? Plan,
     IReadOnlyList<AdaptiveWorkPlan> History,IReadOnlyList<WorkPackageReadiness> Readiness,
-    string? BoundRunId=null,IReadOnlyList<AdaptiveAssignment>? Assignments=null);
+    string? BoundRunId=null,IReadOnlyList<AdaptiveAssignment>? Assignments=null,
+    IReadOnlyList<AdaptiveSubpackageReceipt>? SubpackageReceipts=null);
 
 /// <summary>
 /// Host-owned operational overlay on the immutable, owner-approved plan.
@@ -59,6 +72,14 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
             work_item_id TEXT NOT NULL,revision INTEGER NOT NULL,work_plan_sha256 TEXT NOT NULL,
             source_before_sha256 TEXT NOT NULL,source_after_sha256 TEXT,started_utc TEXT NOT NULL,
             completed_utc TEXT,PRIMARY KEY(run_id,work_item_id)
+        );
+        CREATE TABLE IF NOT EXISTS engineering_adaptive_subpackages(
+            run_id TEXT NOT NULL REFERENCES engineering_runs(id) ON DELETE CASCADE,
+            task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+            work_item_id TEXT NOT NULL,subpackage_id TEXT NOT NULL,ordinal INTEGER NOT NULL,
+            revision INTEGER NOT NULL,work_plan_sha256 TEXT NOT NULL,source_before_sha256 TEXT NOT NULL,
+            source_after_sha256 TEXT,started_utc TEXT NOT NULL,completed_utc TEXT,carried_from_run_id TEXT,
+            PRIMARY KEY(run_id,work_item_id,subpackage_id),UNIQUE(run_id,work_item_id,ordinal)
         );
         """);
 
@@ -115,14 +136,61 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
             var checks=plan.Outline.TestStrategy.Concat(extra.Select(x=>Text(x,8,300)))
                 .Concat(prior?.VerificationRequirements??[]).Distinct(StringComparer.Ordinal).ToArray();
             if(checks.Length>32)throw new StoreFailure("INVALID_WORK_PLAN");
+            var steps=ValidateSubpackages(approved,architecture,change.Subpackages,scope,prior,
+                approved.Id==plan.Outline.Tasks[0].Id);
             packages.Add(new(approved.Id,approved.Title,approved.Description,approved.AcceptanceCriteria,
                 change.DependsOn.OrderBy(x=>x,StringComparer.Ordinal).ToArray(),change.Priority,
-                change.Suspended,change.Risk,scope,architecture.Sha256,checks));
+                change.Suspended,change.Risk,scope,architecture.Sha256,checks,steps));
         }
         // A deterministic topological sort detects cycles even when tasks are
         // suspended. No priority can make a blocked dependency runnable.
         _=Topological(packages);
         return packages.OrderBy(x=>Array.FindIndex(plan.Outline.Tasks.ToArray(),t=>t.Id==x.Id)).ToArray();
+    }
+
+    private static IReadOnlyList<AdaptiveWorkSubpackage>? ValidateSubpackages(ImplementationWorkItem approved,
+        DraftArchitectureContract architecture,IReadOnlyList<WorkSubpackageSchedule>? drafts,
+        IReadOnlyList<string>? parentScope,AdaptiveWorkPackage? prior,bool firstParent)
+    {
+        if(drafts is null || drafts.Count==0)
+        {
+            if(prior?.Subpackages is {Count:>0})throw new StoreFailure("WORK_SCOPE_EXPANSION");
+            return null;
+        }
+        if(drafts.Count is <2 or >4)throw new StoreFailure("INVALID_WORK_PLAN");
+        var ids=new HashSet<string>(StringComparer.Ordinal);
+        var covered=new HashSet<int>();
+        var result=new List<AdaptiveWorkSubpackage>();
+        var priorSteps=prior?.Subpackages;
+        var priorUnion=priorSteps?.SelectMany(x=>x.AllowedPaths).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach(var draft in drafts)
+        {
+            if(draft is null || draft.Id is null || draft.Id.Length is <2 or >40 ||
+                !Regex.IsMatch(draft.Id,"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$",RegexOptions.CultureInvariant) ||
+                !ids.Add(draft.Id) || draft.AcceptanceCriteriaIndices is null ||
+                draft.AcceptanceCriteriaIndices.Count<1 ||
+                draft.AcceptanceCriteriaIndices.Distinct().Count()!=draft.AcceptanceCriteriaIndices.Count ||
+                draft.AcceptanceCriteriaIndices.Any(i=>i<0 || i>=approved.AcceptanceCriteria.Count) ||
+                draft.AllowedPaths is null || draft.AllowedPaths.Count is <1 or >EngineeringRunStore.MaxDistinctFiles ||
+                draft.AllowedPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=draft.AllowedPaths.Count)
+                throw new StoreFailure("INVALID_WORK_PLAN");
+            var scope=draft.AllowedPaths.Select(ProjectDraftStore.SafePath).OrderBy(x=>x,StringComparer.Ordinal).ToArray();
+            var oldStep=priorSteps?.SingleOrDefault(x=>x.Id==draft.Id);
+            if(scope.Any(path=>(parentScope is not null && !parentScope.Contains(path,StringComparer.OrdinalIgnoreCase)) ||
+                (priorUnion is not null && !priorUnion.Contains(path)) ||
+                (oldStep is not null && !oldStep.AllowedPaths.Contains(path,StringComparer.OrdinalIgnoreCase))))
+                throw new StoreFailure("WORK_SCOPE_EXPANSION");
+            foreach(var path in scope)DraftArchitecturePolicy.ValidateSourcePath(architecture,path);
+            if(firstParent && result.Count==0 &&
+                architecture.Choices.Any(c=>c.Topic=="technology-stack" && c.RuntimeProfileId=="static-web") &&
+                !scope.Contains("index.html",StringComparer.OrdinalIgnoreCase))
+                throw new StoreFailure("INVALID_WORK_PLAN");
+            foreach(var index in draft.AcceptanceCriteriaIndices)covered.Add(index);
+            result.Add(new(draft.Id,result.Count,Text(draft.Objective,12,600),
+                draft.AcceptanceCriteriaIndices.Order().Select(i=>approved.AcceptanceCriteria[i]).ToArray(),scope));
+        }
+        if(covered.Count!=approved.AcceptanceCriteria.Count)throw new StoreFailure("INVALID_WORK_PLAN");
+        return result.AsReadOnly();
     }
 
     public static IReadOnlyList<string> Topological(IReadOnlyList<AdaptiveWorkPackage> packages)
@@ -203,7 +271,8 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
         var states=States(db,tx,boundRun);
         IReadOnlyList<WorkPackageReadiness> readiness=latest is null?[]:Evaluate(latest.Packages,states);
         IReadOnlyList<AdaptiveAssignment> assignments=boundRun is null?[]:Assignments(db,tx,boundRun);
-        tx.Commit();return new(latest,history.AsReadOnly(),readiness,boundRun,assignments);
+        IReadOnlyList<AdaptiveSubpackageReceipt> steps=boundRun is null?[]:SubpackageReceipts(db,tx,boundRun);
+        tx.Commit();return new(latest,history.AsReadOnly(),readiness,boundRun,assignments,steps);
     }
 
     // Application-only scheduling authority. HTTP callers cannot impersonate
@@ -333,23 +402,129 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
         return package;
     }
 
+    internal static AdaptiveWorkSubpackage? AdmitNextSubpackage(SqliteConnection db,SqliteTransaction tx,
+        EngineeringRun run,string item)
+    {
+        var bound=RequireBound(db,tx,run)??throw new StoreFailure("STALE_WORK_PLAN");
+        var package=bound.Packages.SingleOrDefault(x=>x.Id==item)??throw new StoreFailure("WORK_NOT_READY");
+        if(package.Subpackages is not {Count:>0} steps ||
+            States(db,tx,run.Id).GetValueOrDefault(item)!="Running")
+            throw new StoreFailure("WORK_NOT_READY");
+        var receipts=SubpackageReceipts(db,tx,run.Id).Where(x=>x.WorkItemId==item).ToArray();
+        if(receipts.Any(x=>x.CompletedUtc is null))throw new StoreFailure("WORK_NOT_READY");
+        if(receipts.Length==steps.Count)return null;
+        if(receipts.Length>steps.Count || receipts.Where((x,i)=>x.Ordinal!=i || x.SubpackageId!=steps[i].Id).Any())
+            throw new StoreFailure("STALE_WORK_PLAN");
+        var next=steps[receipts.Length];
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO engineering_adaptive_subpackages(run_id,task_id,work_item_id,subpackage_id,ordinal,
+                revision,work_plan_sha256,source_before_sha256,started_utc)
+            VALUES(@run,@task,@item,@step,@ordinal,@rev,@sha,@source,@utc)
+            """,("@run",run.Id),("@task",run.TaskId),("@item",item),("@step",next.Id),
+            ("@ordinal",next.Ordinal),("@rev",bound.Revision),("@sha",bound.WorkPlanSha256),
+            ("@source",EngineeringMessageStore.SourceFingerprint(db,tx,run.Id)),("@utc",DateTimeOffset.UtcNow.ToString("O")));
+        return next;
+    }
+
     internal static void RequireWrite(SqliteConnection db,SqliteTransaction tx,EngineeringRun run,
-        string item,IReadOnlyList<EngineeringFileChange> files)
+        string item,IReadOnlyList<EngineeringFileChange> files,string? subpackageId=null)
     {
         var bound=RequireBound(db,tx,run);
-        if(bound is null)return;
+        if(bound is null)
+        {
+            if(subpackageId is not null)throw new StoreFailure("WORK_NOT_READY");
+            return;
+        }
         EngineeringRoleCapabilities.Require("SoftwareEngineer",EngineeringCapability.WriteSource);
         var package=bound.Packages.SingleOrDefault(p=>p.Id==item)??throw new StoreFailure("WORK_NOT_READY");
-        if(package.Suspended || TaskStore.Scalar(db,tx,"""
+        var before=TaskStore.Scalar(db,tx,"""
             SELECT source_before_sha256 FROM engineering_adaptive_assignments
-            WHERE run_id=@run AND work_item_id=@item AND revision=@rev AND work_plan_sha256=@sha
-                AND completed_utc IS NULL
-            """,("@run",run.Id),("@item",item),("@rev",bound.Revision),("@sha",bound.WorkPlanSha256))
-            !=EngineeringMessageStore.SourceFingerprint(db,tx,run.Id))
+            WHERE run_id=@run AND work_item_id=@item AND revision=@rev AND work_plan_sha256=@sha AND completed_utc IS NULL
+            """,("@run",run.Id),("@item",item),("@rev",bound.Revision),("@sha",bound.WorkPlanSha256));
+        if(package.Suspended || before is null)throw new StoreFailure("STALE_WORK_PLAN");
+        IReadOnlyList<string>? scope=package.AllowedPaths;
+        if(package.Subpackages is {Count:>0} steps)
+        {
+            var step=steps.SingleOrDefault(x=>x.Id==subpackageId)??throw new StoreFailure("WORK_NOT_READY");
+            before=TaskStore.Scalar(db,tx,"""
+                SELECT source_before_sha256 FROM engineering_adaptive_subpackages
+                WHERE run_id=@run AND work_item_id=@item AND subpackage_id=@step AND revision=@rev
+                    AND work_plan_sha256=@sha AND completed_utc IS NULL
+                """,("@run",run.Id),("@item",item),("@step",step.Id),("@rev",bound.Revision),("@sha",bound.WorkPlanSha256));
+            scope=step.AllowedPaths;
+        }
+        else if(subpackageId is not null)throw new StoreFailure("WORK_NOT_READY");
+        if(before!=EngineeringMessageStore.SourceFingerprint(db,tx,run.Id))
             throw new StoreFailure("STALE_WORK_PLAN");
-        if(package.AllowedPaths is not null &&
-            files.Any(f=>!package.AllowedPaths.Contains(f.Path,StringComparer.OrdinalIgnoreCase)))
+        if(scope is not null && files.Any(f=>!scope.Contains(f.Path,StringComparer.OrdinalIgnoreCase)))
             throw new StoreFailure("WORK_SCOPE_VIOLATION");
+    }
+
+    // Returns whether all child packages have committed. A parent remains
+    // Running until every child has saved its actual source transaction.
+    internal static bool CompleteSubpackage(SqliteConnection db,SqliteTransaction tx,EngineeringRun run,
+        string item,string subpackageId)
+    {
+        var bound=RequireBound(db,tx,run)??throw new StoreFailure("STALE_WORK_PLAN");
+        var steps=bound.Packages.Single(x=>x.Id==item).Subpackages??throw new StoreFailure("WORK_NOT_READY");
+        if(TaskStore.Execute(db,tx,"""
+            UPDATE engineering_adaptive_subpackages SET source_after_sha256=@source,completed_utc=@utc
+            WHERE run_id=@run AND work_item_id=@item AND subpackage_id=@step AND work_plan_sha256=@sha
+                AND completed_utc IS NULL
+            """,("@source",EngineeringMessageStore.SourceFingerprint(db,tx,run.Id)),
+            ("@utc",DateTimeOffset.UtcNow.ToString("O")),("@run",run.Id),("@item",item),
+            ("@step",subpackageId),("@sha",bound.WorkPlanSha256))!=1)
+            throw new StoreFailure("STALE_WORK_PLAN");
+        return SubpackageReceipts(db,tx,run.Id).Count(x=>x.WorkItemId==item && x.CompletedUtc is not null)==steps.Count;
+    }
+
+    internal static IReadOnlyList<AdaptiveSubpackageReceipt> SubpackageReceipts(SqliteConnection db,SqliteTransaction tx,string runId)
+    {
+        var result=new List<AdaptiveSubpackageReceipt>();
+        using var cmd=TaskStore.Command(db,tx,"""
+            SELECT work_item_id,subpackage_id,ordinal,revision,work_plan_sha256,source_before_sha256,
+                source_after_sha256,started_utc,completed_utc,carried_from_run_id
+            FROM engineering_adaptive_subpackages WHERE run_id=@run ORDER BY work_item_id,ordinal
+            """,("@run",runId));
+        using var reader=cmd.ExecuteReader();
+        while(reader.Read())result.Add(new(reader.GetString(0),reader.GetString(1),reader.GetInt32(2),
+            reader.GetInt32(3),reader.GetString(4),reader.GetString(5),reader.IsDBNull(6)?null:reader.GetString(6),
+            reader.GetString(7),reader.IsDBNull(8)?null:reader.GetString(8),reader.IsDBNull(9)?null:reader.GetString(9)));
+        return result.AsReadOnly();
+    }
+
+    internal static PartialWorkCheckpoint? PartialCheckpoint(SqliteConnection db,SqliteTransaction tx,
+        EngineeringRun run,AdaptiveWorkPlan plan,IReadOnlyList<EngineeringAssignedTask> carried)
+    {
+        var groups=SubpackageReceipts(db,tx,run.Id).Where(x=>x.CompletedUtc is not null &&
+            !carried.Any(c=>c.Id==x.WorkItemId)).GroupBy(x=>x.WorkItemId).ToArray();
+        if(groups.Length==0)return null;
+        if(groups.Length!=1)throw new StoreFailure("RESUME_NOT_AVAILABLE");
+        var group=groups[0];var receipts=group.OrderBy(x=>x.Ordinal).ToArray();
+        var package=plan.Packages.SingleOrDefault(x=>x.Id==group.Key)??throw new StoreFailure("RESUME_NOT_AVAILABLE");
+        var steps=package.Subpackages??throw new StoreFailure("RESUME_NOT_AVAILABLE");
+        if(package.DependsOn.Any(d=>!carried.Any(c=>c.Id==d)) || receipts.Length>=steps.Count ||
+            receipts.Where((x,i)=>x.Ordinal!=i || x.SubpackageId!=steps[i].Id ||
+                x.WorkPlanSha256!=plan.WorkPlanSha256 || x.SourceAfterSha256 is null ||
+                (i>0 && x.SourceBeforeSha256!=receipts[i-1].SourceAfterSha256)).Any() ||
+            receipts[^1].SourceAfterSha256!=EngineeringMessageStore.SourceFingerprint(db,tx,run.Id))
+            throw new StoreFailure("RESUME_NOT_AVAILABLE");
+        return new(group.Key,steps.Take(receipts.Length).SelectMany(x=>x.AllowedPaths)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),receipts);
+    }
+
+    internal static void CarrySubpackages(SqliteConnection db,SqliteTransaction tx,
+        EngineeringRun run,string originalRunId,PartialWorkCheckpoint checkpoint)
+    {
+        foreach(var receipt in checkpoint.Receipts)
+            TaskStore.Execute(db,tx,"""
+                INSERT INTO engineering_adaptive_subpackages(run_id,task_id,work_item_id,subpackage_id,ordinal,
+                    revision,work_plan_sha256,source_before_sha256,source_after_sha256,started_utc,completed_utc,carried_from_run_id)
+                VALUES(@run,@task,@item,@step,@ordinal,@rev,@sha,@before,@after,@started,@completed,@original)
+                """,("@run",run.Id),("@task",run.TaskId),("@item",receipt.WorkItemId),("@step",receipt.SubpackageId),
+                ("@ordinal",receipt.Ordinal),("@rev",receipt.Revision),("@sha",receipt.WorkPlanSha256),
+                ("@before",receipt.SourceBeforeSha256),("@after",receipt.SourceAfterSha256!),
+                ("@started",receipt.StartedUtc),("@completed",receipt.CompletedUtc!),("@original",originalRunId));
     }
 
     internal static void Complete(SqliteConnection db,SqliteTransaction tx,EngineeringRun run,string item)

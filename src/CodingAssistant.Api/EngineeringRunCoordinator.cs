@@ -60,7 +60,8 @@ public sealed class EngineeringRunCoordinator(
         try
         {
             var token = cancellation.Token;
-            async Task Implement(ImplementationWorkItem item,AdaptiveWorkPackage? package)
+            async Task Implement(ImplementationWorkItem item,AdaptiveWorkPackage? package,
+                AdaptiveWorkSubpackage? subpackage=null)
             {
                 var prior = store.Get(job.TaskId, job.Id).Files;
                 using var providerScope = EngineeringProviderActivity.Enter(tasks,job.TaskId,
@@ -72,9 +73,9 @@ public sealed class EngineeringRunCoordinator(
                             store.RecordAtlasInspection(job.TaskId,job.Id,item.Id,observation),
                         OnOutputRejected: rejection =>
                             store.RecordOutputRejection(job.TaskId,job.Id,item.Id,rejection),
-                        AgentModel: job.Model,AdaptivePackage:package),token);
+                        AgentModel: job.Model,AdaptivePackage:package,AdaptiveSubpackage:subpackage),token);
                 token.ThrowIfCancellationRequested();
-                var committed=store.CompleteTask(job.TaskId,job.Id,item.Id,result);
+                var committed=store.CompleteTask(job.TaskId,job.Id,item.Id,result,subpackage?.Id);
                 await atlasNotifier.PublishAsync(committed);
             }
             if(store.HasAdaptiveBinding(job.TaskId,job.Id))
@@ -93,7 +94,17 @@ public sealed class EngineeringRunCoordinator(
                         continue;
                     }
                     var item=plan.Outline.Tasks.Single(t=>t.Id==package.Id);
-                    await Implement(item,package);
+                    if(package.Subpackages is {Count:>0})
+                    {
+                        while(store.Get(job.TaskId,job.Id).Tasks.Single(t=>t.Id==item.Id).State=="Running")
+                        {
+                            token.ThrowIfCancellationRequested();
+                            var step=store.StartNextSubpackage(job.TaskId,job.Id,item.Id)
+                                ??throw new StoreFailure("WORK_NOT_READY");
+                            await Implement(item,package,step);
+                        }
+                    }
+                    else await Implement(item,package);
                 }
             }
             else

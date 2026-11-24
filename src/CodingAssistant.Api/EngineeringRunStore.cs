@@ -343,8 +343,9 @@ public sealed class EngineeringRunStore(
                 ordinal++;
             }
         }
+        var partial=adaptive is null?null:AdaptiveWorkPlanStore.PartialCheckpoint(db,tx,original,adaptive,carried);
         if (ordinal != approved.Outline.Tasks.Count || !sawIncomplete ||
-            carried.Count == 0 || carried.Count == ordinal)
+            (carried.Count == 0 && partial is null) || carried.Count == ordinal)
             throw new StoreFailure("RESUME_NOT_AVAILABLE");
 
         if(adaptive is not null && adaptive.Packages.Where(p=>carried.Any(c=>c.Id==p.Id))
@@ -364,7 +365,8 @@ public sealed class EngineeringRunStore(
                 var content = reader.GetString(1);
                 var sha = reader.GetString(2);
                 var owner = reader.GetString(3);
-                if (!carried.Any(t => t.Id == owner) ||
+                if ((!carried.Any(t => t.Id == owner) &&
+                     !(partial?.WorkItemId==owner && partial.AllowedPaths.Contains(path,StringComparer.OrdinalIgnoreCase))) ||
                     ProjectDraftStore.SafePath(path) != path ||
                     Convert.ToHexString(SHA256.HashData(
                         Encoding.UTF8.GetBytes(content))).ToLowerInvariant() != sha)
@@ -427,7 +429,11 @@ public sealed class EngineeringRunStore(
         if (copied != savedCount)
             throw new StoreFailure("SOURCE_CHANGED");
 
-        if(adaptive is not null)AdaptiveWorkPlanStore.Bind(db,tx,job,adaptive);
+        if(adaptive is not null)
+        {
+            AdaptiveWorkPlanStore.Bind(db,tx,job,adaptive);
+            if(partial is not null)AdaptiveWorkPlanStore.CarrySubpackages(db,tx,job,sourceRunId,partial);
+        }
         Event(db, tx, id, "EngineeringRunResumed",
             "Carried forward " + carried.Count + " approved task(s), " +
             savedCount + " saved file(s) from run " + sourceRunId +
@@ -537,6 +543,20 @@ public sealed class EngineeringRunStore(
         if(next is null){tx.Commit();return null;}
         var package=StartTaskCore(db,tx,job,next);
         tx.Commit();tasks.SignalEngineeringActivity(taskId);return package;
+    }
+
+    public AdaptiveWorkSubpackage? StartNextSubpackage(string taskId,string runId,string workItemId)
+    {
+        ValidId(taskId);ValidId(runId);
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var job=Find(db,tx,runId);
+        if(job is null || job.TaskId!=taskId)throw new StoreFailure("NOT_FOUND");
+        if(job.State!="Running")throw new StoreFailure("INVALID_STATE");
+        RequireBinding(db,tx,job);
+        var step=AdaptiveWorkPlanStore.AdmitNextSubpackage(db,tx,job,workItemId);
+        if(step is not null)Event(db,tx,runId,"EngineeringSubpackageStarted",
+            workItemId+" / "+step.Id+" dispatched within approved parent scope");
+        tx.Commit();tasks.SignalEngineeringActivity(taskId);return step;
     }
 
     private static AdaptiveWorkPackage? StartTaskCore(SqliteConnection db,SqliteTransaction tx,
@@ -665,7 +685,7 @@ public sealed class EngineeringRunStore(
     }
 
     public AtlasSourceEvent? CompleteTask(string taskId, string runId, string workItemId,
-        EngineeringChangeSet changes)
+        EngineeringChangeSet changes,string? subpackageId=null)
     {
         ValidId(taskId); ValidId(runId);
         var safe = MafSoftwareEngineer.Parse(JsonSerializer.Serialize(changes));
@@ -683,7 +703,7 @@ public sealed class EngineeringRunStore(
             """, ("@run", runId), ("@item", workItemId)) is null)
             throw new StoreFailure("INVALID_STATE");
 
-        AdaptiveWorkPlanStore.RequireWrite(db,tx,job,workItemId,safe.Files);
+        AdaptiveWorkPlanStore.RequireWrite(db,tx,job,workItemId,safe.Files,subpackageId);
 
         // Repair runs are allowed to replace only the exact owner-triaged
         // source paths. Enforce this INSIDE the same SQLite transaction that
@@ -759,6 +779,18 @@ public sealed class EngineeringRunStore(
         }
         var atlasEvent = EngineeringAtlasLedger.Append(
             db, tx, runId, workItemId, beforeAtlas, previousGraph, currentGraph);
+        if(subpackageId is not null)
+        {
+            var last=AdaptiveWorkPlanStore.CompleteSubpackage(db,tx,job,workItemId,subpackageId);
+            Event(db,tx,runId,"EngineeringSubpackageCompleted",
+                workItemId+" / "+subpackageId+" source persisted; not tested");
+            if(!last)
+            {
+                TaskStore.Execute(db,tx,"UPDATE engineering_runs SET phase=@phase,updated_utc=@now WHERE id=@run",
+                    ("@phase","SavedSubpackage:"+subpackageId),("@now",now),("@run",runId));
+                tx.Commit();tasks.SignalEngineeringActivity(taskId);return atlasEvent;
+            }
+        }
         TaskStore.Execute(db, tx, """
             UPDATE engineering_run_tasks SET state='Completed',
                 summary=@summary,completed_utc=@now

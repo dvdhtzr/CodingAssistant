@@ -49,6 +49,8 @@ public sealed class EngineeringActivityStore(TaskStore tasks)
         "EngineeringRunAdmitted" => ("Engineering","Source-only engineering run admitted"),
         "EngineeringRunResumed" => ("Engineering","Owner-authorized source run resumed"),
         "EngineeringRunCompleted" => ("Engineering","Source generation completed; not tested"),
+        "EngineeringSubpackageStarted" => ("Team","Software Engineer received bounded child package"),
+        "EngineeringSubpackageCompleted" => ("Engineering","Child package source committed; not tested"),
         "EngineeringRunFailed" => ("Diagnostics","Engineering run stopped safely"),
         "EngineeringRunInterrupted" => ("Diagnostics","Engineering run interrupted"),
         "EngineerAtlasInspected" => ("Engineering","Read-only Code Atlas inspection recorded"),

@@ -3574,6 +3574,67 @@ try
         aetAdaptiveResumed.Files.Single(f=>f.Path=="index.html").Sha256==aetAdaptiveCheckpoint.Files.Single().Sha256 &&
         aetWorkPlanStore.Read(taskBound.Id).Assignments is {Count:1},
         "adaptive resume preserves completed source and invokes only remaining package");
+    // Decompose a parent without adding requirements or widening approved file scope.
+    var aetStepCriteria=Enumerable.Range(0,approvedEngineerPlan.Outline.Tasks.Single(x=>x.Id=="timer-state").AcceptanceCriteria.Count).ToArray();
+    var aetChildren=new WorkSubpackageSchedule[]{
+        new("state-setup","Establish the timer state within approved behavior.",aetStepCriteria,["app.js"]),
+        new("state-wiring","Complete the approved timer control interaction.",aetStepCriteria,["app.js"])
+    };
+    var aetChildContext=aetAdaptiveContext with {ExpectedRunId=aetAdaptiveResumeId,
+        ExpectedSourceSha256=QaReviewStore.Fingerprint(aetAdaptiveResumed!.Files)};
+    var aetChildDraft=new ReviseAdaptivePlanDraft(6,aetResumePlan.WorkPlanSha256,
+        [aetSchedule[0],aetSchedule[1] with {Subpackages=aetChildren}],
+        "Decompose the approved timer state item into bounded child source assignments.");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetChildContext,aetChildDraft with {
+        Packages=[aetSchedule[0],aetSchedule[1] with {Subpackages=[aetChildren[0],aetChildren[1] with {AllowedPaths=["index.html"]}]}]
+    }),"WORK_SCOPE_EXPANSION");
+    var aetChildPlan=aetWorkPlanStore.Revise(aetChildContext,aetChildDraft);
+    var aetChildRun=engineeringStore.Start(taskBound.Id,approvedEngineerPlan,"qwen2.5-coder:14b",
+        new AdaptivePlanSelection(7,aetChildPlan.WorkPlanSha256));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetChildRun.Id)?.Id=="timer-interface",
+        "parent dependencies remain enforced for decomposed work");
+    engineeringStore.CompleteTask(taskBound.Id,aetChildRun.Id,"timer-interface",
+        new EngineeringChangeSet("Saved approved interface for child work.",
+            [new EngineeringFileChange("index.html","Browser interface","<!doctype html><html><body>Timer</body></html>")],
+            ["Independently verify browser behavior."]));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetChildRun.Id)?.Id=="timer-state" &&
+        engineeringStore.StartNextSubpackage(taskBound.Id,aetChildRun.Id,"timer-state")?.Id=="state-setup",
+        "host dispatches first bounded child only after parent dependency");
+    var aetChildChange=new EngineeringChangeSet("Saved initial timer state before wiring.",
+        [new EngineeringFileChange("app.js","Initial timer state","let timerState = 0;")],
+        ["Independently verify timer interaction."]);
+    RejectMessage(()=>engineeringStore.CompleteTask(taskBound.Id,aetChildRun.Id,"timer-state",aetChildChange),"WORK_NOT_READY");
+    engineeringStore.CompleteTask(taskBound.Id,aetChildRun.Id,"timer-state",aetChildChange,"state-setup");
+    var aetChildCheckpoint=engineeringStore.Get(taskBound.Id,aetChildRun.Id);
+    Check(aetChildCheckpoint.Tasks.Single(x=>x.Id=="timer-state").State=="Running" &&
+        aetWorkPlanStore.Read(taskBound.Id).SubpackageReceipts is {Count:1},
+        "child source is persisted without prematurely completing parent");
+    Check(engineeringStore.StartNextSubpackage(taskBound.Id,aetChildRun.Id,"timer-state")?.Id=="state-wiring",
+        "next child waits for first committed source");
+    engineeringStore.Finish(taskBound.Id,aetChildRun.Id,false,"MODEL_OUTPUT_REJECTED");
+    var aetChildCalls=softwareModel.AssignedIds.Count;
+    string aetChildResumeId;
+    using(var aetChildResume=await Post(client,engineeringPath,new StartEngineeringRunRequest(2,secondPlanHash,aetChildRun.Id)))
+    using(var aetChildResumeBody=await Body(aetChildResume))
+    {
+        Check(aetChildResume.StatusCode==HttpStatusCode.Accepted,"explicit resume carries completed child source checkpoint");
+        aetChildResumeId=aetChildResumeBody.RootElement.GetProperty("id").GetString()!;
+    }
+    EngineeringRunSnapshot? aetChildDone=null;
+    for(var aetAttempt=0;aetAttempt<160;aetAttempt++)
+    {
+        aetChildDone=engineeringStore.Get(taskBound.Id,aetChildResumeId);
+        if(aetChildDone.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    var aetChildView=aetWorkPlanStore.Read(taskBound.Id);
+    Check(aetChildDone?.Job.State=="Generated" &&
+        softwareModel.AssignedIds.Skip(aetChildCalls).SequenceEqual(["timer-state"]) &&
+        aetChildView.SubpackageReceipts is {Count:2} &&
+        aetChildView.SubpackageReceipts[0].CarriedFromRunId==aetChildRun.Id &&
+        aetChildView.SubpackageReceipts[1].SubpackageId=="state-wiring" &&
+        aetChildView.SubpackageReceipts[0].SourceAfterSha256==aetChildView.SubpackageReceipts[1].SourceBeforeSha256,
+        "resume invokes only incomplete child and retains exact checkpoint provenance");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetAdaptivePolicy.Revision,
         aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
 

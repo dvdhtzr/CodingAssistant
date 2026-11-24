@@ -24,8 +24,13 @@ approvals or mismatched revision stop admission or writes safely. The
 existing owner-authorized resume path retains completed work, with
 dependency validation for adaptive schedules.
 
-The current graph schedules existing approved work item IDs. Decomposing
-an approved item into finer-grained executable work packages, additional
-independent review checkpoints and autonomous orchestration are remaining
-work; no source generation, execution or delivery privileges are granted
-by the operational graph itself.
+The graph also supports two to four bounded child packages under an
+existing approved item, with explicit file scopes and inherited acceptance
+criteria. All original criteria must be covered; no new mandatory
+requirements or broader source scope can be introduced. Each child uses
+the same sole Software Engineer writer and persists its own source receipt.
+The parent remains incomplete until every child commits. Explicit resume
+can carry a validated completed child prefix and resume only unfinished
+child work. New independent review checkpoint orchestration remains
+AET-6/AET-8 work; the operational graph itself grants no execution or
+delivery privileges.
