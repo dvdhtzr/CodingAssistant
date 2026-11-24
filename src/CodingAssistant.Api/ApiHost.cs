@@ -53,7 +53,8 @@ public static class ApiHost
         IQaSourceReviewer? qaReviewerOverride = null,
         ILocalSourceSmokeRunner? sourceSmokeOverride = null,
         IAtlasCommitArchiveDownloader? atlasArchiveOverride = null,
-        ILeadSourceReviewer? leadReviewerOverride = null)
+        ILeadSourceReviewer? leadReviewerOverride = null,
+        IEngineeringIssueVerifier? issueVerifierOverride = null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -188,6 +189,7 @@ public static class ApiHost
         builder.Services.AddSingleton(leadReviews);
         builder.Services.AddSingleton<ILeadSourceReviewer>(leadReviewerOverride ?? new MafLeadSoftwareEngineer());
         builder.Services.AddSingleton<LeadReviewCoordinator>();
+        builder.Services.AddSingleton<IEngineeringIssueVerifier>(issueVerifierOverride ?? new MafEngineeringIssueVerifier());
         builder.Services.AddSingleton(qaReviews);
         builder.Services.AddSingleton(repairProposals);
         builder.Services.AddSingleton(repairTriage);
@@ -840,6 +842,23 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-issues",
             (string id,string? runId,TaskStore tasks) =>
                 Safe(() => Results.Ok(new EngineeringIssueStore(tasks).Read(id,runId))));
+        app.MapPost("/api/tasks/{id}/engineering-issues/verify",
+            (string id,VerifyEngineeringIssueRequest request,TaskStore tasks,
+             IEngineeringIssueVerifier verifier,AgentRoleModelSettings roleModels,
+             IOllamaModelCatalog catalog,CancellationToken cancellation)=>
+                SafeAsync(async ()=>{
+                    var store=new IssueVerificationStore(tasks);
+                    var input=store.Prepare(id,request);
+                    var role=input.Issue.Origin;
+                    var model=roleModels.Resolve(id,role,input.Plan.Model);
+                    if(!(await catalog.ListAsync(cancellation)).Contains(model,StringComparer.Ordinal))
+                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    using var scope=EngineeringProviderActivity.Enter(tasks,id,role,
+                        input.Issue.Id,input.Request.CandidateSourceSha256);
+                    var assessment=await verifier.VerifyAsync(input,model,cancellation);
+                    cancellation.ThrowIfCancellationRequested();
+                    return Results.Ok(store.Record(id,input,role,model,assessment));
+                }));
         app.MapGet("/api/tasks/{id}/lead-reviews/latest",
             (string id, LeadReviewStore db) =>
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));

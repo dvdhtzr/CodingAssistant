@@ -2511,6 +2511,33 @@ try
         "historical issue remains unclosed even after independent static repair review");
     Check(new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Any(x=>x.Origin=="QaEngineer"),
         "recurring issue remains visible on repaired source");
+    var aetVerificationStore=new IssueVerificationStore(tasks);
+    var aetVerifyRequest=new VerifyEngineeringIssueRequest(engineeringRunId,aetRepairedIssue.Id,
+        repairOutcome!.Engineering.Job.Id,QaReviewStore.Fingerprint(repairOutcome.Engineering.Files));
+    var aetVerifyInput=aetVerificationStore.Prepare(taskBound.Id,aetVerifyRequest);
+    RejectMessage(()=>aetVerificationStore.Record(taskBound.Id,aetVerifyInput,
+        "SoftwareEngineer","qwen3.5:4b",new IssueVerificationAssessment("StillPresent",
+            "This is an unauthorized self-verification attempt.",1,"console.log",null)),
+        "AGENT_CAPABILITY_DENIED");
+    RejectMessage(()=>aetVerificationStore.Record(taskBound.Id,aetVerifyInput,
+        "QaEngineer","qwen3.5:4b",new IssueVerificationAssessment("StillPresent",
+            "This source citation was invented by the fixture.",999,"not present",null)),
+        "MODEL_OUTPUT_REJECTED");
+    var aetStaticResult=aetVerificationStore.Record(taskBound.Id,aetVerifyInput,
+        "QaEngineer","qwen3.5:4b",new IssueVerificationAssessment("ResolvedByStaticEvidence",
+            "Injected source observation does not establish functional behavior.",1,"console.log",null));
+    var aetAfterRecheck=new EngineeringIssueStore(tasks).Read(taskBound.Id,engineeringRunId)
+        .Issues.Single(x=>x.Id==aetRepairedIssue.Id);
+    Check(aetAfterRecheck.State=="AwaitingQualifiedVerification" &&
+        aetAfterRecheck.Verifications.Single().Id==aetStaticResult.Id &&
+        aetAfterRecheck.Verifications.Single().Current,
+        "explicit independent source recheck cannot close a functional concern or fabricate runtime verification");
+    var aetStillPresent=aetVerificationStore.Record(taskBound.Id,aetVerifyInput,
+        "QaEngineer","qwen3.5:4b",new IssueVerificationAssessment("StillPresent",
+            "The candidate still contains the independently identified construct.",1,"console.log",null));
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,engineeringRunId).Issues
+        .Single(x=>x.Id==aetRepairedIssue.Id) is {State:"StillPresent",Verifications.Count:2},
+        "explicit repeated independent verification retains evidence and reopens the issue");
 
     // A real Windows installation can already contain 1-3 approved repairs.
     // Exercise in-place migration of its populated SQLite CHECK constraint,

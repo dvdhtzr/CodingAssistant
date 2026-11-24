@@ -24,7 +24,8 @@ public sealed record EngineeringIssue(string Id,string TaskId,string Engineering
     string? AssignedOwner,string? RepairCycleId,int? RepairAttempt,string? RepairState,
     IReadOnlyList<EngineeringIssueTriage> TriageHistory,
     IReadOnlyList<EngineeringIssueChallenge> Challenges,
-    IReadOnlyList<IssueDecision> Decisions);
+    IReadOnlyList<IssueDecision> Decisions,
+    IReadOnlyList<IssueVerification> Verifications);
 public sealed record EngineeringIssuePage(string TaskId,string? EngineeringRunId,
     bool CurrentSource,IReadOnlyList<EngineeringIssue> Issues);
 
@@ -223,6 +224,8 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                 list.Add(decision);
             }
 
+        var verifications=IssueVerificationStore.History(db,tx,taskId,run.Id,latest)
+            .GroupBy(x=>x.IssueId).ToDictionary(g=>g.Key,g=>g.ToArray(),StringComparer.Ordinal);
         var issues=occurrences.GroupBy(f=>Key(taskId,run.Id,sourceSha,f),StringComparer.Ordinal)
             .Select(group=>{
                 var f=group.Last();
@@ -253,12 +256,29 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                     : decisions.Length>1?"TriageConflict":
                     classification=="ImplementationDefect"?"ConfirmedDefect":
                     classification is not null?"Classified":relatedChallenges.Length>0?"Challenged":"NeedsTriage";
+                var verificationHistory=verifications.GetValueOrDefault(group.Key)??[];
+                var verification=verificationHistory.LastOrDefault();
+                if(verification is {Current:true} &&
+                    verification.ChallengeMessageId==relatedChallenges.LastOrDefault()?.MessageId)
+                {
+                    // Only static architectural/maintainability findings can
+                    // be dispositioned on static evidence. Functional/security
+                    // concerns still need qualified independent verification.
+                    var staticOnly=f.Origin=="LeadSoftwareEngineer" &&
+                        f.Category is ("Architecture" or "Maintainability");
+                    state=verification.Assessment.Outcome switch {
+                        "StillPresent"=>"StillPresent",
+                        "ResolvedByStaticEvidence"=>staticOnly?"StaticResolutionRecorded":"AwaitingQualifiedVerification",
+                        "ChallengeSupported"=>staticOnly?"WithdrawnByReviewer":"AwaitingQualifiedVerification",
+                        _=>state
+                    };
+                }
                 return new EngineeringIssue(group.Key,taskId,run.Id,sourceSha,run.PlanSha256,
                     f.Origin,f.Severity,f.Category,f.Path,f.Line,f.Requirement,f.Evidence,
                     f.Recommendation,f.Verification,refs,current,group.Any(o=>o.Latest),state,
                     classification,repair.Id is not null || effectiveDecision?.Classification=="ImplementationDefect"
                         ?"SoftwareEngineer":null,
-                    repair.Id,repair.Id is null?null:repair.Attempt,repair.State,history,relatedChallenges,decisionHistory);
+                    repair.Id,repair.Id is null?null:repair.Attempt,repair.State,history,relatedChallenges,decisionHistory,verificationHistory);
             }).OrderBy(x=>x.Severity switch {"Critical"=>0,"Major"=>1,"Minor"=>2,_=>3})
             .ThenBy(x=>x.Path,StringComparer.Ordinal).ThenBy(x=>x.Id,StringComparer.Ordinal).ToArray();
         return new(taskId,run.Id,current,issues);
