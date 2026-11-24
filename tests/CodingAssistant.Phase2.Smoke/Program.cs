@@ -1231,6 +1231,7 @@ var leadModel = new Phase2TechnicalLeadPlanner();
 var softwareModel = new Phase4EngineeringModel();
 var qaModel = new Phase5QaModel();
 var aetLeadModel = new AetLeadReviewFixture();
+var aetIssueVerifier = new AetIssueVerifierFixture();
 try
 {
     var tasks = new TaskStore(root);
@@ -1261,7 +1262,8 @@ try
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
-        qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel);
+        qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel,
+        issueVerifierOverride: aetIssueVerifier);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -1454,7 +1456,8 @@ try
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
-        qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel);
+        qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel,
+        issueVerifierOverride: aetIssueVerifier);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -2532,9 +2535,16 @@ try
         aetAfterRecheck.Verifications.Single().Id==aetStaticResult.Id &&
         aetAfterRecheck.Verifications.Single().Current,
         "explicit independent source recheck cannot close a functional concern or fabricate runtime verification");
-    var aetStillPresent=aetVerificationStore.Record(taskBound.Id,aetVerifyInput,
-        "QaEngineer","qwen3.5:4b",new IssueVerificationAssessment("StillPresent",
-            "The candidate still contains the independently identified construct.",1,"console.log",null));
+    using(var aetVerifyAnonymous=new HttpClient {BaseAddress=client.BaseAddress})
+    using(var aetDeniedVerify=await Post(aetVerifyAnonymous,"/api/tasks/"+taskBound.Id+"/engineering-issues/verify",aetVerifyRequest))
+        Check(aetDeniedVerify.StatusCode==HttpStatusCode.Unauthorized,
+            "independent recheck endpoint requires authenticated owner");
+    using(var aetVerifyResponse=await Post(client,"/api/tasks/"+taskBound.Id+"/engineering-issues/verify",aetVerifyRequest))
+    using(var aetVerifyBody=await Body(aetVerifyResponse))
+        Check(aetVerifyResponse.StatusCode==HttpStatusCode.OK &&
+            aetVerifyBody.RootElement.GetProperty("agentId").GetString()=="QaEngineer" &&
+            aetVerifyBody.RootElement.GetProperty("assessment").GetProperty("outcome").GetString()=="StillPresent",
+            "host selects the originating independent reviewer; injected model recheck is persisted");
     Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,engineeringRunId).Issues
         .Single(x=>x.Id==aetRepairedIssue.Id) is {State:"StillPresent",Verifications.Count:2},
         "explicit repeated independent verification retains evidence and reopens the issue");
@@ -3259,6 +3269,71 @@ try
         Check(staleResume.StatusCode == HttpStatusCode.Conflict,
             "cannot resume superseded failure checkpoint after a newer run exists");
 
+    // Exercise the same persisted repair workflow for a genuine lead-review
+    // origin without changing the original QA repair acceptance assertions.
+    string aetResumedLeadId;
+    using(var aetAdmittedLead=await Post(client,aetLeadPath,
+        new StartQaReviewRequest(resumedRunId,secondPlanHash)))
+    using(var aetAdmittedBody=await Body(aetAdmittedLead))
+    {
+        Check(aetAdmittedLead.StatusCode==HttpStatusCode.Accepted,"independent lead reviews resumed generated source");
+        aetResumedLeadId=aetAdmittedBody.RootElement.GetProperty("id").GetString()!;
+    }
+    LeadReviewSnapshot? aetResumedLead=null;
+    for(var aetAttempt=0;aetAttempt<160;aetAttempt++)
+    {
+        aetResumedLead=aetLeadStore.Get(taskBound.Id,aetResumedLeadId);
+        if(aetResumedLead.Job.State!="Running") break;
+        await Task.Delay(25);
+    }
+    Check(aetResumedLead?.Disposition=="ChangesRequested","independent lead finding saved on resumed revision");
+    using(var aetLeadProposed=await Post(client,aetLeadProposalPath,new CreateRepairProposalRequest(null,aetResumedLeadId)))
+        Check(aetLeadProposed.StatusCode==HttpStatusCode.Created,"lead-origin repair proposal admitted");
+    var aetResumedProposal=new RepairProposalStore(tasks).Latest(taskBound.Id)!;
+    using(var aetLeadConfirmed=await Post(client,aetLeadProposalPath+"/"+aetResumedProposal.Id+"/triage",
+        new ClassifyRepairFindingRequest("app.js",0,"ImplementationDefect",
+            "Owner confirms the source defect and approves only its existing file scope.")))
+        Check(aetLeadConfirmed.StatusCode==HttpStatusCode.OK,"lead-origin finding independently classified");
+    string aetLeadCycleId;
+    using(var aetLeadRepair=await Post(client,latestRepairPath,new StartRepairCycleRequest(aetResumedProposal.Id,
+        "REPAIR "+aetResumedProposal.SourceSha256,[new RepairSelection("app.js",0)])))
+    using(var aetRepairBody=await Body(aetLeadRepair))
+    {
+        Check(aetLeadRepair.StatusCode==HttpStatusCode.Accepted,"lead-origin finding enters existing exact-scope source writer");
+        aetLeadCycleId=aetRepairBody.RootElement.GetProperty("id").GetString()!;
+    }
+    RepairCycleSnapshot? aetLeadRepairResult=null;
+    var aetUnifiedCycles=new RepairCycleStore(tasks,engineeringStore,reviewStore,repairProposal);
+    for(var aetAttempt=0;aetAttempt<240;aetAttempt++)
+    {
+        aetLeadRepairResult=aetUnifiedCycles.Get(taskBound.Id,aetLeadCycleId);
+        if(aetLeadRepairResult.Cycle.State is not ("Running" or "Generated" or "QaRunning"))break;
+        await Task.Delay(25);
+    }
+    Check(aetLeadRepairResult?.Cycle.State=="QaReviewed" &&
+        aetLeadRepairResult.Engineering.Files.Single(f=>f.Path=="index.html").Sha256==
+            resumedDone!.Files.Single(f=>f.Path=="index.html").Sha256 &&
+        aetLeadRepairResult.Engineering.Files.Single(f=>f.Path=="app.js").Sha256!=
+            resumedDone!.Files.Single(f=>f.Path=="app.js").Sha256 &&
+        aetLeadRepairResult.StaticPreflight.VerificationStatus=="GENERATED_NOT_TESTED",
+        "lead-origin repair uses existing scope enforcement, immutable revision and independent static QA");
+    var aetLeadRepairedIssue=new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId)
+        .Issues.Single(x=>x.Origin=="LeadSoftwareEngineer");
+    Check(aetLeadRepairedIssue.RepairCycleId==aetLeadCycleId &&
+        aetLeadRepairedIssue.State=="AwaitingIndependentVerification",
+        "lead-origin issue remains linked to actual repair evidence without false closure");
+    var aetLeadVerifyRequest=new VerifyEngineeringIssueRequest(resumedRunId,aetLeadRepairedIssue.Id,
+        aetLeadRepairResult!.Engineering.Job.Id,QaReviewStore.Fingerprint(aetLeadRepairResult.Engineering.Files));
+    using(var aetLeadVerified=await Post(client,"/api/tasks/"+taskBound.Id+"/engineering-issues/verify",aetLeadVerifyRequest))
+    using(var aetLeadVerifiedBody=await Body(aetLeadVerified))
+        Check(aetLeadVerified.StatusCode==HttpStatusCode.OK &&
+            aetLeadVerifiedBody.RootElement.GetProperty("agentId").GetString()=="LeadSoftwareEngineer",
+            "originating lead reviewer independently rechecks repaired source");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId).Issues
+        .Single(x=>x.Id==aetLeadRepairedIssue.Id).State=="AwaitingQualifiedVerification" &&
+        qaModel.ReviewedFiles.Count==10,
+        "lead static correctness assessment cannot claim functional verification; actual QA reviewed two more files");
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var stalePolicy = delegationStore.Propose(taskBound.Id,
@@ -3323,8 +3398,11 @@ try
     using (var blockedQa = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
         Check(blockedQa.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 8,
+              qaModel.ReviewedFiles.Count == 10,
             "stale architecture cannot initiate new QA review of old source");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId).Issues
+        .Single(x=>x.Id==aetLeadRepairedIssue.Id).Verifications.All(x=>!x.Current),
+        "architecture revision invalidates previously recorded issue verification");
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
@@ -3813,5 +3891,20 @@ sealed class AetLeadReviewFixture : ILeadSourceReviewer
             [new LeadFinding("Major","Correctness",input.File.Path,line+1,evidence,
             "The timer fixture requires independent behavior verification.",
             "Inspect and correct the timer implementation.","Verify the timer updates in an independent check.")]));
+    }
+}
+
+sealed class AetIssueVerifierFixture : IEngineeringIssueVerifier
+{
+    public Task<IssueVerificationAssessment> VerifyAsync(IssueVerificationInput input,string model,CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if(model!="qwen3.5:4b" || input.Before.Sha256==input.After.Sha256 ||
+            !input.After.Content.Contains("console.log('repaired start')",StringComparison.Ordinal))
+            throw new Exception("Fixture verifier received wrong role model or source revision");
+        return Task.FromResult(new IssueVerificationAssessment(
+            input.Issue.Origin=="QaEngineer"?"StillPresent":"ResolvedByStaticEvidence",
+            "Injected source recheck records the exact changed construct; functionality remains untested.",
+            1,"console.log('repaired start')",null));
     }
 }

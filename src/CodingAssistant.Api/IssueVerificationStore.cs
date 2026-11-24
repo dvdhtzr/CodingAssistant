@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Data.Sqlite;
@@ -13,7 +14,7 @@ public sealed record IssueVerificationAssessment(string Outcome,string Rationale
 public sealed record IssueVerification(string Id,string IssueId,string OriginalRunId,
     string CandidateRunId,string CandidateSourceSha256,string CandidateFileSha256,
     string PlanSha256,string AgentId,string Model,string? ChallengeMessageId,
-    IssueVerificationAssessment Assessment,string CreatedUtc,bool Current=false);
+    IssueVerificationAssessment Assessment,string CreatedUtc,bool Current=false,string BindingSha256="");
 public sealed record IssueVerificationInput(VerifyEngineeringIssueRequest Request,
     EngineeringIssue Issue,EngineeringRun Candidate,EngineeringSourceFile Before,
     EngineeringSourceFile After,ImplementationPlan Plan,DraftArchitectureContract Architecture,
@@ -23,17 +24,37 @@ public sealed record IssueVerificationInput(VerifyEngineeringIssueRequest Reques
 /// a functional test, a repair grant, or a generic completion certificate.</summary>
 public sealed class IssueVerificationStore(TaskStore tasks)
 {
-    internal static void Initialize(SqliteConnection db)=>TaskStore.Execute(db,null,"""
+    internal static void Initialize(SqliteConnection db)
+    {
+        TaskStore.Execute(db,null,"""
         CREATE TABLE IF NOT EXISTS engineering_issue_verifications (
             id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             issue_id TEXT NOT NULL,original_run_id TEXT NOT NULL,candidate_run_id TEXT NOT NULL,
             candidate_source_sha256 TEXT NOT NULL,candidate_file_sha256 TEXT NOT NULL,
             plan_sha256 TEXT NOT NULL,agent_id TEXT NOT NULL,model TEXT NOT NULL,
-            challenge_message_id TEXT,assessment_json TEXT NOT NULL,created_utc TEXT NOT NULL
+            challenge_message_id TEXT,assessment_json TEXT NOT NULL,created_utc TEXT NOT NULL,
+            binding_sha256 TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS engineering_issue_verification_run
             ON engineering_issue_verifications(task_id,original_run_id,created_utc,id);
         """);
+        var schema=TaskStore.Scalar(db,null,"SELECT sql FROM sqlite_master WHERE name='engineering_issue_verifications'");
+        if(schema?.Contains("binding_sha256",StringComparison.Ordinal)!=true)
+            TaskStore.Execute(db,null,"ALTER TABLE engineering_issue_verifications ADD COLUMN binding_sha256 TEXT NOT NULL DEFAULT ''");
+    }
+
+    // Source freshness alone is insufficient: a new review, challenge or
+    // classification can invalidate a previous assessment on unchanged source.
+    internal static string Binding(string issueId,IReadOnlyList<EngineeringIssueReference> references,
+        IReadOnlyList<EngineeringIssueTriage> triage,IReadOnlyList<IssueDecision> decisions,
+        IReadOnlyList<EngineeringIssueChallenge> challenges,string? repairCycleId,bool latestReview)
+        => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new {
+            schema=1,issueId,references,triage,decisions,challenges,repairCycleId,latestReview
+        }))).ToLowerInvariant();
+
+    private static string Binding(EngineeringIssue issue)=>Binding(issue.Id,issue.References,
+        issue.TriageHistory,issue.Decisions,issue.Challenges,issue.RepairCycleId,issue.LatestReview);
+
     private static EngineeringSourceFile File(SqliteConnection db,SqliteTransaction tx,string run,string path)
     {
         using var cmd=TaskStore.Command(db,tx,"""
@@ -148,25 +169,24 @@ public sealed class IssueVerificationStore(TaskStore tasks)
         if(fresh.Issue.Id!=input.Issue.Id || fresh.Issue.Origin!=agentId ||
             fresh.After.Sha256!=input.After.Sha256 || fresh.Before.Sha256!=input.Before.Sha256 ||
             fresh.ChallengeMessageId!=input.ChallengeMessageId ||
-            !fresh.Issue.References.SequenceEqual(input.Issue.References) ||
-            !fresh.Issue.Decisions.SequenceEqual(input.Issue.Decisions) ||
-            !fresh.Issue.TriageHistory.SequenceEqual(input.Issue.TriageHistory))
+            Binding(fresh.Issue)!=Binding(input.Issue))
             throw new StoreFailure("SOURCE_CHANGED");
         var valid=Parse(JsonSerializer.Serialize(assessment),fresh);
         var result=new IssueVerification(Guid.NewGuid().ToString("N"),fresh.Issue.Id,
             input.Request.OriginalRunId,fresh.Candidate.Id,input.Request.CandidateSourceSha256,
             fresh.After.Sha256,fresh.Candidate.PlanSha256,agentId,model,fresh.ChallengeMessageId,
-            valid,DateTimeOffset.UtcNow.ToString("O"),true);
+            valid,DateTimeOffset.UtcNow.ToString("O"),true,Binding(fresh.Issue));
         TaskStore.Execute(db,tx,"""
             INSERT INTO engineering_issue_verifications(id,task_id,issue_id,original_run_id,
                 candidate_run_id,candidate_source_sha256,candidate_file_sha256,plan_sha256,
-                agent_id,model,challenge_message_id,assessment_json,created_utc)
-            VALUES(@id,@task,@issue,@original,@candidate,@source,@file,@plan,@agent,@model,@challenge,@assessment,@utc)
+                agent_id,model,challenge_message_id,assessment_json,created_utc,binding_sha256)
+            VALUES(@id,@task,@issue,@original,@candidate,@source,@file,@plan,@agent,@model,@challenge,@assessment,@utc,@binding)
             """,("@id",result.Id),("@task",taskId),("@issue",result.IssueId),("@original",result.OriginalRunId),
             ("@candidate",result.CandidateRunId),("@source",result.CandidateSourceSha256),
             ("@file",result.CandidateFileSha256),("@plan",result.PlanSha256),("@agent",agentId),
             ("@model",model),("@challenge",(object?)result.ChallengeMessageId??DBNull.Value),
-            ("@assessment",JsonSerializer.Serialize(valid)),("@utc",result.CreatedUtc));
+            ("@assessment",JsonSerializer.Serialize(valid)),("@utc",result.CreatedUtc),
+            ("@binding",result.BindingSha256));
         EngineeringActivityStore.Record(db,tx,taskId,"IssueStaticRecheckRecorded",agentId,
             "EngineeringIssue",result.IssueId,sourceSha256:result.CandidateSourceSha256,model:model);
         tx.Commit();tasks.SignalEngineeringActivity(taskId);return result;
@@ -185,7 +205,7 @@ public sealed class IssueVerificationStore(TaskStore tasks)
             } catch(StoreFailure) { }
         using var cmd=TaskStore.Command(db,tx,"""
             SELECT id,issue_id,original_run_id,candidate_run_id,candidate_source_sha256,
-                candidate_file_sha256,plan_sha256,agent_id,model,challenge_message_id,assessment_json,created_utc
+                candidate_file_sha256,plan_sha256,agent_id,model,challenge_message_id,assessment_json,created_utc,binding_sha256
             FROM engineering_issue_verifications WHERE task_id=@task AND original_run_id=@run
             ORDER BY created_utc,id
             """,("@task",taskId),("@run",originalRunId));
@@ -196,8 +216,8 @@ public sealed class IssueVerificationStore(TaskStore tasks)
                 reader.GetString(7),reader.GetString(8),reader.IsDBNull(9)?null:reader.GetString(9),
                 JsonSerializer.Deserialize<IssueVerificationAssessment>(reader.GetString(10))
                     ??throw new StoreFailure("INVALID_STATE"),reader.GetString(11),
-                latestSha is not null && latest?.Id==reader.GetString(3) &&
-                latestSha==reader.GetString(4) && latest.PlanSha256==reader.GetString(6)));
+                latestSha is not null && latest is not null && latest.Id==reader.GetString(3) &&
+                latestSha==reader.GetString(4) && latest.PlanSha256==reader.GetString(6),reader.GetString(12)));
         return result.AsReadOnly();
     }
 }

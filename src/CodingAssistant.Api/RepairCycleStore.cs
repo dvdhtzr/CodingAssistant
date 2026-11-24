@@ -210,6 +210,9 @@ public sealed class RepairCycleStore(
         using var tx = db.BeginTransaction();
         if (TaskStore.FindTask(db, tx, taskId) is null)
             throw new StoreFailure("NOT_FOUND");
+        if(TaskStore.Scalar(db,tx,"""
+            SELECT id FROM repair_proposals WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1
+            """,("@task",taskId))!=proposal.Id) throw new StoreFailure("SOURCE_CHANGED");
         var previous = TaskStore.Scalar(db, tx, """
             SELECT id FROM repair_cycles
             WHERE proposal_id=@proposal AND task_id=@task
@@ -294,19 +297,21 @@ public sealed class RepairCycleStore(
                 """, ("@proposal", proposal.Id), ("@path", finding.Path),
                 ("@index", finding.Index)) != "ImplementationDefect")
                 throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
-            if(proposal.LeadReviewId is not null)
-            {
-                var issue=EngineeringIssueStore.Read(db,tx,taskId,baseRun.Id).Issues
-                    .SingleOrDefault(i=>i.Origin=="LeadSoftwareEngineer" &&
-                        i.References.Any(f=>f.ReviewId==proposal.LeadReviewId &&
-                            f.Path==finding.Path && f.FindingIndex==finding.Index));
-                // An unresolved challenge or conflicting authoritative decision
-                // must not be bypassed by the legacy triage/repair path.
-                if(issue is null || (issue.Challenges.Count>0 &&
-                    issue.Decisions.LastOrDefault()?.ChallengeMessageId!=issue.Challenges.Last().MessageId) ||
-                    (issue.Decisions.Count>0 && issue.Decisions.Last().Classification!="ImplementationDefect"))
-                    throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
-            }
+            var reviewId=proposal.LeadReviewId??proposal.QaReviewId??throw new StoreFailure("INVALID_STATE");
+            var origin=proposal.LeadReviewId is not null?"LeadSoftwareEngineer":"QaEngineer";
+            var issue=EngineeringIssueStore.Read(db,tx,taskId,baseRun.Id).Issues
+                .SingleOrDefault(i=>i.Origin==origin && i.References.Any(f=>f.ReviewId==reviewId &&
+                    f.Path.Equals(finding.Path,StringComparison.OrdinalIgnoreCase) && f.FindingIndex==finding.Index));
+            // The same gate applies to both origins. A current confirmed
+            // decision cannot be bypassed with a competing repair request.
+            if(issue is null || issue.State is "WithdrawnByReviewer" or "StaticResolutionRecorded")
+                throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            var decision=issue.Decisions.LastOrDefault();
+            if((issue.Challenges.Count>0 || decision is not null) &&
+                (decision is null || decision.ReviewId!=reviewId ||
+                 decision.ChallengeMessageId!=issue.Challenges.LastOrDefault()?.MessageId ||
+                 decision.Classification!="ImplementationDefect"))
+                throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
         }
 
         // The execution context reflects the persisted owner decision,

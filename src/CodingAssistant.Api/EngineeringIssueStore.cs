@@ -256,7 +256,10 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                     : decisions.Length>1?"TriageConflict":
                     classification=="ImplementationDefect"?"ConfirmedDefect":
                     classification is not null?"Classified":relatedChallenges.Length>0?"Challenged":"NeedsTriage";
-                var verificationHistory=verifications.GetValueOrDefault(group.Key)??[];
+                var binding=IssueVerificationStore.Binding(group.Key,refs,history,decisionHistory,
+                    relatedChallenges,repair.Id,group.Any(o=>o.Latest));
+                var verificationHistory=(verifications.GetValueOrDefault(group.Key)??[])
+                    .Select(x=>x with {Current=x.Current && x.BindingSha256==binding}).ToArray();
                 var verification=verificationHistory.LastOrDefault();
                 if(verification is {Current:true} &&
                     verification.ChallengeMessageId==relatedChallenges.LastOrDefault()?.MessageId)
