@@ -231,6 +231,8 @@ test('owner can assign independent local models without initiating or modifying 
     assert.equal(await qaSelect.inputValue(), 'qwen3-coder:30b');
     assert.equal(await engineerSelect.inputValue(), '__default__',
       'selecting a QA model must not change the Software Engineer model');
+    await page.locator('aside.ca-studio-people').getByRole('button', { name: /QA Engineer/ })
+      .getByText('Next · qwen3-coder:30b').waitFor();
     assert.deepEqual(writes, ['/api/tasks/' + id + '/agent-models/QaEngineer'],
       'model selection writes only the specific preference; never starts a run');
     await controls.getByRole('button', { name: 'Close models' }).click();
@@ -238,6 +240,69 @@ test('owner can assign independent local models without initiating or modifying 
     assert.equal(await page.getByRole('region', {
       name: 'AI Engineering Studio',
     }).count(), 1);
+  } finally { await page.close(); }
+});
+
+test('roster exposes model and saved status; agent selection opens actual specialist detail', async () => {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  try {
+    await mockApi(page);
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    const roster = page.locator('aside.ca-studio-people');
+    const engineer = roster.getByRole('button', { name: /Software Engineer/ });
+    const qa = roster.getByRole('button', { name: /QA Engineer/ });
+    await qa.waitFor();
+    assert.match(await engineer.textContent(), /Next · qwen2.5-coder:14b/);
+    assert.match(await qa.textContent(), /Running · qwen3-coder:30b/,
+      'running job model must differ from the next-work selection');
+    assert.equal(await roster.getByRole('button', { name: 'Models' }).count(), 1,
+      'model selection is discoverable directly in the team roster');
+    await qa.click();
+    const context = page.getByRole('region', { name: 'Selected specialist' });
+    await context.getByRole('heading', { name: 'QA Engineer' }).waitFor();
+    assert.match(await context.textContent(), /MODEL FOR NEW WORK.*qwen2.5-coder:14b/s);
+    assert.match(await context.textContent(), /MODEL PINNED TO ACTIVE WORK.*qwen3-coder:30b/s);
+    assert.match(await context.textContent(), /Record reliable engineering work/);
+    assert.match(await context.textContent(), /QA source review started/);
+    assert.equal(await page.locator('#journey-panel-delivery').isVisible(), true,
+      'a roster selection keeps the role stage visible in the central canvas');
+    await context.getByText('Working style & background').click();
+    assert.match(await context.textContent(), /fictional/i);
+    await context.getByRole('button', { name: 'Change model' }).click();
+    await page.getByRole('region', {
+      name: 'Per-agent local model assignments',
+    }).waitFor();
+    assert.equal(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0), 0);
+  } finally { await page.close(); }
+});
+
+test('activity view shows only actual saved handoffs, source and QA receipts', async () => {
+  const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+  const writes = [];
+  try {
+    await mockApi(page);
+    page.on('request', request => {
+      if (request.method() === 'POST' &&
+          new URL(request.url()).pathname.startsWith('/api/tasks/'))
+        writes.push(new URL(request.url()).pathname);
+    });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.locator('aside.ca-studio-people')
+      .getByRole('button', { name: /QA Engineer/ }).waitFor();
+    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    const timeline = page.getByRole('region', { name: 'Recorded team activity' });
+    await timeline.getByText('QA source review started').waitFor();
+    const receipts = timeline.locator('ol.ca-studio-event-list > li');
+    assert.equal(await receipts.count(), 3,
+      'one source, one QA, one handoff persisted receipt; no generated dialogue');
+    assert.match(await timeline.textContent(), /QA source review started/);
+    assert.match(await timeline.textContent(), /Engineer saved a source revision/);
+    assert.match(await timeline.textContent(), /Technical Lead → Software Engineer/);
+    await receipts.last().getByRole('button', { name: 'Inspect work' }).click();
+    assert.equal(await page.locator('#journey-panel-plan').isVisible(), true);
+    assert.deepEqual(writes, [], 'inspecting saved activity must not mutate source or approvals');
+    await page.getByRole('button', { name: /Attention/ }).click();
+    await page.getByText('Repair cycle 6 stopped').waitFor();
   } finally { await page.close(); }
 });
 
