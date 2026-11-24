@@ -850,6 +850,7 @@ public static class ApiHost
                 Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/repair-progress",
             (string id,string runId,TaskStore tasks)=>Safe(()=>Results.Ok(new RepairProgressStore(tasks).Read(id,runId))));
+        app.MapGet("/api/inference-capacity",()=>Results.Ok(LocalInferenceScheduler.Shared.Snapshot()));
         app.MapGet("/api/tasks/{id}/collaboration/latest",
             (string id,CollaborationStore db)=>Safe(()=>Results.Ok(new {snapshot=db.Latest(id)})));
         app.MapPost("/api/tasks/{id}/collaboration",
@@ -1185,7 +1186,8 @@ public static class ApiHost
         var status = error.Code switch
         {
             "NOT_FOUND" => StatusCodes.Status404NotFound,
-            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" =>
+            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" or
+                "INFERENCE_QUEUE_FULL" or "INFERENCE_QUEUE_TIMEOUT" =>
                 StatusCodes.Status503ServiceUnavailable,
             "REPAIR_NOT_AUTHORIZED" or "REPAIR_LIMIT_REACHED" or
                 "REPAIR_SCOPE_TOO_LARGE" or "REPAIR_SCOPE_VIOLATION" or

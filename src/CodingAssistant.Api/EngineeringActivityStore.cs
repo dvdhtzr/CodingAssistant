@@ -55,6 +55,7 @@ public sealed class EngineeringActivityStore(TaskStore tasks)
         "EngineeringRunInterrupted" => ("Diagnostics","Engineering run interrupted"),
         "EngineerAtlasInspected" => ("Engineering","Read-only Code Atlas inspection recorded"),
         "EngineerOutputRejected" => ("Diagnostics","Engineer output rejected; source unchanged"),
+        "OllamaRequestQueued" => ("Engineering","Waiting for local inference capacity"),
         "OllamaRequestStarted" => ("Engineering","Local Ollama request started"),
         "OllamaResponseAccepted" => ("Engineering","Local response accepted by transport; not source verification"),
         "OllamaRequestCancelled" => ("Diagnostics","Local Ollama request cancelled"),

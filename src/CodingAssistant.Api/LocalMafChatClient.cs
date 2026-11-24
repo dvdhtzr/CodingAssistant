@@ -95,6 +95,10 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             Content = new StringContent(JsonSerializer.Serialize(chat),
                 Encoding.UTF8, "application/json")
         };
+        // Acquire capacity before recording an actual transport request.
+        using var slot=await LocalInferenceScheduler.Shared.AcquireAsync(cancellationToken,
+            ()=>EngineeringProviderActivity.RecordQueued(model,purpose));
+        cancellationToken.ThrowIfCancellationRequested();
         // The actual transport boundary, not an estimate of model progress.
         using var activity = EngineeringProviderActivity.StartProvider(model,purpose,
             cancellationToken);

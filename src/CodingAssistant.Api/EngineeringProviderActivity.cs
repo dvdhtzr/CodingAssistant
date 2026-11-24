@@ -34,6 +34,20 @@ public static class EngineeringProviderActivity
         _ => ""
     };
 
+    public static void RecordQueued(string model,MafAgentPurpose purpose)
+    {
+        var scope=Current.Value;
+        if(scope is null || Role(purpose)!=scope.AgentId || !LocalInterviewModel.AllowedModel(model))return;
+        try
+        {
+            using var db=scope.Tasks.Open();using var tx=db.BeginTransaction();
+            EngineeringActivityStore.Record(db,tx,scope.TaskId,"OllamaRequestQueued",scope.AgentId,
+                "OllamaQueue",scope.ReferenceId+":"+Guid.NewGuid().ToString("N"),sourceSha256:scope.SourceSha256,model:model);
+            tx.Commit();scope.Tasks.SignalEngineeringActivity(scope.TaskId);
+        }
+        catch(Exception){/* No fabricated provider activity on telemetry failure. */}
+    }
+
     public static ProviderRequest? StartProvider(string model,MafAgentPurpose purpose,
         CancellationToken cancellation)
     {

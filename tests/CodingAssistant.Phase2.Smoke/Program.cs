@@ -42,6 +42,42 @@ async Task<JsonDocument> Body(HttpResponseMessage response) =>
 async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj) =>
     await client.PostAsJsonAsync(path, obj);
 
+// Exercise actual shared-capacity lease semantics without an installed model.
+{
+    var scheduler=new LocalInferenceScheduler(1,2,TimeSpan.FromSeconds(3));
+    var first=await scheduler.AcquireAsync(CancellationToken.None);
+    using var cancelWait=new CancellationTokenSource();
+    var queued=0;
+    var second=scheduler.AcquireAsync(cancelWait.Token,()=>Interlocked.Increment(ref queued));
+    var third=scheduler.AcquireAsync(CancellationToken.None,()=>Interlocked.Increment(ref queued));
+    Check(scheduler.Snapshot() is {Capacity:1,Active:1,Waiting:2} && queued==2 &&
+        !second.IsCompleted && !third.IsCompleted,"capacity one queues other actual inference leases");
+    try
+    {
+        using var overflow=await scheduler.AcquireAsync(CancellationToken.None);
+        Check(false,"queue overflow must fail safely");
+    }
+    catch(StoreFailure e)when(e.Code=="INFERENCE_QUEUE_FULL"){Check(true,"bounded inference queue rejects overflow");}
+    cancelWait.Cancel();
+    try{using var ignored=await second;Check(false,"cancelled waiter cannot obtain lease");}
+    catch(OperationCanceledException){Check(true,"queued cancellation stops without taking capacity");}
+    first.Dispose();first.Dispose();
+    using(var lease=await third)
+        Check(scheduler.Snapshot() is {Active:1,Waiting:0},"slot transfers without duplicate release");
+    Check(scheduler.Snapshot() is {Active:0,Waiting:0},"lease returns capacity exactly once");
+    var timeoutScheduler=new LocalInferenceScheduler(1,2,TimeSpan.FromMilliseconds(30));
+    using(var held=await timeoutScheduler.AcquireAsync(CancellationToken.None))
+    {
+        try{using var timeout=await timeoutScheduler.AcquireAsync(CancellationToken.None);Check(false,"wait timeout required");}
+        catch(StoreFailure e)when(e.Code=="INFERENCE_QUEUE_TIMEOUT")
+        {Check(timeoutScheduler.Snapshot() is {Active:1,Waiting:0},"timed-out waiter releases queue reservation");}
+    }
+    var parallel=new LocalInferenceScheduler(2);
+    using(var a=await parallel.AcquireAsync(CancellationToken.None))
+    using(var b=await parallel.AcquireAsync(CancellationToken.None))
+        Check(parallel.Snapshot() is {Capacity:2,Active:2,Waiting:0},"explicit capacity two is honored");
+}
+
 // Strict structured output is only a proposal, never owner approval.
 {
     var parsed = LocalArchitectureAdvisor.Parse(
