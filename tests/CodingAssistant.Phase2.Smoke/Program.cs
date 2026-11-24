@@ -1804,6 +1804,13 @@ try
           engineeringResult.Events.Any(e => e.Kind == "EngineeringTaskStarted") &&
           engineeringResult.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 2,
         "each approved engineer task persists source and exact durable event history");
+    // Keep the generated source pinned to 14B but change QA alone.
+    // A different selected QA model must NOT invalidate source/plan binding.
+    using (var assignment = await Post(client,
+        "/api/tasks/" + taskBound.Id + "/agent-models/QaEngineer",
+        new { model = "qwen3.5:4b" }))
+        Check(assignment.StatusCode == HttpStatusCode.OK,
+            "owner can assign a distinct installed QA model before a new review");
     Check(softwareModel.AssignedIds.SequenceEqual(["timer-interface","timer-state"]) &&
           softwareModel.PreviousFileCountOnSecondTask == 1 &&
           engineeringResult!.Files.Single(f => f.Path == "app.js")
@@ -1915,7 +1922,8 @@ try
         break;
     }
     Check(qaResult?.Job.State == "Reviewed" &&
-          qaResult.Job.Model == "qwen2.5-coder:14b" &&
+          qaResult.Job.Model == "qwen3.5:4b" &&
+          engineeringResult!.Job.Model == "qwen2.5-coder:14b" &&
           qaResult.Reports.Count == 2 &&
           qaResult.Reports.Sum(report =>
               report.Assessment.Findings.Count) == 1 &&
