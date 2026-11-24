@@ -1454,7 +1454,7 @@ try
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
-        qaReviewerOverride: qaModel);
+        qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -2080,7 +2080,7 @@ try
     Check(aetLiveLead?.Job.State=="Reviewed" && aetLiveLead.Disposition=="ChangesRequested" &&
         aetLiveLead.Reports.SelectMany(x=>x.Assessment.Findings).Any(x=>x.Severity=="Major") &&
         QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,engineeringRunId).Files)==aetLeadJob.SourceSha256,
-        "injected reviewer executes actual owner-admitted workflow, saves a concern and leaves source unchanged");
+        "injected reviewer executes actual owner-admitted workflow, saves a concern and leaves source unchanged; state=" + aetLiveLead?.Job.State + ", error=" + aetLiveLead?.Job.ErrorCode);
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,
