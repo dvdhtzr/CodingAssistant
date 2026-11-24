@@ -65,9 +65,9 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
         await api(token,root+'/engineering-delegation/'+action,{revision:policy.revision,
           policySha256:policy.policySha256,confirmation:(action==='approve'?'APPROVE ':'REVOKE ')+policy.policySha256});
       else if(action==='start'&&preview.canStart&&preview.candidate)
-        await api(token,root+'/collaboration',preview.candidate);
+        await api(token,root+'/collaboration',{...preview.candidate});
       else if(action==='resume'&&preview.canResume&&preview.candidate&&job)
-        await api(token,root+'/collaboration/'+job.id+'/resume',preview.candidate);
+        await api(token,root+'/collaboration/'+job.id+'/resume',{...preview.candidate});
       else if(action==='cancel'&&running&&job)
         await api(token,root+'/collaboration/'+job.id+'/cancel',{});
       else throw Error('This action is no longer available.');
