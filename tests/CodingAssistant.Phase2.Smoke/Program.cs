@@ -3440,6 +3440,10 @@ try
             .Single(x=>x.Id=="timer-state").State=="WaitingForDependency" &&
         aetOperationalPlan.Packages.All(x=>x.ArchitectureSha256==architectureSha),
         "adaptive priority cannot bypass mandatory dependency or approved architecture");
+    var aetIndependentPackage=aetOperationalPlan.Packages[0] with {
+        Id="independent-docs",Priority=99,DependsOn=[] };
+    Check(AdaptiveWorkPlanStore.Next([..aetOperationalPlan.Packages,aetIndependentPackage],aetEmptyStates)
+        =="independent-docs","independent ready work can be reprioritized without bypassing dependency constraints");
     var aetWriterStates=new Dictionary<string,string>{{"timer-interface","Running"}};
     Check(AdaptiveWorkPlanStore.Next(aetOperationalPlan.Packages,aetWriterStates) is null,
         "adaptive readiness never dispatches another writer while one is running");
@@ -3506,6 +3510,70 @@ try
         aetAdaptiveView.Assignments[1].SourceBeforeSha256==aetAdaptiveView.Assignments[0].SourceAfterSha256 &&
         aetAdaptiveView.Readiness.All(x=>x.State=="Completed"),
         "actual assignments and source checkpoints bind their respective immutable scheduling revisions");
+    var aetNextContext=aetAdaptiveContext with {ExpectedRunId=aetAdaptiveRun.Id,
+        ExpectedSourceSha256=QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,aetAdaptiveRun.Id).Files)};
+    var aetNextPlan=aetWorkPlanStore.Revise(aetNextContext,new ReviseAdaptivePlanDraft(4,
+        aetReprioritized.WorkPlanSha256,aetSchedule,"Bind a fresh owner-admitted source run to the validated work graph."));
+    using(var aetWrongSchedule=await Post(client,engineeringPath,
+        new StartEngineeringRunRequest(2,secondPlanHash,WorkPlan:new AdaptivePlanSelection(4,aetReprioritized.WorkPlanSha256))))
+        Check(aetWrongSchedule.StatusCode==HttpStatusCode.Conflict,"stale work plan cannot admit an engineering run");
+    string aetCoordinatorRunId;
+    using(var aetAdmittedAdaptive=await Post(client,engineeringPath,
+        new StartEngineeringRunRequest(2,secondPlanHash,WorkPlan:new AdaptivePlanSelection(5,aetNextPlan.WorkPlanSha256))))
+    using(var aetAdmittedAdaptiveBody=await Body(aetAdmittedAdaptive))
+    {
+        Check(aetAdmittedAdaptive.StatusCode==HttpStatusCode.Accepted,"owner selects exact adaptive plan through existing engineering API");
+        aetCoordinatorRunId=aetAdmittedAdaptiveBody.RootElement.GetProperty("id").GetString()!;
+    }
+    EngineeringRunSnapshot? aetCoordinatorDone=null;
+    for(var aetAttempt=0;aetAttempt<160;aetAttempt++)
+    {
+        aetCoordinatorDone=engineeringStore.Get(taskBound.Id,aetCoordinatorRunId);
+        if(aetCoordinatorDone.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    Check(aetCoordinatorDone?.Job.State=="Generated" &&
+        aetWorkPlanStore.Read(taskBound.Id).Assignments is {Count:2} &&
+        aetCoordinatorDone.Files.Count==2,
+        "existing engineering coordinator dispatches real bound packages and persists actual source");
+    var aetResumeContext=aetAdaptiveContext with {ExpectedRunId=aetCoordinatorRunId,
+        ExpectedSourceSha256=QaReviewStore.Fingerprint(aetCoordinatorDone!.Files)};
+    var aetResumePlan=aetWorkPlanStore.Revise(aetResumeContext,new ReviseAdaptivePlanDraft(5,
+        aetNextPlan.WorkPlanSha256,aetSchedule,"Use the same approved scope to exercise recovery after partial work."));
+    var aetFailedAdaptive=engineeringStore.Start(taskBound.Id,approvedEngineerPlan,"qwen2.5-coder:14b",
+        new AdaptivePlanSelection(6,aetResumePlan.WorkPlanSha256));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetFailedAdaptive.Id)?.Id=="timer-interface",
+        "adaptive run admits initial dependency");
+    engineeringStore.CompleteTask(taskBound.Id,aetFailedAdaptive.Id,"timer-interface",
+        new EngineeringChangeSet("Saved approved interface before interruption.",
+            [new EngineeringFileChange("index.html","Browser interface","<!doctype html><html><body>Timer</body></html>")],
+            ["Independently verify browser behavior."]));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetFailedAdaptive.Id)?.Id=="timer-state",
+        "adaptive run admits next dependency before failure");
+    engineeringStore.Finish(taskBound.Id,aetFailedAdaptive.Id,false,"MODEL_OUTPUT_REJECTED");
+    var aetAdaptiveCheckpoint=engineeringStore.Get(taskBound.Id,aetFailedAdaptive.Id);
+    var aetCallsBeforeResume=softwareModel.AssignedIds.Count;
+    string aetAdaptiveResumeId;
+    using(var aetResumeResponse=await Post(client,engineeringPath,
+        new StartEngineeringRunRequest(2,secondPlanHash,aetFailedAdaptive.Id)))
+    using(var aetResumeBody=await Body(aetResumeResponse))
+    {
+        Check(aetResumeResponse.StatusCode==HttpStatusCode.Accepted,
+            "owner can explicitly resume exact adaptive source checkpoint");
+        aetAdaptiveResumeId=aetResumeBody.RootElement.GetProperty("id").GetString()!;
+    }
+    EngineeringRunSnapshot? aetAdaptiveResumed=null;
+    for(var aetAttempt=0;aetAttempt<160;aetAttempt++)
+    {
+        aetAdaptiveResumed=engineeringStore.Get(taskBound.Id,aetAdaptiveResumeId);
+        if(aetAdaptiveResumed.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    Check(aetAdaptiveResumed?.Job.State=="Generated" &&
+        softwareModel.AssignedIds.Skip(aetCallsBeforeResume).SequenceEqual(["timer-state"]) &&
+        aetAdaptiveResumed.Files.Single(f=>f.Path=="index.html").Sha256==aetAdaptiveCheckpoint.Files.Single().Sha256 &&
+        aetWorkPlanStore.Read(taskBound.Id).Assignments is {Count:1},
+        "adaptive resume preserves completed source and invokes only remaining package");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetAdaptivePolicy.Revision,
         aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
 

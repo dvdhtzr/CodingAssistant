@@ -101,6 +101,10 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
                 scope=change.AllowedPaths.Select(ProjectDraftStore.SafePath)
                     .OrderBy(x=>x,StringComparer.Ordinal).ToArray();
                 foreach(var file in scope)DraftArchitecturePolicy.ValidateSourcePath(architecture,file);
+                if(approved.Id==plan.Outline.Tasks[0].Id &&
+                    architecture.Choices.Any(c=>c.Topic=="technology-stack" && c.RuntimeProfileId=="static-web") &&
+                    !scope.Contains("index.html",StringComparer.OrdinalIgnoreCase))
+                    throw new StoreFailure("INVALID_WORK_PLAN");
             }
             var prior=previous?.SingleOrDefault(x=>x.Id==approved.Id);
             if(prior?.AllowedPaths is not null &&
@@ -198,7 +202,7 @@ public sealed class AdaptiveWorkPlanStore(TaskStore tasks)
         var boundRun=bound?.WorkPlanSha256==latest?.WorkPlanSha256 && bound is not null?runId:null;
         var states=States(db,tx,boundRun);
         IReadOnlyList<WorkPackageReadiness> readiness=latest is null?[]:Evaluate(latest.Packages,states);
-        var assignments=boundRun is null?[]:Assignments(db,tx,boundRun);
+        IReadOnlyList<AdaptiveAssignment> assignments=boundRun is null?[]:Assignments(db,tx,boundRun);
         tx.Commit();return new(latest,history.AsReadOnly(),readiness,boundRun,assignments);
     }
 
