@@ -3639,6 +3639,23 @@ try
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetAdaptivePolicy.Revision,
         aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
 
+    // Recovery is driven by evidence, not a lifetime three-repair cap.
+    var aetProgressAttempts=Enumerable.Range(0,5).Select(i=>new RepairProgressAttempt(
+        "fixture-"+i,"run-"+i,"run-"+(i+1),"hash-"+i,"hash-"+(i+1),"QaReviewed",
+        [],"QaEngineer",true,false)).ToArray();
+    Check(!RepairProgressStore.Evaluate("run-5",aetProgressAttempts,[]).StrategyChangeRequired,
+        "five independently productive repair attempts do not exhaust a project-wide cap");
+    Check(RepairProgressStore.Evaluate("run-5",[..aetProgressAttempts,
+        aetProgressAttempts[^1] with {OriginalSourceSha256="hash-5",CandidateSourceSha256="hash-2"}],[])
+        .Reason=="REPEATED_SOURCE_SNAPSHOT","oscillating source snapshots require strategy change");
+    Check(RepairProgressStore.Evaluate("run-2",aetProgressAttempts.Take(2).Select(x=>x with {
+        IndependentStaticResolution=false,RecurringExactFinding=true}).ToArray(),["fixture-issue"])
+        .Reason=="RECURRING_UNRESOLVED_FINDING","consecutive identical unresolved concern requires changed strategy");
+    var aetActualProgress=new RepairProgressStore(tasks).Read(taskBound.Id,aetLeadRepairResult!.Engineering.Job.Id);
+    Check(aetActualProgress.Attempts.Count==1 && aetActualProgress.Attempts[0].CycleId==aetLeadCycleId &&
+        aetActualProgress.Attempts[0].OriginalRunId==resumedRunId,
+        "repair progress uses actual immutable source ancestry rather than project-wide count");
+
     var aetCollabPolicy=delegationStore.Propose(taskBound.Id,
         new ProposeDelegationRequest(4,secondPlanHash,["ScheduleWork","ReviewCode","ReviewAcceptance","RequestRepair","SendMessage"]));
     aetCollabPolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,

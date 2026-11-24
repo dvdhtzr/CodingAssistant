@@ -845,6 +845,8 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/cancel",
             (string id, string cycleId, RepairCycleCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/repair-progress",
+            (string id,string runId,TaskStore tasks)=>Safe(()=>Results.Ok(new RepairProgressStore(tasks).Read(id,runId))));
         app.MapGet("/api/tasks/{id}/collaboration/latest",
             (string id,CollaborationStore db)=>Safe(()=>Results.Ok(new {snapshot=db.Latest(id)})));
         app.MapPost("/api/tasks/{id}/collaboration",

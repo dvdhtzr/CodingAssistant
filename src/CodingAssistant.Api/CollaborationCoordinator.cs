@@ -19,7 +19,7 @@ public sealed record CollaborationDecision(string Action,string Rationale,string
     string? Classification=null);
 public sealed record CollaborationInput(string Objective,CollaborationRun Job,
     IReadOnlyList<string> AllowedActions,IReadOnlyList<EngineeringIssue> Issues,
-    IReadOnlyList<CollaborationStep> Steps);
+    IReadOnlyList<CollaborationStep> Steps,RepairProgressReport? RepairProgress=null);
 public sealed record CollaborationAdmission(string JobId,int Sequence);
 
 public interface ICollaborationLead
@@ -89,7 +89,12 @@ public sealed class MafCollaborationLead(IMafChatClientFactory? factory=null):IC
             new(ChatRole.User,"PROJECT OBJECTIVE (data): "+input.Objective),
             new(ChatRole.User,"HOST ALLOWED ACTIONS (data): "+JsonSerializer.Serialize(input.AllowedActions)),
             new(ChatRole.User,"CURRENT ISSUE EVIDENCE (data): "+JsonSerializer.Serialize(issues)),
-            new(ChatRole.User,"ACTUAL PRIOR DECISIONS (data): "+JsonSerializer.Serialize(input.Steps.TakeLast(8)))
+            new(ChatRole.User,"ACTUAL PRIOR DECISIONS (data): "+JsonSerializer.Serialize(input.Steps.TakeLast(8))),
+            new(ChatRole.User,"HOST REPAIR PROGRESS (data): "+JsonSerializer.Serialize(new {
+                input.RepairProgress?.StrategyChangeRequired,input.RepairProgress?.Reason,
+                attempts=input.RepairProgress?.Attempts.TakeLast(4).Select(a=>new {
+                    a.CycleId,a.State,a.RecurringExactFinding,a.IndependentStaticResolution})
+            }))
         };
         for(var attempt=0;;attempt++)
         {
@@ -227,12 +232,13 @@ public sealed class CollaborationStore(TaskStore tasks)
             ORDER BY created_utc DESC,id DESC LIMIT 1
             """,("@task",job.TaskId),("@run",job.RunId),("@source",job.SourceSha256));
         var latestIssues=issues.Where(i=>i.LatestReview).ToArray();
+        var progress=RepairProgressStore.Read(db,tx,job.TaskId,job.RunId);
         if(lead is null)actions.Add("ReviewCode");
         else if(lead=="Reviewed")
         {
             if(latestIssues.Any(i=>i.State is "NeedsTriage" or "Challenged" or "TriageConflict"))
                 actions.Add("ClassifyIssue");
-            if(latestIssues.Any(i=>i.State=="ConfirmedDefect") &&
+            if(!progress.StrategyChangeRequired && latestIssues.Any(i=>i.State=="ConfirmedDefect") &&
                 Permitted(db,tx,job,"TechnicalLead","RequestRepair"))
                 actions.Add("RequestOwnerRepair");
             var leadConcern=issues.Any(i=>i.Origin=="LeadSoftwareEngineer" &&
@@ -256,7 +262,7 @@ public sealed class CollaborationStore(TaskStore tasks)
         }
         actions.Add("Escalate");
         var task=TaskStore.FindTask(db,tx,job.TaskId)??throw new StoreFailure("NOT_FOUND");
-        return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id));
+        return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress);
     }
     public CollaborationInput Prepare(string taskId,string id)
     {
@@ -436,7 +442,8 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                     case "AwaitQualifiedVerification":
                         store.Finish(job.TaskId,job.Id,"AwaitingVerification","QUALIFIED_VERIFICATION_REQUIRED");return;
                     case "Escalate":
-                        store.Finish(job.TaskId,job.Id,"Escalated","LEAD_ESCALATION");return;
+                        store.Finish(job.TaskId,job.Id,"Escalated",input.RepairProgress?.StrategyChangeRequired==true?
+                            input.RepairProgress.Reason:"LEAD_ESCALATION");return;
                     default:throw new StoreFailure("INVALID_STATE");
                 }
             }
