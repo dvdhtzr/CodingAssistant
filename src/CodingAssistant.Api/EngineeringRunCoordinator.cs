@@ -15,7 +15,8 @@ public sealed class EngineeringRunCoordinator(
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
-    public EngineeringRun Start(string taskId, StartEngineeringRunRequest request)
+    public EngineeringRun Start(string taskId, StartEngineeringRunRequest request,
+        string? agentModel = null)
     {
         if (request.PlanRevision < 1 || string.IsNullOrEmpty(request.PlanSha256))
             throw new StoreFailure("INVALID_INPUT");
@@ -38,8 +39,8 @@ public sealed class EngineeringRunCoordinator(
         // exact latest terminal run, plan/architecture/spec binding and
         // source hashes in one transaction before copying prior completions.
         var job = request.ResumeRunId is { } previousRunId
-            ? store.Resume(taskId, plan, previousRunId)
-            : store.Start(taskId, plan);
+            ? store.Resume(taskId, plan, previousRunId, agentModel)
+            : store.Start(taskId, plan, agentModel);
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = cancellation;
@@ -75,7 +76,8 @@ public sealed class EngineeringRunCoordinator(
                                 job.Id, item.Id, observation),
                         OnOutputRejected: rejection =>
                             store.RecordOutputRejection(job.TaskId,
-                                job.Id, item.Id, rejection)), token);
+                                job.Id, item.Id, rejection),
+                        AgentModel: job.Model), token);
                 token.ThrowIfCancellationRequested();
                 var committed = store.CompleteTask(job.TaskId, job.Id, item.Id, result);
                 // Notification is best effort AFTER the durable transaction.
