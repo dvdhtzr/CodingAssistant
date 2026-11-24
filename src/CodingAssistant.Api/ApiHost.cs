@@ -837,6 +837,9 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/cancel",
             (string id, string cycleId, RepairCycleCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
+        app.MapGet("/api/tasks/{id}/engineering-issues",
+            (string id,string? runId,TaskStore tasks) =>
+                Safe(() => Results.Ok(new EngineeringIssueStore(tasks).Read(id,runId))));
         app.MapGet("/api/tasks/{id}/lead-reviews/latest",
             (string id, LeadReviewStore db) =>
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));

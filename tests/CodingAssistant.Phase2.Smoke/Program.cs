@@ -2081,6 +2081,16 @@ try
         aetLiveLead.Reports.SelectMany(x=>x.Assessment.Findings).Any(x=>x.Severity=="Major") &&
         QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,engineeringRunId).Files)==aetLeadJob.SourceSha256,
         "injected reviewer executes actual owner-admitted workflow, saves a concern and leaves source unchanged; state=" + aetLiveLead?.Job.State + ", error=" + aetLiveLead?.Job.ErrorCode);
+    var aetIssues = new EngineeringIssueStore(tasks).Read(taskBound.Id);
+    Check(aetIssues.CurrentSource && aetIssues.Issues.Count==1 &&
+        aetIssues.Issues.Single().Origin=="LeadSoftwareEngineer" &&
+        aetIssues.Issues.Single().State=="NeedsTriage" &&
+        aetIssues.Issues.Single().SourceSha256==aetLeadJob.SourceSha256 &&
+        aetIssues.Issues.Single().References.Single().ReviewId==aetLiveLeadId,
+        "unified issue projection preserves actual independent finding and exact revision");
+    using(var aetAnonymous=new HttpClient {BaseAddress=client.BaseAddress})
+    using(var aetDenied=await aetAnonymous.GetAsync("/api/tasks/"+taskBound.Id+"/engineering-issues"))
+        Check(aetDenied.StatusCode==HttpStatusCode.Unauthorized,"unified findings remain owner-private");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,
