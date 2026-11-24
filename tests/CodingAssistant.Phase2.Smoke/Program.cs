@@ -2549,6 +2549,70 @@ try
         .Single(x=>x.Id==aetRepairedIssue.Id) is {State:"StillPresent",Verifications.Count:2},
         "explicit repeated independent verification retains evidence and reopens the issue");
 
+    // The QA proposal and its populated triage/cycle children must survive
+    // the old mandatory-QA foreign key migration. Work only in a DB copy.
+    var aetMigrationRoot=Path.Combine(root,"aet-legacy-proposals");
+    Directory.CreateDirectory(aetMigrationRoot);
+    if(!OperatingSystem.IsWindows())
+        File.SetUnixFileMode(aetMigrationRoot,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
+    var aetMigrationPath=Path.Combine(aetMigrationRoot,"codingassistant.db");
+    using(var aetOriginalDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+Path.Combine(root,"codingassistant.db")+";Pooling=False"))
+    using(var aetLegacyDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+aetMigrationPath+";Pooling=False"))
+    {
+        aetOriginalDb.Open();aetLegacyDb.Open();
+        aetOriginalDb.BackupDatabase(aetLegacyDb);
+        using(var aetForeignKeys=aetLegacyDb.CreateCommand())
+        {aetForeignKeys.CommandText="PRAGMA foreign_keys=OFF";aetForeignKeys.ExecuteNonQuery();}
+        using var aetLegacyTx=aetLegacyDb.BeginTransaction();
+        using(var aetLegacySchema=aetLegacyDb.CreateCommand())
+        {
+            aetLegacySchema.Transaction=aetLegacyTx;
+            aetLegacySchema.CommandText="""
+                DELETE FROM repair_triage_decisions WHERE proposal_id IN
+                    (SELECT id FROM repair_proposals WHERE lead_review_id IS NOT NULL);
+                DELETE FROM repair_proposals WHERE lead_review_id IS NOT NULL;
+                CREATE TABLE repair_proposals_old_fixture(
+                    id TEXT PRIMARY KEY NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id),
+                    qa_review_id TEXT NOT NULL UNIQUE REFERENCES qa_reviews(id),
+                    engineering_run_id TEXT NOT NULL REFERENCES engineering_runs(id),
+                    source_sha256 TEXT NOT NULL,plan_revision INTEGER NOT NULL,plan_sha256 TEXT NOT NULL,
+                    spec_version INTEGER NOT NULL,spec_sha256 TEXT NOT NULL,architecture_sha256 TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state='NeedsTriage'),findings_json TEXT NOT NULL,created_utc TEXT NOT NULL
+                );
+                INSERT INTO repair_proposals_old_fixture
+                    SELECT id,task_id,qa_review_id,engineering_run_id,source_sha256,plan_revision,plan_sha256,
+                        spec_version,spec_sha256,architecture_sha256,state,findings_json,created_utc FROM repair_proposals;
+                DROP TABLE repair_proposals;
+                ALTER TABLE repair_proposals_old_fixture RENAME TO repair_proposals;
+                CREATE INDEX repair_proposal_by_task ON repair_proposals(task_id,created_utc DESC,id DESC);
+                """;
+            aetLegacySchema.ExecuteNonQuery();
+        }
+        aetLegacyTx.Commit();
+    }
+    var aetMigratedTasks=new TaskStore(aetMigrationRoot);
+    var aetMigratedProposals=new RepairProposalStore(aetMigratedTasks);
+    aetMigratedProposals.Initialize();
+    aetMigratedProposals.Initialize();
+    var aetMigratedProposal=aetMigratedProposals.Latest(taskBound.Id);
+    Check(aetMigratedProposal?.Id==selectedRepairProposal.Id &&
+        aetMigratedProposal.QaReviewId==selectedRepairProposal.QaReviewId &&
+        aetMigratedProposal.LeadReviewId is null &&
+        new RepairTriageStore(aetMigratedTasks).List(taskBound.Id,selectedRepairProposal.Id).Count==1,
+        "populated QA-only proposal migration preserves exact proposal and child triage");
+    using(var aetMigratedDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+aetMigrationPath+";Pooling=False"))
+    {
+        aetMigratedDb.Open();
+        using var aetCheck=aetMigratedDb.CreateCommand();
+        aetCheck.CommandText="PRAGMA foreign_key_check";
+        using(var aetRows=aetCheck.ExecuteReader())
+            Check(!aetRows.Read(),"legacy proposal migration preserves foreign key integrity");
+        aetCheck.CommandText="SELECT proposal_id FROM repair_cycles WHERE id=@id";
+        aetCheck.Parameters.AddWithValue("@id",cycleId);
+        Check((string?)aetCheck.ExecuteScalar()==selectedRepairProposal.Id,
+            "legacy proposal migration preserves populated repair cycle reference");
+    }
+
     // A real Windows installation can already contain 1-3 approved repairs.
     // Exercise in-place migration of its populated SQLite CHECK constraint,
     // including preservation of all original cycle metadata and source refs.
@@ -3329,6 +3393,20 @@ try
         Check(aetLeadVerified.StatusCode==HttpStatusCode.OK &&
             aetLeadVerifiedBody.RootElement.GetProperty("agentId").GetString()=="LeadSoftwareEngineer",
             "originating lead reviewer independently rechecks repaired source");
+    var aetMafVerifierFactory=new Phase5FakeMafFactory();
+    aetMafVerifierFactory.ScriptedReplies.Enqueue("""
+        {"outcome":"ResolvedByStaticEvidence","rationale":"Invented evidence is not accepted.","line":999,"evidence":"missing","architectureChoiceSha256":null}
+        """);
+    aetMafVerifierFactory.ScriptedReplies.Enqueue("""
+        {"outcome":"StillPresent","rationale":"The candidate has the exact saved logging construct.","line":1,"evidence":"console.log","architectureChoiceSha256":null}
+        """);
+    var aetMafAssessment=await new MafEngineeringIssueVerifier(aetMafVerifierFactory).VerifyAsync(
+        aetVerificationStore.Prepare(taskBound.Id,aetLeadVerifyRequest),"qwen3.5:4b",CancellationToken.None);
+    Check(aetMafAssessment.Outcome=="StillPresent" &&
+        aetMafVerifierFactory.Purposes.SequenceEqual([MafAgentPurpose.LeadSoftwareEngineer]) &&
+        aetMafVerifierFactory.Models.SequenceEqual(["qwen3.5:4b"]) &&
+        aetMafVerifierFactory.NoTools && aetMafVerifierFactory.ScriptedReplies.Count==0,
+        "real MAF verification adapter rejects invented evidence, retries once and exposes no write or execution tools");
     Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId).Issues
         .Single(x=>x.Id==aetLeadRepairedIssue.Id).State=="AwaitingQualifiedVerification" &&
         qaModel.ReviewedFiles.Count==10,
