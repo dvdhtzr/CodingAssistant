@@ -379,6 +379,20 @@ public static class ApiHost
         // All steps are planning-only; none can launch the M1 execution plane.
         app.MapGet("/api/tasks/{id}/interview", (string id, InterviewStore db) =>
             Safe(() => Results.Ok(db.Read(id))));
+        // Owner-only policy management. These endpoints do not start work.
+        app.MapGet("/api/tasks/{id}/engineering-delegation",
+            (string id, TaskStore tasks) => Safe(() => Results.Ok(new {
+                policy = new EngineeringDelegationStore(tasks).Read(id)
+            })));
+        app.MapPost("/api/tasks/{id}/engineering-delegation/propose",
+            (string id, ProposeDelegationRequest input, TaskStore tasks) =>
+                Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Propose(id, input))));
+        app.MapPost("/api/tasks/{id}/engineering-delegation/approve",
+            (string id, ApproveDelegationRequest input, TaskStore tasks) =>
+                Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Approve(id, input))));
+        app.MapPost("/api/tasks/{id}/engineering-delegation/revoke",
+            (string id, ApproveDelegationRequest input, TaskStore tasks) =>
+                Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Revoke(id, input))));
         app.MapGet("/api/tasks/{id}/engineering-messages",
             (string id, long? after, TaskStore tasks) =>
                 Safe(() => Results.Ok(new {
@@ -1090,7 +1104,8 @@ public static class ApiHost
                 "SOURCE_CHANGED" or "SOURCE_SCOPE_CHANGED" or
                 "SMOKE_BUSY" or "SMOKE_ISOLATION_ACK_REQUIRED" or
                 "SPECIFICATION_NOT_APPROVED" or
-                "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
+                "STALE_DELEGATION_POLICY" or "DELEGATION_NOT_AUTHORIZED" or
+            "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
                 "EXECUTION_PLAN_CONFLICT" => StatusCodes.Status409Conflict,

@@ -1742,6 +1742,43 @@ try
     }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
     var messagesPath = "/api/tasks/" + taskBound.Id + "/engineering-messages";
+    var delegationPath = "/api/tasks/" + taskBound.Id + "/engineering-delegation";
+    using (var response = await client.GetAsync(delegationPath))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("policy").ValueKind == JsonValueKind.Null,
+            "delegation defaults to no authority");
+    using (var denied = await Post(client, delegationPath + "/propose",
+        new ProposeDelegationRequest(0, secondPlanHash, ["ExecuteCode"])))
+        Check(denied.StatusCode == HttpStatusCode.BadRequest,
+            "delegation cannot authorize generated code execution");
+    string policySha;
+    using (var proposal = await Post(client, delegationPath + "/propose",
+        new ProposeDelegationRequest(0, secondPlanHash, ["SendMessage","ScheduleWork"])))
+    using (var body = await Body(proposal))
+    {
+        Check(proposal.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("status").GetString() == "Proposed",
+            "delegation proposal grants no authority");
+        policySha = body.RootElement.GetProperty("policySha256").GetString()!;
+    }
+    using (var denied = await Post(client, delegationPath + "/approve",
+        new ApproveDelegationRequest(1, policySha, "APPROVE wrong")))
+        Check(denied.StatusCode == HttpStatusCode.Conflict,
+            "delegation requires exact hash confirmation");
+    using (var approval = await Post(client, delegationPath + "/approve",
+        new ApproveDelegationRequest(1, policySha, "APPROVE " + policySha)))
+        Check(approval.StatusCode == HttpStatusCode.OK,
+            "owner explicitly approves exact delegation policy");
+    using (var revoked = await Post(client, delegationPath + "/revoke",
+        new ApproveDelegationRequest(1, policySha, "REVOKE " + policySha)))
+        Check(revoked.StatusCode == HttpStatusCode.OK &&
+              new EngineeringDelegationStore(tasks).Read(taskBound.Id)?.Status == "Revoked",
+            "owner can revoke persisted delegation policy");
+    using (var denied = await Post(client, delegationPath + "/approve",
+        new ApproveDelegationRequest(1, policySha, "APPROVE " + policySha)))
+        Check(denied.StatusCode == HttpStatusCode.Conflict,
+            "revoked policy cannot be replayed");
     using (var response = await client.GetAsync(messagesPath))
     using (var body = await Body(response))
         Check(response.StatusCode == HttpStatusCode.OK &&
@@ -1832,6 +1869,18 @@ try
           engineeringResult.Events.Any(e => e.Kind == "EngineeringTaskStarted") &&
           engineeringResult.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 2,
         "each approved engineer task persists source and exact durable event history");
+    var receipts = new EngineeringMessageStore(tasks).List(taskBound.Id);
+    Check(receipts.Count == 4 &&
+          receipts.Select(m => m.Kind).SequenceEqual(
+              ["TaskAssignment","TaskCompleted","TaskAssignment","TaskCompleted"]) &&
+          receipts.All(m => m.RunId == engineeringRunId && m.PlanSha256 == secondPlanHash) &&
+          receipts[0].FromAgent == "TechnicalLead" &&
+          receipts[1].FromAgent == "SoftwareEngineer" &&
+          receipts[3].SourceSha256 == QaReviewStore.Fingerprint(engineeringResult!.Files),
+        "assignment and completion receipts bind actual saved revisions");
+    Check(new EngineeringMessageStore(tasks).List(taskBound.Id, receipts[1].Sequence)
+          .SequenceEqual(receipts.Skip(2)),
+        "durable message cursor replays without duplication");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,

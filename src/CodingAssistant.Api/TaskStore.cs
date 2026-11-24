@@ -79,6 +79,7 @@ public sealed class TaskStore
             );
             """);
         EngineeringMessageStore.Initialize(connection);
+        EngineeringDelegationStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 

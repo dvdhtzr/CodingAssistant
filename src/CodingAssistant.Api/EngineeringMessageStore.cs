@@ -1,5 +1,5 @@
 using System.Security.Cryptography;
-using System.Text.Json;
+using System.Text;
 using Microsoft.Data.Sqlite;
 
 namespace CodingAssistant.Api;
@@ -57,8 +57,12 @@ public sealed class EngineeringMessageStore(TaskStore tasks)
         using (var reader = command.ExecuteReader())
             while (reader.Read())
                 hashes.Add([reader.GetString(0), reader.GetString(1)]);
+        // Use the same path/hash canonicalization as independent QA.
+        // The empty assignment snapshot is hashed, not claimed to be reviewed.
+        var input = string.Join("\n", hashes.OrderBy(f => f[0],
+            StringComparer.OrdinalIgnoreCase).Select(f => f[0] + "\t" + f[1]));
         var sourceSha = Convert.ToHexString(SHA256.HashData(
-            JsonSerializer.SerializeToUtf8Bytes(hashes))).ToLowerInvariant();
+            Encoding.UTF8.GetBytes(input))).ToLowerInvariant();
         TaskStore.Execute(db, tx, """
             INSERT INTO engineering_messages(task_id,run_id,work_item_id,kind,
                 from_agent,to_agent,plan_revision,plan_sha256,spec_version,

@@ -117,6 +117,18 @@ public sealed class ImplementationPlanStore(TaskStore tasks, InterviewStore inte
         return reader.Read() ? Decode(reader) : null;
     }
 
+    internal static ImplementationPlan RequireCurrentApproved(SqliteConnection db,
+        SqliteTransaction tx, string taskId)
+    {
+        CheckTaskId(taskId);
+        var plan = Latest(db, tx, taskId);
+        if (plan is null || plan.Status != "Approved")
+            throw new StoreFailure("PLAN_NOT_APPROVED");
+        CheckBinding(db, tx, taskId, plan.SpecificationVersion,
+            plan.SpecificationSha256, plan.ArchitectureSha256);
+        return plan;
+    }
+
     private static ImplementationPlan Effective(ImplementationPlan value,
         int? specVersion, string? specSha, string? archSha)
     {
