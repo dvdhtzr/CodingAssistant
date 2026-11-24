@@ -55,14 +55,17 @@ public sealed class AgentRoleModelSettings(TaskStore tasks)
         return selected ?? DefaultFor(role, inherited);
     }
 
-    public IReadOnlyList<AgentRoleModelSelection> Read(string taskId, string inherited)
+    public IReadOnlyList<AgentRoleModelSelection> Read(string taskId, string inherited,
+        string? interviewModel = null)
     {
         if (!LocalOllamaModelCatalog.ValidLocalName(inherited))
             throw new StoreFailure("INVALID_INPUT");
         _ = tasks.GetTask(taskId);
         using var db = tasks.Open();
         var selections = new List<AgentRoleModelSelection> {
-            new("ProductOwner", inherited, false, "Interview selection")
+            new("ProductOwner", interviewModel ?? inherited, false,
+                interviewModel is null ? "Choose in Product Discovery" :
+                    "Pinned interview model")
         };
         foreach (var role in Configurable)
         {
@@ -74,7 +77,7 @@ public sealed class AgentRoleModelSettings(TaskStore tasks)
                 selected is not null,
                 selected is not null ? "Owner choice" :
                     role is "SoftwareEngineer" or "QaEngineer" ?
-                    "Preferred coding model" : "Inherited interview model"));
+                    "Preferred coding model" : "Inherited specification model"));
         }
         return selections;
     }
@@ -107,6 +110,6 @@ public sealed class AgentRoleModelSettings(TaskStore tasks)
             model ?? DefaultFor(role, inherited), model is not null,
             model is not null ? "Owner choice" :
                 role is "SoftwareEngineer" or "QaEngineer" ?
-                "Preferred coding model" : "Inherited interview model");
+                "Preferred coding model" : "Inherited specification model");
     }
 }
