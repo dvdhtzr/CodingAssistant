@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
+using Microsoft.AspNetCore.Routing;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -170,6 +172,8 @@ public static class ApiHost
             options.Limits.MaxRequestBodySize = 16 * 1024;
             options.AddServerHeader = false;
         });
+        var liveHttpActivity = new LocalHttpActivityLedger();
+        builder.Services.AddSingleton(liveHttpActivity);
         builder.Services.AddSingleton(browserSessions);
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(roleModels);
@@ -271,6 +275,34 @@ public static class ApiHost
             await next(context);
         });
 
+        // Capture only post-authenticated API metadata. No request content,
+        // path values, query strings, credentials, or model output enter this
+        // small ephemeral buffer. The read endpoint is excluded so merely
+        // watching the feed cannot create an artificial stream of activity.
+        app.Use(async (context, next) =>
+        {
+            if (!context.Request.Path.StartsWithSegments("/api") ||
+                context.Request.Path.StartsWithSegments("/api/studio/http-activity") ||
+                context.Request.Path.StartsWithSegments("/api/progress") ||
+                context.Request.Path.StartsWithSegments("/api/local-session"))
+            {
+                await next(context);
+                return;
+            }
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                await next(context);
+            }
+            finally
+            {
+                stopwatch.Stop();
+                var route = (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText;
+                liveHttpActivity.Record(context.Request.Method, route,
+                    context.Response.StatusCode, stopwatch.Elapsed.TotalMilliseconds);
+            }
+        });
+
         // UI assets are static and unauthenticated. All data/operations require
         // the owner bearer or an ephemeral authenticated local browser session.
         app.UseDefaultFiles();
@@ -291,6 +323,11 @@ public static class ApiHost
                 lifetimeSeconds = 12 * 60 * 60
             });
         });
+
+        // Authenticated, read-only, bounded presentation data; not an audit log.
+        app.MapGet("/api/studio/http-activity",
+            (long? after, int? limit, LocalHttpActivityLedger ledger) =>
+                Results.Ok(ledger.Read(after ?? 0, limit ?? 20)));
 
         app.MapGet("/healthz", () => Results.Ok(
             new { status = "ok", executionEnabled = enabled,
