@@ -521,7 +521,7 @@ export default function App() {
           token={token} task={taskView.task} onNavigate={setView} />}
         {taskView && <div hidden={view !== 'work'}>
           <EngineeringStudio key={taskView.task.id} token={token} task={taskView.task}
-            onTeam={() => setView('team')}/>
+            active={view === 'work'} onTeam={() => setView('team')}/>
         </div>}
         {taskView && view === 'team' && <TeamDestination token={token} taskId={taskId}
           onWork={() => setView('work')} />}
