@@ -20,7 +20,7 @@ public sealed class QaReviewCoordinator(
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
     public QaReviewRun Start(string taskId, StartQaReviewRequest request,
-        string? agentModel = null)
+        string? agentModel = null,CollaborationAdmission? admission=null)
     {
         if (string.IsNullOrWhiteSpace(request.EngineeringRunId) ||
             string.IsNullOrWhiteSpace(request.PlanSha256))
@@ -44,7 +44,7 @@ public sealed class QaReviewCoordinator(
         if (!architecture.ReadyForSourceGeneration ||
             architecture.ArchitectureSha256 != plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
-        var job = reviews.Start(taskId, source, plan, agentModel);
+        var job = reviews.Start(taskId, source, plan, agentModel,admission);
         var token = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = token;

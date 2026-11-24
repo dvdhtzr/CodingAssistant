@@ -86,6 +86,7 @@ public sealed class TaskStore
         EngineeringIssueStore.Initialize(connection);
         IssueVerificationStore.Initialize(connection);
         AdaptiveWorkPlanStore.Initialize(connection);
+        CollaborationStore.Initialize(connection);
         RestrictDatabasePermissions();
     }
 
@@ -260,6 +261,7 @@ public sealed class TaskStore
         using var tx = db.BeginTransaction();
         _ = FindTask(db, tx, id) ?? throw new StoreFailure("NOT_FOUND");
 
+        CollaborationStore.RequireNoActive(db,tx,id);
         var runningDraft = Scalar(db, tx, """
             SELECT 1 FROM project_drafts
             WHERE task_id=@id AND state='Running' LIMIT 1

@@ -231,6 +231,7 @@ public sealed class EngineeringRunStore(
             approved.SpecificationSha256, approved.ArchitectureSha256,
             agentModel ?? approved.Model, "Running", "Queued", null, now, now);
         RequireBinding(db, tx, candidate);
+        CollaborationStore.RequireNoActive(db,tx,taskId);
         var adaptive=selection is null?null:AdaptiveWorkPlanStore.RequireSelected(db,tx,taskId,
             approved.PlanSha256,selection);
         try
@@ -288,6 +289,7 @@ public sealed class EngineeringRunStore(
 
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
+        CollaborationStore.RequireNoActive(db,tx,taskId);
         var original = Find(db, tx, sourceRunId);
         if (original is null || original.TaskId != taskId)
             throw new StoreFailure("NOT_FOUND");

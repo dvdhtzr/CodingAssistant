@@ -210,6 +210,7 @@ public sealed class RepairCycleStore(
         using var tx = db.BeginTransaction();
         if (TaskStore.FindTask(db, tx, taskId) is null)
             throw new StoreFailure("NOT_FOUND");
+        CollaborationStore.RequireNoActive(db,tx,taskId);
         if(TaskStore.Scalar(db,tx,"""
             SELECT id FROM repair_proposals WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1
             """,("@task",taskId))!=proposal.Id) throw new StoreFailure("SOURCE_CHANGED");

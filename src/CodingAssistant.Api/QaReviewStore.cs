@@ -207,7 +207,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
 
     public QaReviewRun Start(string taskId,
         EngineeringRunSnapshot source, ImplementationPlan plan,
-        string? agentModel = null)
+        string? agentModel = null,CollaborationAdmission? admission=null)
     {
         ValidateId(taskId);
         if (source.Job.TaskId != taskId ||
@@ -227,6 +227,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
         RequireSource(db, tx, review);
+        CollaborationStore.AdmitReview(db,tx,taskId,review.EngineeringRunId,review.SourceSha256,review.Id,"QaEngineer",admission);
         try
         {
             TaskStore.Execute(db, tx, """

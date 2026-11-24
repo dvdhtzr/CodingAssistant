@@ -7,7 +7,7 @@ public sealed class LeadReviewCoordinator(TaskStore tasks,InterviewStore intervi
     ILeadSourceReviewer reviewer,IHostApplicationLifetime lifetime)
 {
     private readonly ConcurrentDictionary<string,CancellationTokenSource> _active=new();
-    public LeadReviewRun Start(string taskId,StartQaReviewRequest request,string model)
+    public LeadReviewRun Start(string taskId,StartQaReviewRequest request,string model,CollaborationAdmission? admission=null)
     {
         if(string.IsNullOrWhiteSpace(request.EngineeringRunId)||string.IsNullOrWhiteSpace(request.PlanSha256))
             throw new StoreFailure("INVALID_INPUT");
@@ -22,7 +22,7 @@ public sealed class LeadReviewCoordinator(TaskStore tasks,InterviewStore intervi
         var arch=DraftArchitecturePolicy.Readiness(tasks,interviews,taskId);
         if(!arch.ReadyForSourceGeneration || arch.ArchitectureSha256!=plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
-        var job=reviews.Start(taskId,source,plan,model);
+        var job=reviews.Start(taskId,source,plan,model,admission);
         var cancel=CancellationTokenSource.CreateLinkedTokenSource(lifetime.ApplicationStopping);
         _active[job.Id]=cancel;
         var objective=tasks.GetTask(taskId).Task.Objective;

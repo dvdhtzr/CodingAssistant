@@ -68,7 +68,7 @@ public sealed class LeadReviewStore(TaskStore tasks)
     private static void Activity(SqliteConnection db,SqliteTransaction tx,LeadReviewRun job,string kind)
         => EngineeringActivityStore.Record(db,tx,job.TaskId,kind,"LeadSoftwareEngineer","LeadReview",
             job.Id,sourceSha256:job.SourceSha256,model:job.Model);
-    public LeadReviewRun Start(string taskId,EngineeringRunSnapshot source,ImplementationPlan plan,string model)
+    public LeadReviewRun Start(string taskId,EngineeringRunSnapshot source,ImplementationPlan plan,string model,CollaborationAdmission? admission=null)
     {
         CheckId(taskId);
         EngineeringRoleCapabilities.Require("LeadSoftwareEngineer",EngineeringCapability.ReviewCode);
@@ -82,6 +82,7 @@ public sealed class LeadReviewStore(TaskStore tasks)
             QaReviewStore.Fingerprint(source.Files),plan.PlanSha256,model,"Running",null,now,now);
         using var db=tasks.Open();using var tx=db.BeginTransaction();
         RequireSource(db,tx,job);
+        CollaborationStore.AdmitReview(db,tx,taskId,job.EngineeringRunId,job.SourceSha256,job.Id,"LeadSoftwareEngineer",admission);
         try {
             TaskStore.Execute(db,tx,"""
                 INSERT INTO lead_reviews(id,task_id,engineering_run_id,source_sha256,plan_sha256,model,state,created_utc,updated_utc)

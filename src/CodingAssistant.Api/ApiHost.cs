@@ -54,7 +54,8 @@ public static class ApiHost
         ILocalSourceSmokeRunner? sourceSmokeOverride = null,
         IAtlasCommitArchiveDownloader? atlasArchiveOverride = null,
         ILeadSourceReviewer? leadReviewerOverride = null,
-        IEngineeringIssueVerifier? issueVerifierOverride = null)
+        IEngineeringIssueVerifier? issueVerifierOverride = null,
+        ICollaborationLead? collaborationLeadOverride=null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -224,6 +225,11 @@ public static class ApiHost
         builder.Services.AddSingleton<RunNotifier>();
         builder.Services.AddSingleton<EngineeringAtlasNotifier>();
         builder.Services.AddSingleton<EngineeringActivityStore>();
+        var collaborationStore=new CollaborationStore(store);
+        collaborationStore.Recover();
+        builder.Services.AddSingleton(collaborationStore);
+        builder.Services.AddSingleton<ICollaborationLead>(collaborationLeadOverride??new MafCollaborationLead());
+        builder.Services.AddSingleton<CollaborationCoordinator>();
         builder.Services.AddHostedService<EngineeringActivityNotifier>();
 
         var app = builder.Build();
@@ -839,6 +845,14 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/cancel",
             (string id, string cycleId, RepairCycleCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
+        app.MapGet("/api/tasks/{id}/collaboration/latest",
+            (string id,CollaborationStore db)=>Safe(()=>Results.Ok(new {snapshot=db.Latest(id)})));
+        app.MapPost("/api/tasks/{id}/collaboration",
+            (string id,StartCollaborationRequest request,CollaborationCoordinator coordinator,CancellationToken cancellation)=>
+                SafeAsync(async()=>Results.Accepted($"/api/tasks/{id}/collaboration/latest",
+                    await coordinator.StartAsync(id,request,cancellation))));
+        app.MapPost("/api/tasks/{id}/collaboration/{jobId}/cancel",
+            (string id,string jobId,CollaborationCoordinator coordinator)=>Safe(()=>Results.Ok(coordinator.Cancel(id,jobId))));
         app.MapGet("/api/tasks/{id}/adaptive-work-plan",
             (string id,TaskStore tasks)=>Safe(()=>Results.Ok(new AdaptiveWorkPlanStore(tasks).Read(id))));
         app.MapGet("/api/tasks/{id}/engineering-issues",

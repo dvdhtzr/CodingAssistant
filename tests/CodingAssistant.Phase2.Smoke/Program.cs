@@ -1232,6 +1232,7 @@ var softwareModel = new Phase4EngineeringModel();
 var qaModel = new Phase5QaModel();
 var aetLeadModel = new AetLeadReviewFixture();
 var aetIssueVerifier = new AetIssueVerifierFixture();
+var aetCollaborationLead=new AetCollaborationLeadFixture();
 try
 {
     var tasks = new TaskStore(root);
@@ -1263,7 +1264,7 @@ try
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
         qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel,
-        issueVerifierOverride: aetIssueVerifier);
+        issueVerifierOverride: aetIssueVerifier,collaborationLeadOverride:aetCollaborationLead);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -1457,7 +1458,7 @@ try
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
         qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel,
-        issueVerifierOverride: aetIssueVerifier);
+        issueVerifierOverride: aetIssueVerifier,collaborationLeadOverride:aetCollaborationLead);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -3638,10 +3639,53 @@ try
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetAdaptivePolicy.Revision,
         aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
 
+    var aetCollabPolicy=delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(4,secondPlanHash,["ScheduleWork","ReviewCode","ReviewAcceptance"]));
+    aetCollabPolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
+        aetCollabPolicy.PolicySha256,"APPROVE "+aetCollabPolicy.PolicySha256));
+    var aetCollabRequest=new StartCollaborationRequest(aetChildResumeId,QaReviewStore.Fingerprint(aetChildDone!.Files),
+        secondPlanHash,aetCollabPolicy.Revision,aetCollabPolicy.PolicySha256);
+    var aetCollabPath="/api/tasks/"+taskBound.Id+"/collaboration";
+    using(var aetBadCollab=await Post(client,aetCollabPath,aetCollabRequest with {PolicySha256=new string('0',64)}))
+        Check(aetBadCollab.StatusCode==HttpStatusCode.Conflict,"stale delegation cannot start autonomous coordination");
+    using(var aetAnonymousCollab=new HttpClient{BaseAddress=client.BaseAddress})
+    using(var aetDeniedCollab=await Post(aetAnonymousCollab,aetCollabPath,aetCollabRequest))
+        Check(aetDeniedCollab.StatusCode==HttpStatusCode.Unauthorized,"collaboration admission remains owner-private");
+    string aetCollabId;
+    using(var aetCollabStarted=await Post(client,aetCollabPath,aetCollabRequest))
+    using(var aetCollabBody=await Body(aetCollabStarted))
+    {
+        Check(aetCollabStarted.StatusCode==HttpStatusCode.Accepted,"owner admits exact delegated collaboration session");
+        aetCollabId=aetCollabBody.RootElement.GetProperty("id").GetString()!;
+    }
+    var aetCollabStore=new CollaborationStore(tasks);
+    CollaborationSnapshot? aetCollabResult=null;
+    for(var aetAttempt=0;aetAttempt<240;aetAttempt++)
+    {
+        aetCollabResult=aetCollabStore.Get(taskBound.Id,aetCollabId);
+        if(aetCollabResult.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    Check(aetCollabResult?.Job.State=="AwaitingOwner" &&
+        aetCollabResult.Job.Reason=="EXACT_REPAIR_APPROVAL_REQUIRED" &&
+        aetCollabResult.Steps.Select(x=>x.Action).SequenceEqual(["ReviewCode","ClassifyIssue","RequestOwnerRepair"]) &&
+        aetCollabResult.Steps.All(x=>x.ReferenceId is not null) &&
+        aetCollaborationLead.Calls==3,
+        "actual lead decision loop independently reviews, classifies and requests exact repair without bypassing owner gate");
+    Check(engineeringStore.Latest(taskBound.Id)!.Job.Id==aetChildResumeId &&
+        qaModel.ReviewedFiles.Count==10,
+        "blocking lead finding prevents premature QA, source mutation and functional claims");
+    var aetCollabProposal=new RepairProposalStore(tasks).Latest(taskBound.Id)!;
+    Check(aetCollabProposal.Id==aetCollabResult!.Steps.Last().ReferenceId &&
+        aetCollabProposal.LeadReviewId==aetCollabResult.Steps.First().ReferenceId,
+        "actual independent review and repair proposal references are durable");
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
+        aetCollabPolicy.PolicySha256,"REVOKE "+aetCollabPolicy.PolicySha256));
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var stalePolicy = delegationStore.Propose(taskBound.Id,
-        new ProposeDelegationRequest(4,secondPlanHash,["SendMessage"]));
+        new ProposeDelegationRequest(5,secondPlanHash,["SendMessage"]));
     stalePolicy = delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
         stalePolicy.Revision,stalePolicy.PolicySha256,"APPROVE " + stalePolicy.PolicySha256));
     Check(stalePolicy.Current && stalePolicy.EffectiveStatus == "Approved",
@@ -3677,8 +3721,8 @@ try
     Check(effectivePolicy?.Status == "Approved" && !effectivePolicy.Current &&
           effectivePolicy.EffectiveStatus == "STALE_APPROVALS",
         "architecture revision invalidates effective delegated authority");
-    Check(delegationStore.History(taskBound.Id).Count == 5 &&
-          delegationStore.History(taskBound.Id).Take(4).All(p => p.Status == "Revoked"),
+    Check(delegationStore.History(taskBound.Id).Count == 6 &&
+          delegationStore.History(taskBound.Id).Take(5).All(p => p.Status == "Revoked"),
         "delegation retains prior owner decisions");
     Check(delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
         stalePolicy.Revision,stalePolicy.PolicySha256,
@@ -4210,5 +4254,22 @@ sealed class AetIssueVerifierFixture : IEngineeringIssueVerifier
             input.Issue.Origin=="QaEngineer"?"StillPresent":"ResolvedByStaticEvidence",
             "Injected source recheck records the exact changed construct; functionality remains untested.",
             1,"console.log('repaired start')",null));
+    }
+}
+
+sealed class AetCollaborationLeadFixture:ICollaborationLead
+{
+    public int Calls{get;private set;}
+    public Task<CollaborationDecision> DecideAsync(CollaborationInput input,CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();Calls++;
+        var decision=input.AllowedActions.Contains("ReviewCode")?
+            new CollaborationDecision("ReviewCode","Request independent review of the exact generated source."):
+            input.AllowedActions.Contains("ClassifyIssue")?
+            new("ClassifyIssue","The actual source concern needs a scoped correction.",
+                input.Issues.Single(x=>x.State=="NeedsTriage").Id,"ImplementationDefect"):
+            new("RequestOwnerRepair","Request exact owner authorization rather than silently edit the source.",
+                input.Issues.Single(x=>x.State=="ConfirmedDefect").Id);
+        return Task.FromResult(decision);
     }
 }
