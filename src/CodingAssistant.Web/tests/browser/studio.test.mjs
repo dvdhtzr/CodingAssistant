@@ -50,10 +50,38 @@ const done = (route, body, status = 200) => route.fulfill({
 });
 
 function mockApi(page) {
+  const selections = [
+    { role: 'ProductOwner', model: 'qwen3-coder:30b',
+      overridden: false, source: 'Interview selection' },
+    { role: 'SolutionArchitect', model: 'qwen3-coder:30b',
+      overridden: false, source: 'Inherited interview model' },
+    { role: 'TechnicalLead', model: 'qwen3-coder:30b',
+      overridden: false, source: 'Inherited interview model' },
+    { role: 'SoftwareEngineer', model: 'qwen2.5-coder:14b',
+      overridden: false, source: 'Preferred coding model' },
+    { role: 'QaEngineer', model: 'qwen2.5-coder:14b',
+      overridden: false, source: 'Preferred coding model' },
+  ];
   return page.route('**/api/**', route => {
     const path = new URL(route.request().url()).pathname;
     const method = route.request().method();
+    if (method === 'POST' && path.includes('/agent-models/')) {
+      const role = path.split('/').at(-1);
+      const row = selections.find(item => item.role === role);
+      const requested = route.request().postDataJSON()?.model;
+      if (!row) return done(route, { error: 'INVALID_AGENT_ROLE' }, 400);
+      if (requested !== null && requested !== 'qwen3-coder:30b')
+        return done(route, { error: 'MODEL_NOT_INSTALLED' }, 409);
+      row.model = requested ?? (role === 'SoftwareEngineer' || role === 'QaEngineer'
+        ? 'qwen2.5-coder:14b' : 'qwen3-coder:30b');
+      row.overridden = requested !== null;
+      row.source = row.overridden ? 'Owner choice' :
+        role === 'SoftwareEngineer' || role === 'QaEngineer'
+          ? 'Preferred coding model' : 'Inherited interview model';
+      return done(route, row);
+    }
     if (method !== 'GET') return done(route, { error: 'UNEXPECTED_MUTATION' }, 405);
+    if (path.endsWith('/agent-models')) return done(route, { agents: selections });
     if (path === '/api/agents/roster') return done(route, { agents });
     if (path.endsWith('/agent-handoffs')) return done(route, { events: [{
       kind: 'EngineeringHandoff', fromAgent: 'TechnicalLead',
@@ -172,6 +200,42 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
     assert.equal(await canvas.locator('#journey-panel-delivery').isVisible(), true);
     assert.equal(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0), 0,
       'role navigation must not scroll the whole document');
+  } finally { await page.close(); }
+});
+
+test('owner can assign independent local models without initiating or modifying agent runs', async () => {
+  const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+  const writes = [];
+  try {
+    await mockApi(page);
+    page.on('request', request => {
+      if (request.method() === 'POST') writes.push(new URL(request.url()).pathname);
+    });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    const show = page.getByRole('button', { name: 'Assign team models' });
+    await show.click();
+    const controls = page.getByRole('region', {
+      name: 'Per-agent local model assignments',
+    });
+    await controls.getByText('qwen2.5-coder:14b', { exact: false }).first().waitFor();
+    const qaSelect = controls.getByRole('combobox', { name: 'QA Engineer model' });
+    const engineerSelect = controls.getByRole('combobox', {
+      name: 'Software Engineer model',
+    });
+    assert.equal(await qaSelect.inputValue(), '__default__');
+    assert.equal(await engineerSelect.inputValue(), '__default__');
+    await qaSelect.selectOption('qwen3-coder:30b');
+    await controls.getByText('QA Engineer will use qwen3-coder:30b').waitFor();
+    assert.equal(await qaSelect.inputValue(), 'qwen3-coder:30b');
+    assert.equal(await engineerSelect.inputValue(), '__default__',
+      'selecting a QA model must not change the Software Engineer model');
+    assert.deepEqual(writes, ['/api/tasks/' + id + '/agent-models/QaEngineer'],
+      'model selection writes only the specific preference; never starts a run');
+    await controls.getByRole('button', { name: 'Close models' }).click();
+    assert.equal(await controls.count(), 0);
+    assert.equal(await page.getByRole('region', {
+      name: 'AI Engineering Studio',
+    }).count(), 1);
   } finally { await page.close(); }
 });
 
