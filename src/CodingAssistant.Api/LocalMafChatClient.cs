@@ -55,6 +55,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             MafAgentPurpose.TechnicalLead => 3500,
             MafAgentPurpose.SoftwareEngineer => 8000,
             MafAgentPurpose.QaEngineer => 2200,
+            MafAgentPurpose.LeadSoftwareEngineer => 3500,
             _ => 1800
         };
         var chat = new
@@ -72,7 +73,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             {
                 temperature = purpose == MafAgentPurpose.Architecture ? 0.15 : 0.2,
                 num_predict = maxTokens,
-                num_ctx = purpose == MafAgentPurpose.SoftwareEngineer ? 16384 :
+                num_ctx = purpose is MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer ? 16384 :
                     purpose == MafAgentPurpose.Specification ? 12288 : 8192
             }
         };
@@ -117,7 +118,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             }
             catch (StoreFailure error) when (
                 (purpose is MafAgentPurpose.Specification or
-                    MafAgentPurpose.SoftwareEngineer) &&
+                    MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer) &&
                 (error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
                     "MODEL_OUTPUT_TRUNCATED"))
             {
@@ -196,7 +197,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         if (response.ValueKind != JsonValueKind.Object)
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
 
-        if ((purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer) &&
+        if ((purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer) &&
             response.TryGetProperty("done_reason", out var reason) &&
             reason.ValueKind == JsonValueKind.String &&
             reason.GetString() == "length")
@@ -226,11 +227,11 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         // Engineering answers are JSON. A real source string can itself
         // contain literal "<think>" markup; do not mistake a tag inside a
         // syntactically JSON-prefixed answer for hidden model reasoning.
-        if (purpose == MafAgentPurpose.SoftwareEngineer &&
+        if ((purpose is MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer) &&
             finalText.TrimStart().StartsWith("{", StringComparison.Ordinal))
             return finalText.Trim();
         return purpose is MafAgentPurpose.Specification or
-            MafAgentPurpose.SoftwareEngineer
+            MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer
             ? StripClosedThinkingPrefix(finalText) : finalText;
     }
 
@@ -278,6 +279,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         MafAgentPurpose.TechnicalLead => "json",
         MafAgentPurpose.SoftwareEngineer => "json",
         MafAgentPurpose.QaEngineer => "json",
+        MafAgentPurpose.LeadSoftwareEngineer => "json",
         _ => null
     };
 
@@ -300,7 +302,8 @@ public enum MafAgentPurpose
     Architecture,
     TechnicalLead,
     SoftwareEngineer,
-    QaEngineer
+    QaEngineer,
+    LeadSoftwareEngineer
 }
 
 public interface IMafChatClientFactory

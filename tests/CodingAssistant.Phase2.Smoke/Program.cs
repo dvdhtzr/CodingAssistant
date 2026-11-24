@@ -439,15 +439,15 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     {
         Check(error.Code == "AGENT_CAPABILITY_DENIED", "QA source write denied");
     }
-    Check(roster.Count == 5 &&
-          roster.Select(a => a.Id).Distinct().Count() == 5 &&
+    Check(roster.Count == 6 &&
+          roster.Select(a => a.Id).Distinct().Count() == 6 &&
           roster.All(a => a.Goal.Length > 25 &&
               a.Backstory.Length > 25 && !a.CanExecuteCode) &&
           EngineeringAgentRoster.Get("SoftwareEngineer")
               .AllowedSkillScopes.Contains("source-implementation") &&
           EngineeringAgentRoster.Get("QaEngineer")
               .AllowedSkillScopes.Contains("static-code-review"),
-        "five distinct role/goals/backstories and non-executable skill scopes");
+        "six distinct role/goals/backstories and non-executable skill scopes");
 
     var manifest = MafSoftwareEngineer.Parse(
         """{"summary":"Implemented the task with a functional browser entry page.","files":[{"path":"index.html","purpose":"Complete browser interface","content":"<!doctype html><html><body><button id='save'>Save</button></body></html>"}],"verificationNotes":["Click the Save button in a browser"]}""");
@@ -932,6 +932,27 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var file = new EngineeringSourceFile("index.html", "Offline app entry",
         "<html><body><button>Save</button></body></html>",
         new string('8', 64), "create-ui", "2026-11-21T00:03:00Z");
+    var leadFactory = new Phase5FakeMafFactory();
+    leadFactory.ScriptedReplies.Enqueue("""
+        {"disposition":"ChangesRequested","summary":"Static review found an unwired control.",
+        "findings":[{"severity":"Major","category":"Correctness","path":"index.html",
+        "line":1,"evidence":"<button>Save</button>","impact":"The visible control lacks demonstrated wiring.",
+        "resolution":"Connect the approved save behavior.","verification":"Independently check save and reload."}]}
+        """);
+    var leadReport = await new MafLeadSoftwareEngineer(leadFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(leadFactory.Purposes.SequenceEqual([MafAgentPurpose.LeadSoftwareEngineer]) &&
+        leadFactory.Models.SequenceEqual([AgentRoleModelSettings.PreferredReviewer]) &&
+        leadFactory.NoTools && leadFactory.SourceSeen && leadReport.Findings.Count==1,
+        "sixth genuine MAF role reviews independently with exact source evidence and no tools");
+    try {
+        _ = MafLeadSoftwareEngineer.Parse(JsonSerializer.Serialize(leadReport with {
+            Findings=[leadReport.Findings[0] with {Line=99}]}),file);
+        Check(false,"invented line accepted");
+    } catch (StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED") {
+        Check(true,"reviewer cannot invent source evidence");
+    }
     var assessment = await new MafQaEngineer(fakeFactory).ReviewAsync(
         new QaReviewInput("Build notes", "Approved offline notes specification",
             fakePlan, arch, run, file, [file]), CancellationToken.None);
@@ -1733,7 +1754,7 @@ try
     {
         var agents = body.RootElement.GetProperty("agents");
         Check(roster.StatusCode == HttpStatusCode.OK &&
-              agents.GetArrayLength() == 5 &&
+              agents.GetArrayLength() == 6 &&
               agents.EnumerateArray().Any(a =>
                   a.GetProperty("id").GetString() == "SoftwareEngineer" &&
                   !a.GetProperty("canExecuteCode").GetBoolean() &&

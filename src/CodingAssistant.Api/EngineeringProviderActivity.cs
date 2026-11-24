@@ -30,6 +30,7 @@ public static class EngineeringProviderActivity
         MafAgentPurpose.TechnicalLead => "TechnicalLead",
         MafAgentPurpose.SoftwareEngineer => "SoftwareEngineer",
         MafAgentPurpose.QaEngineer => "QaEngineer",
+        MafAgentPurpose.LeadSoftwareEngineer => "LeadSoftwareEngineer",
         _ => ""
     };
 

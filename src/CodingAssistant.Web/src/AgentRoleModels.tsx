@@ -13,6 +13,7 @@ const readable: Record<string, string> = {
   SolutionArchitect: 'Solution Architect',
   TechnicalLead: 'Technical Lead',
   SoftwareEngineer: 'Software Engineer',
+  LeadSoftwareEngineer: 'Lead Software Engineer',
   QaEngineer: 'QA Engineer',
 };
 
@@ -103,8 +104,9 @@ export function AgentRoleModels({ token, taskId, onClose, onSaved }: {
                 value={choice.overridden ? choice.model : '__default__'}
                 disabled={!!busy || !installed.length}
                 onChange={event => void assign(choice.role, event.target.value)}>
-                <option value="__default__">Default: {choice.source === 'Preferred coding model'
-                  ? 'qwen2.5-coder:14b' : 'approved specification model'}</option>
+                <option value="__default__">Default: {choice.role === 'LeadSoftwareEngineer' ? 'qwen3-coder:30b (provisional)' :
+                  choice.role === 'SoftwareEngineer' || choice.role === 'QaEngineer'
+                    ? 'qwen2.5-coder:14b' : 'approved specification model'}</option>
                 {installed.map(model => <option value={model} key={model}>{model}</option>)}
               </select>}
           <small className={available ? 'ca-role-model-ok' : 'ca-role-model-missing'}>
@@ -115,8 +117,8 @@ export function AgentRoleModels({ token, taskId, onClose, onSaved }: {
     </div>}
     {assignments?.some(item => !installed.includes(item.model)) && <p
       className="ca-role-model-install">
-      Install the preferred coder model on this computer with
-      {' '}<code>ollama pull qwen2.5-coder:14b</code>, then refresh this panel.
+      Install the missing selected models in local Ollama, or choose an already installed model.
+      The reviewer default is provisional and has not been benchmarked.
       No model is downloaded or switched automatically.
     </p>}
   </section>;
