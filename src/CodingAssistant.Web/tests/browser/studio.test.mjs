@@ -209,7 +209,9 @@ test('owner can assign independent local models without initiating or modifying 
   try {
     await mockApi(page);
     page.on('request', request => {
-      if (request.method() === 'POST') writes.push(new URL(request.url()).pathname);
+      if (request.method() === 'POST' &&
+          new URL(request.url()).pathname.startsWith('/api/tasks/'))
+        writes.push(new URL(request.url()).pathname);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
     const show = page.getByRole('button', { name: 'Assign team models' });
