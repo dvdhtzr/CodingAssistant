@@ -230,15 +230,11 @@ public sealed class RepairCycleStore(
         if (TaskStore.Scalar(db, tx, """
             SELECT id FROM engineering_runs WHERE task_id=@task
             ORDER BY created_utc DESC,id DESC LIMIT 1
-            """, ("@task", taskId)) != proposal.EngineeringRunId ||
-            TaskStore.Scalar(db, tx, """
-            SELECT id FROM qa_reviews WHERE task_id=@task
-            ORDER BY created_utc DESC,id DESC LIMIT 1
-            """, ("@task", taskId)) != proposal.QaReviewId ||
-            TaskStore.Scalar(db, tx, """
-            SELECT state FROM qa_reviews WHERE id=@qa AND task_id=@task
-            """, ("@qa", proposal.QaReviewId), ("@task", taskId)) != "Reviewed")
+            """, ("@task", taskId)) != proposal.EngineeringRunId)
             throw new StoreFailure("SOURCE_CHANGED");
+        RepairProposalStore.RequireCurrentReview(db,tx,taskId,
+            proposal.LeadReviewId??proposal.QaReviewId??throw new StoreFailure("INVALID_STATE"),
+            proposal.LeadReviewId is not null);
         if (TaskStore.Scalar(db, tx, """
             SELECT 1 FROM engineering_runs WHERE task_id=@task
             AND state='Running' LIMIT 1
@@ -298,6 +294,19 @@ public sealed class RepairCycleStore(
                 """, ("@proposal", proposal.Id), ("@path", finding.Path),
                 ("@index", finding.Index)) != "ImplementationDefect")
                 throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            if(proposal.LeadReviewId is not null)
+            {
+                var issue=EngineeringIssueStore.Read(db,tx,taskId,baseRun.Id).Issues
+                    .SingleOrDefault(i=>i.Origin=="LeadSoftwareEngineer" &&
+                        i.References.Any(f=>f.ReviewId==proposal.LeadReviewId &&
+                            f.Path==finding.Path && f.FindingIndex==finding.Index));
+                // An unresolved challenge or conflicting authoritative decision
+                // must not be bypassed by the legacy triage/repair path.
+                if(issue is null || (issue.Challenges.Count>0 &&
+                    issue.Decisions.LastOrDefault()?.ChallengeMessageId!=issue.Challenges.Last().MessageId) ||
+                    (issue.Decisions.Count>0 && issue.Decisions.Last().Classification!="ImplementationDefect"))
+                    throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            }
         }
 
         // The execution context reflects the persisted owner decision,
@@ -332,7 +341,7 @@ public sealed class RepairCycleStore(
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_tasks
                     (run_id,work_item_id,ordinal,title,state)
-                VALUES (@run,@work,0,'Repair confirmed QA findings','Pending')
+                VALUES (@run,@work,0,'Repair confirmed independent findings','Pending')
                 """, ("@run", runId), ("@work", workItem.Id));
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_files
@@ -356,7 +365,7 @@ public sealed class RepairCycleStore(
                 INSERT INTO engineering_run_events
                     (run_id,sequence,kind,detail,created_utc)
                 VALUES (@run,1,'RepairRunAdmitted',
-                    'Owner-authorized QA repair; source cloned unchanged, not tested',@now)
+                    'Owner-authorized independent finding repair; source cloned unchanged, not tested',@now)
                 """, ("@run", runId), ("@now", now));
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)

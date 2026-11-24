@@ -166,7 +166,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
         // relates to a finding if the selected original path/index matches.
         var triage=new Dictionary<(string Review,string Path,int Index),EngineeringIssueTriage>();
         using(var cmd=TaskStore.Command(db,tx,"""
-            SELECT p.qa_review_id,d.path,d.finding_index,d.classification,d.rationale,d.created_utc
+            SELECT COALESCE(p.qa_review_id,p.lead_review_id),d.path,d.finding_index,d.classification,d.rationale,d.created_utc
             FROM repair_proposals p JOIN repair_triage_decisions d ON d.proposal_id=p.id
             WHERE p.task_id=@task AND p.engineering_run_id=@run AND p.source_sha256=@source
             """,("@task",taskId),("@run",run.Id),("@source",sourceSha)))
@@ -175,7 +175,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                 reader.GetInt32(2))]=new(reader.GetString(0),reader.GetString(3),reader.GetString(4),reader.GetString(5));
         var cycles=new Dictionary<(string Review,string Path,int Index),(string Id,int Attempt,string State)>();
         using(var cmd=TaskStore.Command(db,tx,"""
-            SELECT p.qa_review_id,c.id,c.attempt,c.state,c.findings_json
+            SELECT COALESCE(p.qa_review_id,p.lead_review_id),c.id,c.attempt,c.state,c.findings_json
             FROM repair_cycles c JOIN repair_proposals p ON p.id=c.proposal_id
             WHERE c.task_id=@task AND c.base_run_id=@run AND c.base_source_sha256=@source
             ORDER BY c.attempt
@@ -227,7 +227,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
             .Select(group=>{
                 var f=group.Last();
                 var refs=group.Select(o=>new EngineeringIssueReference(o.ReviewId,o.Path,o.Index,o.FileSha256,o.Origin)).ToArray();
-                var history=group.Where(o=>o.Origin=="QaEngineer").Select(o=>
+                var history=group.Select(o=>
                     triage.GetValueOrDefault((o.ReviewId,o.Path.ToUpperInvariant(),o.Index)))
                     .OfType<EngineeringIssueTriage>().Distinct().OrderBy(v=>v.CreatedUtc).ToArray();
                 var decisions=history.Select(v=>v.Classification).Distinct().ToArray();
@@ -241,7 +241,7 @@ public sealed class EngineeringIssueStore(TaskStore tasks)
                     lastDecision.ChallengeMessageId==relatedChallenges.LastOrDefault()?.MessageId
                     ?lastDecision:null;
                 if(effectiveDecision is not null) classification=effectiveDecision.Classification;
-                var repair=group.Where(o=>o.Origin=="QaEngineer").Select(o=>
+                var repair=group.Select(o=>
                     cycles.GetValueOrDefault((o.ReviewId,o.Path.ToUpperInvariant(),o.Index)))
                     .Where(c=>c.Id is not null).OrderByDescending(c=>c.Attempt).FirstOrDefault();
                 var state=repair.Id is not null ? repair.State switch {

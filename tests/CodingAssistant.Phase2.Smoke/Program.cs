@@ -2137,6 +2137,29 @@ try
         aetDecisionDraft with {Rationale="Conflicting decision cannot overwrite history."}),"IDEMPOTENCY_CONFLICT");
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetChallengePolicy.Revision,
         aetChallengePolicy.PolicySha256,"REVOKE "+aetChallengePolicy.PolicySha256));
+    // Both review origins use the original owner-confirmed repair gate.
+    var aetLeadProposalPath="/api/tasks/"+taskBound.Id+"/repair-proposals";
+    RepairProposal aetLeadProposal;
+    using(var aetProposalResponse=await Post(client,aetLeadProposalPath,
+        new CreateRepairProposalRequest(null,aetLiveLeadId)))
+    using(var aetProposalBody=await Body(aetProposalResponse))
+    {
+        Check(aetProposalResponse.StatusCode==HttpStatusCode.Created &&
+            aetProposalBody.RootElement.GetProperty("qaReviewId").ValueKind==JsonValueKind.Null &&
+            aetProposalBody.RootElement.GetProperty("leadReviewId").GetString()==aetLiveLeadId,
+            "lead repair proposal preserves independent origin without fabricating a QA review");
+        aetLeadProposal=new RepairProposalStore(tasks).Latest(taskBound.Id)!;
+    }
+    using(var aetUntriaged=await Post(client,"/api/tasks/"+taskBound.Id+"/repair-cycles",
+        new StartRepairCycleRequest(aetLeadProposal.Id,"REPAIR "+aetLeadProposal.SourceSha256,
+            [new RepairSelection("app.js",0)])))
+        Check(aetUntriaged.StatusCode==HttpStatusCode.Conflict,
+            "Technical Lead arbitration alone does not bypass existing exact repair admission");
+    using(var aetLeadTriage=await Post(client,aetLeadProposalPath+"/"+aetLeadProposal.Id+"/triage",
+        new ClassifyRepairFindingRequest("app.js",0,"ImplementationDefect",
+            "Owner confirms the independent source concern against approved scope.")))
+        Check(aetLeadTriage.StatusCode==HttpStatusCode.OK,
+            "existing owner triage accepts authentic Lead Software Engineer evidence");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,

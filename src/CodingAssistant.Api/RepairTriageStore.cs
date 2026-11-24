@@ -83,16 +83,18 @@ public sealed class RepairTriageStore(TaskStore tasks)
 
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
-        string runId, qaId, sourceSha, json;
+        string runId, reviewId, sourceSha, json;
+        bool lead;
         using (var cmd = TaskStore.Command(db, tx, """
-            SELECT engineering_run_id,qa_review_id,source_sha256,findings_json
+            SELECT engineering_run_id,qa_review_id,source_sha256,findings_json,lead_review_id
             FROM repair_proposals WHERE id=@id AND task_id=@task
             """, ("@id", proposalId), ("@task", taskId)))
         using (var reader = cmd.ExecuteReader())
         {
             if (!reader.Read()) throw new StoreFailure("NOT_FOUND");
             runId = reader.GetString(0);
-            qaId = reader.GetString(1);
+            lead=!reader.IsDBNull(4);
+            reviewId=reader.GetString(lead?4:1);
             sourceSha = reader.GetString(2);
             json = reader.GetString(3);
         }
@@ -104,12 +106,9 @@ public sealed class RepairTriageStore(TaskStore tasks)
         if (TaskStore.Scalar(db, tx, """
                 SELECT id FROM engineering_runs WHERE task_id=@task
                 ORDER BY created_utc DESC,id DESC LIMIT 1
-                """, ("@task", taskId)) != runId ||
-            TaskStore.Scalar(db, tx, """
-                SELECT id FROM qa_reviews WHERE task_id=@task
-                ORDER BY created_utc DESC,id DESC LIMIT 1
-                """, ("@task", taskId)) != qaId)
+                """, ("@task", taskId)) != runId)
             throw new StoreFailure("SOURCE_CHANGED");
+        RepairProposalStore.RequireCurrentReview(db,tx,taskId,reviewId,lead);
         EngineeringRun source;
         using (var binding = TaskStore.Command(db, tx, """
             SELECT id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
