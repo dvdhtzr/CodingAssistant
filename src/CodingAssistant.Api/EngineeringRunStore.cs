@@ -206,11 +206,12 @@ public sealed class EngineeringRunStore(
             ("@now", DateTimeOffset.UtcNow.ToString("O")));
     }
 
-    public EngineeringRun Start(string taskId, ImplementationPlan approved)
+    public EngineeringRun Start(string taskId, ImplementationPlan approved,
+        string? agentModel = null)
     {
         ValidId(taskId);
         if (approved.TaskId != taskId || approved.Status != "Approved" ||
-            !approved.Current || !LocalInterviewModel.AllowedModel(approved.Model))
+            !approved.Current || !LocalInterviewModel.AllowedModel(agentModel ?? approved.Model))
             throw new StoreFailure("PLAN_NOT_APPROVED");
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
@@ -219,7 +220,7 @@ public sealed class EngineeringRunStore(
         var candidate = new EngineeringRun(id, taskId, approved.Revision,
             approved.PlanSha256, approved.SpecificationVersion,
             approved.SpecificationSha256, approved.ArchitectureSha256,
-            approved.Model, "Running", "Queued", null, now, now);
+            agentModel ?? approved.Model, "Running", "Queued", null, now, now);
         RequireBinding(db, tx, candidate);
         try
         {
@@ -234,7 +235,7 @@ public sealed class EngineeringRunStore(
                 ("@sv", approved.SpecificationVersion),
                 ("@ss", approved.SpecificationSha256),
                 ("@arch", approved.ArchitectureSha256),
-                ("@model", approved.Model), ("@now", now));
+                ("@model", candidate.Model), ("@now", now));
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
@@ -264,12 +265,12 @@ public sealed class EngineeringRunStore(
     /// retried through the normal MAF/host boundary. No execution is authorized.
     /// </summary>
     public EngineeringRun Resume(string taskId, ImplementationPlan approved,
-        string sourceRunId)
+        string sourceRunId, string? agentModel = null)
     {
         ValidId(taskId);
         ValidId(sourceRunId);
         if (approved.TaskId != taskId || approved.Status != "Approved" ||
-            !approved.Current || !LocalInterviewModel.AllowedModel(approved.Model))
+            !approved.Current || !LocalInterviewModel.AllowedModel(agentModel ?? approved.Model))
             throw new StoreFailure("PLAN_NOT_APPROVED");
 
         using var db = tasks.Open();
@@ -284,8 +285,7 @@ public sealed class EngineeringRunStore(
             original.PlanSha256 != approved.PlanSha256 ||
             original.SpecificationVersion != approved.SpecificationVersion ||
             original.SpecificationSha256 != approved.SpecificationSha256 ||
-            original.ArchitectureSha256 != approved.ArchitectureSha256 ||
-            original.Model != approved.Model)
+            original.ArchitectureSha256 != approved.ArchitectureSha256)
             throw new StoreFailure("STALE_IMPLEMENTATION_PLAN");
 
         var latest = TaskStore.Scalar(db, tx, """
@@ -363,7 +363,8 @@ public sealed class EngineeringRunStore(
         var id = Guid.NewGuid().ToString("N");
         var now = DateTimeOffset.UtcNow.ToString("O");
         var job = original with {
-            Id = id, State = "Running", Phase = "Resumed",
+            Id = id, Model = agentModel ?? original.Model,
+            State = "Running", Phase = "Resumed",
             ErrorCode = null, CreatedUtc = now, UpdatedUtc = now
         };
         try
