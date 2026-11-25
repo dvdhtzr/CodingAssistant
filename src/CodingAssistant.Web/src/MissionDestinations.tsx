@@ -233,7 +233,7 @@ export function SkillsDestination({ token, taskId }: { token: string; taskId?: s
         {skills?.length === 0 && <div className="ca-skill-empty">No candidates discovered.</div>}
       </div>
       <div className="ca-skill-col">
-        <h3>Granted</h3><span className="ca-skill-cap">Permissions</span>
+        <h3>Owner review</h3><span className="ca-skill-cap">Project-specific review</span>
         {taskId ? <SkillReviewPanel key={taskId} token={token} taskId={taskId} /> :
           <div className="ca-skill-empty">No skill activation or execution grants.</div>}
       </div>
