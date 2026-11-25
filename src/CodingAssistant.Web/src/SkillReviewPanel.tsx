@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from './api';
 
 type SkillUse = { requestId: string; skillName: string; role: string; topic: string;
-  model: string; status: string; createdUtc: string; contentSha256: string };
+  model: string; status: string; createdUtc: string; contentSha256: string; reportsSaved?: number };
 
 export function SkillUsagePanel({ token, taskId }: { token: string; taskId: string }) {
   const [events, setEvents] = useState<SkillUse[] | null>(null);
@@ -11,8 +11,8 @@ export function SkillUsagePanel({ token, taskId }: { token: string; taskId: stri
   useEffect(() => {
     let closed = false;
     setEvents(null); setError(false);
-    void api<{ events: SkillUse[]; discoveryEvents?: SkillUse[] }>(token, '/api/tasks/' + taskId + '/skill-uses')
-      .then(value => { if (!closed) setEvents([...value.events, ...(value.discoveryEvents ?? [])]
+    void api<{ events: SkillUse[]; discoveryEvents?: SkillUse[]; qaEvents?: SkillUse[] }>(token, '/api/tasks/' + taskId + '/skill-uses')
+      .then(value => { if (!closed) setEvents([...value.events, ...(value.discoveryEvents ?? []), ...(value.qaEvents ?? [])]
         .sort((a, b) => a.createdUtc.localeCompare(b.createdUtc))); })
       .catch(() => { if (!closed) setError(true); });
     return () => { closed = true; };
@@ -25,9 +25,14 @@ export function SkillUsagePanel({ token, taskId }: { token: string; taskId: stri
     {events?.map(event => <details key={event.requestId}>
       <summary>{event.skillName} · {event.status === 'ProposalReturned' ? 'Proposal returned' :
         event.status === 'ResponseReturned' ? 'Validated response returned' :
-        event.status === 'CallFailed' ? 'Call failed' : 'Admitted; outcome not recorded'}</summary>
+        event.status === 'CallFailed' ? 'Call failed' :
+        event.status === 'Reviewed' ? 'Static reports saved' :
+        event.status === 'Running' ? 'QA admitted / running' :
+        event.status === 'Interrupted' ? 'QA interrupted' :
+        event.status === 'Failed' ? 'QA failed' : 'Admitted; outcome not recorded'}</summary>
       <p>{event.role} · {event.topic} · {event.model}</p>
       <p className="hint">{event.createdUtc} · {event.contentSha256}</p>
+      {event.reportsSaved !== undefined && <p>{event.reportsSaved} static file report(s) saved; no tests executed.</p>}
       <p className="hint">Not proof of a saved or approved artifact, execution grant, or runtime verification.</p>
     </details>)}
   </>;
