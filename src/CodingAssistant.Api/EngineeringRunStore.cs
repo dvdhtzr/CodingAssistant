@@ -571,7 +571,8 @@ public sealed class EngineeringRunStore(
                 "SOURCE_SYNTAX" or "SOURCE_CONTRACT" or "JSON_SYNTAX" or
                 "STATIC_WEB_PATH" or "STATIC_WEB_ENTRY" or
                 "REPAIR_SCOPE" or "REPAIR_EDIT_INVALID" or "REPAIR_EDIT_NOT_UNIQUE" or
-                "REPAIR_EDIT_NO_CHANGE" or "OUTPUT_TRUNCATED" or
+                "REPAIR_EDIT_NO_CHANGE" or "REPAIR_EDIT_SHAPE" or "REPAIR_EDIT_LENGTH" or
+                "REPAIR_EDIT_OVERLAP" or "REPAIR_EDIT_SOURCE" or "OUTPUT_TRUNCATED" or
                 "MODEL_THINKING_ONLY" or "EMPTY_OR_INVALID_RESPONSE"))
             throw new StoreFailure("INVALID_INPUT");
         using var db = tasks.Open();
