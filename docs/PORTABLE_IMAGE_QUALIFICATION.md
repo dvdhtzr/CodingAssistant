@@ -55,3 +55,24 @@ without implicit download. Run the full Ubuntu/Windows regression CI
 before merging. No real container or model qualification is implied
 by these tests. Keep #70 open until portable admission and both
 independent host qualifications meet its acceptance criteria.
+
+## Slice 2 — exact evaluator provisioning inputs
+
+The explicit M0.16 evaluator provisioner now passes the full inspected
+local M0 runtime ID to `BASE_IMAGE` (no Containerfile default), with
+`--pull=never`. Only the recipe, frozen package manifest and independent
+acceptance test are staged in a fresh temporary build context. The rest
+of the repository, including ignored private evidence, is not sent as
+build context. The provisioner hashes the exact staged inputs and uses
+Podman's build ID receipt; it checks both the full built ID and the
+evaluator tag resolve to that same distinct image. Missing/invalid IDs,
+a tag retarget during provisioning or missing inspection fail closed.
+The temporary context is removed even on failure.
+
+The returned recipe hashes and image IDs are provisioning observations,
+not independently approved allowlist entries. Dependency resolution is
+still a trusted provisioning operation, not a reproducible offline
+build; no generated-code execution, model pin or qualification result
+is changed. CI's trusted fixture Docker build continues supplying its
+own explicit base argument. Existing Dell images are not rebuilt by
+this change. #70 remains open.
