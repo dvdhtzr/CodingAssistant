@@ -7,7 +7,7 @@ namespace CodingAssistant.Api;
 
 public sealed record QaFinding(
     string Severity, string Requirement, string Evidence,
-    string Recommendation);
+    string Recommendation, string? CriterionId = null);
 public sealed record QaFileAssessment(
     string Summary, IReadOnlyList<QaFinding> Findings,
     IReadOnlyList<string> ManualChecks);
@@ -79,10 +79,14 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
           "findings":[
             {"severity":"Major","requirement":"Relevant acceptance requirement",
              "evidence":"Actual source construct or omission causing concern",
-             "recommendation":"Concrete change or independent check"}
+             "recommendation":"Concrete change or independent check",
+             "criterionId":"work-item:1"}
           ],
           "manualChecks":["Specific browser/build check that QA must later perform"]
         }
+        For a concern about a listed acceptance criterion, copy its exact
+        requirement text and criterion ID. Omit criterionId or use null for
+        other source concerns. Never invent IDs. Criteria are not test results.
         Severity is only Critical, Major or Minor. 0–6 findings, 1–6
         actionable manual checks. JSON only; no markdown or status PASS.
         If the engineering source is Failed or Interrupted, it is a PARTIAL
@@ -168,8 +172,7 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
             new(ChatRole.User, "APPROVED ARCHITECTURE (untrusted data):\n" +
                 JsonSerializer.Serialize(input.Architecture.ApprovedChoices)),
             new(ChatRole.User, "OWNER-APPROVED TECHNICAL LEAD WORK ITEMS (untrusted data):\n" +
-                JsonSerializer.Serialize(input.Plan.Outline.Tasks.Select(task =>
-                    new { task.Id, task.Title, task.AcceptanceCriteria }))),
+                JsonSerializer.Serialize(QaAcceptanceProjection.Identify(input.Plan))),
             new(ChatRole.User, "SOURCE INVENTORY (names, hashes and purposes; "
                 + "inventory alone is NOT source evidence):\n" +
                 JsonSerializer.Serialize(input.AllFiles.Select(f =>
@@ -258,7 +261,7 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                     "Your previous response did not match the bounded static QA " +
                     "report contract. Return ONLY JSON with summary, findings " +
                     "(severity Critical/Major/Minor, requirement, evidence, " +
-                    "recommendation), and 1–6 actionable manualChecks. Report " +
+                    "recommendation, optional criterionId), and 1–6 actionable manualChecks. Report " +
                     "hypotheses, never actual test results or invented evidence."));
             }
         }
@@ -292,9 +295,14 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 if (f is null || f.Severity is not
                     ("Critical" or "Major" or "Minor"))
                     throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-                return new QaFinding(f.Severity, Text(f.Requirement, 8, 240),
+                if (f.CriterionId is { } id &&
+                    (id.Length is < 3 or > 55 || id.Any(ch =>
+                        !char.IsAsciiLetterLower(ch) && !char.IsAsciiDigit(ch) &&
+                        ch is not ('-' or ':'))))
+                    throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+                return new QaFinding(f.Severity, Text(f.Requirement, 8, 260),
                     Text(f.Evidence, 12, 500),
-                    Text(f.Recommendation, 12, 500));
+                    Text(f.Recommendation, 12, 500), f.CriterionId);
             }).ToArray();
             return new QaFileAssessment(Text(result.Summary, 16, 1600),
                 findings, result.ManualChecks.Select(x => Text(x, 12, 350)).ToArray());
