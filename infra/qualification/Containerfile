@@ -2,7 +2,7 @@
 # Inference and all subsequent evaluation runs are always --network=none and
 # refer to the resulting immutable image ID, NEVER this mutable tag.
 # The full-stack dependencies are fetched only during this trusted image build.
-ARG BASE_IMAGE
+ARG BASE_IMAGE=localhost/codingassistant-m0-runtime:2.3.0
 FROM ${BASE_IMAGE}
 USER root
 COPY benchmarks/fixtures/03-fullstack-feature/web/package.json /opt/qualification/web/package.json
