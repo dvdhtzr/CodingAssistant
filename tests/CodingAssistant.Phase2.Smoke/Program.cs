@@ -1754,20 +1754,20 @@ try
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(malformed);
         var digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
-        var rejected = false;
+        var skillInputRejected = false;
         try { SkillCatalog.Validate(bytes, "bad", digest); }
-        catch (StoreFailure) { rejected = true; }
-        Check(rejected, "malformed or authority-bearing frontmatter rejected");
+        catch (StoreFailure) { skillInputRejected = true; }
+        Check(skillInputRejected, "malformed or authority-bearing frontmatter rejected");
     }
     {
         var candidate = candidateSkills[0];
         var changed = System.Text.Encoding.UTF8.GetBytes(
             "---\nname: " + candidate.Name + "\ndescription: " +
             candidate.Description + "\n---\n\nChanged instructions\n");
-        var rejected = false;
+        var skillInputRejected = false;
         try { SkillCatalog.Validate(changed, candidate.Name, candidate.ContentSha256); }
-        catch (StoreFailure) { rejected = true; }
-        Check(rejected, "changed skill text fails the reviewed content hash");
+        catch (StoreFailure) { skillInputRejected = true; }
+        Check(skillInputRejected, "changed skill text fails the reviewed content hash");
     }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
     using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
