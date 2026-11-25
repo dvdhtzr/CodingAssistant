@@ -277,38 +277,41 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         while (true)
         {
             cancellation.ThrowIfCancellationRequested();
-            var answer = await agent.RunAsync(messages,
-                cancellationToken: cancellation);
-            if (AgentAtlasInspectionGateway.TryParseRequest(
-                answer.Text, out var request))
-            {
-                if (inspections >= AgentAtlasInspectionGateway.MaximumRequestsPerTask)
-                    throw new StoreFailure("ATLAS_TOOL_LIMIT");
-                var observation = QaAtlasInspectionGateway.Execute(
-                    input, request!);
-                input.OnAtlasInspection?.Invoke(new AtlasInspectionObservation(
-                    observation.Name, observation.SourceRevision,
-                    observation.ResultCount));
-                inspections++;
-                messages.Add(new ChatMessage(ChatRole.User,
-                    "HOST QA CODE ATLAS OBSERVATION (" + inspections + "/" +
-                    AgentAtlasInspectionGateway.MaximumRequestsPerTask +
-                    "; ONLY this reviewed file; read-only static evidence, " +
-                    "NOT build/test verification):\n" +
-                    JsonSerializer.Serialize(observation) +
-                    "\nContinue independent QA and output ONLY the complete " +
-                    "bounded QA report JSON, or one remaining inspection."));
-                continue;
-            }
             try
             {
+                var answer = await agent.RunAsync(messages,
+                    cancellationToken: cancellation);
+                if (AgentAtlasInspectionGateway.TryParseRequest(
+                    answer.Text, out var request))
+                {
+                    if (inspections >= AgentAtlasInspectionGateway.MaximumRequestsPerTask)
+                        throw new StoreFailure("ATLAS_TOOL_LIMIT");
+                    var observation = QaAtlasInspectionGateway.Execute(
+                        input, request!);
+                    input.OnAtlasInspection?.Invoke(new AtlasInspectionObservation(
+                        observation.Name, observation.SourceRevision,
+                        observation.ResultCount));
+                    inspections++;
+                    messages.Add(new ChatMessage(ChatRole.User,
+                        "HOST QA CODE ATLAS OBSERVATION (" + inspections + "/" +
+                        AgentAtlasInspectionGateway.MaximumRequestsPerTask +
+                        "; ONLY this reviewed file; read-only static evidence, " +
+                        "NOT build/test verification):\n" +
+                        JsonSerializer.Serialize(observation) +
+                        "\nContinue independent QA and output ONLY the complete " +
+                        "bounded QA report JSON, or one remaining inspection."));
+                    continue;
+                }
                 var report = Parse(answer.Text);
                 return QaAcceptanceProjection.GroundCrossFile(input.Plan,
                     input.File.Path, suppliedCompanions, report);
             }
             catch (StoreFailure error) when (
-                error.Code == "MODEL_OUTPUT_REJECTED" && invalidReports++ < 2)
+                (error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or
+                    "MODEL_THINKING_ONLY") && invalidReports++ < 2)
             {
+                // Only host-owned categories are logged; never retain rejected output.
+                Console.Error.WriteLine($"QA response rejected (attempt {invalidReports}/3): {error.Code}");
                 messages.Add(new ChatMessage(ChatRole.User, invalidReports == 2 ?
                     "Final compact report attempt: return one JSON object with exactly summary, findings, manualChecks. " +
                     "Omit optional implementationEvidence and crossFileObservations. Summary 16-1600 characters; " +
