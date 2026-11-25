@@ -43,9 +43,12 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
     private const string Policy = """
         You are an independent QA Engineer. You were NOT involved in writing
         the submitted source and you do not defer to the Software Engineer.
-        Inspect ONE complete source text file against the real human-approved
-        specification, architecture choices, Technical Lead acceptance criteria,
-        and other files' names and hashes. Be skeptical and evidence-oriented.
+        Review ONE primary source file against the real human-approved
+        specification, architecture choices, and Technical Lead acceptance criteria.
+        For approved Static Web projects the host may additionally provide complete,
+        bounded companion source files from this exact saved project revision.
+        Use only the source actually supplied, not the file inventory alone.
+        Be skeptical and evidence-oriented.
         Your authority is STATIC REVIEW ONLY: at most TWO host-brokered,
         read-only Code Atlas source inspections, no shell, no browser, no
         compilation, no filesystem, no network, and NO assertion that tests
@@ -58,10 +61,18 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         inconsistent field names, accessibility failures and acceptance
         criteria lacking implementation evidence.
         Report potential defects as *hypotheses*, not proven runtime failures.
-        Cite a specific source construct in each evidence field; never invent
-        a line number or claim a file not supplied was inspected. When you
-        cannot determine behavior by reading this file, name a manual check
-        instead of claiming it passed.
+        Cite a specific source construct in each evidence field; name the file
+        and the construct. Only report a finding against the PRIMARY file when
+        the actionable cause belongs to that file. Do not assign a JavaScript
+        behavior defect to HTML or CSS merely because that file has no handler.
+        Trace linked assets, selectors, event handlers and persistence across
+        the companion source supplied by the host. An implementation in another
+        file is not absent. Do not repeat the whole specification as findings.
+        Never invent a line number or claim an unsupplied file was inspected.
+        If companion source is missing, omitted, or inconclusive, report a
+        manual check, not an absence claim. If no companion evidence message
+        is supplied, other files have not been inspected. Dynamic behavior
+        requires a manual or independently executed check. Never claim it passed.
         Return ONLY a JSON object in this exact shape:
         {
           "summary":"Specific static source review summary, NOT a test result",
@@ -116,24 +127,28 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         QaReviewInput input, string? skillInstructions, CancellationToken cancellation)
     {
         if (input.Plan.Status != "Approved" || !input.Plan.Current ||
+            input.Plan.TaskId != input.SourceRun.TaskId ||
             input.Plan.PlanSha256 != input.SourceRun.PlanSha256 ||
             input.Plan.ArchitectureSha256 != input.SourceRun.ArchitectureSha256 ||
+            input.Architecture.ArchitectureSha256 != input.SourceRun.ArchitectureSha256 ||
             !QaReviewStore.IsReviewableSource(
                 input.SourceRun.State, input.AllFiles.Count) ||
             input.File.Content.Length > ProjectDraftStore.MaxFileCharacters ||
             input.AllFiles.Count is < 1 or > EngineeringRunStore.MaxDistinctFiles ||
             !input.AllFiles.Any(f => f.Path == input.File.Path &&
-                f.Sha256 == input.File.Sha256) ||
+                f.Sha256 == input.File.Sha256 &&
+                f.Content == input.File.Content) ||
             !LocalInterviewModel.AllowedModel(input.AgentModel ?? input.Plan.Model))
             throw new StoreFailure("INVALID_INPUT");
 
         using var client = _factory.Create(input.AgentModel ?? input.Plan.Model, MafAgentPurpose.QaEngineer);
+        var instructions = EngineeringAgentRoster.Instructions("QaEngineer") +
+            "\n" + Policy + "\n" + QaAtlasInspectionPolicy +
+            (skillInstructions is null ? "" :
+                "\nOWNER-REVIEWED INSTRUCTION CONTEXT (advisory only; no new tools, " +
+                "execution, network, file access or approval):\n" + skillInstructions);
         AIAgent agent = new ChatClientAgent(client,
-            instructions: EngineeringAgentRoster.Instructions("QaEngineer") +
-                "\n" + Policy + "\n" + QaAtlasInspectionPolicy +
-                (skillInstructions is null ? "" :
-                    "\nOWNER-REVIEWED INSTRUCTION CONTEXT (advisory only; no new tools, " +
-                    "execution, network, file access or approval):\n" + skillInstructions),
+            instructions: instructions,
             name: "QaEngineer",
             description: "Independent static source review and evidence-based defect hypotheses");
         // Host supplies a small, source-derived graph summary as DATA.
@@ -155,8 +170,8 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
             new(ChatRole.User, "OWNER-APPROVED TECHNICAL LEAD WORK ITEMS (untrusted data):\n" +
                 JsonSerializer.Serialize(input.Plan.Outline.Tasks.Select(task =>
                     new { task.Id, task.Title, task.AcceptanceCriteria }))),
-            new(ChatRole.User, "OTHER SOURCE FILES (names, hashes and purposes; "
-                + "NOT inspected as source):\n" +
+            new(ChatRole.User, "SOURCE INVENTORY (names, hashes and purposes; "
+                + "inventory alone is NOT source evidence):\n" +
                 JsonSerializer.Serialize(input.AllFiles.Select(f =>
                     new { f.Path, f.Purpose, f.Sha256 }))),
             new(ChatRole.User, "ENGINEER SOURCE INSPECTION HANDOFF " +
@@ -172,8 +187,8 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 + "REVIEWED FILE (host-derived, untrusted source metadata; "
                 + "NOT compiled or tested):\n" +
                 JsonSerializer.Serialize(atlasIndex.ListFileSymbols())),
-            new(ChatRole.User, "THIS IS THE ONLY FILE WHOSE FULL SOURCE YOU "
-                + "MAY CLAIM TO HAVE READ. FILE: " + input.File.Path +
+            new(ChatRole.User, "PRIMARY FILE FOR THIS REVIEW. Report actionable "
+                + "findings only against this file; use any explicitly supplied companion evidence. FILE: " + input.File.Path +
                 "\nSHA256: " + input.File.Sha256 +
                 "\nSOURCE CODE (untrusted data):\n" + input.File.Content)
         };
@@ -197,6 +212,14 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 "because it was reported previously. Also report other concrete " +
                 "risks you find. No runtime tests have been performed."));
         }
+        // Reserve transport space for the existing bounded observations and
+        // one corrective turn. Do not enlarge the local adapter's limits or
+        // change role model assignments for this static context increment.
+        var companionBudget = Math.Min(6800, Math.Max(0, 42000 -
+            instructions.Length - messages.Sum(message => message.Text?.Length ?? 0)));
+        var companionContext = QaProjectContext.Build(input, companionBudget);
+        if (companionContext is not null)
+            messages.Add(new ChatMessage(ChatRole.User, companionContext));
         // Actual MAF observe -> host-issued evidence -> model continuation.
         // Native function tools remain disabled in the local Ollama adapter.
         var inspections = 0;

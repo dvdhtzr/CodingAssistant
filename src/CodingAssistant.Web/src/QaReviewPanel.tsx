@@ -267,7 +267,10 @@ export function QaReviewPanel({ token, taskId, engineering }: {
     </div>
     <p className="hint">An independent QA specialist inspects saved
       Software Engineer files against the approved specification and Technical
-      Lead acceptance criteria, recording possible defects and checks for later.
+      Lead acceptance criteria. For approved Static Web projects, QA may
+      receive bounded companion HTML, JavaScript and CSS from the same saved
+      revision. Missing context and dynamic behavior require further checks,
+      not automatic repairs.
       <strong> No build, browser test, or runtime verification is performed.</strong></p>
 
     {partialSource && hasSavedSource && <p className="activity-warning">
@@ -430,7 +433,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         The static model identified no issues in this review. That does
         <strong> not</strong> mean the application builds, runs, or passes tests.</p>}
       {result.job.state === 'Running' && <p className="hint">
-        The selected local model is reviewing saved files one at a time.
+        The selected local model is reviewing each primary file with any available bounded project context.
         Only persisted findings count as progress.</p>}
       {result.job.state === 'Failed' && <p className="activity-warning">
         The static review stopped. Completed per-file reports remain available;
