@@ -2117,6 +2117,16 @@ try
         repairOutcome = cycleStore.Get(taskBound.Id, cycleId);
         break;
     }
+    // Emit fixed fixture status, not source, prompts, IDs, paths or raw
+    // exceptions. Distinguish terminal failures from exhausted polling.
+    Console.WriteLine("Repair fixture outcome: cycle=" +
+        (repairOutcome?.Cycle.State ?? "POLL_EXHAUSTED") +
+        "; cycleCode=" + (repairOutcome?.Cycle.ErrorCode ?? "NONE") +
+        "; engineering=" + (repairOutcome?.Engineering.Job.State ?? "NONE") +
+        "; engineeringCode=" + (repairOutcome?.Engineering.Job.ErrorCode ?? "NONE") +
+        "; qa=" + (repairOutcome?.Review?.Job.State ?? "NONE") +
+        "; qaCode=" + (repairOutcome?.Review?.Job.ErrorCode ?? "NONE") +
+        "; focused=" + qaModel.RepairFocusPaths.SequenceEqual(["app.js"]));
     Check(repairOutcome?.Cycle.State == "QaReviewed" &&
           repairOutcome.Review?.Job.State == "Reviewed" &&
           repairOutcome.Engineering.Job.State == "Generated" &&

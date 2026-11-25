@@ -1,4 +1,7 @@
 using System.Net;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using Microsoft.Extensions.Logging;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -41,6 +44,10 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
 {
     var app = ApiHost.Build([], settings, runner, htmlGenerator, interviewModel,
                             projectModel, catalog ?? new SmokeOllamaModelCatalog());
+    Check(!app.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Microsoft.AspNetCore.Hosting.Diagnostics")
+        .IsEnabled(LogLevel.Information),
+        "raw hosting request URL logging is disabled");
     await app.StartAsync();
     saveApp(app);
     var addresses = app.Services.GetRequiredService<IServer>()
@@ -56,6 +63,89 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     {
         BaseAddress = new Uri(address)
     };
+}
+
+// Private directory and existing database checks must fail BEFORE SQLite opens.
+{
+    var folder = Path.Combine(Path.GetTempPath(), "ca-privacy-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(folder);
+    try
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var directory = new DirectoryInfo(folder);
+            var acl = directory.GetAccessControl();
+            acl.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+            directory.SetAccessControl(acl);
+        }
+        else
+            File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                UnixFileMode.UserExecute | UnixFileMode.OtherRead);
+        var rejected = false;
+        try { _ = new TaskStore(folder); }
+        catch (InvalidOperationException) { rejected = true; }
+        Check(rejected && !File.Exists(Path.Combine(folder, "codingassistant.db")),
+            "unsafe data directory rejected before database creation");
+    }
+    finally { Directory.Delete(folder, recursive: true); }
+}
+
+// Sidecar churn: real short-lived SQLite WAL connections open and close
+// while independent TaskStore readers validate the same private directory.
+// Existing unsafe sidecars are still rejected before SQLite opens.
+{
+    var folder = Path.Combine(Path.GetTempPath(), "ca-sidecar-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var owner = new TaskStore(folder);
+        var dbPath = Path.Combine(folder, "codingassistant.db");
+        var task = owner.CreateTask(new CreateTaskRequest("Private fixture", "No private data", Guid.NewGuid().ToString("N")));
+        var writer = Task.Run(() =>
+        {
+            for (var i = 0; i < 30; i++)
+            {
+                using var db = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = dbPath, Pooling = false
+                }.ToString());
+                db.Open();
+                using var command = db.CreateCommand();
+                command.CommandText = "PRAGMA busy_timeout=5000; UPDATE tasks SET objective='No private data' WHERE id=@id;";
+                command.Parameters.AddWithValue("@id", task.Id);
+                command.ExecuteNonQuery();
+            }
+        });
+        var reader = Task.Run(() =>
+        {
+            for (var i = 0; i < 60; i++)
+                if (owner.GetTask(task.Id).Task.Id != task.Id)
+                    throw new Exception("Private sidecar fixture read failed");
+        });
+        await Task.WhenAll(writer, reader).WaitAsync(TimeSpan.FromSeconds(45));
+        Check(true, "concurrent private WAL reader/writer churn preserves access checks");
+        var sidecar = dbPath + "-journal";
+        File.WriteAllText(sidecar, "not a real journal");
+        if (OperatingSystem.IsWindows())
+        {
+            var file = new FileInfo(sidecar);
+            var acl = file.GetAccessControl();
+            acl.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                FileSystemRights.Read, AccessControlType.Allow));
+            file.SetAccessControl(acl);
+        }
+        else
+            File.SetUnixFileMode(sidecar, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                UnixFileMode.OtherRead);
+        var refused = false;
+        try { _ = new TaskStore(folder); }
+        catch (InvalidOperationException) { refused = true; }
+        Check(refused && File.ReadAllText(sidecar) == "not a real journal",
+            "unsafe existing sidecar refused before SQLite recovery reads it");
+    }
+    finally { Directory.Delete(folder, recursive: true); }
 }
 
 // The activity display is ephemeral metadata, not a logging or approval system.
@@ -1366,6 +1456,9 @@ try
             $"/api/runs/{queuedRunId}/start", new { }))
             Check(stillBusy.StatusCode == HttpStatusCode.Conflict,
                   "unverified orphan blocks new execution admission");
+        using (var deletion = await executionClient.DeleteAsync($"/api/tasks/{executionTaskId}"))
+            Check(deletion.StatusCode == HttpStatusCode.Conflict,
+                "project deletion cannot erase unresolved recovery safety gate");
         fake.CleanupIsVerified = true;
         using (var recovered = await Post(executionClient,
             $"/api/runs/{blockedRunId}/execution-recover", new { }))
@@ -2498,6 +2591,18 @@ try
         integrity.CommandText = "PRAGMA foreign_key_check;";
         using var rows = integrity.ExecuteReader();
         Check(!rows.Read(), "planning-project removal preserves database integrity");
+    }
+
+    using (var privacyDb = new SqliteConnection(
+        new SqliteConnectionStringBuilder { DataSource = Path.Combine(data, "codingassistant.db") }.ToString()))
+    {
+        // secure_delete is connection-local; test through the public store's
+        // authenticated deletion integration tests above, rather than assuming
+        // a fresh arbitrary SQLite connection inherits application settings.
+        privacyDb.Open();
+        using var integrity = privacyDb.CreateCommand();
+        integrity.CommandText = "PRAGMA integrity_check";
+        Check((string?)integrity.ExecuteScalar() == "ok", "private database integrity after owner deletion");
     }
 
     if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
