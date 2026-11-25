@@ -112,3 +112,32 @@ companion admission, fabricated/omitted source rejection, unique and
 ambiguous links and the persisted HTTP response. No execution authority or
 preview is added; independent deterministic preflight and runtime qualification
 remain separate work.
+
+
+## Fifth implementation slice — deterministic preflight evidence
+
+Reuse the existing Static Web source preflight rather than relying on a
+model to guess whether local assets or selectors exist. The host captures
+one report for each admitted QA review of an approved Static Web project
+from the actual persisted engineering run, inside the existing exact
+plan/source binding. It stores the report separately from model findings,
+with source fingerprint, status, bounded literal source excerpts and
+candidate referenced paths where available. The report remains attached
+to historical reviews, is removed with its project, and is never silently
+recomputed on UI polling. Older QA jobs have no captured report.
+
+Independent QA receives a small bounded subset of primary-file observations
+as advisory data before reviewing the saved source. The owner can inspect
+the complete saved preflight separately. The preflight's source-text
+heuristics are not a browser parser, execution, or semantic proof: dynamic
+selectors, templates, comments, base URLs and other unsupported constructs
+may need independent investigation. Regex timeout is recorded as an
+inspection limit, not a pass. No observation changes repair approval,
+confirms a runtime defect, or automatically authorizes source edits.
+Model-free fixtures cover source anchors, exact report fingerprint,
+persisted response, and the actual MAF context handoff.
+
+This is the first deterministic-evidence increment, not qualification of
+the isolated evaluator. Stronger syntax/asset checks and actual behavioral
+verification remain necessary before a generated application can be
+called verified.
