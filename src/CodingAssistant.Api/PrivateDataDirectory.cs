@@ -34,18 +34,41 @@ internal static class PrivateDataDirectory
 
     internal static void ValidateFile(string path)
     {
-        var info = new FileInfo(path);
-        if (info.LinkTarget is not null ||
-            (info.Exists && (info.Attributes & FileAttributes.ReparsePoint) != 0))
-            throw new InvalidOperationException("Refusing redirected private data file");
-        if (!info.Exists)
-            return;
-        if (OperatingSystem.IsWindows())
-            ValidateWindows(info.GetAccessControl(AccessControlSections.Access |
-                AccessControlSections.Owner));
-        else if ((File.GetUnixFileMode(path) & ~(UnixFileMode.UserRead |
-                     UnixFileMode.UserWrite)) != 0)
-            throw new InvalidOperationException("Data file must be owner-private (0600)");
+        // SQLite WAL/SHM files can disappear after attributes are read but
+        // before the security descriptor is fetched on another connection.
+        // Retry that narrow race; never swallow ACL denial or an unsafe file.
+        for (var attempt = 0; attempt < 4; attempt++)
+        {
+            FileAttributes attributes;
+            try
+            {
+                attributes = File.GetAttributes(path);
+            }
+            catch (FileNotFoundException)
+            {
+                // No file is present at this observation. The containing
+                // owner-private directory already constrains newly created files.
+                return;
+            }
+            if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+                throw new InvalidOperationException("Refusing redirected private data file");
+            try
+            {
+                if (OperatingSystem.IsWindows())
+                    ValidateWindows(new FileInfo(path).GetAccessControl(
+                        AccessControlSections.Access | AccessControlSections.Owner));
+                else if ((File.GetUnixFileMode(path) & ~(UnixFileMode.UserRead |
+                             UnixFileMode.UserWrite)) != 0)
+                    throw new InvalidOperationException("Data file must be owner-private (0600)");
+                return;
+            }
+            catch (FileNotFoundException) when (attempt < 3)
+            {
+                // Observe again, including reparse-point and ACL checks if
+                // SQLite recreated the sidecar. No busy wait or permission waiver.
+            }
+        }
+        throw new InvalidOperationException("Private data file could not be validated");
     }
 
     [SupportedOSPlatform("windows")]

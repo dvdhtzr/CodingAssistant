@@ -92,6 +92,62 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     finally { Directory.Delete(folder, recursive: true); }
 }
 
+// Sidecar churn: real short-lived SQLite WAL connections open and close
+// while independent TaskStore readers validate the same private directory.
+// Existing unsafe sidecars are still rejected before SQLite opens.
+{
+    var folder = Path.Combine(Path.GetTempPath(), "ca-sidecar-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var owner = new TaskStore(folder);
+        var dbPath = Path.Combine(folder, "codingassistant.db");
+        var task = owner.CreateTask(new CreateTaskRequest("Private fixture", "No private data", Guid.NewGuid().ToString("N")));
+        var writer = Task.Run(() =>
+        {
+            for (var i = 0; i < 30; i++)
+            {
+                using var db = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = dbPath, Pooling = false
+                }.ToString());
+                db.Open();
+                using var command = db.CreateCommand();
+                command.CommandText = "PRAGMA busy_timeout=5000; UPDATE tasks SET objective='No private data' WHERE id=@id;";
+                command.Parameters.AddWithValue("@id", task.Id);
+                command.ExecuteNonQuery();
+            }
+        });
+        var reader = Task.Run(() =>
+        {
+            for (var i = 0; i < 60; i++)
+                if (owner.GetTask(task.Id).Task.Id != task.Id)
+                    throw new Exception("Private sidecar fixture read failed");
+        });
+        await Task.WhenAll(writer, reader).WaitAsync(TimeSpan.FromSeconds(45));
+        Check(true, "concurrent private WAL reader/writer churn preserves access checks");
+        var sidecar = dbPath + "-journal";
+        File.WriteAllText(sidecar, "not a real journal");
+        if (OperatingSystem.IsWindows())
+        {
+            var file = new FileInfo(sidecar);
+            var acl = file.GetAccessControl();
+            acl.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                FileSystemRights.Read, AccessControlType.Allow));
+            file.SetAccessControl(acl);
+        }
+        else
+            File.SetUnixFileMode(sidecar, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                UnixFileMode.OtherRead);
+        var refused = false;
+        try { _ = new TaskStore(folder); }
+        catch (InvalidOperationException) { refused = true; }
+        Check(refused && File.ReadAllText(sidecar) == "not a real journal",
+            "unsafe existing sidecar refused before SQLite recovery reads it");
+    }
+    finally { Directory.Delete(folder, recursive: true); }
+}
+
 // The activity display is ephemeral metadata, not a logging or approval system.
 {
     var activity = new LocalHttpActivityLedger();
