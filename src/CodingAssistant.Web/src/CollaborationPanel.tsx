@@ -150,7 +150,10 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
   const repairing=linkedRepair?.state==='Running'||linkedRepair?.state==='QaRunning';
   const continuing=linkedRepair?.state==='Generated';
   const running=job?.state==='Running'||repairing||continuing;
-  async function act(action:'propose'|'approve'|'revoke'|'start'|'resume'|'cancel'){
+  const recoverHandoff=continuing&&!!preview?.candidate&&
+    preview.candidate.policySha256===job?.policySha256&&
+    preview.candidate.runId!==job?.runId;
+  async function act(action:'propose'|'approve'|'revoke'|'start'|'resume'|'resumeHandoff'|'cancel'){
     if(busy||!preview||loadError)return;
     setBusy(true);setError('');
     try{
@@ -170,6 +173,8 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
         await api(token,root+'/collaboration',{...preview.candidate});
       else if(action==='resume'&&preview.canResume&&preview.candidate&&job)
         await api(token,root+'/collaboration/'+job.id+'/resume',{...preview.candidate});
+      else if(action==='resumeHandoff'&&recoverHandoff&&linkedRepair&&preview.candidate)
+        await api(token,root+'/repair-cycles/'+linkedRepair.cycleId+'/resume-collaboration',{...preview.candidate});
       else if(action==='cancel'&&repairing&&linkedRepair)
         await api(token,root+'/repair-cycles/'+linkedRepair.cycleId+'/cancel',{});
       else if(action==='cancel'&&job?.state==='Running')
@@ -233,6 +238,8 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('resume')}>Resume saved coordination</button>}
     {(repairing||job?.state==='Running')&&<button type="button" disabled={busy||loadError} onClick={()=>void act('cancel')}>Stop coordination</button>}
+    {recoverHandoff&&<button type="button" disabled={busy||loadError}
+      onClick={()=>void act('resumeHandoff')}>Resume independent review handoff</button>}
     {linkedRepair&&<p>{repairing?'The Software Engineer is working within the admitted scope.':
       continuing?'The repair is saved but not verified. Waiting for the independent review handoff.':
       'The linked repair has stopped.'}{linkedRepair.errorCode?' · '+linkedRepair.errorCode:''}</p>}
