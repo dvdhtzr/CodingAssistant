@@ -596,6 +596,8 @@ def main() -> int:
             print("M0.16 EVALUATOR_IMAGE_PROVISIONED")
             print("Runtime image ID:", status["runtime_image_id"])
             print("Evaluator image ID:", status["evaluator_image_id"])
+            print("Evaluator recipe input SHA256:", json.dumps(
+                status["recipe_inputs_sha256"], sort_keys=True))
             print("No model or generated code executed during provisioning.")
             return 0
         report = run(args.model, args.agent_timeout, args.evaluation_timeout,
