@@ -492,8 +492,10 @@ def run(contract_path: pathlib.Path, request_id: str | None, *,
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            terminal = journal.finish(report, name)
-            journal.close()
+            try:
+                terminal = journal.finish(report, name)
+            finally:
+                journal.close()
         print("PILOT", terminal, report["phase"])
         if report["evaluation"]:
             outcome = report["evaluation"]
