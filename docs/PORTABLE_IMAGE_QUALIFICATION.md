@@ -56,23 +56,29 @@ before merging. No real container or model qualification is implied
 by these tests. Keep #70 open until portable admission and both
 independent host qualifications meet its acceptance criteria.
 
-## Slice 2 — exact evaluator provisioning inputs
+## Slice 2 — separate candidate evaluator provisioning
 
-The explicit M0.16 evaluator provisioner now passes the full inspected
-local M0 runtime ID to `BASE_IMAGE` (no Containerfile default), with
-`--pull=never`. Only the recipe, frozen package manifest and independent
-acceptance test are staged in a fresh temporary build context. The rest
-of the repository, including ignored private evidence, is not sent as
-build context. The provisioner hashes the exact staged inputs and uses
-Podman's build ID receipt; it checks both the full built ID and the
-evaluator tag resolve to that same distinct image. Missing/invalid IDs,
-a tag retarget during provisioning or missing inspection fail closed.
-The temporary context is removed even on failure.
+The historical M0.16 qualification runner is frozen by the independent
+M0.18 audit. Keep its bytes, original recipe and original image tag
+unchanged; do not update the audit's pinned hashes to silence a failure.
+The new opt-in command is:
 
-The returned recipe hashes and image IDs are provisioning observations,
-not independently approved allowlist entries. Dependency resolution is
-still a trusted provisioning operation, not a reproducible offline
-build; no generated-code execution, model pin or qualification result
-is changed. CI's trusted fixture Docker build continues supplying its
-own explicit base argument. Existing Dell images are not rebuilt by
-this change. #70 remains open.
+```sh
+python3 tools/m0/evaluator_candidate_provision.py --prepare
+```
+
+Without the flag no build or inspection runs. On a normal Linux user
+with rootless Podman, explicit provisioning selects the inspected full
+local runtime ID, stages only the three fixed recipe inputs in a
+temporary context, hashes their exact bytes, and requires a build ID
+receipt and matching exact-ID/tag inspection. The candidate recipe has
+no mutable base default. Its distinct candidate tag is never consumed
+by existing execution paths. No model or generated code is run.
+
+The returned `CANDIDATE_PROVISIONED_NOT_QUALIFIED` evidence is not
+authorization, a reproducible dependency build, or host qualification.
+The owner must independently review the dependency manifest/lock hashes,
+approve the exact content IDs and complete the existing host-specific
+positive/negative qualification gates before any new image is admitted.
+Do not substitute this candidate into an existing approved execution
+plan or reuse historical Dell evidence for it.
