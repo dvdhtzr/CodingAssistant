@@ -73,21 +73,24 @@ public static class SkillCatalog
         referenceStream.CopyTo(referenceBytes);
         var referenceText = ValidateReference(referenceBytes.ToArray(), QaReferencePath, QaReferenceHash);
         var packageHash = PackageHash(pin.Hash, QaReferencePath, QaReferenceHash);
-        if (packageHash != QaPackageHash ||
-            Encoding.UTF8.GetByteCount(instructions + referenceText) > MaximumBytes)
+        if (packageHash != QaPackageHash)
             throw new StoreFailure("SKILL_HASH_MISMATCH");
-        return entry with {
+        var package = entry with {
             Version = "2",
             SourceCommit = QaReferenceCommit,
             SourceUrl = "https://github.com/dvdhtzr/CodingAssistant/blob/" + QaReferenceCommit +
                 "/src/CodingAssistant.Api/Skills/static-web-verification/SKILL.md",
             ContentSha256 = packageHash,
+            Compatibility = "MAF local Ollama fixed instruction/reference package; live activation not qualified",
             SkillFileSha256 = pin.Hash,
             References = Array.AsReadOnly(new[] { new SkillReference(QaReferencePath,
                 "https://github.com/dvdhtzr/CodingAssistant/blob/" + QaReferenceCommit +
                 "/src/CodingAssistant.Api/Skills/static-web-verification/" + QaReferencePath,
                 QaReferenceHash, referenceText) })
         };
+        if (Encoding.UTF8.GetByteCount(ReviewedInstructionContext(package)) > MaximumBytes)
+            throw new StoreFailure("SKILL_CONTENT_INVALID");
+        return package;
     }
 
     public static string PackageHash(string skillHash, string relativePath, string referenceHash) =>
