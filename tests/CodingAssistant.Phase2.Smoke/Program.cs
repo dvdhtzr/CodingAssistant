@@ -1975,6 +1975,116 @@ try
             architectSkillRequest.Skill! with { RequestId = Guid.NewGuid().ToString("N") } },
             "STALE_SKILL_REVIEW");
     }
+    // Product Owner skill context is reconstructed by the host, not caller text.
+    {
+        var discoverySkillTask = tasks.CreateTask(new CreateTaskRequest(
+            "Discovery skill test", "Build an offline notes tracker", Guid.NewGuid().ToString("N")));
+        var discoverySkillStore = new SkillReviewStore(tasks);
+        var discoverySkillReview = discoverySkillStore.Read(discoverySkillTask.Id)
+            .Single(x => x.Skill.Name == SkillReviewStore.DiscoverySkill);
+        var discoverySkillSelection = new ProductOwnerSkillRequest(
+            discoverySkillReview.Skill.Name, 1, discoverySkillReview.ReviewSha256,
+            Guid.NewGuid().ToString("N"));
+        const string discoverySkillModel = "qwen3.5:4b";
+        void DenyDiscoverySkill(ProductOwnerSkillRequest selection, string operation,
+            int sequence, string? answer, string expected)
+        {
+            try
+            {
+                _ = discoverySkillStore.AdmitDiscovery(discoverySkillTask.Id,
+                    selection, operation, sequence, answer, discoverySkillModel);
+                Check(false, "unexpected discovery skill admission");
+            }
+            catch (StoreFailure failure)
+            {
+                Check(failure.Code == expected, "discovery skill rejects " + expected);
+            }
+        }
+        DenyDiscoverySkill(discoverySkillSelection, "interview-turn", 0, null,
+            "STALE_SKILL_REVIEW");
+        var discoverySkillApproval = new SkillReviewRequest(1, 0,
+            discoverySkillReview.ReviewSha256, "ApproveLocalUse",
+            "APPROVE LOCAL USE " + discoverySkillReview.ReviewSha256, true);
+        discoverySkillStore.Review(discoverySkillTask.Id, discoverySkillReview.Skill.Name,
+            discoverySkillApproval);
+        DenyDiscoverySkill(discoverySkillSelection with { Name = "architecture-tradeoffs" },
+            "interview-turn", 0, null, "INVALID_INPUT");
+        DenyDiscoverySkill(discoverySkillSelection, "specification-draft", 0, null, "STALE_INTERVIEW");
+        DenyDiscoverySkill(discoverySkillSelection, "interview-turn", 2, null, "STALE_INTERVIEW");
+        using (var rejectedDiscoveryAdapter = await Post(client,
+            "/api/tasks/" + discoverySkillTask.Id + "/interview/turn",
+            new InterviewTurnRequest(0, null, discoverySkillModel, discoverySkillSelection)))
+            Check(rejectedDiscoveryAdapter.StatusCode == HttpStatusCode.BadRequest &&
+                discoverySkillStore.ReadDiscoveryUses(discoverySkillTask.Id).Count == 0,
+                "non-MAF override cannot silently ignore selected Product Owner skill");
+        var discoverySkillContext = discoverySkillStore.AdmitDiscovery(discoverySkillTask.Id,
+            discoverySkillSelection, "interview-turn", 0, null, discoverySkillModel);
+        DenyDiscoverySkill(discoverySkillSelection, "interview-turn", 0, null,
+            "IDEMPOTENCY_CONFLICT");
+        var discoverySkillFactory = new Phase3FakeMafFactory();
+        var discoverySkillTeam = new MafAgentTeam(discoverySkillFactory);
+        try
+        {
+            _ = await discoverySkillTeam.DraftWithSkillAsync(discoverySkillContext, CancellationToken.None);
+            Check(false, "wrong phase should not consume a discovery context");
+        }
+        catch (StoreFailure failure)
+        {
+            Check(failure.Code == "SKILL_SCOPE_DENIED", "interview context cannot draft specifications");
+        }
+        var discoverySkillReply = await discoverySkillTeam.AskWithSkillAsync(
+            discoverySkillContext, CancellationToken.None);
+        discoverySkillStore.FinishDiscovery(discoverySkillContext, true);
+        var discoverySkillFirstTurn = interviews.CommitTurn(discoverySkillTask.Id,
+            new InterviewTurnRequest(0, null, discoverySkillModel), discoverySkillReply);
+        var discoverySkillAnswer = interviews.CommitTurn(discoverySkillTask.Id,
+            new InterviewTurnRequest(discoverySkillFirstTurn.LastSequence,
+                "Just me, working offline", discoverySkillModel),
+            new InterviewReply("Ready to draft.", true));
+        var discoveryDraftSelection = discoverySkillSelection with { RequestId = Guid.NewGuid().ToString("N") };
+        var discoveryDraftContext = discoverySkillStore.AdmitDiscovery(discoverySkillTask.Id,
+            discoveryDraftSelection, "specification-draft", discoverySkillAnswer.LastSequence,
+            null, discoverySkillModel);
+        var discoverySkillDraft = await discoverySkillTeam.DraftWithSkillAsync(
+            discoveryDraftContext, CancellationToken.None);
+        discoverySkillStore.FinishDiscovery(discoveryDraftContext, true);
+        Check(discoverySkillDraft.Length >= 180 && discoverySkillFactory.SkillContextsSeen == 2 &&
+            discoverySkillFactory.AllowedToolsSeen == 0,
+            "real MAF Product Owner receives reviewed text for both phases without tools");
+        await discoverySkillTeam.DraftAsync(discoverySkillTask.Objective,
+            discoverySkillAnswer.Messages, discoverySkillModel, CancellationToken.None);
+        Check(discoverySkillFactory.SkillContextsSeen == 2, "unselected draft has no ambient skill");
+        try
+        {
+            _ = await discoverySkillTeam.DraftWithSkillAsync(discoveryDraftContext, CancellationToken.None);
+            Check(false, "discovery context must be single use");
+        }
+        catch (StoreFailure failure)
+        {
+            Check(failure.Code == "IDEMPOTENCY_CONFLICT", "discovery context rejects reuse");
+        }
+        var discoveryUsage = new SkillReviewStore(new TaskStore(root))
+            .ReadDiscoveryUses(discoverySkillTask.Id);
+        Check(discoveryUsage.Count == 2 && discoveryUsage.All(e => e.Status == "ResponseReturned" &&
+            e.Role == "ProductOwner" && e.ContextSha256.Length == 64) &&
+            discoveryUsage.Select(e => e.ContextSha256).Distinct().Count() == 2,
+            "audit persists exact distinct host contexts without storing transcript text");
+        using (var discoveryUsageResponse = await client.GetAsync(
+            "/api/tasks/" + discoverySkillTask.Id + "/skill-uses"))
+        using (var discoveryUsageBody = await Body(discoveryUsageResponse))
+            Check(discoveryUsageResponse.StatusCode == HttpStatusCode.OK &&
+                discoveryUsageBody.RootElement.GetProperty("discoveryEvents").GetArrayLength() == 2,
+                "discovery usage is exposed through the authenticated project audit");
+        discoverySkillStore.Review(discoverySkillTask.Id, discoverySkillReview.Skill.Name,
+            discoverySkillApproval with { ExpectedRevision = 1, Decision = "Revoke",
+                Confirmation = "REVOKE " + discoverySkillReview.ReviewSha256,
+                LocalUsePermissionConfirmed = false });
+        DenyDiscoverySkill(discoveryDraftSelection with { RequestId = Guid.NewGuid().ToString("N") },
+            "specification-draft", discoverySkillAnswer.LastSequence, null, "STALE_SKILL_REVIEW");
+        using (var deletedDiscoverySkill = await client.DeleteAsync("/api/tasks/" + discoverySkillTask.Id))
+            Check(deletedDiscoverySkill.IsSuccessStatusCode,
+                "project deletion clears Product Owner skill audit records");
+    }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
     using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await anonymous.GetAsync(engineeringPath + "/latest"))
