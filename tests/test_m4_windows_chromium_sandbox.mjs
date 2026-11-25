@@ -8,7 +8,7 @@ import {
   validateFixtureSeccompBytes,FIXTURE_SECCOMP_VARIANT,FIXTURE_PID_LIMIT,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
-  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,outputDetail,
+  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,outputDetail,boundedBrowserOutput,DOM_OUTPUT_LIMIT,SANDBOX_OUTPUT_LIMIT,
 } from '../tools/m4/windows_chromium_sandbox_guest.mjs';
 
 const NAME='ca-win-m47-012345abcdef';
@@ -340,4 +340,21 @@ test('normal exit without rendered evidence yields actionable bounded diagnostic
   assert.equal(outputDetail(result('<p>SECRET</p>'),'dom'),'UNEXPECTED_DOM_OUTPUT');
   assert.ok(BROWSER_ARGS.includes('--virtual-time-budget=5000'));
   assert.ok(BROWSER_ARGS.includes('--timeout=12000'));
+});
+
+test('sandbox status has its own bounded capture ceiling without weakening evidence assertions',()=>{
+  assert.equal(DOM_OUTPUT_LIMIT,32768);
+  assert.equal(SANDBOX_OUTPUT_LIMIT,262144);
+  const padding='<style>/*'+'x'.repeat(40000)+'*/</style>';
+  const yes=padding+'<p>You are adequately sandboxed.</p>';
+  const no=padding+'<p>You are not adequately sandboxed.</p>';
+  const scriptOnly=padding+'<script>const msg="You are adequately sandboxed."</script>';
+  assert.equal(boundedBrowserOutput(yes,'dom'),false);
+  assert.equal(boundedBrowserOutput(yes,'status'),true);
+  assert.equal(sandboxStatusPassed(yes),true);
+  assert.equal(sandboxStatusPassed(no),false);
+  assert.equal(sandboxStatusPassed(scriptOnly),false);
+  assert.equal(outputDetail({status:0,stdout:no},'status'),'SANDBOX_NEGATIVE');
+  assert.equal(outputDetail({status:0,stdout:'x'.repeat(SANDBOX_OUTPUT_LIMIT+1)},'status'),'DOM_OUTPUT_OVERSIZED');
+  assert.equal(boundedBrowserOutput('é'.repeat(16385),'dom'),false);
 });

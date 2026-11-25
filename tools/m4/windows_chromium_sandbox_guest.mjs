@@ -36,6 +36,14 @@ export const CRASH_DETAILS=Object.freeze([
 ]);
 export const NAMESPACE_CODES=Object.freeze(['USER_NAMESPACE_OK','USER_NAMESPACE_DENIED',
   'USER_NAMESPACE_TOOL_UNAVAILABLE','USER_NAMESPACE_PROBE_FAILED']);
+// The internal Chromium status WebUI includes bundled markup, unlike the tiny
+// fixed HTML fixture. Keep independent byte ceilings; never export raw HTML.
+export const DOM_OUTPUT_LIMIT=32*1024;
+export const SANDBOX_OUTPUT_LIMIT=256*1024;
+function outputLimit(kind){return kind==='status'?SANDBOX_OUTPUT_LIMIT:DOM_OUTPUT_LIMIT;}
+export function boundedBrowserOutput(html,kind){
+  return typeof html==='string'&&Buffer.byteLength(html,'utf8')<=outputLimit(kind);
+}
 export const BROWSER_ARGS=Object.freeze([
   '--headless','--disable-gpu','--disable-dev-shm-usage',
   '--disable-background-networking','--disable-crash-reporter',
@@ -157,7 +165,7 @@ export function outputDetail(proc,kind,before={},after={}){
   if(/(?:renderer|render process|fork|child process)[^\n]*(?:crash|failed|exited|killed|resource temporarily unavailable)|failed to (?:launch|start|fork)[^\n]*(?:renderer|child|process)/i.test(stderr))
     return 'RENDERER_PROCESS_FAILED';
   const html=typeof proc.stdout==='string'?proc.stdout:'';
-  if(html.length>32768)return 'DOM_OUTPUT_OVERSIZED';
+  if(!boundedBrowserOutput(html,kind))return 'DOM_OUTPUT_OVERSIZED';
   if(!html.trim())return 'EMPTY_DOM_OUTPUT';
   if(/chrome-error:\/\/|id=["']main-frame-error["']|ERR_(?:FILE_NOT_FOUND|ACCESS_DENIED|FAILED|BLOCKED_BY_CLIENT)/i.test(html))
     return 'BROWSER_ERROR_PAGE';
@@ -196,14 +204,14 @@ function runBrowser(browser,url,kind){
   }));
   const before=resourceEvents();
   const result=spawnSync(browser.executable,[...BROWSER_ARGS,'--user-data-dir='+dirs.profile,url],{
-    encoding:'utf8',timeout:23000,maxBuffer:65536,
+    encoding:'utf8',timeout:23000,maxBuffer:Math.max(65536,outputLimit(kind)),
     env:{HOME:home,PATH:process.env.PATH,XDG_CONFIG_HOME:dirs.config,
       XDG_CACHE_HOME:dirs.cache,XDG_RUNTIME_DIR:dirs.runtime},
   });
   const after=resourceEvents();
   if(result.status!==0)
     return {passed:false,code:classifyBrowser(result),detail:crashDetail(result,before,after)};
-  const valid=typeof result.stdout==='string'&&result.stdout.length<=32768;
+  const valid=boundedBrowserOutput(result.stdout,kind);
   // A zero exit is insufficient: require actual, bounded rendered evidence.
   const passed=valid&&(kind==='dom'?fixedDomPassed(result.stdout):sandboxStatusPassed(result.stdout));
   return {passed,code:passed?'PASS':kind==='dom'?'CHROMIUM_FIXED_DOM_MISSING':'CHROMIUM_SANDBOX_STATUS_UNPROVEN',
