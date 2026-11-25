@@ -170,6 +170,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const partialSource = source?.state === 'Failed' ||
     source?.state === 'Interrupted';
   const running = result?.job.state === 'Running';
+  const currentRepair = !!source && repair?.cycle.engineeringRunId === source.id;
   const currentReport = !!source &&
     result?.job.engineeringRunId === source.id &&
     result.job.planSha256 === plan?.planSha256 &&
@@ -305,6 +306,13 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       not automatic repairs.
       <strong> No build, browser test, or runtime verification is performed.</strong></p>
 
+    {source && <div role="status" aria-label="Current QA source" className="qa-current-source">
+      <strong>Current source · {source.id.slice(0, 12)}</strong>
+      <p>{source.state} · {engineering.snapshot?.files.length ?? 0} saved file(s) · plan v{source.planRevision}</p>
+      <p>{currentReport ? 'Independent QA: ' + result?.job.state :
+        'This source has not been independently reviewed. Start QA below.'}</p>
+      {!currentRepair && <p className="hint">No repair cycle is attached to this source run.</p>}
+    </div>}
     {partialSource && hasSavedSource && <p className="activity-warning">
       The Software Engineer run ended <strong>{source?.state}</strong> with
       { ' '}{engineering.snapshot?.files.length} saved file(s).
@@ -339,7 +347,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         disabled={!eligible || running || !!busy}
         onClick={() => void start()}>
         {busy === 'start' ? 'Starting QA…' :
-          result ? (partialSource
+          currentReport ? (partialSource
             ? 'Request a fresh partial-source QA review'
             : 'Request a fresh static QA review') :
             (partialSource ? 'Ask QA to inspect partial source' :
@@ -404,7 +412,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         </div>
       </div>}
     </div>}
-    {repair && <div className="qa-repair-progress" role="status">
+    {repair && currentRepair && <div className="qa-repair-progress" role="status">
       <p><strong>Repair cycle {repair.cycle.attempt}</strong>
         {' · '}{repair.cycle.state} · {repair.cycle.engineeringRunId.slice(0, 12)}</p>
       <p className="hint">Software Engineer source: {repair.engineering.job.state}
@@ -448,6 +456,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       <ol className="events" aria-label="Saved Software Engineer repair cycles">
         {repairHistory.map(cycle => <li key={cycle.id}>
           <strong>Cycle {cycle.attempt}: {cycle.state}</strong>
+          {cycle.engineeringRunId !== source?.id && ' · Historical source'}
           {' · '}{cycle.engineeringRunId.slice(0, 12)}
           {cycle.qaReviewId ? ' · Independent QA recorded' : ' · No completed QA yet'}
           {cycle.errorCode ? ' · ' + cycle.errorCode : ''}
@@ -455,7 +464,18 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       </ol>
     </details>}
     {error && <p className="activity-warning" role="alert">{error}</p>}
-    {result && <>
+    {result && !currentReport && <details>
+      <summary>Earlier QA report · {result.job.engineeringRunId.slice(0, 12)} · {result.job.state}</summary>
+      <p className="hint">Historical evidence only; review current source before authorizing repairs.</p>
+      {result.job.errorCode && <p>{result.job.errorCode}</p>}
+      {result.reports.map(report => <details key={report.path}>
+        <summary>{report.path} · {report.assessment.findings.length} previous finding(s)</summary>
+        <p>{report.assessment.summary}</p>
+        {report.assessment.findings.map((finding, index) => <p key={index}>
+          {finding.severity}: {finding.requirement} · {finding.evidence} · {finding.recommendation}</p>)}
+      </details>)}
+    </details>}
+    {result && currentReport && <>
       <p className="hint" role="status">
         <strong>{result.job.state === 'Reviewed'
           ? result.sourceState === 'Generated'
