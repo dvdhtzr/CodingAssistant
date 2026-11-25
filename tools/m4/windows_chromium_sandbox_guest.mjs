@@ -50,6 +50,13 @@ export const BROWSER_ARGS=Object.freeze([
   '--no-first-run','--no-default-browser-check',
   '--enable-logging=stderr','--virtual-time-budget=5000','--timeout=12000','--dump-dom',
 ]);
+// Chrome 123+ requires explicit internal-scheme permission in headless mode.
+// Only the reviewed status invocation may navigate to this fixed internal URL.
+export function fixedBrowserArgs(kind,profile){
+  if(kind==='status')return [...BROWSER_ARGS,'--allow-chrome-scheme-url','--user-data-dir='+profile,'chrome://sandbox'];
+  if(kind==='dom')return [...BROWSER_ARGS,'--user-data-dir='+profile,'file:///tmp/ca-m47-sandbox.html'];
+  throw new Error('Unsupported fixed browser fixture');
+}
 function denied(fn){try{fn();return false;}catch{return true;}}
 function child(command){
   return spawnSync(process.execPath,['-e',command],{
@@ -191,7 +198,7 @@ function userNamespaceProbe(){
   if(/operation not permitted|permission denied/i.test(String(result.stderr??'')))return 'USER_NAMESPACE_DENIED';
   return 'USER_NAMESPACE_PROBE_FAILED';
 }
-function runBrowser(browser,url,kind){
+function runBrowser(browser,kind){
   if(!browser.executable)
     return {passed:false,code:browser.kind,detail:'NONE'};
   if(kind==='status' && browser.kind!=='FULL_CHROMIUM')
@@ -203,7 +210,7 @@ function runBrowser(browser,url,kind){
     const dir=path.join(home,name);fs.mkdirSync(dir,{mode:0o700});return [name,dir];
   }));
   const before=resourceEvents();
-  const result=spawnSync(browser.executable,[...BROWSER_ARGS,'--user-data-dir='+dirs.profile,url],{
+  const result=spawnSync(browser.executable,fixedBrowserArgs(kind,dirs.profile),{
     encoding:'utf8',timeout:23000,maxBuffer:Math.max(65536,outputLimit(kind)),
     env:{HOME:home,PATH:process.env.PATH,XDG_CONFIG_HOME:dirs.config,
       XDG_CACHE_HOME:dirs.cache,XDG_RUNTIME_DIR:dirs.runtime},
@@ -253,8 +260,8 @@ export async function runFixedCompatibility(){
     {flag:'wx',mode:0o600});
   const namespaceProbe=userNamespaceProbe();
   const browser=browserExecutable();
-  const dom=runBrowser(browser,'file://'+sample,'dom');
-  const sandbox=runBrowser(browser,'chrome://sandbox','status');
+  const dom=runBrowser(browser,'dom');
+  const sandbox=runBrowser(browser,'status');
   cases.sandboxed_chromium_fixed_dom=dom.passed;
   cases.chromium_sandbox_status_adequate=sandbox.passed;
   return {cases,browser:{

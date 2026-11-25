@@ -8,7 +8,7 @@ import {
   validateFixtureSeccompBytes,FIXTURE_SECCOMP_VARIANT,FIXTURE_PID_LIMIT,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
-  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,outputDetail,boundedBrowserOutput,DOM_OUTPUT_LIMIT,SANDBOX_OUTPUT_LIMIT,
+  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,outputDetail,boundedBrowserOutput,DOM_OUTPUT_LIMIT,SANDBOX_OUTPUT_LIMIT,fixedBrowserArgs,
 } from '../tools/m4/windows_chromium_sandbox_guest.mjs';
 
 const NAME='ca-win-m47-012345abcdef';
@@ -357,4 +357,19 @@ test('sandbox status has its own bounded capture ceiling without weakening evide
   assert.equal(outputDetail({status:0,stdout:no},'status'),'SANDBOX_NEGATIVE');
   assert.equal(outputDetail({status:0,stdout:'x'.repeat(SANDBOX_OUTPUT_LIMIT+1)},'status'),'DOM_OUTPUT_OVERSIZED');
   assert.equal(boundedBrowserOutput('é'.repeat(16385),'dom'),false);
+});
+
+test('headless internal-scheme permission is restricted to the fixed sandbox-status invocation',()=>{
+  const dom=fixedBrowserArgs('dom','/tmp/fixture-profile');
+  const status=fixedBrowserArgs('status','/tmp/status-profile');
+  assert.deepEqual(dom,[...BROWSER_ARGS,'--user-data-dir=/tmp/fixture-profile','file:///tmp/ca-m47-sandbox.html']);
+  assert.deepEqual(status,[...BROWSER_ARGS,'--allow-chrome-scheme-url','--user-data-dir=/tmp/status-profile','chrome://sandbox']);
+  assert.ok(!BROWSER_ARGS.includes('--allow-chrome-scheme-url'));
+  assert.ok(!dom.includes('--allow-chrome-scheme-url'));
+  for(const args of [dom,status]){
+    for(const bypass of ['--no-sandbox','--disable-setuid-sandbox','--single-process','--no-zygote','--disable-seccomp-filter-sandbox','--disable-web-security'])
+      assert.ok(!args.includes(bypass));
+    assert.ok(!args.some(a=>a.startsWith('--remote-debugging')));
+  }
+  assert.throws(()=>fixedBrowserArgs('https://example.com','/tmp/status-profile'));
 });
