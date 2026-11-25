@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
 import { AgentIdentityPanel } from './AgentIdentityPanel';
-import { SkillReviewPanel } from './SkillReviewPanel';
+import { SkillReviewPanel, SkillUsagePanel } from './SkillReviewPanel';
 import { TeamWorkroom } from './TeamWorkroom';
 import type { JourneyId } from './ProjectJourney';
 
@@ -209,7 +209,7 @@ export function SkillsDestination({ token, taskId }: { token: string; taskId?: s
       <span className="pill">{taskId ? 'Review only' : 'Discovery only'}</span>
     </div>
     <p className="hint">Inspect repository-owned, hash-pinned SKILL.md instruction candidates.
-      Discovery does not approve or activate a skill, or grant any tool permissions.</p>
+      Discovery alone does not approve or activate a skill, or grant any tool permissions.</p>
     <div className="ca-skill-cols">
       <div className="ca-skill-col ca-skill-declared">
         <h3>Declared</h3><span className="ca-skill-cap">Host-defined scope</span>
@@ -239,7 +239,8 @@ export function SkillsDestination({ token, taskId }: { token: string; taskId?: s
       </div>
       <div className="ca-skill-col">
         <h3>Used</h3><span className="ca-skill-cap">Recorded usage</span>
-        <div className="ca-skill-empty">No skill invocations recorded.</div>
+        {taskId ? <SkillUsagePanel key={taskId} token={token} taskId={taskId} /> :
+          <div className="ca-skill-empty">No skill invocations recorded.</div>}
       </div>
     </div>
   </section>;
