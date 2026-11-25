@@ -8,7 +8,8 @@ public sealed record RepairProgressAttempt(string CycleId,string OriginalRunId,s
     IReadOnlyList<RepairFindingReference> Findings,string Origin,
     bool IndependentStaticResolution,bool RecurringExactFinding);
 public sealed record RepairProgressReport(string RunId,IReadOnlyList<RepairProgressAttempt> Attempts,
-    bool StrategyChangeRequired,string Reason,IReadOnlyList<string> StalledIssueIds);
+    bool StrategyChangeRequired,string Reason,IReadOnlyList<string> StalledIssueIds,
+    IReadOnlyList<string>? PotentialRegressionIssueIds=null);
 
 /// <summary>Evidence-only recovery guard. No attempt-count ceiling. A repeated
 /// source snapshot or consecutive unchanged, independently recurring defect
@@ -89,6 +90,36 @@ public sealed class RepairProgressStore(TaskStore tasks)
         var last=attempts.TakeLast(2).ToArray();
         var stalled=last.Length!=2?[]:current.Where(i=>last.All(a=>a.Findings.Any(f=>Matches(i,f,a.Origin))))
             .Select(i=>i.Id).ToArray();
-        return Evaluate(runId,attempts,stalled);
+        var progress=Evaluate(runId,attempts,stalled);
+        // A newly grounded blocking concern in text introduced by a delegated
+        // candidate is a possible regression, NOT a proven runtime failure.
+        // Stop autonomous promotion/repair instead of chasing moving findings.
+        // Unchanged excerpts may represent newly discovered pre-existing
+        // defects; do not mislabel them as regressions based on finding count.
+        var lastAttempt=attempts.LastOrDefault();
+        if(lastAttempt is not null && TaskStore.Scalar(db,tx,"""
+            SELECT 1 FROM engineering_routine_repair_admissions
+            WHERE task_id=@task AND cycle_id=@cycle
+            """,("@task",taskId),("@cycle",lastAttempt.CycleId)) is not null)
+        {
+            var introduced=new List<string>();
+            foreach(var issue in current.Where(i=>i.LatestReview && i.Severity is ("Major" or "Critical")))
+            {
+                var before=TaskStore.Scalar(db,tx,"""
+                    SELECT content FROM engineering_run_files WHERE run_id=@run AND path=@path
+                    """,("@run",lastAttempt.OriginalRunId),("@path",issue.Path));
+                var after=TaskStore.Scalar(db,tx,"""
+                    SELECT content FROM engineering_run_files WHERE run_id=@run AND path=@path
+                    """,("@run",runId),("@path",issue.Path));
+                if(before is not null && after is not null && before!=after &&
+                    issue.Evidence.Length>=8 && after.Contains(issue.Evidence,StringComparison.Ordinal) &&
+                    !before.Contains(issue.Evidence,StringComparison.Ordinal))
+                    introduced.Add(issue.Id);
+            }
+            if(introduced.Count>0)
+                return progress with { StrategyChangeRequired=true,Reason="POTENTIAL_CANDIDATE_REGRESSION",
+                    PotentialRegressionIssueIds=introduced.AsReadOnly() };
+        }
+        return progress;
     }
 }
