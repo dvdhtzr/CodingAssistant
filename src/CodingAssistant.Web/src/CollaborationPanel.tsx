@@ -9,11 +9,13 @@ export interface CollaborationSnapshot {
 }
 interface Candidate { runId: string; sourceSha256: string; planSha256: string;
   policyRevision: number; policySha256: string }
+interface RoutineScope { baselineRunId:string; baselineSourceSha256:string; paths:string[]; maximumRepairs:number }
 interface Policy { revision: number; policySha256: string; status: string;
-  current: boolean; operations: string[] }
+  current: boolean; operations: string[]; routineRepair?:RoutineScope|null }
 interface Preview { planSha256: string | null; policy: Policy | null;
   snapshot: CollaborationSnapshot | null; candidate: Candidate | null;
   canStart: boolean; canResume: boolean; reason: string;
+  routineRepairCandidate?: {runId:string;sourceSha256:string;paths:string[]}|null;
   capacity: { capacity: number; active: number; waiting: number } }
 const operations=['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','SendMessage'];
 const actionLabel: Record<string,string>={
@@ -119,6 +121,13 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
   const [error,setError]=useState('');
   const [loadError,setLoadError]=useState(false);
   const [version,setVersion]=useState(0);
+  const [routineEnabled,setRoutineEnabled]=useState(false);
+  const [repairPaths,setRepairPaths]=useState<string[]>([]);
+  const [maximumRepairs,setMaximumRepairs]=useState(4);
+  const scopeCandidate=preview?.routineRepairCandidate;
+  useEffect(()=>{
+    setRoutineEnabled(false);setRepairPaths([]);
+  },[taskId,scopeCandidate?.runId,scopeCandidate?.sourceSha256]);
   useEffect(()=>{
     let closed=false,pending=false;
     async function load(){
@@ -141,9 +150,15 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
     if(busy||!preview||loadError)return;
     setBusy(true);setError('');
     try{
-      if(action==='propose' && preview.planSha256)
+      if(action==='propose' && preview.planSha256){
+        if(routineEnabled&&(!scopeCandidate||!repairPaths.length||repairPaths.some(p=>!scopeCandidate.paths.includes(p))))
+          throw Error('Select the exact saved source files for routine repairs.');
         await api(token,root+'/engineering-delegation/propose',
-          {expectedRevision:policy?.revision??0,planSha256:preview.planSha256,operations});
+          {expectedRevision:policy?.revision??0,planSha256:preview.planSha256,
+            operations:routineEnabled?[...operations,'WriteSource']:operations,
+            ...(routineEnabled&&scopeCandidate?{routineRepair:{baselineRunId:scopeCandidate.runId,
+              baselineSourceSha256:scopeCandidate.sourceSha256,paths:repairPaths,maximumRepairs}}:{})});
+      }
       else if((action==='approve'||action==='revoke')&&policy)
         await api(token,root+'/engineering-delegation/'+action,{revision:policy.revision,
           policySha256:policy.policySha256,confirmation:(action==='approve'?'APPROVE ':'REVOKE ')+policy.policySha256});
@@ -168,19 +183,42 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
       <strong role="status">{job?stateLabel[job.state]??job.state:'Not started'}</strong></div>
     <p>Inference: {preview.capacity.active}/{preview.capacity.capacity} active · {preview.capacity.waiting} queued</p>
     {loadError&&<p role="alert">Refresh unavailable. Actions are disabled until evidence is current.</p>}
-    {!approved&&!proposed&&<><p>Authorize review, scheduling, messaging and repair requests for the current approved plan. Source repair and execution still require separate approval.</p>
-      <button type="button" disabled={busy||loadError||!preview.planSha256||running}
+    {!approved&&!proposed&&<><p>Authorize routine reviews, scheduling and messaging. You can also delegate bounded source-only repairs. Execution always requires separate authorization.</p>
+      {scopeCandidate&&<fieldset disabled={busy||loadError||running}>
+        <legend>Routine source repairs</legend>
+        <label><input type="checkbox" checked={routineEnabled}
+          onChange={e=>setRoutineEnabled(e.target.checked)}/> Let the team repair grounded defects without asking me each time</label>
+        {routineEnabled&&<>
+          <p>Choose existing files from source run {scopeCandidate.runId.slice(0,12)}. New files and changes outside this scope are not authorized.</p>
+          {scopeCandidate.paths.map(path=><label key={path} className="qa-repair-choice">
+            <input type="checkbox" checked={repairPaths.includes(path)}
+              onChange={e=>setRepairPaths(old=>e.target.checked?[...old,path]:old.filter(p=>p!==path))}/>{path}</label>)}
+          <label>Repair budget <select value={maximumRepairs} onChange={e=>setMaximumRepairs(Number(e.target.value))}>
+            {[1,2,3,4,5,6,7,8].map(n=><option key={n} value={n}>{n}</option>)}
+          </select></label>
+          <p>The team stops if evidence is insufficient, the repair budget is exhausted, or you revoke the policy. No build or runtime verification is granted.</p>
+        </>}
+      </fieldset>}
+      <button type="button" disabled={busy||loadError||!preview.planSha256||running||
+        (routineEnabled&&(!scopeCandidate||!repairPaths.length||repairPaths.length>12))}
         onClick={()=>void act('propose')}>Prepare delegation policy</button></>}
     {proposed&&<><p>Review this exact routine-work policy before authorizing it.</p>
       <details open><summary>Policy revision {policy!.revision}</summary>
         <ul>{policy!.operations.map(op=><li key={op}>{op}</li>)}</ul>
+        {policy!.routineRepair&&<><p>Up to {policy!.routineRepair.maximumRepairs} routine source repairs from run {policy!.routineRepair.baselineRunId.slice(0,12)}.</p>
+          <ul>{policy!.routineRepair.paths.map(path=><li key={path}>{path}</li>)}</ul>
+          <p>Starting source fingerprint: <code>{policy!.routineRepair.baselineSourceSha256}</code></p></>}
         <code>{policy!.policySha256}</code>
       </details>
       <button type="button" className="primary" disabled={busy||loadError||running}
         onClick={()=>void act('approve')}>Approve exact delegation</button></>}
-    {approved&&<><p>Delegation v{policy!.revision} · approved. No execution permission.</p>
+    {approved&&<><p>Delegation v{policy!.revision} · approved. {policy!.routineRepair?
+      'Bounded routine source repairs enabled.':'Individual repair confirmation required.'} No execution permission.</p>
       <details><summary>Inspect or revoke delegation</summary>
-        <ul>{policy!.operations.map(op=><li key={op}>{op}</li>)}</ul><code>{policy!.policySha256}</code>
+        <ul>{policy!.operations.map(op=><li key={op}>{op}</li>)}</ul>
+        {policy!.routineRepair&&<><p>Repair budget: {policy!.routineRepair.maximumRepairs}</p>
+          <ul>{policy!.routineRepair.paths.map(path=><li key={path}>{path}</li>)}</ul></>}
+        <code>{policy!.policySha256}</code>
         <button type="button" disabled={busy||loadError} onClick={()=>void act('revoke')}>Revoke delegation</button>
       </details></>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
