@@ -427,6 +427,29 @@ public sealed class RepairCycleStore(
             throw new StoreFailure("NOT_FOUND");
     }
 
+    // Commit the owner stop before signalling cooperative cancellation.
+    // This serializes with actual source writes and terminal generation,
+    // so a late model response cannot persist after a successful stop.
+    internal bool TryInterruptRoutineRepair(string taskId,string cycleId)
+    {
+        CheckId(taskId);CheckId(cycleId);
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var cycle=Find(db,tx,taskId,cycleId)??throw new StoreFailure("NOT_FOUND");
+        if(cycle.State!="Running" ||
+            TaskStore.Scalar(db,tx,"""
+                SELECT 1 FROM engineering_routine_repair_admissions
+                WHERE task_id=@task AND cycle_id=@cycle
+                """,("@task",taskId),("@cycle",cycleId)) is null)
+            return false;
+        EngineeringRunStore.InterruptInTransaction(db,tx,taskId,cycle.EngineeringRunId);
+        TaskStore.Execute(db,tx,"""
+            UPDATE repair_cycles SET state='Interrupted',error_code='OWNER_CANCELLED',updated_utc=@utc
+            WHERE task_id=@task AND id=@cycle AND state='Running'
+            """,("@task",taskId),("@cycle",cycleId),("@utc",DateTimeOffset.UtcNow.ToString("O")));
+        EngineeringActivityStore.Record(db,tx,taskId,"RepairInterrupted","HumanOwner","RepairCycle",cycleId);
+        tx.Commit();tasks.SignalEngineeringActivity(taskId);return true;
+    }
+
     public void SetState(string taskId, string cycleId, string state,
         string? error = null, string? qaId = null)
     {
