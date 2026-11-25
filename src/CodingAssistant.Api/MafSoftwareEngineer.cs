@@ -420,7 +420,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
         IReadOnlyList<EngineeringSourceFile> originals)
     {
         if (string.IsNullOrWhiteSpace(raw) || raw.Length > 28000)
-            throw new StoreFailure("REPAIR_EDIT_INVALID");
+            throw new StoreFailure("REPAIR_EDIT_SIZE");
         EngineeringRepairEdits? patch;
         try {
             patch = JsonSerializer.Deserialize<EngineeringRepairEdits>(
@@ -429,7 +429,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                     UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
                 });
         }
-        catch (JsonException) { throw new StoreFailure("REPAIR_EDIT_INVALID"); }
+        catch (JsonException) { throw new StoreFailure("REPAIR_EDIT_FIELDS"); }
         if (patch is null ||
             patch.Summary is null || patch.Summary.Trim().Length is < 10 or > 1600 ||
             patch.Edits is null || patch.Edits.Count is < 1 or > 6 ||
@@ -504,10 +504,13 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                     "REPAIR_EDIT_INVALID" or "REPAIR_EDIT_NO_CHANGE" or
                     "REPAIR_EDIT_NOT_UNIQUE" or "REPAIR_SCOPE" or
                     "REPAIR_EDIT_SHAPE" or "REPAIR_EDIT_LENGTH" or
-                    "REPAIR_EDIT_OVERLAP" or "REPAIR_EDIT_SOURCE")
+                    "REPAIR_EDIT_OVERLAP" or "REPAIR_EDIT_SOURCE" or
+                    "REPAIR_EDIT_SIZE" or "REPAIR_EDIT_FIELDS")
                 {
                     result = null;
                     reason = error.Code + ": " + (error.Code switch {
+                        "REPAIR_EDIT_SIZE" => "Return a nonempty repair object no longer than 28000 characters; use fewer and smaller edits.",
+                        "REPAIR_EDIT_FIELDS" => "Use exactly summary, edits and verificationNotes. Each edit contains path, oldText and newText as JSON strings; no other properties or nested objects.",
                         "REPAIR_EDIT_SHAPE" => "Use summary (10-1600 chars), 1-6 edit objects with path, oldText and newText, and 0-6 nonempty verificationNotes strings (max 350 chars).",
                         "REPAIR_EDIT_LENGTH" => "oldText must contain 12-5000 characters and newText 0-6000 characters. Include both JSON strings.",
                         "REPAIR_EDIT_OVERLAP" => "Choose disjoint excerpts from the original saved file, not from a previous edit.",

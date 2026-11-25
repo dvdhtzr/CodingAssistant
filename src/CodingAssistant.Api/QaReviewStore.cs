@@ -21,7 +21,8 @@ public sealed record QaReviewSnapshot(
     QaReviewRun Job, IReadOnlyList<QaFileReport> Reports,
     IReadOnlyList<QaReviewEvent> Events, string SourceState,
     QaAcceptanceSummary? Acceptance = null,
-    StaticWebPreflightReport? StaticPreflight = null);
+    StaticWebPreflightReport? StaticPreflight = null,
+    bool UnchangedFailedRepair = false);
 
 /// <summary>
 /// Evidence ledger for *static* QA source inspection. Review admission,
@@ -345,9 +346,13 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         var boundPlan = ImplementationPlanStore.ReadForQa(db, tx, review);
         var acceptance = QaAcceptanceProjection.Build(review, boundPlan, reports);
         var preflight = ReadStaticPreflight(db, tx, review);
+        var unchangedFailedRepair = sourceState is "Failed" or "Interrupted" &&
+            RepairCycleStore.IsUnchangedFailedRepair(db, tx, taskId,
+                review.EngineeringRunId, review.SourceSha256);
         tx.Commit();
         return new QaReviewSnapshot(review, reports.AsReadOnly(),
-            events.AsReadOnly(), sourceState ?? "Unavailable", acceptance, preflight);
+            events.AsReadOnly(), sourceState ?? "Unavailable", acceptance, preflight,
+            unchangedFailedRepair);
     }
 
     private static StaticWebPreflightReport? ReadStaticPreflight(

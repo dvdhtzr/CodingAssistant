@@ -172,6 +172,54 @@ public sealed class RepairCycleStore(
         return new(cycle, run, qa, StaticWebSourcePreflight.Inspect(run));
     }
 
+    // Failed repair runs are disposable clones, unlike failed initial builds.
+    // Recovery is allowed only when every link back to a completed source
+    // run has the same exact file identity, binding and an unsuccessful repair
+    // with no completed assignment. Never reclassify partial source as complete.
+    internal static bool IsUnchangedFailedRepair(SqliteConnection db,
+        SqliteTransaction tx, string taskId, string runId, string sourceSha)
+    {
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (visited.Add(runId))
+        {
+            var identities = new List<EngineeringSourceFile>();
+            using (var command = TaskStore.Command(db, tx, """
+                SELECT path,sha256 FROM engineering_run_files
+                WHERE run_id=@run ORDER BY path
+                """, ("@run", runId)))
+            using (var reader = command.ExecuteReader())
+                while (reader.Read())
+                    identities.Add(new EngineeringSourceFile(reader.GetString(0),
+                        "", "", reader.GetString(1), "", ""));
+            if (identities.Count is < 1 or > EngineeringRunStore.MaxDistinctFiles ||
+                QaReviewStore.Fingerprint(identities) != sourceSha)
+                return false;
+            var state = TaskStore.Scalar(db, tx, """
+                SELECT state FROM engineering_runs WHERE id=@run AND task_id=@task
+                """, ("@run", runId), ("@task", taskId));
+            if (state == "Generated") return visited.Count > 1;
+            if (state is not ("Failed" or "Interrupted")) return false;
+            var parent = TaskStore.Scalar(db, tx, """
+                SELECT c.base_run_id FROM repair_cycles c
+                JOIN engineering_runs child ON child.id=c.engineering_run_id
+                JOIN engineering_runs parent ON parent.id=c.base_run_id
+                WHERE c.engineering_run_id=@run AND c.task_id=@task
+                AND child.task_id=@task AND parent.task_id=@task
+                AND c.state IN ('Failed','Interrupted') AND c.base_source_sha256=@sha
+                AND child.plan_revision=parent.plan_revision
+                AND child.plan_sha256=parent.plan_sha256
+                AND child.spec_version=parent.spec_version
+                AND child.spec_sha256=parent.spec_sha256
+                AND child.architecture_sha256=parent.architecture_sha256
+                AND NOT EXISTS (SELECT 1 FROM engineering_run_tasks
+                    WHERE run_id=child.id AND state='Completed')
+                """, ("@run", runId), ("@task", taskId), ("@sha", sourceSha));
+            if (parent is null) return false;
+            runId = parent;
+        }
+        return false;
+    }
+
     public RepairCycle Start(string taskId, StartRepairCycleRequest request,
         ImplementationPlan plan, string? agentModel = null)
     {
@@ -261,7 +309,8 @@ public sealed class RepairCycleStore(
                 reader.IsDBNull(10) ? null : reader.GetString(10),
                 reader.GetString(11), reader.GetString(12));
         }
-        if (baseRun.State != "Generated" ||
+        if ((baseRun.State != "Generated" &&
+                !IsUnchangedFailedRepair(db, tx, taskId, baseRun.Id, proposal.SourceSha256)) ||
             baseRun.PlanSha256 != proposal.PlanSha256 ||
             baseRun.PlanSha256 != plan.PlanSha256 ||
             baseRun.PlanRevision != proposal.PlanRevision ||
