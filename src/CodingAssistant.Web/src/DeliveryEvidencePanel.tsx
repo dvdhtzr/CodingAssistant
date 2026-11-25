@@ -3,6 +3,7 @@ import { api } from './api';
 
 interface DeliveryEvidence {
   runId: string | null; sourceSha256: string | null; currentSource: boolean;
+  routineCandidate?: {runId:string;baseRunId:string;baseSourceSha256:string;disposition:string}|null;
   implementationComplete: boolean; engineeringComplete: boolean;
   productAccepted: boolean; deliveryAllowed: boolean; blockers: string[];
   work: Array<{id:string;title:string;state:string;acceptanceCriteria:string[]}>;
@@ -23,6 +24,7 @@ const reasons: Record<string,string> = {
   UNRESOLVED_FINDINGS: 'Review findings still need disposition.',
   IMPLEMENTATION_INCOMPLETE: 'Approved work packages are not all complete.',
   NO_SOURCE_RUN: 'No source run is recorded.',
+  POTENTIAL_CANDIDATE_REGRESSION: 'A repair introduced a grounded blocking concern. The candidate is rejected; the preceding source is preserved.',
 };
 export function DeliveryEvidencePanel({token,taskId,runId,onClose}:{
   token:string;taskId:string;runId:string|null;onClose:()=>void;
@@ -63,6 +65,13 @@ export function DeliveryEvidencePanel({token,taskId,runId,onClose}:{
         <dt>Product acceptance</dt><dd>{saved.productAccepted?'Accepted':'Not accepted'}</dd>
       </dl>
       {saved.runId&&!saved.currentSource&&<p>Source evidence is not current.</p>}
+      {saved.routineCandidate&&<div>
+        <strong>{saved.routineCandidate.disposition==='REJECTED_POTENTIAL_REGRESSION'?
+          'Candidate rejected — possible regression':saved.routineCandidate.disposition==='STOPPED_UNVERIFIED'?
+          'Candidate stopped — not verified':'Candidate saved — not verified'}</strong>
+        <p>Candidate {saved.routineCandidate.runId.slice(0,12)} · preserved predecessor {saved.routineCandidate.baseRunId.slice(0,12)}</p>
+        <p>The predecessor remains inspectable. Neither source is certified for delivery.</p>
+      </div>}
       <ul>{saved.blockers.map(b=><li key={b}>{reasons[b]??b.replaceAll('_',' ').toLowerCase()}</li>)}</ul>
       <details><summary>Requirements and work ({saved.work.length})</summary>
         {saved.approvedSpecification&&<p style={{whiteSpace:'pre-wrap'}}>{saved.approvedSpecification}</p>}
