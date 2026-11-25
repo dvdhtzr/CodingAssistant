@@ -1040,6 +1040,16 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           fakeFactory.QaRoleSeen && fakeFactory.NoTools &&
           fakeFactory.SourceSeen,
         "fifth real MAF agent independently inspects exact source without tools");
+    var compactFactory = new Phase5FakeMafFactory();
+    compactFactory.ScriptedReplies.Enqueue("""{"summary":"Not valid","findings":[],"manualChecks":[]}""");
+    compactFactory.ScriptedReplies.Enqueue("""{"status":"PASS","summary":"Invented verification"}""");
+    compactFactory.ScriptedReplies.Enqueue("""{"summary":"Static source still needs a functional storage check.","findings":[],"manualChecks":["Check storage persistence after browser reload"]}""");
+    var compactAssessment = await new MafQaEngineer(compactFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(compactAssessment.ManualChecks.Count == 1 &&
+          compactFactory.ScriptedReplies.Count == 0 && compactFactory.NoTools,
+        "QA can recover from two malformed reports using a final bounded compact report without granting tools");
     var investigation = new EngineeringRunEvent(6,
         "EngineerAtlasInspected",
         "SoftwareEngineer used atlas.find_symbols on accepted source " +
