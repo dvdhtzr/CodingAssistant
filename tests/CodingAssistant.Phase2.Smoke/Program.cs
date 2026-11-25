@@ -1874,6 +1874,107 @@ try
             Check(missingReviewTask.StatusCode == HttpStatusCode.NotFound,
                 "deleted project cannot expose review history");
     }
+    {
+        var skillActivationStore = new SkillReviewStore(tasks);
+        var architectSkillReview = skillActivationStore.Read(taskBound.Id)
+            .Single(x => x.Skill.Name == SkillReviewStore.ArchitectureSkill);
+        var currentSkillSpec = interviews.Read(taskBound.Id).Specification!;
+        var currentSkillRevision = decisionStore.List(taskBound.Id)
+            .Single(x => x.Topic == "technology-stack").Revision;
+        var architectSkillRequest = new RecommendArchitectureRequest(1,
+            currentSkillSpec.Version, currentSkillSpec.Sha256, "technology-stack",
+            currentSkillRevision, new ArchitectureSkillRequest(
+                architectSkillReview.Skill.Name, 1, architectSkillReview.ReviewSha256,
+                Guid.NewGuid().ToString("N")));
+        const string skillModel = "qwen3.5:4b";
+        void DenySkillAdmission(RecommendArchitectureRequest req, string code)
+        {
+            try
+            {
+                _ = skillActivationStore.AdmitArchitecture(taskBound.Id, req, skillModel);
+                Check(false, "unexpected skill admission");
+            }
+            catch (StoreFailure failure)
+            {
+                Check(failure.Code == code, "skill admission rejects " + code);
+            }
+        }
+        DenySkillAdmission(architectSkillRequest, "STALE_SKILL_REVIEW");
+        var architectSkillApproval = new SkillReviewRequest(1, 0,
+            architectSkillReview.ReviewSha256, "ApproveLocalUse",
+            "APPROVE LOCAL USE " + architectSkillReview.ReviewSha256, true);
+        skillActivationStore.Review(taskBound.Id, architectSkillReview.Skill.Name,
+            architectSkillApproval);
+        DenySkillAdmission(architectSkillRequest with { Skill =
+            architectSkillRequest.Skill! with { Name = "requirements-discovery" } }, "INVALID_INPUT");
+        DenySkillAdmission(architectSkillRequest with { SpecificationSha256 =
+            new string('0', 64) }, "SPECIFICATION_CONFLICT");
+        DenySkillAdmission(architectSkillRequest with { ExpectedRevision =
+            currentSkillRevision + 1 }, "STALE_DECISION");
+        Check(skillActivationStore.ReadUses(taskBound.Id).Count == 0,
+            "rejected skill admissions leave no invented model receipts");
+        // The API test uses a non-MAF advisor override. Explicit skill use
+        // must never silently fall back to that adapter.
+        using (var adapterDenied = await Post(client, "/api/tasks/" + taskBound.Id +
+            "/architecture-decisions/recommend", architectSkillRequest))
+            Check(adapterDenied.StatusCode == HttpStatusCode.BadRequest &&
+                skillActivationStore.ReadUses(taskBound.Id).Count == 0,
+                "unsupported adapter cannot silently ignore a requested skill");
+        var architectSkillContext = skillActivationStore.AdmitArchitecture(
+            taskBound.Id, architectSkillRequest, skillModel);
+        DenySkillAdmission(architectSkillRequest, "IDEMPOTENCY_CONFLICT");
+        var skillMafFactory = new Phase3FakeMafFactory();
+        var skillMafTeam = new MafAgentTeam(skillMafFactory);
+        var skillAdvice = await skillMafTeam.RecommendWithSkillAsync(taskBound.Objective,
+            currentSkillSpec.Content, skillModel, "technology-stack",
+            architectSkillContext, CancellationToken.None);
+        skillActivationStore.FinishArchitecture(architectSkillContext, true);
+        Check(skillAdvice.Options.Count == 2 && skillMafFactory.AllowedToolsSeen == 0 &&
+            skillMafFactory.SkillContextsSeen == 1,
+            "real MAF adapter receives reviewed instructions once and no tools");
+        await skillMafTeam.RecommendAsync(taskBound.Objective, currentSkillSpec.Content,
+            skillModel, "technology-stack", CancellationToken.None);
+        Check(skillMafFactory.SkillContextsSeen == 1,
+            "ordinary recommendation has no ambient skill context");
+        try
+        {
+            await skillMafTeam.RecommendWithSkillAsync(taskBound.Objective,
+                currentSkillSpec.Content, skillModel, "technology-stack",
+                architectSkillContext, CancellationToken.None);
+            Check(false, "skill context must be one-shot");
+        }
+        catch (StoreFailure failure)
+        {
+            Check(failure.Code == "IDEMPOTENCY_CONFLICT", "one-shot context rejects replay");
+        }
+        var incompleteSkillUse = skillActivationStore.AdmitArchitecture(taskBound.Id,
+            architectSkillRequest with { Skill = architectSkillRequest.Skill! with {
+                RequestId = Guid.NewGuid().ToString("N") } }, skillModel);
+        skillActivationStore.FinishArchitecture(incompleteSkillUse, false);
+        var skillUseRoute = "/api/tasks/" + taskBound.Id + "/skill-uses";
+        using (var privateSkillClient = new HttpClient { BaseAddress = client.BaseAddress })
+        using (var deniedUseRead = await privateSkillClient.GetAsync(skillUseRoute))
+            Check(deniedUseRead.StatusCode == HttpStatusCode.Unauthorized, "usage is owner-private");
+        using (var skillUseResponse = await client.GetAsync(skillUseRoute))
+        using (var skillUseBody = await Body(skillUseResponse))
+        {
+            var usageEvents = skillUseBody.RootElement.GetProperty("events");
+            Check(skillUseResponse.StatusCode == HttpStatusCode.OK &&
+                usageEvents.GetArrayLength() == 2 &&
+                usageEvents.EnumerateArray().Any(e =>
+                    e.GetProperty("status").GetString() == "ProposalReturned") &&
+                usageEvents.EnumerateArray().Any(e =>
+                    e.GetProperty("status").GetString() == "CallFailed"),
+                "audit distinguishes a parsed proposal and an unsuccessful call");
+        }
+        skillActivationStore.Review(taskBound.Id, architectSkillReview.Skill.Name,
+            architectSkillApproval with { ExpectedRevision = 1, Decision = "Revoke",
+                Confirmation = "REVOKE " + architectSkillReview.ReviewSha256,
+                LocalUsePermissionConfirmed = false });
+        DenySkillAdmission(architectSkillRequest with { Skill =
+            architectSkillRequest.Skill! with { RequestId = Guid.NewGuid().ToString("N") } },
+            "STALE_SKILL_REVIEW");
+    }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
     using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await anonymous.GetAsync(engineeringPath + "/latest"))
@@ -3182,6 +3283,7 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
     public List<string> Models { get; } = [];
     public int SystemPoliciesSeen { get; private set; }
     public int AllowedToolsSeen { get; private set; }
+    public int SkillContextsSeen { get; private set; }
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
     {
@@ -3204,6 +3306,11 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                     StringComparison.Ordinal) == true)
                 parent.SystemPoliciesSeen++;
             parent.AllowedToolsSeen += options?.Tools?.Count ?? 0;
+            if (history.Any(m => m.Role.Value == "system" &&
+                m.Text?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT", StringComparison.Ordinal) == true) ||
+                options?.Instructions?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
+                    StringComparison.Ordinal) == true)
+                parent.SkillContextsSeen++;
             if (purpose == MafAgentPurpose.Interview)
                 parent.InterviewCorrectionPrompts.AddRange(history
                     .Where(m => m.Role == ChatRole.User &&
