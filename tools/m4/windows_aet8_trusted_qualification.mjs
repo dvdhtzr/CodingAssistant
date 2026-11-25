@@ -50,7 +50,7 @@ export function parseTrustedReport(raw){
 export function parseGuestStream(raw){
   if(typeof raw!=='string'||raw.length>60000)fail('GUEST_REPORT_INVALID');
   const lines=raw.trim().split(/\r?\n/).filter(Boolean);
-  if(lines.length>32)fail('GUEST_REPORT_INVALID');
+  if(lines.length>64)fail('GUEST_REPORT_INVALID');
   let checkpoint=null,final=null;
   for(const line of lines){
     let x;try{x=JSON.parse(line);}catch{fail('GUEST_REPORT_INVALID');}

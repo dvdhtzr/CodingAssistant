@@ -5,7 +5,7 @@ import {EventEmitter} from 'node:events';
 import {spawnSync} from 'node:child_process';
 import {trustedDockerArgs,parseTrustedReport,parseGuestStream,trustedPayload,qualifyTrusted} from '../tools/m4/windows_aet8_trusted_qualification.mjs';
 import {SECURITY_CASES,FIXTURE_CASES} from '../tools/m4/windows_aet8_trusted_guest.mjs';
-import {QUALIFICATION_BROWSER_ARGS,createPipeTransport,waitForBrowserExit,closeBrowserProcess} from '../tools/m4/windows_aet8_pipe_driver.mjs';
+import {QUALIFICATION_BROWSER_ARGS,createPipeTransport,waitForBrowserExit,closeBrowserProcess,COMMAND_TIMEOUT_CODES} from '../tools/m4/windows_aet8_pipe_driver.mjs';
 import {CALCULATION_CASES,evaluateCalculationJournal} from '../tools/m4/calculation_journal_contract.mjs';
 const name='ca-win-aet8-012345abcdef',id='sha256:'+'a'.repeat(64);
 const booleans=(keys,value)=>Object.fromEntries(keys.map(k=>[k,value]));
@@ -116,7 +116,7 @@ test('stream checkpoints retain exact security observations on outer timeout but
   assert.equal(r.lastGuestStage,'WORKING');assert.equal(Object.values(r.security).filter(Boolean).length,10);
   const finished=parseGuestStream(line+JSON.stringify(good())+'\n');assert.ok(finished.final);
   assert.throws(()=>parseGuestStream(JSON.stringify(good())+'\n'+line));
-  assert.throws(()=>parseGuestStream(line.repeat(33)));
+  assert.throws(()=>parseGuestStream(line.repeat(65)));
 });
 
 test('forced exit or nonzero browser process exit never satisfies persistence',async()=>{
@@ -135,4 +135,16 @@ test('strict trusted qualification cannot count infrastructure exceptions as neg
   const observations=await evaluateCalculationJournal(broken);
   assert.equal(observations.passed,0);
   assert.equal(observations.generatedArtifactVerified,false);
+});
+
+test('timeout diagnostics name the actual fixed protocol method and functional case',async()=>{
+  const child=new EventEmitter();child.stdio=[null,null,null,new PassThrough(),new PassThrough()];child.kill=()=>{};
+  const pipe=createPipeTransport(child);
+  await assert.rejects(pipe.send('Runtime.evaluate',{},'session',10),new RegExp(COMMAND_TIMEOUT_CODES['Runtime.evaluate']));
+  pipe.close();
+  const seen=[];
+  await assert.rejects(evaluateCalculationJournal(async()=>{throw Error('BROWSER_TIMEOUT_RUNTIME_EVALUATE');},{onCaseStart:k=>seen.push(k),onCaseError:e=>{throw e;}}),/BROWSER_TIMEOUT_RUNTIME_EVALUATE/);
+  assert.deepEqual(seen,[CALCULATION_CASES[0]]);
+  const x=good();x.failure={stage:'WORKING/'+CALCULATION_CASES[0],code:COMMAND_TIMEOUT_CODES['Runtime.evaluate']};
+  assert.deepEqual(parseTrustedReport(JSON.stringify(x)).failure,x.failure);
 });

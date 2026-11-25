@@ -9,6 +9,7 @@ export const QUALIFICATION_BROWSER_ARGS=Object.freeze([
   '--disable-background-networking','--disable-crash-reporter',
   '--no-first-run','--no-default-browser-check','--disable-background-mode','--remote-debugging-pipe',
 ]);
+export const COMMAND_TIMEOUT_CODES=Object.freeze({"Browser.getVersion":"BROWSER_TIMEOUT_BROWSER_GET_VERSION","Browser.close":"BROWSER_TIMEOUT_BROWSER_CLOSE","Runtime.evaluate":"BROWSER_TIMEOUT_RUNTIME_EVALUATE","Page.navigate":"BROWSER_TIMEOUT_PAGE_NAVIGATE","Page.reload":"BROWSER_TIMEOUT_PAGE_RELOAD","Input.dispatchMouseEvent":"BROWSER_TIMEOUT_INPUT_DISPATCH_MOUSE_EVENT","Input.dispatchKeyEvent":"BROWSER_TIMEOUT_INPUT_DISPATCH_KEY_EVENT","Storage.clearDataForOrigin":"BROWSER_TIMEOUT_STORAGE_CLEAR_DATA_FOR_ORIGIN","Target.createTarget":"BROWSER_TIMEOUT_TARGET_CREATE_TARGET","Target.attachToTarget":"BROWSER_TIMEOUT_TARGET_ATTACH_TO_TARGET","Target.closeTarget":"BROWSER_TIMEOUT_TARGET_CLOSE_TARGET"});
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function binary(){
   for(const dir of fs.readdirSync('/ms-playwright').filter(n=>/^chromium-\d+$/.test(n)).sort())
@@ -46,7 +47,7 @@ export function createPipeTransport(child){
     if(pending.size>=16)return Promise.reject(Error('BROWSER_PIPE_BUSY'));
     const id=++next;
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{pending.delete(id);reject(Error('BROWSER_COMMAND_TIMEOUT'));},Math.max(1,Math.min(5000,timeoutMs)));
+      const timer=setTimeout(()=>{pending.delete(id);reject(Error(COMMAND_TIMEOUT_CODES[method]??'BROWSER_COMMAND_TIMEOUT'));},Math.max(1,Math.min(5000,timeoutMs)));
       pending.set(id,{resolve,reject,timer});
       outgoing.write(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})})+'\0');
     });
@@ -112,7 +113,9 @@ function makePage(transport,sessionId,url){
   };
   const ready=async(deadline=Date.now()+8000)=>{
     while(Date.now()<deadline){
-      if(await evaluate('location.href==='+JSON.stringify(url)+'&&document.readyState==="complete"',Math.min(1000,deadline-Date.now())))return;
+      try{
+        if(await evaluate('location.href==='+JSON.stringify(url)+'&&document.readyState==="complete"',Math.min(2000,deadline-Date.now())))return;
+      }catch(e){if(!['BROWSER_TIMEOUT_RUNTIME_EVALUATE','BROWSER_PROTOCOL_ERROR','FIXTURE_DOM_EVALUATION_FAILED'].includes(e?.message))throw e;}
       await sleep(100);
     }
     throw Error('FIXTURE_NAVIGATION_TIMEOUT');
