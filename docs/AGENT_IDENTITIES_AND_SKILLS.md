@@ -196,6 +196,35 @@ No standing activation is granted.
 This uses the existing MAF ChatClientAgent instruction context path
 rather than a native portable-skills API. Model-free tests exercise the
 actual adapter with a fake IChatClient; a real local Ollama owner test
-is still required. Product Owner and QA activation, safe reviewed
-references, native skills API compatibility and full live acceptance
-remain outstanding.
+is still required. QA activation, safe reviewed references, native skills API compatibility
+and full live acceptance remain outstanding.
+
+## Product Owner activation increment (#110)
+
+After reviewing `requirements-discovery` for a project, the Product
+Discovery and Specification stages offer a separate checkbox for one
+model-driven interview turn or specification draft. It resets on
+submission. Ordinary calls never receive ambient skill context.
+
+Both existing POST contracts accept optional `skill` containing the
+name, review revision, review SHA-256 and a fresh request ID. The host
+rechecks the current review and exact saved transcript sequence in a
+transaction, reconstructs the context from the persisted objective,
+transcript and pending owner answer (if any), validates the local
+model and phase, and binds the context digest to an admitted event.
+No model-supplied skill paths, text, tools or execution rights are
+accepted. A single-use context cannot cross interview and specification
+phases. Existing bounded retries and output validators remain intact.
+The deterministic final interview acknowledgement rejects skill
+activation, since it does not call a model.
+
+The authenticated skill-uses endpoint includes separate
+`discoveryEvents` records with expected sequence and context SHA-256,
+rather than pretending an approved specification already exists.
+`ResponseReturned` means the Product Owner adapter returned a
+validated result (including the existing bounded repetition fallback),
+not that the artifact was saved or approved, or that instructions were
+obeyed. `Admitted` without a terminal receipt is an unknown outcome.
+Review revocation prevents future admissions; admitted calls retain
+their immutable context. Project deletion removes the audit records.
+Model-free MAF adapter tests do not qualify live Ollama.
