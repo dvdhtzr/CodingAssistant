@@ -4,8 +4,10 @@ using Microsoft.Data.Sqlite;
 
 namespace CodingAssistant.Api;
 
+public sealed record RoutineRepairScope(string BaselineRunId, string BaselineSourceSha256,
+    string[] Paths, int MaximumRepairs);
 public sealed record ProposeDelegationRequest(int ExpectedRevision,
-    string PlanSha256, string[] Operations);
+    string PlanSha256, string[] Operations, RoutineRepairScope? RoutineRepair = null);
 public sealed record ApproveDelegationRequest(int Revision,
     string PolicySha256, string Confirmation);
 public sealed record DelegationPolicy(string TaskId, int Revision,
@@ -13,7 +15,7 @@ public sealed record DelegationPolicy(string TaskId, int Revision,
     string SpecificationSha256, string ArchitectureSha256,
     IReadOnlyList<string> Operations, string PolicySha256, string Status,
     string CreatedUtc, string? ApprovedUtc, bool Current = false,
-    string EffectiveStatus = "UNKNOWN");
+    string EffectiveStatus = "UNKNOWN", RoutineRepairScope? RoutineRepair = null);
 
 /// <summary>Versioned, owner-approved opt-in for future autonomous routine
 /// actions. This is an additional permission gate, never an alternative
@@ -44,6 +46,12 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
                 approved_utc TEXT,
                 PRIMARY KEY(task_id,revision)
             );
+            CREATE TABLE IF NOT EXISTS engineering_routine_repair_scope (
+                task_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                scope_json TEXT NOT NULL,
+                PRIMARY KEY(task_id,revision),
+                FOREIGN KEY(task_id,revision) REFERENCES engineering_delegation(task_id,revision) ON DELETE CASCADE
+            );
             """);
 
     private static DelegationPolicy? Latest(SqliteConnection db,
@@ -52,7 +60,9 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
         using var cmd = TaskStore.Command(db, tx, """
             SELECT task_id,revision,plan_revision,plan_sha256,spec_version,
                 spec_sha256,architecture_sha256,operations_json,policy_sha256,
-                status,created_utc,approved_utc
+                status,created_utc,approved_utc,
+                (SELECT scope_json FROM engineering_routine_repair_scope s
+                 WHERE s.task_id=engineering_delegation.task_id AND s.revision=engineering_delegation.revision)
             FROM engineering_delegation WHERE task_id=@task
             ORDER BY revision DESC LIMIT 1
             """, ("@task", taskId));
@@ -63,7 +73,8 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             reader.GetString(5),reader.GetString(6),
             JsonSerializer.Deserialize<string[]>(reader.GetString(7))!,
             reader.GetString(8),reader.GetString(9),reader.GetString(10),
-            reader.IsDBNull(11) ? null : reader.GetString(11));
+            reader.IsDBNull(11) ? null : reader.GetString(11),
+            RoutineRepair: reader.IsDBNull(12) ? null : JsonSerializer.Deserialize<RoutineRepairScope>(reader.GetString(12)));
     }
 
     private static void RequireBinding(DelegationPolicy policy, ImplementationPlan plan)
@@ -120,7 +131,9 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
         using (var cmd = TaskStore.Command(db, tx, """
             SELECT task_id,revision,plan_revision,plan_sha256,spec_version,
                 spec_sha256,architecture_sha256,operations_json,policy_sha256,
-                status,created_utc,approved_utc
+                status,created_utc,approved_utc,
+                (SELECT scope_json FROM engineering_routine_repair_scope s
+                 WHERE s.task_id=engineering_delegation.task_id AND s.revision=engineering_delegation.revision)
             FROM engineering_delegation WHERE task_id=@task ORDER BY revision
             """, ("@task",taskId)))
         using (var reader = cmd.ExecuteReader())
@@ -130,11 +143,41 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
                     reader.GetString(5),reader.GetString(6),
                     JsonSerializer.Deserialize<string[]>(reader.GetString(7))!,
                     reader.GetString(8),reader.GetString(9),reader.GetString(10),
-                    reader.IsDBNull(11) ? null : reader.GetString(11)));
+                    reader.IsDBNull(11) ? null : reader.GetString(11),
+            RoutineRepair: reader.IsDBNull(12) ? null : JsonSerializer.Deserialize<RoutineRepairScope>(reader.GetString(12))));
         var result = history.Select((item,index) =>
             Effective(item,plan,index == history.Count-1)).ToArray();
         tx.Commit();
         return result;
+    }
+
+    private static RoutineRepairScope? ValidateRoutineScope(SqliteConnection db,
+        SqliteTransaction tx, string taskId, ImplementationPlan plan,
+        IReadOnlyList<string> operations, RoutineRepairScope? scope)
+    {
+        if (scope is null) return null;
+        if (scope.MaximumRepairs is < 1 or > 8 || scope.Paths is null ||
+            scope.Paths.Length is < 1 or > 12 ||
+            scope.Paths.Any(p => string.IsNullOrWhiteSpace(p) || ProjectDraftStore.SafePath(p) != p) ||
+            scope.Paths.Distinct(StringComparer.OrdinalIgnoreCase).Count() != scope.Paths.Length ||
+            new[] {"ScheduleWork","RequestRepair","WriteSource","ReviewCode","ReviewAcceptance"}
+                .Any(op => !operations.Contains(op, StringComparer.Ordinal)))
+            throw new StoreFailure("INVALID_INPUT");
+        var source = EngineeringRunStore.Find(db, tx, scope.BaselineRunId);
+        if (source is null || source.TaskId != taskId || source.State != "Generated" ||
+            source.PlanSha256 != plan.PlanSha256 ||
+            TaskStore.Scalar(db, tx, """
+                SELECT id FROM engineering_runs WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1
+                """, ("@task", taskId)) != source.Id ||
+            EngineeringMessageStore.SourceFingerprint(db, tx, source.Id) != scope.BaselineSourceSha256)
+            throw new StoreFailure("SOURCE_CHANGED");
+        EngineeringRunStore.RequireBinding(db, tx, source);
+        foreach (var path in scope.Paths)
+            if (TaskStore.Scalar(db, tx, """
+                SELECT path FROM engineering_run_files WHERE run_id=@run AND path=@path
+                """, ("@run",source.Id),("@path",path)) != path)
+                throw new StoreFailure("REPAIR_SCOPE_VIOLATION");
+        return scope with { Paths = scope.Paths.OrderBy(p => p, StringComparer.Ordinal).ToArray() };
     }
 
     public DelegationPolicy Propose(string taskId, ProposeDelegationRequest input)
@@ -154,10 +197,14 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             throw new StoreFailure("STALE_DELEGATION_POLICY");
         var revision = input.ExpectedRevision + 1;
         var operations = input.Operations.OrderBy(op => op, StringComparer.Ordinal).ToArray();
-        var sha = Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
-            new { schemaVersion = 1, taskId, revision, planRevision = plan.Revision,
-                plan.PlanSha256, plan.SpecificationVersion, plan.SpecificationSha256,
-                plan.ArchitectureSha256, operations }))).ToLowerInvariant();
+        var routine = ValidateRoutineScope(db, tx, taskId, plan, operations, input.RoutineRepair);
+        var sha = Convert.ToHexString(SHA256.HashData(routine is null
+            ? JsonSerializer.SerializeToUtf8Bytes(new { schemaVersion = 1, taskId, revision,
+                planRevision = plan.Revision, plan.PlanSha256, plan.SpecificationVersion,
+                plan.SpecificationSha256, plan.ArchitectureSha256, operations })
+            : JsonSerializer.SerializeToUtf8Bytes(new { schemaVersion = 2, taskId, revision,
+                planRevision = plan.Revision, plan.PlanSha256, plan.SpecificationVersion,
+                plan.SpecificationSha256, plan.ArchitectureSha256, operations, routine }))).ToLowerInvariant();
         if (previous is not null && previous.Status is ("Approved" or "Proposed"))
             TaskStore.Execute(db, tx, """
                 UPDATE engineering_delegation SET status='Superseded'
@@ -173,6 +220,11 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             ("@plan",plan.PlanSha256),("@sv",plan.SpecificationVersion),
             ("@spec",plan.SpecificationSha256),("@arch",plan.ArchitectureSha256),
             ("@ops",JsonSerializer.Serialize(operations)),("@sha",sha),("@now",now));
+        if (routine is not null)
+            TaskStore.Execute(db, tx, """
+                INSERT INTO engineering_routine_repair_scope(task_id,revision,scope_json)
+                VALUES(@task,@revision,@scope)
+                """, ("@task",taskId),("@revision",revision),("@scope",JsonSerializer.Serialize(routine)));
         var result = Effective(Latest(db, tx, taskId)!,plan,true);
         EngineeringActivityStore.Record(db,tx,taskId,"DelegationProposed","HumanOwner",
             "DelegationPolicy",sha,revision);
@@ -190,7 +242,9 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             policy.PolicySha256 != input.PolicySha256 ||
             input.Confirmation != "APPROVE " + policy.PolicySha256)
             throw new StoreFailure("APPROVAL_MISMATCH");
-        RequireBinding(policy, ImplementationPlanStore.RequireCurrentApproved(db, tx, taskId));
+        var plan = ImplementationPlanStore.RequireCurrentApproved(db, tx, taskId);
+        RequireBinding(policy, plan);
+        _ = ValidateRoutineScope(db, tx, taskId, plan, policy.Operations, policy.RoutineRepair);
         var now = DateTimeOffset.UtcNow.ToString("O");
         TaskStore.Execute(db, tx, """
             UPDATE engineering_delegation SET status='Approved',approved_utc=@now
