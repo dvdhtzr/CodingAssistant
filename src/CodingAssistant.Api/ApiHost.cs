@@ -433,7 +433,8 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/interview/turn", (
                 string id, InterviewTurnRequest input,
                 TaskStore tasks, InterviewStore db, IInterviewModel model,
-                IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+                IOllamaModelCatalog catalog, SkillReviewStore skillReviews,
+                CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 var task = tasks.GetTask(id).Task;
@@ -457,6 +458,8 @@ public static class ApiHost
                 if (snapshot.Messages.Count(x => x.Role == "owner") ==
                     InterviewStore.ModelDrivenAnswerLimit)
                 {
+                    if (input.Skill is not null)
+                        throw new StoreFailure("SKILL_SCOPE_DENIED");
                     _ = InterviewStore.ValidOwnerMessage(input.Message);
                     return Results.Ok(db.CommitTurn(
                         id, input with { Model = selected },
@@ -471,15 +474,27 @@ public static class ApiHost
                         snapshot.LastSequence + 1, "owner",
                         InterviewStore.ValidOwnerMessage(input.Message),
                         DateTimeOffset.UtcNow.ToString("O")));
-                var reply = await model.AskAsync(
-                    task.Objective, context, selected, cancellation);
+                InterviewReply reply;
+                if (input.Skill is null)
+                    reply = await model.AskAsync(task.Objective, context, selected, cancellation);
+                else
+                {
+                    if (model is not MafAgentTeam team)
+                        throw new StoreFailure("SKILL_ADAPTER_UNAVAILABLE");
+                    var admitted = skillReviews.AdmitDiscovery(id, input.Skill,
+                        "interview-turn", input.ExpectedSequence, input.Message, selected);
+                    try { reply = await team.AskWithSkillAsync(admitted, cancellation); }
+                    catch { skillReviews.FinishDiscovery(admitted, false); throw; }
+                    skillReviews.FinishDiscovery(admitted, true);
+                }
                 return Results.Ok(db.CommitTurn(
                     id, input with { Model = selected }, reply));
             }));
         app.MapPost("/api/tasks/{id}/interview/specification", (
                 string id, SpecificationRequest input,
                 TaskStore tasks, InterviewStore db, IInterviewModel model,
-                IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+                IOllamaModelCatalog catalog, SkillReviewStore skillReviews,
+                CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 var task = tasks.GetTask(id).Task;
@@ -496,9 +511,20 @@ public static class ApiHost
                 var localNames = await catalog.ListAsync(cancellation);
                 if (!localNames.Contains(selectedModel, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
-                var content = await model.DraftAsync(
-                    task.Objective, snapshot.Messages, selectedModel,
-                    cancellation);
+                string content;
+                if (input.Skill is null)
+                    content = await model.DraftAsync(task.Objective, snapshot.Messages,
+                        selectedModel, cancellation);
+                else
+                {
+                    if (model is not MafAgentTeam team)
+                        throw new StoreFailure("SKILL_ADAPTER_UNAVAILABLE");
+                    var admitted = skillReviews.AdmitDiscovery(id, input.Skill,
+                        "specification-draft", input.ExpectedSequence, null, selectedModel);
+                    try { content = await team.DraftWithSkillAsync(admitted, cancellation); }
+                    catch { skillReviews.FinishDiscovery(admitted, false); throw; }
+                    skillReviews.FinishDiscovery(admitted, true);
+                }
                 return Results.Ok(db.CommitSpecification(
                     id, input.ExpectedSequence, content, selectedModel));
             }));
@@ -662,7 +688,8 @@ public static class ApiHost
         app.MapGet("/api/agents/skills", () =>
             Safe(() => Results.Ok(new { skills = SkillCatalog.Discover() })));
         app.MapGet("/api/tasks/{id}/skill-uses", (string id, SkillReviewStore reviews) =>
-            Safe(() => Results.Ok(new { events = reviews.ReadUses(id) })));
+            Safe(() => Results.Ok(new { events = reviews.ReadUses(id),
+                discoveryEvents = reviews.ReadDiscoveryUses(id) })));
         app.MapGet("/api/tasks/{id}/skill-reviews", (string id, SkillReviewStore reviews) =>
             Safe(() => Results.Ok(new { skills = reviews.Read(id) })));
         app.MapPost("/api/tasks/{id}/skill-reviews/{name}",
