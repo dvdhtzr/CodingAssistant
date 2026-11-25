@@ -104,7 +104,7 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
         var task = owner.CreateTask(new CreateTaskRequest("Private fixture", "No private data", Guid.NewGuid().ToString("N")));
         var writer = Task.Run(() =>
         {
-            for (var i = 0; i < 30; i++)
+            for (var i = 0; i < 100; i++)
             {
                 using var db = new SqliteConnection(new SqliteConnectionStringBuilder
                 {
@@ -119,11 +119,17 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
         });
         var reader = Task.Run(() =>
         {
-            for (var i = 0; i < 60; i++)
+            for (var i = 0; i < 150; i++)
                 if (owner.GetTask(task.Id).Task.Id != task.Id)
                     throw new Exception("Private sidecar fixture read failed");
         });
-        await Task.WhenAll(writer, reader).WaitAsync(TimeSpan.FromSeconds(45));
+        var additionalReader = Task.Run(() =>
+        {
+            for (var i = 0; i < 150; i++)
+                if (owner.GetTask(task.Id).Task.Id != task.Id)
+                    throw new Exception("Concurrent private sidecar fixture read failed");
+        });
+        await Task.WhenAll(writer, reader, additionalReader).WaitAsync(TimeSpan.FromSeconds(60));
         Check(true, "concurrent private WAL reader/writer churn preserves access checks");
         var sidecar = dbPath + "-journal";
         File.WriteAllText(sidecar, "not a real journal");
@@ -144,6 +150,39 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
         catch (InvalidOperationException) { refused = true; }
         Check(refused && File.ReadAllText(sidecar) == "not a real journal",
             "unsafe existing sidecar refused before SQLite recovery reads it");
+        var runtimeRefused = false;
+        try { _ = owner.GetTask(task.Id); }
+        catch (StoreFailure failure) { runtimeRefused = failure.Code == "PRIVATE_DATA_UNAVAILABLE"; }
+        Check(runtimeRefused && File.ReadAllText(sidecar) == "not a real journal",
+            "runtime sidecar validation fails closed with sanitized storage error");
+        File.Delete(sidecar);
+        if (OperatingSystem.IsWindows())
+        {
+            // A genuine persistent sharing denial is not an absent file.
+            // Opening with no sharing prevents metadata access while the
+            // handle lives; the bounded validation must not open SQLite.
+            using (var held = new FileStream(sidecar, FileMode.CreateNew,
+                FileAccess.ReadWrite, FileShare.None))
+            {
+                // Explicitly deny READ_CONTROL on the file instead of assuming
+                // metadata access conflicts with every Windows sharing mode.
+                var acl = held.GetAccessControl();
+                using var identity = WindowsIdentity.GetCurrent();
+                acl.AddAccessRule(new FileSystemAccessRule(identity.User!,
+                    FileSystemRights.ReadPermissions, AccessControlType.Deny));
+                held.SetAccessControl(acl);
+                var denied = false;
+                try { _ = owner.GetTask(task.Id); }
+                catch (StoreFailure failure) { denied = failure.Code == "PRIVATE_DATA_UNAVAILABLE"; }
+                Check(denied, "persistent sidecar access denial is not treated as absence");
+                acl.RemoveAccessRuleSpecific(new FileSystemAccessRule(identity.User!,
+                    FileSystemRights.ReadPermissions, AccessControlType.Deny));
+                held.SetAccessControl(acl);
+            }
+            File.Delete(sidecar);
+        }
+        Check(owner.GetTask(task.Id).Task.Id == task.Id,
+            "private database reads recover after unsafe sidecar removal");
     }
     finally { Directory.Delete(folder, recursive: true); }
 }
