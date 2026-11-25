@@ -246,7 +246,8 @@ public sealed class CollaborationStore(TaskStore tasks)
     // The exact owner-authorized repair is linked inside its admission
     // transaction. A policy approval alone is not a source repair grant.
     internal static void BindRepair(SqliteConnection db,SqliteTransaction tx,string taskId,
-        string parentId,string cycleId,RepairProposal proposal,IReadOnlyList<RepairFindingReference> selected)
+        string parentId,string cycleId,RepairProposal proposal,IReadOnlyList<RepairFindingReference> selected,
+        string? routineCandidateRunId=null)
     {
         var parent=Find(db,tx,taskId,parentId);
         if(parent.State!="AwaitingOwner" || parent.Reason!="EXACT_REPAIR_APPROVAL_REQUIRED" ||
@@ -265,6 +266,15 @@ public sealed class CollaborationStore(TaskStore tasks)
             !selected.Any(f=>issue.References.Any(x=>x.ReviewId==(proposal.LeadReviewId??proposal.QaReviewId) &&
                 x.Path.Equals(f.Path,StringComparison.OrdinalIgnoreCase) && x.FindingIndex==f.Index)))
             throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+        if(routineCandidateRunId is not null)
+        {
+            var decision=issue.Decisions.LastOrDefault();
+            if(selected.Count!=1 || !issue.LatestReview ||
+                decision?.PolicyRevision!=parent.PolicyRevision || decision.PolicySha256!=parent.PolicySha256 ||
+                decision.Classification!="ImplementationDefect")
+                throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            EngineeringDelegationStore.AdmitRoutineRepair(db,tx,parent,proposal,selected[0].Path,cycleId,routineCandidateRunId);
+        }
         TaskStore.Execute(db,tx,"INSERT INTO engineering_collaboration_repairs(task_id,parent_id,cycle_id) VALUES(@task,@parent,@cycle)",
             ("@task",taskId),("@parent",parentId),("@cycle",cycleId));
     }
@@ -570,7 +580,7 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
     ICollaborationLead lead,LeadReviewCoordinator leadReviews,LeadReviewStore leadStore,
     QaReviewCoordinator qaReviews,QaReviewStore qaStore,RepairProposalStore proposals,RepairCycleStore cycles,
     AgentRoleModelSettings models,IOllamaModelCatalog catalog,ImplementationPlanStore plans,
-    IEngineeringIssueVerifier verifier,IHostApplicationLifetime lifetime)
+    IEngineeringIssueVerifier verifier,IHostApplicationLifetime lifetime,IServiceProvider services)
 {
     private readonly ConcurrentDictionary<string,CancellationTokenSource> _active=new();
     public async Task<CollaborationRun> StartAsync(string taskId,StartCollaborationRequest request,CancellationToken token,
@@ -683,7 +693,40 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         var proposal=proposals.Propose(job.TaskId,issue.Origin=="QaEngineer"?new(review):new(null,review),
                             new CollaborationAdmission(job.Id,step.Sequence),issue.Id);
                         PublishRepairRequest(job,issue,step.Rationale);
-                        store.Finish(job.TaskId,job.Id,"AwaitingOwner","EXACT_REPAIR_APPROVAL_REQUIRED");return;
+                        var policy=new EngineeringDelegationStore(tasks).Read(job.TaskId);
+                        // Only a separately approved source-only scope can remove the
+                        // per-finding owner gate. The old owner route stays unchanged.
+                        // Persist the recoverable exact repair checkpoint before dispatch.
+                        store.Finish(job.TaskId,job.Id,"AwaitingOwner","EXACT_REPAIR_APPROVAL_REQUIRED");
+                        if(policy is { Current:true, Status:"Approved", RoutineRepair:not null } &&
+                            policy.PolicySha256==job.PolicySha256 &&
+                            policy.RoutineRepair.Paths.Contains(issue.Path,StringComparer.Ordinal))
+                        {
+                            token.ThrowIfCancellationRequested();
+                            var finding=issue.References.Last();
+                            var engineerModel=models.Resolve(job.TaskId,"SoftwareEngineer",job.Model);
+                            var qaModel=models.Resolve(job.TaskId,"QaEngineer",job.Model);
+                            var installed=await catalog.ListAsync(token);
+                            if(!installed.Contains(engineerModel,StringComparer.Ordinal) ||
+                                !installed.Contains(qaModel,StringComparer.Ordinal))
+                                throw new StoreFailure("MODEL_NOT_INSTALLED");
+                            try
+                            {
+                                services.GetRequiredService<RepairCycleCoordinator>().StartRoutine(job.TaskId,
+                                    new StartRepairCycleRequest(proposal.Id,null,
+                                        [new RepairSelection(finding.Path,finding.FindingIndex)],job.Id),
+                                    engineerModel,qaModel);
+                            }
+                            catch(StoreFailure error) when(error.Code is "REPAIR_NOT_AUTHORIZED" or
+                                "ROUTINE_REPAIR_BUDGET_EXHAUSTED" or "ROUTINE_REPAIR_RECHECK_REQUIRED" or
+                                "REPAIR_SCOPE_VIOLATION" or "SOURCE_CHANGED" or "DELEGATION_NOT_AUTHORIZED")
+                            {
+                                // Preserve the owner checkpoint when scope, evidence or
+                                // progress is inadequate. No candidate was admitted.
+                                store.Finish(job.TaskId,job.Id,"Escalated",error.Code);
+                            }
+                        }
+                        return;
                     }
                     case "AwaitQualifiedVerification":
                         store.Finish(job.TaskId,job.Id,"AwaitingVerification","QUALIFIED_VERIFICATION_REQUIRED");return;
