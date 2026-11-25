@@ -10,12 +10,15 @@ public sealed record ArchitectureSkillRequest(string? Name, int ReviewRevision,
 public sealed class ArchitectureSkillContext
 {
     internal ArchitectureSkillContext(string requestId, string taskId, string topic,
-        string model, string contentSha256, string instructions)
+        string model, int specificationVersion, string specificationSha256,
+        string contentSha256, string instructions)
     {
         RequestId = requestId;
         TaskId = taskId;
         Topic = topic;
         Model = model;
+        SpecificationVersion = specificationVersion;
+        SpecificationSha256 = specificationSha256;
         ContentSha256 = contentSha256;
         Instructions = instructions;
     }
@@ -24,7 +27,15 @@ public sealed class ArchitectureSkillContext
     public string Topic { get; }
     public string Model { get; }
     public string ContentSha256 { get; }
+    public int SpecificationVersion { get; }
+    public string SpecificationSha256 { get; }
     internal string Instructions { get; }
+    private int _consumed;
+    internal void Consume()
+    {
+        if (Interlocked.Exchange(ref _consumed, 1) != 0)
+            throw new StoreFailure("IDEMPOTENCY_CONFLICT");
+    }
 }
 
 public sealed record SkillUseEvent(string RequestId, string SkillName, string Role,
@@ -110,7 +121,8 @@ public sealed partial class SkillReviewStore
             ("@utc", DateTimeOffset.UtcNow.ToString("O")));
         tx.Commit();
         return new ArchitectureSkillContext(use.RequestId, taskId, request.Topic!,
-            model, skill.ContentSha256, skill.Instructions);
+            model, request.SpecificationVersion, request.SpecificationSha256,
+            skill.ContentSha256, skill.Instructions);
     }
 
     // "ProposalReturned" is a valid parsed response, not proof of persistence,
