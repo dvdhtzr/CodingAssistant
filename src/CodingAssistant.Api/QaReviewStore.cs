@@ -321,6 +321,22 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         var sourceState = TaskStore.Scalar(db, tx, """
             SELECT state FROM engineering_runs WHERE id=@id AND task_id=@task
             """, ("@id", review.EngineeringRunId), ("@task", taskId));
+        // Compare immutable file identities in the same read transaction.
+        // No source body is needed for this projection.
+        var identities = new List<EngineeringSourceFile>();
+        using (var cmd = TaskStore.Command(db, tx, """
+            SELECT path,sha256 FROM engineering_run_files WHERE run_id=@id
+            ORDER BY path
+            """, ("@id", review.EngineeringRunId)))
+        using (var reader = cmd.ExecuteReader())
+            while (reader.Read())
+                identities.Add(new EngineeringSourceFile(reader.GetString(0),
+                    "", "", reader.GetString(1), "", ""));
+        if (!IsReviewableSource(sourceState ?? "Unavailable", identities.Count) ||
+            Fingerprint(identities) != review.SourceSha256 ||
+            reports.Any(report => !identities.Any(file => file.Path == report.Path &&
+                file.Sha256 == report.SourceSha256)))
+            throw new StoreFailure("SOURCE_CHANGED");
         var boundPlan = ImplementationPlanStore.ReadForQa(db, tx, review);
         var acceptance = QaAcceptanceProjection.Build(review, boundPlan, reports);
         tx.Commit();
