@@ -2,6 +2,7 @@
 import os
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -149,6 +150,75 @@ class RealRecoveryProbeContracts(unittest.TestCase):
         self.assertNotIn("SECRET", str(result))
         self.assertFalse(result["model_inference"])
         self.assertFalse(result["actual_owner_approval"])
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux private-lock semantics")
+    def test_retained_probe_rejects_wrong_label_and_active_then_retries(self):
+        if os.geteuid() == 0:
+            self.skipTest("nonroot host required")
+        with tempfile.TemporaryDirectory() as temp, \
+             mock.patch.object(p, "ARTIFACTS", pathlib.Path(temp)), \
+             mock.patch.object(p, "inspect_podman", return_value={"rootless": True}):
+            report = {}
+            with p.retained_ledger(report) as folder:
+                with p.RunLedger(folder / "private-ledger") as ledger:
+                    handle = ledger.start(p.REQUEST_ID)
+                    handle.advance("PREFLIGHT")
+                    handle.advance("AWAITING_APPROVAL", plan_hash=p.TEST_PLAN)
+                    handle.advance("APPROVED")
+                    handle.advance("RUNNING", container_name=handle.container_name())
+                    rid = handle.run_id
+                    token = folder.name.removeprefix("ca-m114-recovery-")
+                    blocked = p.retry_recovery(token)
+                    self.assertEqual(blocked["recovery_result"], "ACTIVE")
+                    handle.close()
+            self.assertTrue(folder.is_dir())
+            self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(report["recovery_token"], token)
+            def wrong_label(args, timeout):
+                self.assertNotIn("rm", args)
+                return p.subprocess.CompletedProcess(args, 0,
+                    "wrong-label" if "inspect" in args else "", "")
+            with mock.patch("run_ledger._fixed", side_effect=wrong_label):
+                result = p.retry_recovery(token)
+                self.assertEqual(result["recovery_result"], "RECOVERY_BLOCKED")
+            self.assertTrue(folder.is_dir())
+            with p.RunLedger(folder / "private-ledger") as ledger:
+                handle_state = ledger.get(rid)["state"]
+                self.assertEqual(handle_state, "RECOVERY_BLOCKED")
+            replies = iter([p.subprocess.CompletedProcess([], 0, "", ""),
+                            p.subprocess.CompletedProcess([], 0, rid+"\n", ""),
+                            p.subprocess.CompletedProcess([], 0, "", ""),
+                            p.subprocess.CompletedProcess([], 1, "", "")])
+            with mock.patch("run_ledger._fixed", side_effect=lambda *a, **k: next(replies)), \
+                 mock.patch.object(p, "fixed", return_value=p.subprocess.CompletedProcess([],1,"","")):
+                result = p.retry_recovery(token)
+            self.assertEqual(result["status"], "REAL_RECOVERY_RETRY_PASS")
+            self.assertFalse(folder.exists())
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux private-lock semantics")
+    def test_clean_probe_directory_is_removed_but_uncertain_exception_retained(self):
+        if os.geteuid() == 0:
+            self.skipTest("nonroot host required")
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(p, "ARTIFACTS", pathlib.Path(temp)):
+            report = {}
+            with p.retained_ledger(report) as folder:
+                pass
+            self.assertFalse(folder.exists())
+            report = {}
+            with self.assertRaises(OSError):
+                with p.retained_ledger(report) as folder:
+                    raise OSError("private details")
+            self.assertTrue(folder.is_dir())
+            self.assertEqual(report["reason"], "RECOVERY_CLEANUP_BLOCKED")
+            self.assertNotIn("private details", str(report))
+
+    def test_probe_record_cannot_target_unrelated_run(self):
+        row = {"request_id": p.REQUEST_ID, "plan_hash": p.TEST_PLAN,
+               "run_id": "a"*24, "container_name": p.managed_container("a"*24)}
+        self.assertTrue(p.probe_record(row))
+        for change in [{"request_id":"b"*32},{"plan_hash":"b"*64},
+                       {"container_name":p.managed_container("b"*24)}]:
+            self.assertFalse(p.probe_record({**row, **change}))
 
 
 if __name__ == "__main__":

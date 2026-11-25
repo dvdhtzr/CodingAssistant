@@ -1,0 +1,5 @@
+# M1.14 recovery evidence preservation (#68)
+
+The fixed, opt-in Dell model-free orphan probe uses a unique 0700 test journal. If cleanup cannot be confirmed, preserve it and print a 12-hex recovery token. The token is not a plan approval. The retry is Linux/rootless only, validates the private test directory and fixed request/plan/container binding, respects the probe lock and RunLedger active run lock, and delegates container removal to the existing exact label-checked reconciler. Delete the test journal only after terminal interrupted-clean state and an independent absence check. A missing or uncertain journal, wrong container label, live lock, or failed Podman check blocks without replay. No new container, model invocation, worktree, credentials, or execution rights are introduced by retry.
+
+The real Dell orphan probe is NOT requested here. Verify model-free CI and reviewed integration before any separately authorized real-host probe. Model-free tests exercise retained evidence, wrong labels, active locking, successful cleanup, and exact probe identity.
