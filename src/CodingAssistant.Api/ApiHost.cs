@@ -180,6 +180,7 @@ public static class ApiHost
         builder.Services.AddSingleton(browserSessions);
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(roleModels);
+        builder.Services.AddSingleton<SkillReviewStore>();
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(architectureDecisions);
         builder.Services.AddSingleton(handoffs);
@@ -640,6 +641,11 @@ public static class ApiHost
                 agents = EngineeringAgentRoster.All }));
         app.MapGet("/api/agents/skills", () =>
             Safe(() => Results.Ok(new { skills = SkillCatalog.Discover() })));
+        app.MapGet("/api/tasks/{id}/skill-reviews", (string id, SkillReviewStore reviews) =>
+            Safe(() => Results.Ok(new { skills = reviews.Read(id) })));
+        app.MapPost("/api/tasks/{id}/skill-reviews/{name}",
+            (string id, string name, SkillReviewRequest request, SkillReviewStore reviews) =>
+                Safe(() => Results.Ok(reviews.Review(id, name, request))));
 
         // Fourth real MAF agent: one task at a time from the exact current
         // owner-approved Technical Lead plan, source-only and never executed.
@@ -1127,7 +1133,7 @@ public static class ApiHost
                 "SOURCE_CHANGED" or "SOURCE_SCOPE_CHANGED" or
                 "SMOKE_BUSY" or "SMOKE_ISOLATION_ACK_REQUIRED" or
                 "SPECIFICATION_NOT_APPROVED" or
-                "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
+                "STALE_SKILL_REVIEW" or "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
                 "EXECUTION_PLAN_CONFLICT" => StatusCodes.Status409Conflict,
