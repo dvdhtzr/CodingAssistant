@@ -689,7 +689,8 @@ public static class ApiHost
             Safe(() => Results.Ok(new { skills = SkillCatalog.Discover() })));
         app.MapGet("/api/tasks/{id}/skill-uses", (string id, SkillReviewStore reviews) =>
             Safe(() => Results.Ok(new { events = reviews.ReadUses(id),
-                discoveryEvents = reviews.ReadDiscoveryUses(id) })));
+                discoveryEvents = reviews.ReadDiscoveryUses(id),
+                qaEvents = reviews.ReadQaUses(id) })));
         app.MapGet("/api/tasks/{id}/skill-reviews", (string id, SkillReviewStore reviews) =>
             Safe(() => Results.Ok(new { skills = reviews.Read(id) })));
         app.MapPost("/api/tasks/{id}/skill-reviews/{name}",
