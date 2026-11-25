@@ -1769,6 +1769,111 @@ try
         catch (StoreFailure) { skillInputRejected = true; }
         Check(skillInputRejected, "changed skill text fails the reviewed content hash");
     }
+    // Skill review is project-scoped, explicitly owner-confirmed and never activation.
+    {
+        var reviewPath = "/api/tasks/" + taskBound.Id + "/skill-reviews";
+        var reviewStore = new SkillReviewStore(tasks);
+        var initialSkill = reviewStore.Read(taskBound.Id)[0];
+        var skillPath = reviewPath + "/" + initialSkill.Skill.Name;
+        var approval = new SkillReviewRequest(1, 0, initialSkill.ReviewSha256,
+            "ApproveLocalUse", "APPROVE LOCAL USE " + initialSkill.ReviewSha256, true);
+        Check(initialSkill.Revision == 0 && !initialSkill.Active &&
+            !initialSkill.ApprovedForLocalInstructionReview,
+            "skill review starts unapproved and inactive");
+        using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+        {
+            using var hiddenSkillReview = await anonymous.GetAsync(reviewPath);
+            using var deniedSkillReview = await Post(anonymous, skillPath, approval);
+            Check(hiddenSkillReview.StatusCode == HttpStatusCode.Unauthorized &&
+                deniedSkillReview.StatusCode == HttpStatusCode.Unauthorized,
+                "skill reviews require authentication for reads and writes");
+        }
+        foreach (var invalidReview in new[] {
+            approval with { LocalUsePermissionConfirmed = false },
+            approval with { Confirmation = "APPROVE" },
+            approval with { Decision = "Activate" },
+            approval with { SchemaVersion = 2 },
+        })
+        {
+            using var deniedSkillReview = await Post(client, skillPath, invalidReview);
+            Check(!deniedSkillReview.IsSuccessStatusCode,
+                "skill review rejects missing permission, confirmation or unknown action");
+        }
+        using (var wrongBinding = await Post(client, skillPath,
+            approval with { ReviewSha256 = new string('0', 64) }))
+            Check(wrongBinding.StatusCode == HttpStatusCode.Conflict,
+                "wrong skill review fingerprint blocks approval");
+        using (var unknownSkill = await Post(client, reviewPath + "/unknown", approval))
+            Check(unknownSkill.StatusCode == HttpStatusCode.NotFound,
+                "unregistered skill cannot be reviewed");
+        Check(reviewStore.Read(taskBound.Id)[0].Revision == 0,
+            "rejected reviews do not create events");
+        using (var acceptedReview = await Post(client, skillPath, approval))
+        using (var acceptedBody = await Body(acceptedReview))
+        {
+            Check(acceptedReview.StatusCode == HttpStatusCode.OK &&
+                acceptedBody.RootElement.GetProperty("approvedForLocalInstructionReview").GetBoolean() &&
+                !acceptedBody.RootElement.GetProperty("active").GetBoolean() &&
+                acceptedBody.RootElement.GetProperty("revision").GetInt32() == 1,
+                "owner approves only exact local instruction review, not activation");
+        }
+        var otherReviewTask = tasks.CreateTask(new CreateTaskRequest(
+            "Skill review isolation", "Check independent project review state",
+            Guid.NewGuid().ToString("N")));
+        var otherSkill = reviewStore.Read(otherReviewTask.Id)[0];
+        Check(otherSkill.ReviewSha256 != initialSkill.ReviewSha256 &&
+            !otherSkill.ApprovedForLocalInstructionReview,
+            "approval never transfers to another project");
+        using (var crossProject = await Post(client,
+            "/api/tasks/" + otherReviewTask.Id + "/skill-reviews/" + initialSkill.Skill.Name,
+            approval))
+            Check(crossProject.StatusCode == HttpStatusCode.Conflict,
+                "another project's exact review hash cannot authorize approval");
+        Check(SkillReviewStore.ReviewSha256(taskBound.Id,
+            initialSkill.Skill with { License = "different-license" }) != initialSkill.ReviewSha256 &&
+            SkillReviewStore.ReviewSha256(taskBound.Id,
+            initialSkill.Skill with { Version = "2" }) != initialSkill.ReviewSha256 &&
+            SkillReviewStore.ReviewSha256(taskBound.Id,
+            initialSkill.Skill with { Role = "QaEngineer" }) != initialSkill.ReviewSha256 &&
+            SkillReviewStore.ReviewSha256(taskBound.Id,
+            initialSkill.Skill with { ContentSha256 = new string('0', 64) }) != initialSkill.ReviewSha256,
+            "license, version, role and content changes invalidate the review fingerprint");
+        using (var replay = await Post(client, skillPath, approval))
+            Check(replay.StatusCode == HttpStatusCode.Conflict,
+                "replayed approval is rejected by exact review revision");
+        var restartedReview = new SkillReviewStore(new TaskStore(root)).Read(taskBound.Id)[0];
+        Check(restartedReview.ApprovedForLocalInstructionReview && restartedReview.Revision == 1 &&
+            !restartedReview.Active && restartedReview.History.Count == 1,
+            "owner review persists across SQLite store recreation");
+        var revocation = approval with { ExpectedRevision = 1, Decision = "Revoke",
+            Confirmation = "REVOKE " + initialSkill.ReviewSha256,
+            LocalUsePermissionConfirmed = false };
+        using (var revokedReview = await Post(client, skillPath, revocation))
+            Check(revokedReview.StatusCode == HttpStatusCode.OK,
+                "owner can explicitly revoke exact current review");
+        var revokedSkill = reviewStore.Read(taskBound.Id)[0];
+        Check(revokedSkill.ReviewStatus == "REVOKED" &&
+            !revokedSkill.ApprovedForLocalInstructionReview && !revokedSkill.Active &&
+            revokedSkill.History.Count == 2 && revokedSkill.History[0].Decision == "ApproveLocalUse" &&
+            revokedSkill.History[1].Decision == "Revoke",
+            "approval and revocation retain ordered audit events");
+        using (var globalCatalogResponse = await client.GetAsync("/api/agents/skills"))
+        using (var globalCatalogBody = await Body(globalCatalogResponse))
+            Check(globalCatalogBody.RootElement.GetProperty("skills").EnumerateArray()
+                .All(skill => !skill.GetProperty("active").GetBoolean()),
+                "project review never activates the global catalog");
+        // Exercise deletion with persisted review history on a separate disposable project.
+        reviewStore.Review(otherReviewTask.Id, otherSkill.Skill.Name,
+            approval with { ReviewSha256 = otherSkill.ReviewSha256,
+                Confirmation = "APPROVE LOCAL USE " + otherSkill.ReviewSha256 });
+        using (var deletedReviewTask = await client.DeleteAsync("/api/tasks/" + otherReviewTask.Id))
+            Check(deletedReviewTask.IsSuccessStatusCode,
+                "project deletion removes skill review events before parent task");
+        using (var missingReviewTask = await client.GetAsync(
+            "/api/tasks/" + otherReviewTask.Id + "/skill-reviews"))
+            Check(missingReviewTask.StatusCode == HttpStatusCode.NotFound,
+                "deleted project cannot expose review history");
+    }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
     using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await anonymous.GetAsync(engineeringPath + "/latest"))
