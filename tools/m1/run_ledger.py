@@ -8,6 +8,8 @@ credentials, source, arbitrary child-process data or arbitrary file paths.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import os
 import pathlib
 import re
@@ -128,6 +130,68 @@ def _result_code(value: str | None) -> str | None:
     return value
 
 
+def read_evidence(directory: pathlib.Path, name: str) -> tuple[dict, str]:
+    """Read bounded owner-private evidence, hashing the same bytes we parse."""
+    if type(name) is not str or not EVIDENCE_RE.fullmatch(name):
+        raise ValueError("Untrusted evidence filename")
+    path = directory / name
+    if path.is_symlink():
+        raise OSError("Refuse linked evidence")
+    _validated_file(path)
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                info.st_size > 64000 or
+                (os.name == "posix" and
+                 (info.st_uid != os.getuid() or info.st_mode & 0o077))):
+            raise ValueError("Unsafe evidence file")
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            body = stream.read(64001)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(body) > 64000:
+        raise ValueError("Oversized saved evidence")
+    report = json.loads(body.decode("utf-8"))
+    if type(report) is not dict:
+        raise ValueError("Invalid evidence object")
+    return report, hashlib.sha256(body).hexdigest()
+
+
+def flush_evidence_directory(directory: pathlib.Path) -> None:
+    # File writers fsync contents before finish. On Linux ensure the new
+    # filename itself is durable before committing its SQLite reference.
+    if os.name == "posix":
+        fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def verify_success(report: dict, name: str) -> bool:
+    gateway = report.get("gateway")
+    if type(gateway) is not dict or gateway.get("removed") is not True:
+        return False
+    if report.get("phase") != "complete":
+        return False
+    if name.startswith("m112-approved-coding-"):
+        evaluator = report.get("evaluator")
+        return (report.get("status") == "GATEWAY_APPROVED_CODING_PASS" and
+                report.get("approved") is True and
+                type(evaluator) is dict and evaluator.get("verified") is True and
+                evaluator.get("status") == "VERIFIED" and
+                report.get("fixture_unchanged") is True and
+                report.get("sentinel_unchanged") is True)
+    evaluation = report.get("evaluation")
+    return (report.get("status") == "TASK_PROJECT_VERIFIED" and
+            type(evaluation) is dict and evaluation.get("build_passed") is True and
+            evaluation.get("tests_passed") is True and
+            type(evaluation.get("test_count")) is int and evaluation["test_count"] > 0)
+
+
 class DuplicateRequest(ValueError):
     def __init__(self, record: dict):
         super().__init__("Idempotency key already used; existing run returned")
@@ -135,8 +199,9 @@ class DuplicateRequest(ValueError):
 
 
 class RunLedger:
-    def __init__(self, directory: pathlib.Path):
+    def __init__(self, directory: pathlib.Path, *, evidence_directory: pathlib.Path | None = None):
         self.directory = directory
+        self.evidence_directory = evidence_directory if evidence_directory is not None else directory
         _directory(directory)
         self.lock_dir = directory / "run-locks"
         _directory(self.lock_dir)
@@ -157,6 +222,7 @@ class RunLedger:
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.execute("PRAGMA journal_mode=DELETE")
         with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
             self.db.execute("""
               CREATE TABLE IF NOT EXISTS runs (
                 run_id TEXT PRIMARY KEY,
@@ -166,10 +232,15 @@ class RunLedger:
                 container_name TEXT UNIQUE,
                 result_code TEXT,
                 evidence_name TEXT,
+                evidence_sha256 TEXT,
                 created_utc TEXT NOT NULL,
                 updated_utc TEXT NOT NULL
               )
             """)
+            # Existing rows stay readable; do not backfill unverifiable hashes.
+            columns = {row[1] for row in self.db.execute("PRAGMA table_info(runs)")}
+            if "evidence_sha256" not in columns:
+                self.db.execute("ALTER TABLE runs ADD COLUMN evidence_sha256 TEXT")
             self.db.execute("""
               CREATE TABLE IF NOT EXISTS transitions (
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -270,7 +341,8 @@ class RunLedger:
                  plan_hash: str | None = None,
                  container_name: str | None = None,
                  result_code: str | None = None,
-                 evidence_name: str | None = None) -> None:
+                 evidence_name: str | None = None,
+                 evidence_sha256: str | None = None) -> None:
         if to not in STATES:
             raise ValueError("Unrecognized state")
         if plan_hash is not None and not HASH_RE.fullmatch(plan_hash):
@@ -280,6 +352,13 @@ class RunLedger:
             raise ValueError("Invalid managed container name")
         if evidence_name is not None and not EVIDENCE_RE.fullmatch(evidence_name):
             raise ValueError("Invalid evidence file name")
+        if (evidence_name is None) != (evidence_sha256 is None):
+            raise ValueError("Evidence filename and digest must be bound together")
+        if evidence_sha256 is not None and not HASH_RE.fullmatch(evidence_sha256):
+            raise ValueError("Invalid evidence digest")
+        if to == "SUCCEEDED" and (evidence_sha256 is None or result_code not in
+                ("GATEWAY_APPROVED_CODING_PASS", "TASK_PROJECT_VERIFIED")):
+            raise ValueError("Success requires bound verified evidence")
         _result_code(result_code)
         with self.db:
             # Serialize the read/transition/event as a single write transaction.
@@ -307,10 +386,11 @@ class RunLedger:
                   plan_hash=COALESCE(?,plan_hash),
                   container_name=COALESCE(?,container_name),
                   result_code=COALESCE(?,result_code),
-                  evidence_name=COALESCE(?,evidence_name)
+                  evidence_name=COALESCE(?,evidence_name),
+                  evidence_sha256=COALESCE(?,evidence_sha256)
                 WHERE run_id=? AND state=?
             """, (to, now, plan_hash, container_name, result_code,
-                  evidence_name, run_id, row["state"]))
+                  evidence_name, evidence_sha256, run_id, row["state"]))
             if updated.rowcount != 1:
                 raise ValueError("Run state concurrently modified")
             self.db.execute(
@@ -395,6 +475,8 @@ class RunHandle:
     def advance(self, state: str, **kwargs) -> None:
         if self.fd is None:
             raise ValueError("Run handle no longer owns the execution lock")
+        if state == "SUCCEEDED" or "evidence_sha256" in kwargs:
+            raise ValueError("Use finish to bind independently recorded evidence")
         self.ledger._advance(self.run_id, state, **kwargs)
 
     def container_name(self) -> str:
@@ -405,12 +487,17 @@ class RunHandle:
             raise ValueError("Run handle no longer owns the execution lock")
         if type(report) is not dict:
             raise ValueError("Missing execution result")
-        prior = self.ledger.get(self.run_id)["state"]
+        row = self.ledger.get(self.run_id)
+        prior = row["state"]
         if prior in TERMINAL:
             return prior
+        saved, digest = read_evidence(self.ledger.evidence_directory, evidence_name)
+        if (saved != report or saved.get("run_id") != self.run_id or
+                saved.get("plan_hash") != row["plan_hash"]):
+            raise ValueError("Evidence does not match exact durable run and plan")
         if report.get("status") in ("GATEWAY_APPROVED_CODING_PASS",
                                      "TASK_PROJECT_VERIFIED"):
-            if prior != "VERIFYING":
+            if prior != "VERIFYING" or not verify_success(saved, evidence_name):
                 raise ValueError("Cannot mark success without verified execution phase")
             target, code = "SUCCEEDED", report["status"]
         elif report.get("status") == "NOT_APPROVED":
@@ -419,14 +506,16 @@ class RunHandle:
             return prior
         else:
             gateway = report.get("gateway")
-            if type(gateway) is dict and gateway.get("removed") is False and (
-                    prior in ("RUNNING", "VERIFYING")):
+            if (prior in ("RUNNING", "VERIFYING") and
+                    (type(gateway) is not dict or gateway.get("removed") is not True)):
                 target, code = "RECOVERY_BLOCKED", None
             else:
                 target, code = "FAILED", "BLOCKED"
             if target == "FAILED" and prior == "NEW":
                 self.advance("PREFLIGHT")
-        self.advance(target, result_code=code, evidence_name=evidence_name)
+        flush_evidence_directory(self.ledger.evidence_directory)
+        self.ledger._advance(self.run_id, target, result_code=code,
+                             evidence_name=evidence_name, evidence_sha256=digest)
         return target
 
     def close(self) -> None:

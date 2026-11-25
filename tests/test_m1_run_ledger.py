@@ -1,5 +1,6 @@
 """M1 durable host journal: no Podman, Ollama, Gateway or model in CI."""
 import importlib.util
+import hashlib
 import json
 import os
 import pathlib
@@ -78,18 +79,33 @@ class DurableRunLedgerTests(unittest.TestCase):
         self.assertEqual(self.store.reconcile(handle.run_id)["result"],
                          "ALREADY_TERMINAL")
 
+    def save_evidence(self, handle, name, report):
+        value = {**report, "run_id": handle.run_id,
+                 "plan_hash": self.store.get(handle.run_id)["plan_hash"]}
+        path = self.root / name
+        path.write_text(json.dumps(value), encoding="utf-8")
+        path.chmod(0o600)
+        return value
+
+    def verified_report(self):
+        return {"status": "GATEWAY_APPROVED_CODING_PASS", "phase": "complete",
+                "approved": True, "gateway": {"removed": True},
+                "evaluator": {"status": "VERIFIED", "verified": True},
+                "fixture_unchanged": True, "sentinel_unchanged": True}
+
     def test_success_requires_real_verify_phase_and_persisted_result(self):
         handle = self.start()
         self.running(handle)
-        with self.assertRaises(ValueError):
-            handle.finish({"status": "GATEWAY_APPROVED_CODING_PASS"},
-                          "m112-approved-coding-" + "0" * 12 + ".json")
-        handle.advance("VERIFYING")
         name = "m112-approved-coding-" + "0" * 12 + ".json"
-        self.assertEqual(handle.finish({
-            "status": "GATEWAY_APPROVED_CODING_PASS",
-        }, name), "SUCCEEDED")
-        self.assertEqual(self.store.get(handle.run_id)["evidence_name"], name)
+        report = self.save_evidence(handle, name, self.verified_report())
+        with self.assertRaises(ValueError):
+            handle.finish(report, name)
+        handle.advance("VERIFYING")
+        self.assertEqual(handle.finish(report, name), "SUCCEEDED")
+        row = self.store.get(handle.run_id)
+        self.assertEqual(row["evidence_name"], name)
+        self.assertEqual(row["evidence_sha256"],
+                         hashlib.sha256((self.root / name).read_bytes()).hexdigest())
         with self.assertRaises(ValueError):
             handle.advance("RUNNING", container_name=handle.container_name())
         handle.close()
@@ -244,9 +260,9 @@ class DurableRunLedgerTests(unittest.TestCase):
     def test_cleanup_unverified_is_recoverable_not_falsely_failed(self):
         handle = self.start()
         self.running(handle)
-        state = handle.finish(
-            {"status":"BLOCKED", "gateway":{"removed":False}},
-            "m112-approved-coding-" + "1"*12 + ".json")
+        name = "m112-approved-coding-" + "1"*12 + ".json"
+        report = self.save_evidence(handle, name, {"status":"BLOCKED", "gateway":{"removed":False}})
+        state = handle.finish(report, name)
         self.assertEqual(state,"RECOVERY_BLOCKED")
         handle.close()
         self.assertEqual(self.store.reconcile(
@@ -360,6 +376,59 @@ with RunLedger(Path(sys.argv[2])) as ledger:
             with self.assertRaises(ValueError):
                 r.RunLedger(private)
             self.assertEqual(secret.read_bytes(), b"do not open")
+
+    def test_missing_or_forged_evidence_and_direct_success_are_rejected(self):
+        h = self.start()
+        self.running(h)
+        h.advance("VERIFYING")
+        name = "m112-approved-coding-" + "3"*12 + ".json"
+        with self.assertRaises(OSError):
+            h.finish(self.verified_report(), name)
+        with self.assertRaises(ValueError):
+            h.advance("SUCCEEDED", result_code="GATEWAY_APPROVED_CODING_PASS")
+        bad = self.save_evidence(h, name, {**self.verified_report(), "gateway": {"removed": False}})
+        with self.assertRaises(ValueError):
+            h.finish(bad, name)
+        valid = self.save_evidence(h, name, self.verified_report())
+        with self.assertRaises(ValueError):
+            h.finish({**valid, "run_id": "f"*24}, name)
+        self.assertEqual(self.store.get(h.run_id)["state"], "VERIFYING")
+        self.assertIsNone(self.store.get(h.run_id)["evidence_sha256"])
+
+    def test_evidence_written_but_terminal_commit_failed_cannot_be_replayed(self):
+        h = self.start("3"*32)
+        self.running(h)
+        h.advance("VERIFYING")
+        name = "m112-approved-coding-" + "4"*12 + ".json"
+        report = self.save_evidence(h, name, self.verified_report())
+        self.store.db.execute("""
+            CREATE TRIGGER reject_success BEFORE INSERT ON transitions
+            WHEN NEW.state='SUCCEEDED' BEGIN SELECT RAISE(ABORT, 'commit fixture'); END
+        """)
+        self.store.db.commit()
+        with self.assertRaises(sqlite3.DatabaseError):
+            h.finish(report, name)
+        h.close()
+        with r.RunLedger(self.root) as independent:
+            self.assertEqual(independent.get(h.run_id)["state"], "VERIFYING")
+            self.assertIsNone(independent.get(h.run_id)["evidence_sha256"])
+            self.assertTrue((self.root / name).is_file())
+            self.assertEqual(independent.reconcile(h.run_id, runner=lambda *a, **k: completed(1))["result"], "INTERRUPTED_CLEAN")
+            with self.assertRaises(r.DuplicateRequest):
+                independent.start("3"*32)
+            self.assertNotIn("SUCCEEDED", independent.transitions(h.run_id))
+
+    def test_old_schema_migrates_without_inventing_evidence_digest(self):
+        self.store.close()
+        db = sqlite3.connect(self.root / "runs.sqlite3")
+        db.execute("ALTER TABLE runs DROP COLUMN evidence_sha256")
+        db.execute("INSERT INTO runs(run_id,state,created_utc,updated_utc) VALUES(?,?,?,?)",
+                   ("a"*24, "FAILED", "old", "old"))
+        db.commit()
+        db.close()
+        self.store = r.RunLedger(self.root)
+        self.assertIsNone(self.store.get("a"*24)["evidence_sha256"])
+        self.assertEqual(self.store.get("a"*24)["state"], "FAILED")
 
 
 if __name__ == "__main__":

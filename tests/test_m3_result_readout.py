@@ -1,5 +1,6 @@
 """Model-free M3 result contracts for the existing immutable M1 evidence ledger."""
 import importlib.util
+import hashlib
 import json
 import os
 import pathlib
@@ -112,6 +113,30 @@ class ResultReadoutContracts(unittest.TestCase):
             ledger.get_by_request.return_value = row
             with mock.patch.object(runner, "ARTIFACTS", root):
                 with self.assertRaises(OSError):
+                    runner.read_result_by_request(ledger, REQUEST)
+
+    def test_bound_evidence_hash_detects_tampering_and_wrong_run(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = pathlib.Path(temp)
+            evidence = root / EVIDENCE
+            value = {**report(), "run_id": "a"*24, "approved": True,
+                     "gateway": {"removed": True},
+                     "fixture_unchanged": True, "sentinel_unchanged": True}
+            body = json.dumps(value).encode("utf-8")
+            evidence.write_bytes(body)
+            evidence.chmod(0o600)
+            row = {"state": "SUCCEEDED", "plan_hash": HASH, "run_id": "a"*24,
+                   "evidence_name": EVIDENCE, "evidence_sha256": hashlib.sha256(body).hexdigest()}
+            ledger = mock.Mock()
+            ledger.get_by_request.return_value = row
+            with mock.patch.object(runner, "ARTIFACTS", root):
+                self.assertTrue(runner.read_result_by_request(ledger, REQUEST)["available"])
+                row["run_id"] = "b"*24
+                with self.assertRaises(ValueError):
+                    runner.read_result_by_request(ledger, REQUEST)
+                row["run_id"] = "a"*24
+                evidence.write_bytes(body + b" ")
+                with self.assertRaises(ValueError):
                     runner.read_result_by_request(ledger, REQUEST)
 
 
