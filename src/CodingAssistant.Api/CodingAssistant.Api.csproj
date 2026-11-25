@@ -11,4 +11,7 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Skills/**/SKILL.md" />
+  </ItemGroup>
 </Project>
