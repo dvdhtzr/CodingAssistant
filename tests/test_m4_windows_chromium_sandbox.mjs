@@ -5,7 +5,7 @@ import {spawnSync} from 'node:child_process';
 import {
   sandboxDockerArgs,parseSandboxReport,runSandboxCompatibility,main,
   OFFICIAL_SECCOMP_GIT_BLOB,checkedChromiumSeccomp,validateChromiumSeccompBytes,
-  validateFixtureSeccompBytes,FIXTURE_SECCOMP_VARIANT,
+  validateFixtureSeccompBytes,FIXTURE_SECCOMP_VARIANT,FIXTURE_PID_LIMIT,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
   CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,outputDetail,
@@ -93,11 +93,13 @@ test('Docker contract has immutable offline image and bounded no-mount isolation
   for(const required of ['--rm','-i','--pull=never',
     '--network=none','--read-only','--cap-drop=all',
     '--security-opt=no-new-privileges','--user=1000:1000',
-    '--pids-limit=96','--memory=2g','--cpus=2',
+    '--pids-limit=256','--memory=2g','--cpus=2',
     '--ipc=private','--shm-size=256m',
     '--input-type=module','-','--run-fixed-sandbox-probe'])
     assert.ok(argv.includes(required),required);
   assert.ok(argv.includes(ID));
+  assert.equal(FIXTURE_PID_LIMIT,256);
+  assert.deepEqual(argv.filter(a=>a.startsWith('--pids-limit=')),['--pids-limit=256']);
   const seccomp=checkedChromiumSeccomp();
   const opts=argv.filter(a=>a.startsWith('--security-opt=seccomp='));
   assert.deepEqual(opts,['--security-opt=seccomp='+seccomp.path]);
@@ -200,6 +202,7 @@ test('simulated positive Windows run never sets untrusted execution permission',
   assert.equal(result.containerRemoved,true);
   assert.deepEqual(result.browser,BROWSER);
   assert.equal(result.seccompVariant,FIXTURE_SECCOMP_VARIANT);
+  assert.equal(result.fixturePidLimit,256);
   assert.equal(result.seccompSha256,checkedChromiumSeccomp().sha256);
   assert.equal(result.seccompUpstreamSha256,checkedChromiumSeccomp().upstreamSha256);
   for(const prop of [

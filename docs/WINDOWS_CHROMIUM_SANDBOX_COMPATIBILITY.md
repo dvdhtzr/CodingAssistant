@@ -123,6 +123,7 @@ M4.7 WINDOWS_SANDBOX_COMPATIBILITY_PASS
   fixed isolation and browser checks: 11/11
   container removed: true
   seccomp fixture policy: m47-fixed-chromium-chroot-v1
+  fixed fixture PID limit: 256
   Chromium: FULL_CHROMIUM; fixed DOM: PASS; sandbox status: PASS
   generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED
 ~~~
@@ -170,3 +171,7 @@ On November 24, 2026 the owner-host result reported 9/11, FULL_CHROMIUM, SIGABRT
 ## Post-chroot owner-host result
 
 Owner-host output confirms the approved fixture-only variant removes both SIGABRT startup failures. The two browser checks still lack affirmative rendered evidence, despite normal process exits. The probe now supplies a bounded virtual-time budget and navigation timeout (within the existing outer process timeout), following the existing trusted Calculation Journal capture approach. Failed evidence records distinguish empty/blank/unchanged/error DOM, negative or pending sandbox status, child-renderer failure, and PID/memory event deltas even when the browser process exits zero. No raw log or rendered HTML leaves the guest. This does not assert that capture timing was the sole cause. No further security policy or resource limit changes, and no generated-source execution. All eleven original checks still must pass.
+
+## Owner-approved fixed-fixture PID ceiling
+
+The subsequent owner-host run reported 9/11, normal Chromium exits, USER_NAMESPACE_OK and PID_LIMIT_HIT for both browser invocations. Kernel cgroup event deltas demonstrate that the existing 96-task limit was reached; this includes threads. The owner approved a bounded increase to 256 for M4.7's fixed fixture only. The exact ceiling is enforced by the Docker argument and recorded in the evidence. The two-CPU and 2 GiB memory limits, timeouts, seccomp policy, non-root identity, zero capabilities, no network, read-only root, and no mounts remain unchanged. No other guest or runtime profile is modified. Actual compatibility is still pending owner-host results; no generated-source execution is authorized even on 11/11.

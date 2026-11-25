@@ -25,6 +25,8 @@ const SECCOMP_LOCATION=fileURLToPath(new URL(
 const FIXTURE_SECCOMP_LOCATION=fileURLToPath(new URL(
   './profiles/m47-fixed-chromium-chroot-seccomp.json',import.meta.url));
 export const FIXTURE_SECCOMP_VARIANT='m47-fixed-chromium-chroot-v1';
+// Owner-approved November 24, 2026: fixed compatibility guest only.
+export const FIXTURE_PID_LIMIT=256;
 const FIXTURE_RULE=Object.freeze({names:['chroot'],action:'SCMP_ACT_ALLOW',args:[],
   comment:'Owner-approved M4.7 fixed fixture only: permit Chromium namespace chroot; no capability grant',includes:{},excludes:{}});
 function fail(message){throw Error(message);}
@@ -97,7 +99,7 @@ export function sandboxDockerArgs(id,name){
     '--network=none','--read-only','--cap-drop=all',
     '--security-opt=no-new-privileges',
     '--security-opt=seccomp='+seccomp.path,'--user=1000:1000',
-    '--pids-limit=96','--memory=2g','--cpus=2',
+    '--pids-limit='+FIXTURE_PID_LIMIT,'--memory=2g','--cpus=2',
     '--ipc=private','--shm-size=256m',
     '--tmpfs=/tmp:rw,nosuid,nodev,mode=1777,size=256m',
     '--env=HOME=/tmp','--env=XDG_CONFIG_HOME=/tmp/config',
@@ -147,7 +149,7 @@ export function runSandboxCompatibility({
     imageTag:IMAGE_TAG,imageId:null,registryDigest:null,
     fixedGuestSha256:createHash('sha256').update(SOURCE).digest('hex'),
     seccompSha256:null,seccompUpstreamGitBlob:null,seccompUpstreamSha256:null,
-    seccompVariant:null,
+    seccompVariant:null,fixturePidLimit:FIXTURE_PID_LIMIT,
     checks:null,passedChecks:0,requiredChecks:CASES.length,
     browser:null,containerRemoved:false,
     modelInvoked:false,generatedSourceExecuted:false,sourceMounted:false,
@@ -244,6 +246,7 @@ export function main(argv=process.argv.slice(2),options={}){
     report.passedChecks+'/'+report.requiredChecks+'\n');
   process.stdout.write('  container removed: '+report.containerRemoved+'\n');
   if(report.seccompVariant)process.stdout.write('  seccomp fixture policy: '+report.seccompVariant+'\n');
+  process.stdout.write('  fixed fixture PID limit: '+report.fixturePidLimit+'\n');
   if(report.browser)
     process.stdout.write('  Chromium: '+report.browser.binary+
       '; fixed DOM: '+report.browser.dom+
