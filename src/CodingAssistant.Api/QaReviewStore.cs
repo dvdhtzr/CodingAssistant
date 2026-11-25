@@ -372,8 +372,29 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             """, ("@run", job.EngineeringRunId), ("@path", source.Path));
         if (content is null || content != source.Content)
             throw new StoreFailure("SOURCE_CHANGED");
-        valid = QaAcceptanceProjection.Ground(
-            ImplementationPlanStore.ReadForQa(db, tx, job), content, valid);
+        var boundPlan = ImplementationPlanStore.ReadForQa(db, tx, job);
+        valid = QaAcceptanceProjection.Ground(boundPlan, content, valid);
+        if (valid.CrossFileObservations is { Count: > 0 })
+        {
+            var architecture = DraftArchitecturePolicy.Capture(db, tx, taskId,
+                job.SpecificationVersion, job.SpecificationSha256);
+            var companions = new List<EngineeringSourceFile>();
+            if (architecture?.Sha256 == job.ArchitectureSha256 &&
+                architecture.Choices.Any(choice => choice.RuntimeProfileId == "static-web"))
+            {
+                using var cmd = TaskStore.Command(db, tx, """
+                    SELECT path,content,sha256 FROM engineering_run_files
+                    WHERE run_id=@run AND path<>@path ORDER BY path
+                    """, ("@run", job.EngineeringRunId), ("@path", source.Path));
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                    if (QaProjectContext.IsWebSource(reader.GetString(0)))
+                        companions.Add(new EngineeringSourceFile(reader.GetString(0),
+                            "", reader.GetString(1), reader.GetString(2), "", ""));
+            }
+            valid = QaAcceptanceProjection.GroundCrossFile(boundPlan, source.Path,
+                companions, valid);
+        }
         var now = DateTimeOffset.UtcNow.ToString("O");
         try
         {
