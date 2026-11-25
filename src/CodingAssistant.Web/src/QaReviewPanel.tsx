@@ -527,9 +527,9 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       </p>}
       {result.sourceState !== 'Generated' &&
         <p className="activity-warning">
-          QA inspected only saved files from a {result.sourceState} engineering
-          run. Unfinished tasks remain unverified; this report is not
-          evidence of a complete application.
+          {result.unchangedFailedRepair
+            ? 'QA reviewed unchanged source from an unsuccessful repair. Fresh owner-approved repair is available; no functional test has been performed.'
+            : 'QA inspected only saved files from an unfinished engineering run. Unfinished tasks remain unverified; this report is not evidence of a complete application.'}
         </p>}
       {!currentReport && <p className="activity-warning">
         Historical QA report: the latest engineering source or plan has changed.
