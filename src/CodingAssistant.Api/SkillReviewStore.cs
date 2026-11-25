@@ -21,7 +21,7 @@ public sealed record ProjectSkillReview(SkillCatalogEntry Skill, string ReviewSh
 /// Durable project-scoped owner review only. A review is not model activation,
 /// execution approval or a redistribution license. No model consumes this store.
 /// </summary>
-public sealed class SkillReviewStore(TaskStore tasks)
+public sealed partial class SkillReviewStore(TaskStore tasks)
 {
     public const int SchemaVersion = 1;
     private const int MaxRevisions = 100;

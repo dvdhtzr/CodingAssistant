@@ -1,6 +1,36 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
 
+type SkillUse = { requestId: string; skillName: string; role: string; topic: string;
+  model: string; status: string; createdUtc: string; contentSha256: string };
+
+export function SkillUsagePanel({ token, taskId }: { token: string; taskId: string }) {
+  const [events, setEvents] = useState<SkillUse[] | null>(null);
+  const [error, setError] = useState(false);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let closed = false;
+    setEvents(null); setError(false);
+    void api<{ events: SkillUse[] }>(token, '/api/tasks/' + taskId + '/skill-uses')
+      .then(value => { if (!closed) setEvents(value.events); })
+      .catch(() => { if (!closed) setError(true); });
+    return () => { closed = true; };
+  }, [token, taskId, reload]);
+  return <>
+    <button type="button" onClick={() => setReload(n => n + 1)}>Refresh skill usage</button>
+    {error && <p role="alert">Skill usage could not be loaded.</p>}
+    {!events && !error && <p role="status">Loading recorded skill usage…</p>}
+    {events?.length === 0 && <p>No skill invocations recorded.</p>}
+    {events?.map(event => <details key={event.requestId}>
+      <summary>{event.skillName} · {event.status === 'ProposalReturned' ? 'Proposal returned' :
+        event.status === 'CallFailed' ? 'Call failed' : 'Admitted; outcome not recorded'}</summary>
+      <p>{event.role} · {event.topic} · {event.model}</p>
+      <p className="hint">{event.createdUtc} · {event.contentSha256}</p>
+      <p className="hint">Not a saved or approved decision, execution grant, or runtime verification.</p>
+    </details>)}
+  </>;
+}
+
 type ReviewEvent = { revision: number; decision: string; createdUtc: string; reviewSha256: string };
 type Review = {
   skill: { name: string; role: string; version: string; license: string };

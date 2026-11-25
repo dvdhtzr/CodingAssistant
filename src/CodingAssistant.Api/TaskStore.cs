@@ -75,6 +75,24 @@ public sealed class TaskStore
               current_version INTEGER NOT NULL DEFAULT 0 CHECK(current_version >= 0),
               created_utc TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS skill_use_events (
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              request_id TEXT NOT NULL,
+              skill_name TEXT NOT NULL,
+              role TEXT NOT NULL,
+              review_revision INTEGER NOT NULL CHECK(review_revision > 0),
+              review_sha256 TEXT NOT NULL,
+              content_sha256 TEXT NOT NULL,
+              spec_version INTEGER NOT NULL CHECK(spec_version > 0),
+              spec_sha256 TEXT NOT NULL,
+              topic TEXT NOT NULL,
+              expected_decision_revision INTEGER NOT NULL CHECK(expected_decision_revision >= 0),
+              model TEXT NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('Admitted','ProposalReturned','CallFailed')),
+              created_utc TEXT NOT NULL,
+              finished_utc TEXT,
+              PRIMARY KEY(task_id,request_id)
+            );
             CREATE TABLE IF NOT EXISTS skill_review_events (
               task_id TEXT NOT NULL REFERENCES tasks(id),
               skill_name TEXT NOT NULL,
@@ -291,6 +309,7 @@ public sealed class TaskStore
             "DELETE FROM run_intents WHERE task_id=@id",
             "DELETE FROM plans WHERE task_id=@id",
             "DELETE FROM agent_role_models WHERE task_id=@id",
+            "DELETE FROM skill_use_events WHERE task_id=@id",
             "DELETE FROM skill_review_events WHERE task_id=@id",
             "DELETE FROM html_artifacts WHERE task_id=@id",
             "DELETE FROM repair_triage_decisions WHERE proposal_id IN (SELECT id FROM repair_proposals WHERE task_id=@id)",

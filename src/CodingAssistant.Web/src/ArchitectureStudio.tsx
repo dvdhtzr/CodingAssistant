@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from './api';
+import { api, newRequestId } from './api';
 import { JourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
 
 interface Spec {
@@ -33,6 +33,10 @@ interface Decision {
   selectedOptionId: string | null;
   specificationCurrent: boolean;
 }
+type ArchitectureSkillReview = {
+  skill: { name: string; role: string; version: string; contentSha256: string };
+  revision: number; reviewSha256: string; approvedForLocalInstructionReview: boolean;
+};
 const topics = [
   { id: 'technology-stack', label: 'Technology stack' },
   { id: 'architecture-style', label: 'Architecture approach' },
@@ -53,6 +57,21 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [skillReview, setSkillReview] = useState<ArchitectureSkillReview | null>(null);
+  const [skillTopic, setSkillTopic] = useState('');
+  useEffect(() => {
+    let closed = false;
+    setSkillReview(null); setSkillTopic('');
+    if (!expanded) return;
+    void api<{ skills: ArchitectureSkillReview[] }>(token,
+      '/api/tasks/' + taskId + '/skill-reviews').then(value => {
+      if (!closed) setSkillReview(value.skills.find(item =>
+        item.skill.name === 'architecture-tradeoffs' &&
+        item.skill.role === 'SolutionArchitect' &&
+        item.approvedForLocalInstructionReview) ?? null);
+    }).catch(() => { if (!closed) setSkillReview(null); });
+    return () => { closed = true; };
+  }, [token, taskId, spec?.sha256, expanded]);
 
   useEffect(() => {
     let closed = false;
@@ -76,6 +95,8 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
 
   async function recommend(topic: string) {
     if (!spec || spec.status !== 'Approved' || busy) return;
+    const selectedSkill = skillTopic === topic ? skillReview : null;
+    setSkillTopic('');
     setBusy(topic + ':recommend'); setError('');
     try {
       const previous = decisions.find(d => d.topic === topic);
@@ -86,6 +107,9 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
           specificationSha256: spec.sha256,
           topic,
           expectedRevision: previous?.revision ?? 0,
+          ...(selectedSkill ? { skill: { name: selectedSkill.skill.name,
+            reviewRevision: selectedSkill.revision, reviewSha256: selectedSkill.reviewSha256,
+            requestId: newRequestId() } } : {}),
         });
       setDecisions(current => [...current.filter(d => d.topic !== topic), updated]);
       setChoices(current => ({ ...current, [topic]: '' }));
@@ -202,6 +226,11 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
           <span className="pill">{!decision ? 'Not proposed' :
             !fresh ? 'Stale specification' : decision.status}</span>
         </div>
+        {!needsApprovedSpec && skillReview && <label className="hint">
+          <input type="checkbox" checked={skillTopic === topic.id} disabled={!!busy}
+            onChange={event => setSkillTopic(event.target.checked ? topic.id : '')} />
+          Use reviewed architecture-tradeoffs skill for this recommendation only
+        </label>}
         {needsApprovedSpec ?
           <button type="button" className="outline architect-unblock"
             disabled={!!busy}
