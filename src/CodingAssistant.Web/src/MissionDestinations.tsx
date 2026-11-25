@@ -190,7 +190,7 @@ export type SkillCandidate = {
   status: string; approved: boolean; active: boolean; instructions: string;
 };
 
-function SkillsDestination({ token }: { token: string }) {
+export function SkillsDestination({ token }: { token: string }) {
   const [skills, setSkills] = useState<SkillCandidate[] | null>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
