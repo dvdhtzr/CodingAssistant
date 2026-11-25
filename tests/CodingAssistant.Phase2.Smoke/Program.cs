@@ -3879,6 +3879,19 @@ try
             {
                 using var stopped=await Post(client,"/api/tasks/"+taskBound.Id+"/repair-cycles/"+pending.Cycle.Id+"/cancel",new {});
                 Check(stopped.StatusCode==HttpStatusCode.OK,"owner can stop active delegated repair");
+                using var stoppedBody=await Body(stopped);
+                Check(stoppedBody.RootElement.GetProperty("cycle").GetProperty("state").GetString()=="Interrupted",
+                    "stop response acknowledges durable interruption, not merely a cancellation request");
+                try
+                {
+                    engineeringStore.CompleteTask(taskBound.Id,pending.Engineering.Job.Id,"timer-state",
+                        new EngineeringChangeSet("Attempt to save after cancellation.",
+                            [new EngineeringFileChange("app.js","Timer behavior","console.log('forbidden after stop');")],
+                            ["Independent verification required."]));
+                    Check(false,"stopped routine candidate must not persist source");
+                }
+                catch(StoreFailure e) when(e.Code=="INVALID_STATE")
+                {Check(true,"transaction rejects late write after owner stop");}
             }
             softwareModel.RoutineGate!.TrySetResult(true);
             RepairCycleSnapshot? terminal=null;
