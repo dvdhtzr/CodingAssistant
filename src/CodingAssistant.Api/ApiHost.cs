@@ -544,7 +544,8 @@ public static class ApiHost
                  TaskStore tasks, InterviewStore interviews,
                  ArchitectureDecisionStore decisions, IArchitectureAdvisor advisor,
                  MafHandoffStore handoffs, IOllamaModelCatalog catalog,
-                 AgentRoleModelSettings roleModels, CancellationToken cancellation) =>
+                 AgentRoleModelSettings roleModels, SkillReviewStore skillReviews,
+                 CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 if (input.SchemaVersion != ArchitectureDecisionStore.SchemaVersion ||
@@ -562,9 +563,28 @@ public static class ApiHost
                 var models = await catalog.ListAsync(cancellation);
                 if (!models.Contains(chosen, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
-                var recommendation = await advisor.RecommendAsync(
-                    task.Objective, spec.Content, chosen,
-                    input.Topic!, cancellation);
+                ArchitectureRecommendation recommendation;
+                if (input.Skill is null)
+                    recommendation = await advisor.RecommendAsync(
+                        task.Objective, spec.Content, chosen, input.Topic!, cancellation);
+                else
+                {
+                    // No implicit fallback if an explicitly selected skill is unavailable.
+                    if (advisor is not MafAgentTeam team)
+                        throw new StoreFailure("SKILL_ADAPTER_UNAVAILABLE");
+                    var context = skillReviews.AdmitArchitecture(id, input, chosen);
+                    try
+                    {
+                        recommendation = await team.RecommendWithSkillAsync(
+                            task.Objective, spec.Content, chosen, input.Topic!, context, cancellation);
+                    }
+                    catch
+                    {
+                        skillReviews.FinishArchitecture(context, false);
+                        throw;
+                    }
+                    skillReviews.FinishArchitecture(context, true);
+                }
                 var created = decisions.Propose(id, new(
                     ArchitectureDecisionStore.SchemaVersion,
                     input.SpecificationVersion, input.SpecificationSha256,
@@ -641,6 +661,8 @@ public static class ApiHost
                 agents = EngineeringAgentRoster.All }));
         app.MapGet("/api/agents/skills", () =>
             Safe(() => Results.Ok(new { skills = SkillCatalog.Discover() })));
+        app.MapGet("/api/tasks/{id}/skill-uses", (string id, SkillReviewStore reviews) =>
+            Safe(() => Results.Ok(new { events = reviews.ReadUses(id) })));
         app.MapGet("/api/tasks/{id}/skill-reviews", (string id, SkillReviewStore reviews) =>
             Safe(() => Results.Ok(new { skills = reviews.Read(id) })));
         app.MapPost("/api/tasks/{id}/skill-reviews/{name}",
