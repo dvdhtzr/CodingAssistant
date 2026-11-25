@@ -42,6 +42,27 @@ export function parseTrustedReport(raw){
     fail('GUEST_REPORT_CONTRADICTORY');
   return x;
 }
+// Bounded checkpoints are diagnostic-only. A complete final record with
+// a zero guest exit and confirmed cleanup remains mandatory for a pass.
+export function parseGuestStream(raw){
+  if(typeof raw!=='string'||raw.length>60000)fail('GUEST_REPORT_INVALID');
+  const lines=raw.trim().split(/\r?\n/).filter(Boolean);
+  if(lines.length>32)fail('GUEST_REPORT_INVALID');
+  let checkpoint=null,final=null;
+  for(const line of lines){
+    let x;try{x=JSON.parse(line);}catch{fail('GUEST_REPORT_INVALID');}
+    if(x?.kind==='progress'){
+      if(final||Object.keys(x).length!==6||!FAILURE_STAGES.includes(x.stage))fail('GUEST_REPORT_INVALID');
+      const {kind,stage,...data}=x;
+      const safe=parseTrustedReport(JSON.stringify({...data,failure:{stage,code:'GUEST_DEADLINE_EXCEEDED'}}));
+      checkpoint={stage,security:safe.security,fixture:safe.fixture,observations:safe.observations};
+    }else{
+      if(final)fail('GUEST_REPORT_INVALID');
+      final=parseTrustedReport(line);
+    }
+  }
+  return {checkpoint,final};
+}
 export function trustedPayload(){
   const sources=readPinnedSources();
   const hashes=Object.fromEntries(Object.entries(sources).map(([k,v])=>[k,sha(v)]));
@@ -56,7 +77,7 @@ export function qualifyTrusted({platform=process.platform,env=process.env,docker
     imageTag:IMAGE_TAG,imageId:null,registryDigest:null,seccompSha256:null,fixturePidLimit:FIXTURE_PID_LIMIT,
     evaluatorVersion:CALCULATION_CONTRACT_VERSION,evaluatorSha256:sha(contract),driverSha256:sha(driver),guestSha256:null,
     trustedSourceHashes:null,security:null,fixture:null,observations:null,containerRemoved:false,
-    generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false,reason:null,guestFailure:null};
+    generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false,reason:null,guestFailure:null,lastGuestStage:null};
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT||!NAME.test(name)){report.reason='LOCAL_WINDOWS_ONLY';return report;}
   let attempted=false;
   const json=args=>{const x=docker(args,9000);if(x.status!==0||!x.stdout)fail('DOCKER_METADATA_UNAVAILABLE');try{return JSON.parse(x.stdout);}catch{fail('DOCKER_METADATA_INVALID');}};
@@ -72,8 +93,11 @@ export function qualifyTrusted({platform=process.platform,env=process.env,docker
     if(!absent())fail('DISPOSABLE_NAME_COLLISION');
     attempted=true;
     const execution=docker(trustedDockerArgs(pin.imageId,name),180000,payload.source);
+    const {checkpoint,final}=parseGuestStream(execution.stdout||'');
+    if(checkpoint){report.lastGuestStage=checkpoint.stage;report.security=checkpoint.security;report.fixture=checkpoint.fixture;report.observations=checkpoint.observations;}
     if(execution.timedOut)fail('FIXED_EVALUATOR_TIMEOUT');
-    const x=parseTrustedReport(execution.stdout);
+    if(!final)fail('GUEST_REPORT_INVALID');
+    const x=final;
     report.security=x.security;report.fixture=x.fixture;report.observations=x.observations;report.guestFailure=x.failure??null;
     if(x.failure)fail('GUEST_STAGE_BLOCKED');
     if(execution.status!==0||!Object.values(x.security).every(Boolean)||!Object.values(x.fixture).every(Boolean))fail('FIXED_EVALUATOR_CHECKS_FAILED');
@@ -105,6 +129,7 @@ export function main(argv=process.argv.slice(2)){
   }
   if(r.observations)for(const [name,values] of Object.entries(r.observations))console.log('  '+name+': '+(values?Object.values(values).filter(Boolean).length+'/'+CALCULATION_CASES.length:'NOT_RUN'));
   console.log('  container removed: '+r.containerRemoved);
+  if(r.lastGuestStage)console.log('  last guest stage: '+r.lastGuestStage);
   if(r.guestFailure)console.log('  guest failure: '+r.guestFailure.stage+' / '+r.guestFailure.code);
   if(r.reason)console.log('  blocker: '+r.reason);
   console.log('  generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED');

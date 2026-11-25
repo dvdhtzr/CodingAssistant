@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {EventEmitter} from 'node:events';
 import {spawnSync} from 'node:child_process';
-import {trustedDockerArgs,parseTrustedReport,trustedPayload,qualifyTrusted} from '../tools/m4/windows_aet8_trusted_qualification.mjs';
+import {trustedDockerArgs,parseTrustedReport,parseGuestStream,trustedPayload,qualifyTrusted} from '../tools/m4/windows_aet8_trusted_qualification.mjs';
 import {SECURITY_CASES,FIXTURE_CASES} from '../tools/m4/windows_aet8_trusted_guest.mjs';
-import {QUALIFICATION_BROWSER_ARGS,createPipeTransport} from '../tools/m4/windows_aet8_pipe_driver.mjs';
+import {QUALIFICATION_BROWSER_ARGS,createPipeTransport,waitForBrowserExit,closeBrowserProcess} from '../tools/m4/windows_aet8_pipe_driver.mjs';
 import {CALCULATION_CASES} from '../tools/m4/calculation_journal_contract.mjs';
 const name='ca-win-aet8-012345abcdef',id='sha256:'+'a'.repeat(64);
 const booleans=(keys,value)=>Object.fromEntries(keys.map(k=>[k,value]));
@@ -19,7 +19,7 @@ function dockerMock(change={}){
     if(args[0]==='info')return {status:0,stdout:JSON.stringify({OSType:'linux',OperatingSystem:'Docker Desktop',PidsLimit:true,MemoryLimit:true})};
     if(args[0]==='image')return {status:0,stdout:JSON.stringify({Id:id,RepoDigests:['mcr.microsoft.com/playwright@sha256:'+'b'.repeat(64)],Os:'linux',Architecture:'amd64'})};
     if(args[0]==='ps')return {status:0,stdout:++ps===1?(change.collision?'id':''):(change.leftover?'id':'')};
-    if(args[0]==='run')return {status:change.exit??0,stdout:JSON.stringify(change.report??good()),timedOut:change.timeout??false};
+    if(args[0]==='run')return {status:change.exit??0,stdout:change.stdout??JSON.stringify(change.report??good()),timedOut:change.timeout??false};
     if(args[0]==='container')return {status:0,stdout:JSON.stringify({'codingassistant.aet8':change.badLabel?'wrong':name})};
     if(args[0]==='rm')return {status:0,stdout:''};
     throw Error('Unexpected command');
@@ -87,4 +87,34 @@ test('bounded guest stage failure preserves completed security and prior fixture
   const early={schemaVersion:1,security:null,fixture:booleans(FIXTURE_CASES,false),observations:{working:null,broken:null,spoof:null},failure:{stage:'MODULES',code:'GUEST_STAGE_FAILED'}};
   assert.deepEqual(parseTrustedReport(JSON.stringify(early)),early);
   assert.throws(()=>parseTrustedReport(JSON.stringify({...early,failure:{stage:'MODULES',code:'PRIVATE_RAW_ERROR'}})));
+});
+
+test('exit wait is bounded and does not require close of inherited streams',async()=>{
+  const child=new EventEmitter();child.exitCode=null;child.signalCode=null;
+  assert.equal(await waitForBrowserExit(child,10),false);
+  assert.equal(child.listenerCount('exit'),0);
+  const exit=waitForBrowserExit(child,100);
+  child.exitCode=0;child.emit('exit',0,null);
+  assert.equal(await exit,true);
+  const closed=await waitForBrowserExit(child,10);assert.equal(closed,true);
+  const streams=[new PassThrough(),new PassThrough()];
+  child.stdio=streams;
+  const transport={send:async()=>{},close:()=>{}};
+  await closeBrowserProcess(child,transport);
+  assert.ok(streams.every(s=>s.destroyed));
+});
+test('stream checkpoints retain exact security observations on outer timeout but cannot qualify',()=>{
+  const x=good();x.fixture.working_seven_checks=false;x.fixture.inert_negative_rejected=false;
+  x.fixture.forged_receipt_rejected=false;x.fixture.trusted_source_unchanged=false;
+  x.observations={working:null,broken:null,spoof:null};
+  const line=JSON.stringify({kind:'progress',stage:'WORKING',...x})+'\n';
+  const stream=parseGuestStream(line);assert.equal(stream.final,null);
+  assert.equal(stream.checkpoint.stage,'WORKING');
+  const m=dockerMock({stdout:line,timeout:true});
+  const r=qualifyTrusted({platform:'win32',env:{},name,docker:m.docker});
+  assert.equal(r.status,'BLOCKED');assert.equal(r.reason,'FIXED_EVALUATOR_TIMEOUT');
+  assert.equal(r.lastGuestStage,'WORKING');assert.equal(Object.values(r.security).filter(Boolean).length,10);
+  const finished=parseGuestStream(line+JSON.stringify(good())+'\n');assert.ok(finished.final);
+  assert.throws(()=>parseGuestStream(JSON.stringify(good())+'\n'+line));
+  assert.throws(()=>parseGuestStream(line.repeat(33)));
 });

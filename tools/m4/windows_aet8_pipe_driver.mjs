@@ -41,23 +41,46 @@ export function createPipeTransport(child){
     }
   });
   incoming.on('error',fail);outgoing.on('error',fail);child.on('error',fail);child.on('exit',fail);
-  return {send(method,params={},sessionId){
+  return {send(method,params={},sessionId,timeoutMs=5000){
     if(closed)return Promise.reject(Error('BROWSER_PIPE_CLOSED'));
     if(pending.size>=16)return Promise.reject(Error('BROWSER_PIPE_BUSY'));
     const id=++next;
     return new Promise((resolve,reject)=>{
-      const timer=setTimeout(()=>{pending.delete(id);reject(Error('BROWSER_COMMAND_TIMEOUT'));},5000);
+      const timer=setTimeout(()=>{pending.delete(id);reject(Error('BROWSER_COMMAND_TIMEOUT'));},Math.max(1,Math.min(5000,timeoutMs)));
       pending.set(id,{resolve,reject,timer});
       outgoing.write(JSON.stringify({id,method,params,...(sessionId?{sessionId}:{})})+'\0');
     });
   },close:fail};
 }
-function processClosed(child){
-  if(child.exitCode!==null||child.signalCode!==null)return Promise.resolve();
+// 'close' can wait for inherited descriptors after the browser has exited.
+// Bound the actual process exit, then dispose of our local pipe handles.
+export function waitForBrowserExit(child,timeoutMs=3000){
+  if(child.exitCode!==null||child.signalCode!==null)return Promise.resolve(true);
   return new Promise(resolve=>{
-    const timer=setTimeout(()=>{child.kill('SIGKILL');},2500);
-    child.once('close',()=>{clearTimeout(timer);resolve();});
+    let timer;
+    const finish=value=>{clearTimeout(timer);child.removeListener('exit',onExit);child.removeListener('error',onError);resolve(value);};
+    const onExit=()=>finish(true),onError=()=>finish(false);
+    child.once('exit',onExit);child.once('error',onError);
+    timer=setTimeout(()=>finish(false),timeoutMs);
   });
+}
+export async function closeBrowserProcess(child,transport){
+  let graceful=false,exited=false;
+  try{
+    const wait=waitForBrowserExit(child,3500);
+    try{await transport.send('Browser.close',{},undefined,1500);}catch{}
+    graceful=await wait&&child.exitCode===0;
+    exited=child.exitCode!==null||child.signalCode!==null;
+    if(!exited){
+      const killed=waitForBrowserExit(child,2000);
+      child.kill('SIGKILL');exited=await killed;
+    }
+  }finally{
+    transport.close();
+    for(const stream of child.stdio??[])stream?.destroy?.();
+  }
+  if(!exited)throw Error('BROWSER_EXIT_TIMEOUT');
+  if(!graceful)throw Error('BROWSER_SHUTDOWN_NOT_GRACEFUL');
 }
 async function launch(profile){
   const root=path.dirname(profile);
@@ -71,12 +94,10 @@ async function launch(profile){
   let done=false;
   const close=async()=>{
     if(done)return;done=true;
-    const wait=processClosed(child);
-    try{await transport.send('Browser.close');}catch{}
-    await wait;transport.close();
+    await closeBrowserProcess(child,transport);
   };
   try{await transport.send('Browser.getVersion');return {transport,close};}
-  catch(e){await close();throw e;}
+  catch(e){try{await close();}catch{}throw e;}
 }
 // Only the contract's fixed locator vocabulary is supported. Candidate strings
 // are data, never JS source. Real mouse and key events are emitted by CDP.
@@ -84,15 +105,15 @@ const selectorQuery=(selector,role,name)=>role?
   'Array.from(document.querySelectorAll('+JSON.stringify(role==='button'?'button':'section,[role="region"]')+')).filter(e=>(e.getAttribute("aria-label")||e.textContent.trim())==='+JSON.stringify(name)+')':
   'Array.from(document.querySelectorAll('+JSON.stringify(selector)+'))';
 function makePage(transport,sessionId,url){
-  const send=(method,params={})=>transport.send(method,params,sessionId);
-  const evaluate=async expression=>{
-    const r=await send('Runtime.evaluate',{expression,returnByValue:true});
+  const send=(method,params={},timeoutMs=5000)=>transport.send(method,params,sessionId,timeoutMs);
+  const evaluate=async(expression,timeoutMs=5000)=>{
+    const r=await send('Runtime.evaluate',{expression,returnByValue:true},timeoutMs);
     if(r.exceptionDetails)throw Error('FIXTURE_DOM_EVALUATION_FAILED');
     return r.result?.value;
   };
-  const ready=async()=>{
-    for(let i=0;i<40;i++){
-      if(await evaluate('location.href==='+JSON.stringify(url)+'&&document.readyState==="complete"'))return;
+  const ready=async(deadline=Date.now()+8000)=>{
+    while(Date.now()<deadline){
+      if(await evaluate('location.href==='+JSON.stringify(url)+'&&document.readyState==="complete"',Math.min(1000,deadline-Date.now())))return;
       await sleep(100);
     }
     throw Error('FIXTURE_NAVIGATION_TIMEOUT');
@@ -124,8 +145,9 @@ function makePage(transport,sessionId,url){
     reload:async()=>{
       const previous=await evaluate('performance.timeOrigin');
       await send('Page.reload');
-      for(let i=0;i<40;i++){
-        try{if(await evaluate('performance.timeOrigin')!==previous){await ready();return;}}catch{}
+      const deadline=Date.now()+8000;
+      while(Date.now()<deadline){
+        try{if(await evaluate('performance.timeOrigin',Math.min(1000,deadline-Date.now()))!==previous){await ready(deadline);return;}}catch{}
         await sleep(100);
       }
       throw Error('BROWSER_RELOAD_TIMEOUT');
