@@ -478,6 +478,11 @@ public sealed class CollaborationStore(TaskStore tasks)
                 actions.Remove("AwaitQualifiedVerification");
             }
         }
+        // An introduced blocking source concern must not be hidden by a
+        // falling issue count. Finish any available original-finding recheck,
+        // then stop and preserve the candidate and its predecessor for review.
+        if(progress.PotentialRegressionIssueIds is { Count: > 0 } && recheckCandidates.Count==0)
+            actions.Clear();
         actions.Add("Escalate");
         var task=TaskStore.FindTask(db,tx,job.TaskId)??throw new StoreFailure("NOT_FOUND");
         return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress,recheckCandidates);
