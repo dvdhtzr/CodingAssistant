@@ -9,31 +9,35 @@ export interface WorkTeamEvidence {
   handoffs: TeamHandoff[];
   engineering: EngineerSnapshot | null;
   qa: TeamQaSnapshot | null;
-  repair: { cycle: { state: string; attempt: number } } | null;
+  repair: { cycle: { state: string; attempt: number; engineeringRunId: string } } | null;
 }
 
 // Only persisted work can mark an agent active. In particular, a QA-driven
 // repair is not shown as running just because a proposal exists.
 export function workAgentStatuses(saved: WorkTeamEvidence) {
+  const eng = saved.engineering?.job;
+  const repair = saved.repair?.cycle.engineeringRunId === eng?.id ? saved.repair : null;
+  const qa = saved.qa?.job.engineeringRunId === eng?.id &&
+    saved.qa?.job.planSha256 === eng?.planSha256 ? saved.qa : null;
   return saved.agents.map(agent => {
     const engineerRunning = saved.engineering?.job.state === 'Running' ||
-      saved.repair?.cycle.state === 'Running';
-    const qaRunning = saved.qa?.job.state === 'Running' ||
-      saved.repair?.cycle.state === 'QaRunning';
+      repair?.cycle.state === 'Running';
+    const qaRunning = qa?.job.state === 'Running' ||
+      repair?.cycle.state === 'QaRunning';
     const active = agent.id === 'SoftwareEngineer' ? engineerRunning :
       agent.id === 'QaEngineer' ? qaRunning : false;
     return { agent, active,
       detail: agent.id === 'SoftwareEngineer' ? (
-        saved.repair?.cycle.state === 'Running'
-          ? 'Authorized repair · cycle ' + saved.repair.cycle.attempt
+        repair?.cycle.state === 'Running'
+          ? 'Authorized repair · cycle ' + repair.cycle.attempt
           : saved.engineering?.job.state === 'Running'
             ? saved.engineering.tasks.find(task => task.state === 'Running')?.title ??
               'Source run active'
             : saved.engineering?.job.state ?? 'Not started'
       ) : agent.id === 'QaEngineer' ? (
-        saved.repair?.cycle.state === 'QaRunning' ? 'Independent repair review' :
-          saved.qa?.job.state === 'Running' ? 'Reviewing saved source' :
-            saved.qa?.job.state ?? 'Not started'
+        repair?.cycle.state === 'QaRunning' ? 'Independent repair review' :
+          qa?.job.state === 'Running' ? 'Reviewing saved source' :
+            qa?.job.state ?? 'Not started'
       ) : 'No active run recorded' };
   });
 }
