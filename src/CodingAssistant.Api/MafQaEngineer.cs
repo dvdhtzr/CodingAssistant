@@ -10,10 +10,13 @@ public sealed record QaFinding(
     string Recommendation, string? CriterionId = null, string? SourceExcerpt = null);
 public sealed record QaImplementationEvidence(string CriterionId, string SourceExcerpt,
     string Explanation);
+public sealed record QaCrossFileObservation(string CriterionId, string CausePath,
+    string CauseExcerpt, string Explanation);
 public sealed record QaFileAssessment(
     string Summary, IReadOnlyList<QaFinding> Findings,
     IReadOnlyList<string> ManualChecks,
-    IReadOnlyList<QaImplementationEvidence>? ImplementationEvidence = null);
+    IReadOnlyList<QaImplementationEvidence>? ImplementationEvidence = null,
+    IReadOnlyList<QaCrossFileObservation>? CrossFileObservations = null);
 public sealed record QaFileReport(
     string Path, string SourceSha256, QaFileAssessment Assessment,
     string ReviewedUtc);
@@ -90,6 +93,11 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
             {"criterionId":"work-item:2","sourceExcerpt":"Verbatim short PRIMARY file excerpt",
              "explanation":"Why this construct appears relevant to the criterion"}
           ],
+          "crossFileObservations":[
+            {"criterionId":"work-item:1","causePath":"exact supplied companion path",
+             "causeExcerpt":"Verbatim companion source excerpt",
+             "explanation":"Why the primary file depends on the suspected cause"}
+          ],
           "manualChecks":["Specific browser/build check that QA must later perform"]
         }
         For a concern about a listed acceptance criterion, copy its exact
@@ -102,6 +110,12 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         Do not use an excerpt from a companion file as primary-file evidence.
         A matching excerpt confirms only that text exists, not its semantics.
         Findings may include a verbatim primary-file excerpt when available.
+        If a suspected cause belongs to a supplied companion rather than the
+        primary file, report it ONLY as an optional crossFileObservation (up
+        to three), with exact companion path, verbatim excerpt and criterion ID.
+        Never repeat it as a repair finding against the primary file. The
+        companion's independent review must assess the cause itself. Uncertain
+        relationships without exact evidence belong in manualChecks.
         Severity is only Critical, Major or Minor. 0–6 findings, 1–6
         actionable manual checks. JSON only; no markdown or status PASS.
         If the engineering source is Failed or Interrupted, it is a PARTIAL
@@ -235,7 +249,8 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         // change role model assignments for this static context increment.
         var companionBudget = Math.Min(6800, Math.Max(0, 42000 -
             instructions.Length - messages.Sum(message => message.Text?.Length ?? 0)));
-        var companionContext = QaProjectContext.Build(input, companionBudget);
+        var companionContext = QaProjectContext.Build(input, companionBudget,
+            out var suppliedCompanions);
         if (companionContext is not null)
             messages.Add(new ChatMessage(ChatRole.User, companionContext));
         // Actual MAF observe -> host-issued evidence -> model continuation.
@@ -268,7 +283,12 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                     "bounded QA report JSON, or one remaining inspection."));
                 continue;
             }
-            try { return Parse(answer.Text); }
+            try
+            {
+                var report = Parse(answer.Text);
+                return QaAcceptanceProjection.GroundCrossFile(input.Plan,
+                    input.File.Path, suppliedCompanions, report);
+            }
             catch (StoreFailure error) when (
                 error.Code == "MODEL_OUTPUT_REJECTED" && invalidReports++ == 0)
             {
@@ -278,6 +298,7 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                     "(severity Critical/Major/Minor, requirement, evidence, " +
                     "recommendation, optional criterionId/sourceExcerpt), optional " +
                     "implementationEvidence (criterionId, sourceExcerpt, explanation), " +
+                    "optional crossFileObservations (criterionId, causePath, causeExcerpt, explanation), " +
                     "and 1–6 actionable manualChecks. Report " +
                     "hypotheses, never actual test results or invented evidence."));
             }
@@ -341,9 +362,22 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                     continue;
                 positive.Add(new QaImplementationEvidence(item.CriterionId, excerpt, explanation));
             }
+            var crossFile = new List<QaCrossFileObservation>();
+            if (result.CrossFileObservations is { Count: > 3 })
+                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            foreach (var item in result.CrossFileObservations ?? [])
+            {
+                if (item is null || !ValidCriterionId(item.CriterionId) ||
+                    item.CausePath is not { Length: >= 1 and <= 240 } path ||
+                    path.Any(char.IsControl) || Excerpt(item.CauseExcerpt) is not { } excerpt ||
+                    item.Explanation is not { Length: >= 12 and <= 240 } explanation ||
+                    explanation.Any(ch => char.IsControl(ch) && ch is not ('\n' or '\t')))
+                    continue;
+                crossFile.Add(new QaCrossFileObservation(item.CriterionId, path, excerpt, explanation));
+            }
             return new QaFileAssessment(Text(result.Summary, 16, 1600),
                 findings, result.ManualChecks.Select(x => Text(x, 12, 350)).ToArray(),
-                positive.ToArray());
+                positive.ToArray(), crossFile.ToArray());
         }
         catch (JsonException)
         {

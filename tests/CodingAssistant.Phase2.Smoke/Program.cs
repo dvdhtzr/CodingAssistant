@@ -1061,6 +1061,51 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           positiveOnly.Criteria.All(c => c.VerificationStatus == "RequiresTesting"),
         "positive-only evidence never implies verified behavior");
 
+    var crossCause = saveConcern with { SourceExcerpt = "localStorage.setItem" };
+    var causeFile = new EngineeringSourceFile("app.js", "Persistence", primaryEvidenceSource,
+        new string('2', 64), "save", "2026-11-21T00:03:00Z");
+    var observation = new QaCrossFileObservation("save:1", "app.js",
+        "localStorage.setItem", "The form depends on the companion storage handler.");
+    var related = QaAcceptanceProjection.GroundCrossFile(evidencePlan, "index.html",
+        [causeFile], new QaFileAssessment("Static cross-file observations.",
+            [], ["Check the saved data in an independent browser."],
+            CrossFileObservations: [observation,
+                observation with { Explanation = "Repeated observation of the same cause." },
+                observation with { CausePath = "../app.js" },
+                observation with { CauseExcerpt = "fabricated handler" },
+                observation with { CriterionId = "unknown:1" },
+                observation with { CausePath = "index.html" }]));
+    Check(related.CrossFileObservations?.Count == 1,
+        "cross-file evidence requires exact admitted companion path, excerpt and criterion");
+    var reconciled = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("app.js", causeFile.Sha256,
+            new QaFileAssessment("Static cause review only.", [crossCause],
+                ["Independently test restoration."]), "2026-11-21T00:03:00Z"),
+         new QaFileReport("index.html", new string('3', 64), related,
+            "2026-11-21T00:03:00Z")]);
+    Check(reconciled.Findings.Count == 1 &&
+          reconciled.Findings.Single().Path == "app.js" &&
+          reconciled.CrossFileEvidence.Single().RelatedFindingIndex == 0 &&
+          reconciled.CrossFileEvidence.Single().ObservedFromPath == "index.html" &&
+          reconciled.Criteria.All(c => c.VerificationStatus == "RequiresTesting"),
+        "cross-file observation links to the independently reviewed cause without adding a repair target");
+    var unmatched = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("index.html", new string('3', 64), related,
+            "2026-11-21T00:03:00Z")]);
+    Check(unmatched.Findings.Count == 0 &&
+          unmatched.CrossFileEvidence.Single().RelatedFindingIndex is null,
+        "unresolved companion observation cannot create a repair finding");
+    var ambiguousCause = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("app.js", causeFile.Sha256,
+            new QaFileAssessment("Two distinct static concerns.",
+                [crossCause, crossCause with { Recommendation = "Check a different restoration problem." }],
+                ["Independently test restoration."]), "2026-11-21T00:03:00Z"),
+         new QaFileReport("index.html", new string('3', 64), related,
+            "2026-11-21T00:03:00Z")]);
+    Check(ambiguousCause.Findings.Count == 2 &&
+          ambiguousCause.CrossFileEvidence.Single().RelatedFindingIndex is null,
+        "ambiguous cause matches remain unresolved and distinct findings are preserved");
+
     var evidence = QaAcceptanceProjection.Build(evidenceReview, evidencePlan, evidenceReports);
     Check(evidence.PlanSha256 == evidencePlan.PlanSha256 &&
           evidence.SourceSha256 == evidenceReview.SourceSha256 &&
@@ -1176,12 +1221,14 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         AllFiles = [htmlFile, scriptFile, styleFile, oversizedFile, privateFile] };
     var companionFactory = new Phase5FakeMafFactory();
     companionFactory.ScriptedReplies.Enqueue(
-        """{"summary":"The linked script contains a Save handler; browser behavior remains unverified.","findings":[],"implementationEvidence":[{"criterionId":"qa:1","sourceExcerpt":"id='save'","explanation":"The primary file declares a named control."}],"manualChecks":["Click Save and reload in an independent browser"]}""");
+        """{"summary":"The linked script contains a Save handler; browser behavior remains unverified.","findings":[],"implementationEvidence":[{"criterionId":"qa:1","sourceExcerpt":"id='save'","explanation":"The primary file declares a named control."}],"crossFileObservations":[{"criterionId":"qa:1","causePath":"app.js","causeExcerpt":"localStorage.setItem","explanation":"The control depends on the companion persistence handler."},{"criterionId":"qa:1","causePath":"large.js","causeExcerpt":"zzzzzzzzzzzz","explanation":"This companion was omitted from the review context."},{"criterionId":"qa:1","causePath":"secrets.cs","causeExcerpt":"RestrictedDetails","explanation":"This non-web file was not admitted as context."}],"manualChecks":["Click Save and reload in an independent browser"]}""");
     var companionReport = await new MafQaEngineer(companionFactory).ReviewAsync(
         webInput, CancellationToken.None);
     var companionEvidence = companionFactory.LastCompanionContext ?? "";
     Check(companionFactory.NoTools && companionReport.Findings.Count == 0 &&
           companionReport.ImplementationEvidence?.Single().SourceExcerpt == "id='save'" &&
+          companionReport.CrossFileObservations?.Count == 1 &&
+          companionReport.CrossFileObservations?.Single().CausePath == "app.js" &&
           companionEvidence.Contains("localStorage.setItem", StringComparison.Ordinal) &&
           companionEvidence.Contains("button { display: block; }", StringComparison.Ordinal) &&
           companionEvidence.Contains(scriptFile.Sha256, StringComparison.Ordinal) &&
@@ -2645,7 +2692,12 @@ try
             savedAcceptance.GetProperty("criteria").EnumerateArray().Sum(c =>
                 c.GetProperty("implementationIndicators").GetArrayLength()) == 1 &&
             qaResult!.Reports.Single(report => report.Path == "app.js")
-                .Assessment.ImplementationEvidence?.Count == 1,
+                .Assessment.ImplementationEvidence?.Count == 1 &&
+            qaResult.Reports.Single(report => report.Path == "index.html")
+                .Assessment.CrossFileObservations?.Count == 1 &&
+            savedAcceptance.GetProperty("crossFileEvidence").GetArrayLength() == 1 &&
+            savedAcceptance.GetProperty("crossFileEvidence")[0]
+                .GetProperty("causePath").GetString() == "app.js",
             "HTTP QA acceptance view is derived from persisted exact plan and reports, never a test pass");
     }
 
@@ -4050,7 +4102,16 @@ sealed class Phase5QaModel : IQaSourceReviewer
             : new QaFileAssessment(
                 "The HTML source references a script and a clickable button.",
                 [],
-                ["Load index.html offline and verify the script is linked"]));
+                ["Load index.html offline and verify the script is linked"],
+                CrossFileObservations: input.AllFiles.FirstOrDefault(f => f.Path == "app.js")
+                    is { } companion ? [
+                    new QaCrossFileObservation(QaAcceptanceProjection.Identify(input.Plan).First().Id,
+                        companion.Path, companion.Content[..Math.Min(80, companion.Content.Length)],
+                        "The document refers to the companion script."),
+                    new QaCrossFileObservation(QaAcceptanceProjection.Identify(input.Plan).First().Id,
+                        "../app.js", companion.Content[..Math.Min(80, companion.Content.Length)],
+                        "Invalid path must never become admitted evidence.")]
+                    : []));
     }
 }
 

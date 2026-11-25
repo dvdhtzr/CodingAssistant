@@ -20,6 +20,9 @@ interface QaAcceptanceSummary {
     criterionId: string | null; originalIndices: number[] }[];
   rawFindingCount: number;
   unmappedFindingCount: number;
+  crossFileEvidence?: { criterionId: string; observedFromPath: string;
+    causePath: string; causeExcerpt: string; explanation: string;
+    relatedFindingIndex: number | null }[];
 }
 interface QaFileReport {
   path: string;
@@ -477,6 +480,19 @@ export function QaReviewPanel({ token, taskId, engineering }: {
             </details>}
           </div>)}
         </details>
+        {(acceptance.crossFileEvidence?.length ?? 0) > 0 && <details>
+          <summary>Cross-file investigation ({acceptance.crossFileEvidence?.length})</summary>
+          <p className="hint">Related source observations are not additional repair targets.</p>
+          {acceptance.crossFileEvidence?.map((observation, index) => <div className="qa-finding" key={index}>
+            <p><strong>{observation.observedFromPath} → {observation.causePath}</strong>
+              {' · '}{observation.criterionId}</p>
+            <p className="hint">{observation.relatedFindingIndex == null
+              ? 'Requires investigation — no unique independent finding'
+              : 'Linked to independently reviewed finding ' + (observation.relatedFindingIndex + 1)}</p>
+            <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{observation.causeExcerpt}</pre>
+            <p>{observation.explanation}</p>
+          </div>)}
+        </details>}
       </section>}
       {qaAtlasInvestigations > 0 && <p className="hint"
         aria-label="Independent QA Code Atlas investigations">
@@ -496,8 +512,10 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         Historical QA report: the latest engineering source or plan has changed.
         These findings are retained for reference, not current verification.</p>}
       {result.job.state === 'Reviewed' && potentialIssues === 0 && <p className="hint">
-        The static model identified no issues in this review. That does
-        <strong> not</strong> mean the application builds, runs, or passes tests.</p>}
+        No primary-file repair findings were recorded.
+        {(acceptance?.crossFileEvidence?.length ?? 0) > 0 &&
+          ' Cross-file observations still require investigation.'}
+        {' '}This does <strong>not</strong> mean the application builds, runs, or passes tests.</p>}
       {result.job.state === 'Running' && <p className="hint">
         The selected local model is reviewing each primary file with any available bounded project context.
         Only persisted findings count as progress.</p>}
