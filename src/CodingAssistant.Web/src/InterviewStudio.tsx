@@ -7,7 +7,7 @@ import { TeamWorkroom } from './TeamWorkroom';
 import { VerificationTimeline } from './VerificationTimeline';
 import { ArchitectureStudio } from './ArchitectureStudio';
 import { TechnicalLeadStudio } from './TechnicalLeadStudio';
-import { api, type TaskItem } from './api';
+import { api, newRequestId, type TaskItem } from './api';
 import { JourneyStage, JourneyStatusStrip, journeySteps, restoreJourneyStage,
   toggleJourneyStage, type JourneyId, type JourneyStep } from './ProjectJourney';
 
@@ -35,6 +35,8 @@ interface InterviewSnapshot {
   messages: InterviewMessage[];
   specification: InterviewSpecification | null;
 }
+type DiscoverySkillReview = { skill: { name: string; role: string }; revision: number;
+  reviewSha256: string; approvedForLocalInstructionReview: boolean };
 type InterviewBusy = 'start' | 'answer' | 'draft' | 'approve' | '';
 const MODEL_DRIVEN_ANSWER_LIMIT = 12;
 const MAX_OWNER_ANSWERS = MODEL_DRIVEN_ANSWER_LIMIT + 1;
@@ -94,6 +96,25 @@ export function InterviewStudio({ token, task, studioCanvas = false,
   const [elapsed, setElapsed] = useState(0);
   const [expanded, setExpanded] = useState<JourneyId | null>('discovery');
   const [showAllStages, setShowAllStages] = useState(false);
+  const [discoveryReview, setDiscoveryReview] = useState<DiscoverySkillReview | null>(null);
+  const [skillOperation, setSkillOperation] = useState<'turn' | 'draft' | ''>('');
+  useEffect(() => {
+    let closed = false;
+    setDiscoveryReview(null); setSkillOperation('');
+    if (expanded !== 'discovery' && expanded !== 'specification') return;
+    void api<{ skills: DiscoverySkillReview[] }>(token, `/api/tasks/${task.id}/skill-reviews`)
+      .then(value => { if (!closed) setDiscoveryReview(value.skills.find(item =>
+        item.skill.name === 'requirements-discovery' && item.skill.role === 'ProductOwner' &&
+        item.approvedForLocalInstructionReview) ?? null); })
+      .catch(() => { if (!closed) setDiscoveryReview(null); });
+    return () => { closed = true; };
+  }, [token, task.id, expanded]);
+  function selectedSkill(operation: 'turn' | 'draft') {
+    return skillOperation === operation && discoveryReview ? { skill: {
+      name: discoveryReview.skill.name, reviewRevision: discoveryReview.revision,
+      reviewSha256: discoveryReview.reviewSha256, requestId: newRequestId(),
+    } } : {};
+  }
   const manuallySelected = useRef(false);
   const [architectureStep, setArchitectureStep] = useState<JourneyStep>(journeySteps[2]);
   const [planStep, setPlanStep] = useState<JourneyStep>(journeySteps[3]);
@@ -203,6 +224,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
   ) {
     if (busy) return;
     setBusy(operation);
+    setSkillOperation('');
     setError('');
     try {
       const updated = await work();
@@ -376,6 +398,12 @@ export function InterviewStudio({ token, task, studioCanvas = false,
     {error && <div className="alert" role="alert">{error}</div>}
 
     {snapshot && <>
+      {discoveryReview && ownerAnswers < MODEL_DRIVEN_ANSWER_LIMIT &&
+        (!snapshot.lastSequence || canAnswerInterview) && <label className="hint">
+          <input type="checkbox" checked={skillOperation === 'turn'} disabled={!!busy}
+            onChange={event => setSkillOperation(event.target.checked ? 'turn' : '')} />
+          Use reviewed requirements-discovery skill for the next model-driven interview turn only
+        </label>}
       {!snapshot.lastSequence && <div className="interview-start">
         <p>Your Product Owner will ask relevant questions about <em>your</em> project.
           Questions adapt to your answers, without a rigid questionnaire or demo task.</p>
@@ -401,7 +429,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
           disabled={!!busy || modelsLoading || !chosenModel || !installedModels.includes(chosenModel)}
           onClick={() => void submit('start', () =>
             api<InterviewSnapshot>(token, `/api/tasks/${task.id}/interview/turn`, {
-              expectedSequence: 0, model: chosenModel,
+              expectedSequence: 0, model: chosenModel, ...selectedSkill('turn'),
             }))}>
           Begin Product Owner conversation
         </button>
@@ -439,6 +467,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
               expectedSequence: snapshot.lastSequence,
               message,
               model: snapshot.model,
+              ...(ownerAnswers < MODEL_DRIVEN_ANSWER_LIMIT ? selectedSkill('turn') : {}),
             }))} />}
         {ownerAnswers >= MAX_OWNER_ANSWERS &&
           <InterviewCompletionNotice ownerAnswers={ownerAnswers}
@@ -472,6 +501,11 @@ export function InterviewStudio({ token, task, studioCanvas = false,
           </button>
         </div>
         {modelsError && <p role="alert" className="hint">{modelsError}</p>}
+        {discoveryReview && <label className="hint">
+          <input type="checkbox" checked={skillOperation === 'draft'} disabled={!!busy}
+            onChange={event => setSkillOperation(event.target.checked ? 'draft' : '')} />
+          Use reviewed requirements-discovery skill for this specification draft only
+        </label>}
         {draftModel === 'qwen3:30b' && <p className="hint" role="status">
           This Qwen 3 model can continue reasoning without producing a finished
           answer, even with thinking disabled. For more reliable specification
@@ -484,7 +518,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
           onClick={() => void submit('draft', () => api<InterviewSnapshot>(
             token, `/api/tasks/${task.id}/interview/specification`, {
               expectedSequence: snapshot.lastSequence,
-              model: draftModel,
+              model: draftModel, ...selectedSkill('draft'),
             }))}>
           {busy === 'draft' ? 'Drafting specification…' :
             spec ? 'Revise specification from discussion' : 'Draft detailed specification'}
