@@ -121,8 +121,8 @@ Only the three fixed manifest resources are read; no filesystem path
 or package ID from a request is opened. The deliberately narrow
 frontmatter subset is two plain scalar fields, with bounded content
 and exact pinned hashes. General YAML, references, third-party
-installation, approval persistence, activation, role/task binding
-and activation audit are not implemented yet. The catalog does not
+installation, activation, and activation audit are not implemented yet.
+Project-specific owner review and revocation are described below. The catalog does not
 supply any text to MAF or Ollama and cannot grant a tool or execution
 permission. Existing agent instructions and approvals are unchanged.
 
@@ -131,3 +131,31 @@ The existing API project references Microsoft.Agents.AI 1.28.0 on
 compatibility and live local skill activation still require separate
 validation. #110 remains open until its complete acceptance criteria
 are satisfied.
+
+## Owner review increment (#110)
+
+The Skills destination now offers project-specific review of the three
+fixed embedded candidates. Authenticated GET
+`/api/tasks/{id}/skill-reviews` returns review state and history. POST
+`/api/tasks/{id}/skill-reviews/{name}` records an explicit review or
+revocation. The SHA-256 review fingerprint binds schema, project,
+source commit and URL, version, content digest, license declaration,
+compatibility, role, scope, byte limit, and required tool categories.
+The expected revision prevents stale/replayed writes. SQLite records
+ordered, bounded events; project deletion removes its review records.
+
+An owner must confirm permission for **local instruction use** and
+enter the exact displayed `APPROVE LOCAL USE <reviewSha256>` phrase.
+The repository license marker is unspecified; this attestation does
+not create or infer a redistribution license. Revocation similarly
+requires `REVOKE <reviewSha256>`. A changed descriptor or hash makes
+the prior review stale; it does not silently transfer to another role,
+project, version, or package. A current approval is
+`APPROVED_LOCAL_REVIEW_NOT_ACTIVE`, never an execution grant. The
+global catalog remains unapproved/inactive because reviews are local
+to projects. No agent reads this ledger yet.
+
+Still outstanding: phase-specific exact task activation and usage
+evidence, native MAF skills compatibility, reference loader and
+independent live local Ollama acceptance. No external installation,
+script execution, network or filesystem access is enabled.

@@ -75,6 +75,20 @@ public sealed class TaskStore
               current_version INTEGER NOT NULL DEFAULT 0 CHECK(current_version >= 0),
               created_utc TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS skill_review_events (
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              skill_name TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 100),
+              role TEXT NOT NULL,
+              version TEXT NOT NULL,
+              content_sha256 TEXT NOT NULL,
+              license TEXT NOT NULL,
+              review_sha256 TEXT NOT NULL,
+              decision TEXT NOT NULL CHECK(decision IN ('ApproveLocalUse','Revoke')),
+              local_use_confirmed INTEGER NOT NULL CHECK(local_use_confirmed IN (0,1)),
+              created_utc TEXT NOT NULL,
+              PRIMARY KEY(task_id,skill_name,revision)
+            );
             CREATE TABLE IF NOT EXISTS plans (
               task_id TEXT NOT NULL REFERENCES tasks(id),
               version INTEGER NOT NULL CHECK(version > 0),
@@ -277,6 +291,7 @@ public sealed class TaskStore
             "DELETE FROM run_intents WHERE task_id=@id",
             "DELETE FROM plans WHERE task_id=@id",
             "DELETE FROM agent_role_models WHERE task_id=@id",
+            "DELETE FROM skill_review_events WHERE task_id=@id",
             "DELETE FROM html_artifacts WHERE task_id=@id",
             "DELETE FROM repair_triage_decisions WHERE proposal_id IN (SELECT id FROM repair_proposals WHERE task_id=@id)",
             "DELETE FROM repair_cycles WHERE task_id=@id",

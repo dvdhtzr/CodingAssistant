@@ -100,7 +100,7 @@ test('Team, Quality, Skills and History expose honest destinations without autom
   const common = { token: 'f'.repeat(64), taskId: task.id, onWork: noop };
   const team = renderToStaticMarkup(React.createElement(TeamDestination, common));
   const quality = renderToStaticMarkup(React.createElement(QualityDestination, common));
-  const skills = renderToStaticMarkup(React.createElement(SkillsDestination, common));
+  const skills = renderToStaticMarkup(React.createElement(SkillsDestination, { token: common.token }));
   const history = renderToStaticMarkup(React.createElement(HistoryDestination, common));
   assert.match(team, /Engineering team/);
   assert.match(quality, /Loading saved QA evidence/);
@@ -109,6 +109,11 @@ test('Team, Quality, Skills and History expose honest destinations without autom
   assert.match(skills, /Loading skill catalog/);
   assert.match(skills, /No skill activation or execution grants/);
   assert.doesNotMatch(skills, /<button[^>]*>Approve|<button[^>]*>Activate/);
+  const projectSkills = renderToStaticMarkup(React.createElement(SkillsDestination, common));
+  assert.match(projectSkills, /Review only/);
+  assert.match(projectSkills, /Loading project skill reviews/);
+  assert.match(projectSkills, /No activation or execution grants/);
+  assert.doesNotMatch(projectSkills, /<button[^>]*>Activate/);
   assert.match(history, /Loading recorded activity/);
   assert.doesNotMatch(team + quality + skills + history, /Authorize this exact M1 plan/);
 });
