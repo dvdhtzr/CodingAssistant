@@ -20,7 +20,8 @@ public sealed record QaReviewEvent(
 public sealed record QaReviewSnapshot(
     QaReviewRun Job, IReadOnlyList<QaFileReport> Reports,
     IReadOnlyList<QaReviewEvent> Events, string SourceState,
-    QaAcceptanceSummary? Acceptance = null);
+    QaAcceptanceSummary? Acceptance = null,
+    StaticWebPreflightReport? StaticPreflight = null);
 
 /// <summary>
 /// Evidence ledger for *static* QA source inspection. Review admission,
@@ -74,6 +75,10 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 assessment_json TEXT NOT NULL,
                 reviewed_utc TEXT NOT NULL,
                 PRIMARY KEY(qa_id,path)
+            );
+            CREATE TABLE IF NOT EXISTS qa_static_preflight (
+                qa_id TEXT PRIMARY KEY NOT NULL REFERENCES qa_reviews(id),
+                report_json TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS qa_review_events (
                 qa_id TEXT NOT NULL REFERENCES qa_reviews(id),
@@ -339,9 +344,90 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             throw new StoreFailure("SOURCE_CHANGED");
         var boundPlan = ImplementationPlanStore.ReadForQa(db, tx, review);
         var acceptance = QaAcceptanceProjection.Build(review, boundPlan, reports);
+        var preflight = ReadStaticPreflight(db, tx, review);
         tx.Commit();
         return new QaReviewSnapshot(review, reports.AsReadOnly(),
-            events.AsReadOnly(), sourceState ?? "Unavailable", acceptance);
+            events.AsReadOnly(), sourceState ?? "Unavailable", acceptance, preflight);
+    }
+
+    private static StaticWebPreflightReport? ReadStaticPreflight(
+        SqliteConnection db, SqliteTransaction tx, QaReviewRun review)
+    {
+        var json = TaskStore.Scalar(db, tx, """
+            SELECT report_json FROM qa_static_preflight WHERE qa_id=@id
+            """, ("@id", review.Id));
+        if (json is null) return null;
+        var report = JsonSerializer.Deserialize<StaticWebPreflightReport>(json)
+            ?? throw new StoreFailure("INVALID_STATE");
+        if (report.RunId != review.EngineeringRunId ||
+            report.SourceSha256 != review.SourceSha256 ||
+            report.VerificationStatus != "GENERATED_NOT_TESTED")
+            throw new StoreFailure("SOURCE_CHANGED");
+        return report;
+    }
+
+    // Compute once per review, from owner-private persisted source, not
+    // a model assertion or a supplied filesystem path. No runtime authority.
+    internal StaticWebPreflightReport? CaptureStaticPreflight(string taskId, string reviewId)
+    {
+        ValidateId(taskId); ValidateId(reviewId);
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var review = Find(db, tx, reviewId);
+        if (review is null || review.TaskId != taskId)
+            throw new StoreFailure("NOT_FOUND");
+        if (review.State != "Running") throw new StoreFailure("INVALID_STATE");
+        RequireSource(db, tx, review);
+        var architecture = DraftArchitecturePolicy.Capture(db, tx, taskId,
+            review.SpecificationVersion, review.SpecificationSha256);
+        if (architecture is null || architecture.Sha256 != review.ArchitectureSha256 ||
+            !architecture.Choices.Any(choice => choice.RuntimeProfileId == "static-web"))
+            return null;
+        var saved = ReadStaticPreflight(db, tx, review);
+        if (saved is not null) return saved;
+        var files = new List<EngineeringSourceFile>();
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT path,purpose,content,sha256,work_item_id,updated_utc
+            FROM engineering_run_files WHERE run_id=@run ORDER BY path
+            """, ("@run", review.EngineeringRunId)))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                files.Add(new EngineeringSourceFile(reader.GetString(0), reader.GetString(1),
+                    reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5)));
+        var sourceState = TaskStore.Scalar(db, tx, """
+            SELECT state FROM engineering_runs WHERE id=@id AND task_id=@task
+            """, ("@id", review.EngineeringRunId), ("@task", taskId));
+        if (!IsReviewableSource(sourceState ?? "", files.Count) ||
+            Fingerprint(files) != review.SourceSha256)
+            throw new StoreFailure("SOURCE_CHANGED");
+        var source = new EngineeringRun(review.EngineeringRunId, taskId,
+            review.PlanRevision, review.PlanSha256, review.SpecificationVersion,
+            review.SpecificationSha256, review.ArchitectureSha256, review.Model,
+            sourceState!, "StaticPreflight", null, review.CreatedUtc, review.UpdatedUtc);
+        StaticWebPreflightReport report;
+        try
+        {
+            report = StaticWebSourcePreflight.Inspect(new EngineeringRunSnapshot(source, [], [], files));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            report = new(source.Id, source.State, review.SourceSha256,
+                "STATIC_INSPECTION_LIMIT", "GENERATED_NOT_TESTED", 0, 0, []);
+        }
+        if (report.SourceSha256 is null && report.Status == "BOUNDS_EXCEEDED")
+            report = report with { SourceSha256 = review.SourceSha256 };
+        if (report.RunId != review.EngineeringRunId ||
+            report.SourceSha256 != review.SourceSha256 ||
+            report.VerificationStatus != "GENERATED_NOT_TESTED")
+            throw new StoreFailure("SOURCE_CHANGED");
+        TaskStore.Execute(db, tx, """
+            INSERT INTO qa_static_preflight(qa_id,report_json) VALUES(@id,@json)
+            """, ("@id", review.Id), ("@json", JsonSerializer.Serialize(report)));
+        Event(db, tx, review.Id, "QaStaticPreflightCaptured",
+            "Host static source preflight: " + report.Status + "; " +
+            report.Findings.Count + " observation(s); no tests executed");
+        tx.Commit();
+        return report;
     }
 
     public void SaveFileReport(string taskId, string reviewId,
