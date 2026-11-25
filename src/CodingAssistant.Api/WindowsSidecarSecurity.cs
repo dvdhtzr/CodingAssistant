@@ -28,19 +28,24 @@ internal static class WindowsSidecarSecurity
     private const int ErrorDeletePending = 303;
     private const int MaximumDescriptorBytes = 1024 * 1024;
 
-    internal static void Validate(string path, Action<FileSystemSecurity> validate)
+    internal static void Validate(string path, Action<FileSystemSecurity> validate) =>
+        ValidateObserved(() => Observe(path, validate), Thread.Sleep);
+
+    // Internal deterministic test seam; the production path always uses
+    // the fixed Windows observer and bounded delays above.
+    internal static void ValidateObserved(Func<int> observe, Action<int> delay)
     {
         // Never interpret access denied as absent. A retry must either
         // observe actual absence or complete the original security check.
         for (var attempt = 0; attempt < 5; attempt++)
         {
-            var status = Observe(path, validate);
+            var status = observe();
             if (status is 0 or ErrorFileNotFound)
                 return;
             if (attempt == 4 || status is not (ErrorAccessDenied or
                     ErrorSharingViolation or ErrorLockViolation or ErrorDeletePending))
                 throw new InvalidOperationException("Private SQLite sidecar could not be validated");
-            Thread.Sleep(5 << attempt);
+            delay(5 << attempt);
         }
     }
 
@@ -49,10 +54,13 @@ internal static class WindowsSidecarSecurity
         using var handle = CreateFile(path, ReadControlAndAttributes,
             ShareReadWriteDelete, IntPtr.Zero, OpenExisting, OpenReparsePoint, IntPtr.Zero);
         if (handle.IsInvalid)
-            return Marshal.GetLastPInvokeError();
+        {
+            var error = Marshal.GetLastPInvokeError();
+            return error == 0 ? -1 : error;
+        }
         if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo,
                 out var info, (uint)Marshal.SizeOf<AttributeTagInfo>()))
-            return Marshal.GetLastPInvokeError();
+            return MetadataFailure(Marshal.GetLastPInvokeError());
         if ((info.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
             throw new InvalidOperationException("Refusing redirected private data file");
 
@@ -63,7 +71,7 @@ internal static class WindowsSidecarSecurity
         try
         {
             if (status != 0)
-                return (int)status;
+                return MetadataFailure((int)status);
             if (descriptor == IntPtr.Zero)
                 throw new InvalidOperationException("Missing private file security descriptor");
             var length = GetSecurityDescriptorLength(descriptor);
@@ -87,6 +95,11 @@ internal static class WindowsSidecarSecurity
                 _ = LocalFree(descriptor);
         }
     }
+
+    // Only CreateFile can establish name absence; failure on an already
+    // opened handle is never an absence observation.
+    private static int MetadataFailure(int status) =>
+        status is 0 or ErrorFileNotFound ? -1 : status;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct AttributeTagInfo
