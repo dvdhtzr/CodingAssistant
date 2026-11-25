@@ -196,8 +196,8 @@ No standing activation is granted.
 This uses the existing MAF ChatClientAgent instruction context path
 rather than a native portable-skills API. Model-free tests exercise the
 actual adapter with a fake IChatClient; a real local Ollama owner test
-is still required. QA activation, safe reviewed references, native skills API compatibility
-and full live acceptance remain outstanding.
+is still required. Safe reviewed references, native skills API compatibility and full live
+acceptance remain outstanding.
 
 ## Product Owner activation increment (#110)
 
@@ -228,3 +228,39 @@ obeyed. `Admitted` without a terminal receipt is an unknown outcome.
 Review revocation prevents future admissions; admitted calls retain
 their immutable context. Project deletion removes the audit records.
 Model-free MAF adapter tests do not qualify live Ollama.
+
+## QA Engineer activation increment (#110)
+
+After reviewing the `static-web-verification` skill, select the
+one-job opt-in before requesting independent static QA of saved
+source. The optional `skill` field on the existing QA start request
+contains the exact name, review revision/hash and new request ID.
+Only the approved static-web architecture profile is eligible.
+An explicitly selected skill cannot fall back to a non-MAF reviewer.
+
+QA admission and the skill-use record commit in the same SQLite
+transaction, after existing current source, specification,
+architecture and approved plan checks. The skill context is bound
+to the new review ID, exact source run and file fingerprint, plan,
+architecture and selected model. Each file consumes that context
+once; existing bounded QA corrections and read-only Code Atlas
+observations remain unchanged. The reviewed instructions provide
+advisory context only and cannot add callable tools, filesystem
+access, execution, package installation or test claims.
+
+The usage endpoint adds `qaEvents`, joining each admitted skill
+selection to its actual QA review state and count of saved file
+reports. Running, failed and interrupted states are not completed
+reviews. Static reports are not evidence of a successful build,
+runtime verification or repaired behavior. Revocation blocks
+future job admissions, not an already admitted immutable job.
+Project deletion removes skill usage records before their parent
+QA review. Explicit selection applies only to that requested job;
+automated repair-cycle QA never inherits it.
+
+Model-free tests exercise the real coordinator and MAF adapter with
+an injected deterministic IChatClient, including rejected review,
+scope mismatch, adapter fallback, replay and revocation. This does
+not qualify real Ollama or generated-code execution. Native MAF
+skills API and safe reference support still require separate review
+and live acceptance.
