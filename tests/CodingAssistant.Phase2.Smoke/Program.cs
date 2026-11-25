@@ -1024,6 +1024,43 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
             new QaFileAssessment("Static observations only.", [saveConcern],
                 ["Test saving notes in a browser."]), "2026-11-21T00:03:00Z")
     };
+    // Ground evidence on the primary source alone, not a companion, model
+    // explanation or source inventory. Invalid quotes remain hypotheses.
+    const string primaryEvidenceSource = "const save = () => localStorage.setItem('notes', 'saved');";
+    var grounded = QaAcceptanceProjection.Ground(evidencePlan, primaryEvidenceSource,
+        new QaFileAssessment("Static observations only.",
+            [saveConcern with { SourceExcerpt = "localStorage.setItem" },
+             ambiguousConcern with { SourceExcerpt = "fabricated event handler" }],
+            ["Test saving notes in a browser."],
+            [new QaImplementationEvidence("save:1", "localStorage.setItem",
+                "The source contains a persistence call."),
+             new QaImplementationEvidence("save:1", "localStorage.setItem",
+                "Duplicate observation of persistence."),
+             new QaImplementationEvidence("unknown:1", "localStorage.setItem",
+                "This criterion does not exist in the plan."),
+             new QaImplementationEvidence("edit:2", "fabricated event handler",
+                "This quotation is not part of the primary source.")]));
+    Check(grounded.Findings[0].SourceExcerpt == "localStorage.setItem" &&
+          grounded.Findings[1].SourceExcerpt is null &&
+          grounded.ImplementationEvidence?.Count == 1,
+        "literal source grounding discards fabricated evidence and unknown criterion links");
+    var groundedProjection = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("app.js", new string('2', 64), grounded,
+            "2026-11-21T00:03:00Z")]);
+    var groundedCriterion = groundedProjection.Criteria.Single(c => c.Criterion.Id == "save:1");
+    Check(groundedCriterion.StaticStatus == "EvidenceAndConcern" &&
+          groundedCriterion.ImplementationIndicators.Single().SourceExcerpt == "localStorage.setItem" &&
+          groundedCriterion.ImplementationIndicators.Single().Path == "app.js" &&
+          groundedCriterion.VerificationStatus == "RequiresTesting",
+        "positive static evidence can coexist with an unresolved concern without passing a test");
+    var positiveOnly = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("app.js", new string('2', 64), grounded with { Findings = [] },
+            "2026-11-21T00:03:00Z")]);
+    Check(positiveOnly.Criteria.Single(c => c.Criterion.Id == "save:1").StaticStatus ==
+          "ImplementationEvidence" &&
+          positiveOnly.Criteria.All(c => c.VerificationStatus == "RequiresTesting"),
+        "positive-only evidence never implies verified behavior");
+
     var evidence = QaAcceptanceProjection.Build(evidenceReview, evidencePlan, evidenceReports);
     Check(evidence.PlanSha256 == evidencePlan.PlanSha256 &&
           evidence.SourceSha256 == evidenceReview.SourceSha256 &&
@@ -1139,11 +1176,12 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         AllFiles = [htmlFile, scriptFile, styleFile, oversizedFile, privateFile] };
     var companionFactory = new Phase5FakeMafFactory();
     companionFactory.ScriptedReplies.Enqueue(
-        """{"summary":"The linked script contains a Save handler; browser behavior remains unverified.","findings":[],"manualChecks":["Click Save and reload in an independent browser"]}""");
+        """{"summary":"The linked script contains a Save handler; browser behavior remains unverified.","findings":[],"implementationEvidence":[{"criterionId":"qa:1","sourceExcerpt":"id='save'","explanation":"The primary file declares a named control."}],"manualChecks":["Click Save and reload in an independent browser"]}""");
     var companionReport = await new MafQaEngineer(companionFactory).ReviewAsync(
         webInput, CancellationToken.None);
     var companionEvidence = companionFactory.LastCompanionContext ?? "";
     Check(companionFactory.NoTools && companionReport.Findings.Count == 0 &&
+          companionReport.ImplementationEvidence?.Single().SourceExcerpt == "id='save'" &&
           companionEvidence.Contains("localStorage.setItem", StringComparison.Ordinal) &&
           companionEvidence.Contains("button { display: block; }", StringComparison.Ordinal) &&
           companionEvidence.Contains(scriptFile.Sha256, StringComparison.Ordinal) &&
@@ -2603,7 +2641,11 @@ try
             savedAcceptance.GetProperty("criteria").GetArrayLength() > 0 &&
             savedAcceptance.GetProperty("criteria").EnumerateArray().All(c =>
                 c.GetProperty("verificationStatus").GetString() == "RequiresTesting") &&
-            savedAcceptance.GetProperty("findings").GetArrayLength() == 1,
+            savedAcceptance.GetProperty("findings").GetArrayLength() == 1 &&
+            savedAcceptance.GetProperty("criteria").EnumerateArray().Sum(c =>
+                c.GetProperty("implementationIndicators").GetArrayLength()) == 1 &&
+            qaResult!.Reports.Single(report => report.Path == "app.js")
+                .Assessment.ImplementationEvidence?.Count == 1,
             "HTTP QA acceptance view is derived from persisted exact plan and reports, never a test pass");
     }
 
@@ -3993,7 +4035,18 @@ sealed class Phase5QaModel : IQaSourceReviewer
                 [new QaFinding("Major", "Start advances timer state",
                     "The handler logs start but does not update a visible timer.",
                     "Implement timer state and check it with a real browser")],
-                ["Click Start and observe the timer after several seconds"])
+                ["Click Start and observe the timer after several seconds"],
+                [new QaImplementationEvidence(
+                    QaAcceptanceProjection.Identify(input.Plan).First().Id,
+                    input.File.Content[..Math.Min(80, input.File.Content.Length)],
+                    "A saved primary source construct provides an implementation indicator."),
+                 new QaImplementationEvidence("unknown:1",
+                    input.File.Content[..Math.Min(80, input.File.Content.Length)],
+                    "Unknown criterion cannot become acceptance evidence."),
+                 new QaImplementationEvidence(
+                    QaAcceptanceProjection.Identify(input.Plan).First().Id,
+                    "FABRICATED_SOURCE_EXCERPT_ABSENT_FROM_FIXTURE",
+                    "Invented evidence must be discarded by the store.")])
             : new QaFileAssessment(
                 "The HTML source references a script and a clickable button.",
                 [],
