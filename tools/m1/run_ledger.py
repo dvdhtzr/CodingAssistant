@@ -56,8 +56,8 @@ def _validated_file(path: pathlib.Path) -> None:
         raise ValueError("Refuse linked ledger path")
     if path.exists():
         info = path.stat()
-        if not stat.S_ISREG(info.st_mode):
-            raise ValueError("Ledger file is not regular")
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("Ledger file must be regular and unlinked")
         if os.name == "posix" and (info.st_uid != os.getuid() or
                                    info.st_mode & 0o077):
             raise ValueError("Ledger file must be owner-private")
@@ -106,11 +106,20 @@ def _open_lock(path: pathlib.Path, create: bool) -> int:
     if create:
         flags |= os.O_CREAT | os.O_EXCL
     fd = os.open(path, flags, 0o600)
-    if create:
-        os.write(fd, b"\0")  # Windows byte-range lock needs existing byte.
-    else:
-        _validated_file(path)
-    return fd
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("Unsafe opened lock file")
+        if os.name == "posix" and (info.st_uid != os.getuid() or info.st_mode & 0o077):
+            raise ValueError("Lock must be owner-private")
+        if create:
+            os.write(fd, b"\0")  # Windows byte-range lock needs existing byte.
+        else:
+            _validated_file(path)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _result_code(value: str | None) -> str | None:
@@ -137,6 +146,10 @@ class RunLedger:
                      0o600)
         os.close(fd)
         _validated_file(db_path)
+        # SQLite can consume a pre-existing rollback journal during recovery.
+        # Reject unsafe linked or non-private sidecars before opening SQLite.
+        for suffix in ("-journal", "-wal", "-shm"):
+            _validated_file(pathlib.Path(str(db_path) + suffix))
         self.db = sqlite3.connect(db_path, timeout=10)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys=ON")
@@ -229,6 +242,7 @@ class RunLedger:
                     raise RuntimeError("Could not hold new run lock")
                 now = utc()
                 with self.db:
+                    self.db.execute("BEGIN IMMEDIATE")
                     self.db.execute(
                         "INSERT INTO runs (run_id,request_id,state,created_utc,updated_utc)"
                         " VALUES (?,?, 'NEW',?,?)", (run_id, request_id, now, now))
@@ -261,12 +275,15 @@ class RunLedger:
             raise ValueError("Unrecognized state")
         if plan_hash is not None and not HASH_RE.fullmatch(plan_hash):
             raise ValueError("Invalid approved plan hash")
-        if container_name is not None and not CONTAINER_RE.fullmatch(container_name):
+        if container_name is not None and (not CONTAINER_RE.fullmatch(container_name) or
+                                           container_name != managed_container(run_id)):
             raise ValueError("Invalid managed container name")
         if evidence_name is not None and not EVIDENCE_RE.fullmatch(evidence_name):
             raise ValueError("Invalid evidence file name")
         _result_code(result_code)
         with self.db:
+            # Serialize the read/transition/event as a single write transaction.
+            self.db.execute("BEGIN IMMEDIATE")
             row = self.db.execute(
                 "SELECT state,plan_hash,container_name FROM runs WHERE run_id=?",
                 (run_id,)).fetchone()
@@ -376,12 +393,16 @@ class RunHandle:
         self.fd = fd
 
     def advance(self, state: str, **kwargs) -> None:
+        if self.fd is None:
+            raise ValueError("Run handle no longer owns the execution lock")
         self.ledger._advance(self.run_id, state, **kwargs)
 
     def container_name(self) -> str:
         return managed_container(self.run_id)
 
     def finish(self, report: dict, evidence_name: str) -> str:
+        if self.fd is None:
+            raise ValueError("Run handle no longer owns the execution lock")
         if type(report) is not dict:
             raise ValueError("Missing execution result")
         prior = self.ledger.get(self.run_id)["state"]

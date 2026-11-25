@@ -1,0 +1,5 @@
+# M1 durable ledger crash consistency (#69)
+
+First implementation slice: explicit SQLite immediate write transactions for run admission and state/event mutation, exact container-name binding, closed-handle mutation rejection, private regular single-link ledger/lock files and pre-open sidecar checks. Tests exercise independent subprocess duplicate admission, transactional state/event rollback on injected SQLite write failure, restart reconciliation without replay, and link rejection. A SQLite transaction abort does not stand for a physical disk-failure qualification.
+
+Remaining before #69 closure: bind final evidence bytes and SHA256 to the exact run/plan in the same terminal-state transaction, independently validate reads, preserve historical unbound receipts without claiming new provenance, and add evidence-write/commit crash-window tests. Do not mark this issue completed on the first slice alone. Existing M1 exact plan approvals, image pinning and execution permissions remain unchanged; changed source hashes require the existing separate host preflight and owner authorization for future real execution.

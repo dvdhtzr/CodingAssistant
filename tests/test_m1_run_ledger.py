@@ -262,6 +262,105 @@ class DurableRunLedgerTests(unittest.TestCase):
         self.assertNotIn(b"OPENAI_API_KEY", data)
         self.assertEqual(self.store.get(handle.run_id)["result_code"], "BLOCKED")
 
+    def test_transition_and_event_rollback_together_on_sqlite_write_failure(self):
+        h = self.start("1"*32)
+        self.running(h)
+        self.store.db.execute("""
+            CREATE TRIGGER reject_verify BEFORE INSERT ON transitions
+            WHEN NEW.state='VERIFYING' BEGIN SELECT RAISE(ABORT, 'io fixture'); END
+        """)
+        self.store.db.commit()
+        with self.assertRaises(sqlite3.DatabaseError):
+            h.advance("VERIFYING")
+        with r.RunLedger(self.root) as independent:
+            self.assertEqual(independent.get(h.run_id)["state"], "RUNNING")
+            self.assertNotIn("VERIFYING", independent.transitions(h.run_id))
+        h.close()
+        result = self.store.reconcile(h.run_id, runner=lambda *_args, **_kw: completed(1))
+        self.assertEqual(result["result"], "INTERRUPTED_CLEAN")
+        self.assertNotIn("SUCCEEDED", self.store.transitions(h.run_id))
+
+    def test_two_process_duplicate_admission_has_one_durable_winner(self):
+        # Two independent SQLite connections, both ready before the gate.
+        child = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from run_ledger import RunLedger, DuplicateRequest
+with RunLedger(Path(sys.argv[2])) as ledger:
+    print('READY', flush=True)
+    sys.stdin.readline()
+    try:
+        handle = ledger.start('2'*32)
+        print('WIN '+handle.run_id, flush=True)
+        handle.close()
+    except DuplicateRequest as e:
+        print('DUP '+e.record['run_id'], flush=True)
+"""
+        processes = []
+        try:
+            for _ in range(2):
+                p = subprocess.Popen([sys.executable, "-c", child,
+                    str(ROOT / "tools/m1"), str(self.root)],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, text=True)
+                processes.append(p)
+            for p in processes:
+                self.assertEqual(p.stdout.readline().strip(), "READY")
+            for p in processes:
+                p.stdin.write("go\n")
+                p.stdin.flush()
+            results = []
+            for p in processes:
+                out, err = p.communicate(timeout=30)
+                self.assertEqual(p.returncode, 0, err)
+                results.append(out.strip().split())
+            self.assertEqual(sorted(x[0] for x in results), ["DUP", "WIN"])
+            self.assertEqual(results[0][1], results[1][1])
+            self.assertEqual(len(self.store.history()), 1)
+            self.assertEqual(self.store.transitions(results[0][1]), ["NEW"])
+        finally:
+            for p in processes:
+                if p.poll() is None:
+                    p.kill()
+                p.communicate(timeout=10)
+
+    def test_closed_handle_and_foreign_valid_container_cannot_mutate_state(self):
+        h = self.start()
+        self.approved(h)
+        foreign = r.managed_container("f"*24)
+        if foreign == h.container_name():
+            foreign = r.managed_container("e"*24)
+        with self.assertRaises(ValueError):
+            h.advance("RUNNING", container_name=foreign)
+        h.close()
+        with self.assertRaises(ValueError):
+            h.advance("RUNNING", container_name=h.container_name())
+        self.assertEqual(self.store.get(h.run_id)["state"], "APPROVED")
+
+    def test_hardlinked_ledger_file_and_linked_sqlite_sidecar_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            private = pathlib.Path(temp) / "private"
+            private.mkdir(mode=0o700)
+            db = private / "runs.sqlite3"
+            db.write_bytes(b"not a database")
+            db.chmod(0o600)
+            try:
+                os.link(db, private / "linked-copy")
+            except (OSError, NotImplementedError):
+                self.skipTest("Hard links unavailable")
+            with self.assertRaises(ValueError):
+                r.RunLedger(private)
+            (private / "linked-copy").unlink()
+            db.unlink()
+            secret = private / "unrelated"
+            secret.write_bytes(b"do not open")
+            secret.chmod(0o600)
+            os.link(secret, private / "runs.sqlite3-journal")
+            with self.assertRaises(ValueError):
+                r.RunLedger(private)
+            self.assertEqual(secret.read_bytes(), b"do not open")
+
 
 if __name__ == "__main__":
     unittest.main()
