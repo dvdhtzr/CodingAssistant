@@ -144,8 +144,12 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
         string objective, string approvedSpecification, string model, string topic,
         ArchitectureSkillContext skill, CancellationToken cancellation)
     {
-        if (skill.Model != model || skill.Topic != topic)
+        var actual = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(
+                $"codingassistant-spec-v1\n{skill.TaskId}\n{skill.SpecificationVersion}\n{approvedSpecification}")));
+        if (skill.Model != model || skill.Topic != topic || actual != skill.SpecificationSha256)
             throw new StoreFailure("SKILL_SCOPE_DENIED");
+        skill.Consume();
         return RecommendCoreAsync(objective, approvedSpecification, model, topic, skill, cancellation);
     }
 
