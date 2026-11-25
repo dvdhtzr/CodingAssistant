@@ -117,6 +117,20 @@ public sealed class ImplementationPlanStore(TaskStore tasks, InterviewStore inte
         return reader.Read() ? Decode(reader) : null;
     }
 
+    // Historical QA must use its exact formerly approved plan, not the
+    // current plan or a text match against a newer revision.
+    internal static ImplementationPlan ReadForQa(SqliteConnection db,
+        SqliteTransaction tx, QaReviewRun review)
+    {
+        using var command = TaskStore.Command(db, tx, SelectColumns +
+            " WHERE task_id=@id AND revision=@revision AND plan_sha256=@hash" +
+            " AND approved_utc IS NOT NULL",
+            ("@id", review.TaskId), ("@revision", review.PlanRevision),
+            ("@hash", review.PlanSha256));
+        using var reader = command.ExecuteReader();
+        return reader.Read() ? Decode(reader) : throw new StoreFailure("SOURCE_CHANGED");
+    }
+
     private static ImplementationPlan Effective(ImplementationPlan value,
         int? specVersion, string? specSha, string? archSha)
     {
