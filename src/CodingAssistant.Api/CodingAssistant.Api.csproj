@@ -15,5 +15,6 @@
     <EmbeddedResource Include="Skills/requirements-discovery/SKILL.md" LogicalName="CodingAssistant.Api.Skills.requirements-discovery.SKILL.md" />
     <EmbeddedResource Include="Skills/architecture-tradeoffs/SKILL.md" LogicalName="CodingAssistant.Api.Skills.architecture-tradeoffs.SKILL.md" />
     <EmbeddedResource Include="Skills/static-web-verification/SKILL.md" LogicalName="CodingAssistant.Api.Skills.static-web-verification.SKILL.md" />
+    <EmbeddedResource Include="Skills/static-web-verification/references/review-checklist.md" LogicalName="CodingAssistant.Api.Skills.static-web-verification.references.review-checklist.md" />
   </ItemGroup>
 </Project>

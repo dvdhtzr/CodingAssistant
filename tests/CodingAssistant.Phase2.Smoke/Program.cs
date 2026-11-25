@@ -1771,6 +1771,62 @@ try
         catch (StoreFailure) { skillInputRejected = true; }
         Check(skillInputRejected, "changed skill text fails the reviewed content hash");
     }
+    // Fixed embedded reference loading: no path resolution or arbitrary files.
+    {
+        var referenceCandidate = candidateSkills.Single(s => s.Name == SkillReviewStore.QaSkill);
+        var fixedReference = referenceCandidate.References!.Single();
+        Check(referenceCandidate.Version == "2" &&
+            referenceCandidate.SkillFileSha256 ==
+                "a44462505576db34ccf61b57aa9952281828ced76402111389007c50f5f391e6" &&
+            referenceCandidate.ContentSha256 ==
+                "057bbd8f17179ac760ea38eec4255700419e5fc673d785e0809ab5ccc00e86d4" &&
+            SkillCatalog.PackageHash(referenceCandidate.SkillFileSha256!,
+                fixedReference.RelativePath, fixedReference.ContentSha256) == referenceCandidate.ContentSha256 &&
+            candidateSkills.Where(s => s.Name != SkillReviewStore.QaSkill)
+                .All(s => s.Version == "1" && s.References is null),
+            "reference package has exact file hashes and does not alter unrelated approvals");
+        var referenceBytes = System.Text.Encoding.UTF8.GetBytes(fixedReference.Text + "\n");
+        Check(SkillCatalog.ValidateReference(referenceBytes, fixedReference.RelativePath,
+            fixedReference.ContentSha256) == fixedReference.Text,
+            "approved embedded reference is bounded canonical text");
+        foreach (var disallowedReference in new[] { "../review-checklist.md",
+            "/references/review-checklist.md", "references/../references/review-checklist.md",
+            "references\\review-checklist.md", "C:/review-checklist.md",
+            "references/%2e%2e/review-checklist.md", "scripts/run.ps1", "references/other.md" })
+        {
+            var referenceRejected = false;
+            try { SkillCatalog.ValidateReference(referenceBytes, disallowedReference,
+                fixedReference.ContentSha256); }
+            catch (StoreFailure failure) { referenceRejected = failure.Code == "SKILL_SCOPE_DENIED"; }
+            Check(referenceRejected, "reference path outside exact allowlist rejected");
+        }
+        foreach (var alteredReference in new[] {
+            System.Text.Encoding.UTF8.GetBytes(fixedReference.Text + "\nchanged"),
+            new byte[] { 0xff }, new byte[4097] })
+        {
+            var referenceRejected = false;
+            try { SkillCatalog.ValidateReference(alteredReference, fixedReference.RelativePath,
+                fixedReference.ContentSha256); }
+            catch (StoreFailure) { referenceRejected = true; }
+            Check(referenceRejected, "changed, invalid or oversized reference rejected");
+        }
+        var oldReferenceDescriptor = referenceCandidate with {
+            Version = "1", SourceCommit = "e12ea7c3b86b03abef633ddc7003d0e284722b89",
+            SourceUrl = "https://github.com/dvdhtzr/CodingAssistant/blob/e12ea7c3b86b03abef633ddc7003d0e284722b89/src/CodingAssistant.Api/Skills/static-web-verification/SKILL.md",
+            ContentSha256 = referenceCandidate.SkillFileSha256!, SkillFileSha256 = null,
+            Compatibility = "MAF local Ollama instruction-only candidate; live activation not qualified",
+            References = null };
+        var oldReferenceReviewHash = SkillReviewStore.ReviewSha256(taskBound.Id, oldReferenceDescriptor);
+        var newReferenceReviewHash = SkillReviewStore.ReviewSha256(taskBound.Id, referenceCandidate);
+        Check(oldReferenceReviewHash != newReferenceReviewHash,
+            "new reference package invalidates old QA approval identity");
+        using (var oldReferenceApproval = await Post(client,
+            "/api/tasks/" + taskBound.Id + "/skill-reviews/" + referenceCandidate.Name,
+            new SkillReviewRequest(1, 0, oldReferenceReviewHash, "ApproveLocalUse",
+                "APPROVE LOCAL USE " + oldReferenceReviewHash, true)))
+            Check(oldReferenceApproval.StatusCode == HttpStatusCode.Conflict,
+                "prior instruction-only review cannot approve expanded QA package");
+    }
     // Skill review is project-scoped, explicitly owner-confirmed and never activation.
     {
         var skillReviewRoute = "/api/tasks/" + taskBound.Id + "/skill-reviews";
@@ -2308,7 +2364,8 @@ try
         var skillQaResult = reviewStore.Get(taskBound.Id, skillQaJob.Id);
         var skillQaAudit = new SkillReviewStore(new TaskStore(root)).ReadQaUses(taskBound.Id).Single();
         Check(skillQaResult.Job.State == "Reviewed" && skillQaResult.Reports.Count == 2 &&
-            qaSkillFactory.SkillContextsSeen == 2 && qaSkillFactory.NoTools &&
+            qaSkillFactory.SkillContextsSeen == 2 && qaSkillFactory.ReferenceContextsSeen == 2 &&
+            qaSkillFactory.NoTools && skillQaAudit.ContentSha256 == qaSkillCandidate.Skill.ContentSha256 &&
             skillQaAudit.QaReviewId == skillQaJob.Id && skillQaAudit.ReportsSaved == 2 &&
             skillQaAudit.SourceSha256 == QaReviewStore.Fingerprint(engineeringResult!.Files) &&
             skillQaAudit.PlanSha256 == secondPlanHash && skillQaAudit.Status == "Reviewed",
@@ -3789,6 +3846,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool RepairFocusSeen { get; private set; }
     public bool NoTools { get; private set; }
     public int SkillContextsSeen { get; private set; }
+    public int ReferenceContextsSeen { get; private set; }
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
 
@@ -3830,6 +3888,12 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                     m.Role.Value == "system" && m.Text?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
                         StringComparison.Ordinal) == true))
                 parent.SkillContextsSeen++;
+            if (options?.Instructions?.Contains("OWNER-REVIEWED ADVISORY REFERENCE (references/review-checklist.md)", StringComparison.Ordinal) == true &&
+                options?.Instructions?.Contains("Identify state persistence and restoration paths", StringComparison.Ordinal) == true ||
+                history.Any(m => m.Role.Value == "system" &&
+                    m.Text?.Contains("OWNER-REVIEWED ADVISORY REFERENCE (references/review-checklist.md)", StringComparison.Ordinal) == true &&
+                    m.Text.Contains("Identify state persistence and restoration paths", StringComparison.Ordinal)))
+                parent.ReferenceContextsSeen++;
             parent.HostObservationSeen |= history.Any(m =>
                 m.Role.Value == "user" &&
                 m.Text?.Contains("HOST QA CODE ATLAS OBSERVATION",

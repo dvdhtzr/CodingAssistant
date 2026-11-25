@@ -196,8 +196,7 @@ No standing activation is granted.
 This uses the existing MAF ChatClientAgent instruction context path
 rather than a native portable-skills API. Model-free tests exercise the
 actual adapter with a fake IChatClient; a real local Ollama owner test
-is still required. Safe reviewed references, native skills API compatibility and full live
-acceptance remain outstanding.
+is still required. Native skills API compatibility and full live acceptance remain outstanding.
 
 ## Product Owner activation increment (#110)
 
@@ -261,6 +260,37 @@ automated repair-cycle QA never inherits it.
 Model-free tests exercise the real coordinator and MAF adapter with
 an injected deterministic IChatClient, including rejected review,
 scope mismatch, adapter fallback, replay and revocation. This does
-not qualify real Ollama or generated-code execution. Native MAF
-skills API and safe reference support still require separate review
-and live acceptance.
+not qualify real Ollama or generated-code execution. Native MAF skills API compatibility and live acceptance remain outstanding.
+
+## Fixed reviewed reference package (#110)
+
+Static-web-verification v2 includes the repository-owned advisory
+`references/review-checklist.md`, pinned at commit
+`981d9c09e5f74c361181349cb47be2625941c861`. Both files are explicitly
+embedded assembly resources, not filesystem or network lookups.
+`skillFileSha256` identifies the canonical-LF SKILL.md; each reference
+has its own canonical-LF hash and immutable source URL.
+For v2, `contentSha256` identifies the complete package: SHA-256 of
+UTF-8 `codingassistant-skill-package-v1\n<skillHash>\n<relativePath>\n<referenceHash>\n`.
+The other v1 skill descriptors and review fingerprints are unchanged.
+Existing v1 QA reviews become stale and require a new owner review;
+historical records retain their original hashes. The QA usage event
+records the admitted package hash. The owner can inspect the exact
+reference text in both discovery and review before approving.
+
+Only the exact relative reference path is allowed; arbitrary files,
+traversal, absolute/encoded/alternate-separator paths and scripts
+are rejected. Bounded strict UTF-8 text and pinned SHA-256 are checked
+before admission; the combined instruction text remains bounded.
+No arbitrary directory enumeration, YAML inclusion, user/model-supplied
+reference lookup, tool invocation, filesystem access or symlink resolution
+is supported at runtime. Model-free source checks also reject nonregular
+Git blobs, checkout symlinks and Windows reparse points for the two
+pinned source files. This is a fixed embedded reference implementation,
+not a general-purpose portable skill importer. Reference text is
+subordinate advisory context only; the existing QA authority and
+independent verification gates are unchanged.
+
+Native MAF skill-loading compatibility and real local Ollama acceptance
+remain separate tasks. No general external skills import or generated
+execution is authorized.

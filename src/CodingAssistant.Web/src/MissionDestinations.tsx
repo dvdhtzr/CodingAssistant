@@ -189,6 +189,8 @@ export type SkillCandidate = {
   name: string; description: string; version: string; sourceUrl: string;
   contentSha256: string; license: string; role: string; scope: string;
   status: string; approved: boolean; active: boolean; instructions: string;
+  skillFileSha256?: string | null;
+  references?: { relativePath: string; sourceUrl: string; contentSha256: string; text: string }[] | null;
 };
 
 export function SkillsDestination({ token, taskId }: { token: string; taskId?: string }) {
@@ -227,7 +229,14 @@ export function SkillsDestination({ token, taskId }: { token: string; taskId?: s
             {skill.active ? ' Active' : ' Not active'}</p>
           <p>{skill.instructions}</p>
           <p className="hint">License: {skill.license}</p>
-          <p className="hint" style={{ overflowWrap: 'anywhere' }}>SHA-256: {skill.contentSha256}</p>
+          <p className="hint" style={{ overflowWrap: 'anywhere' }}>{skill.skillFileSha256 ? 'Package SHA-256' : 'SHA-256'}: {skill.contentSha256}</p>
+          {skill.skillFileSha256 && <p className="hint" style={{ overflowWrap: 'anywhere' }}>SKILL.md SHA-256: {skill.skillFileSha256}</p>}
+          {skill.references?.map(reference => <details key={reference.relativePath}>
+            <summary>{reference.relativePath}</summary>
+            <p style={{ whiteSpace: 'pre-wrap' }}>{reference.text}</p>
+            <p className="hint" style={{ overflowWrap: 'anywhere' }}>SHA-256: {reference.contentSha256}</p>
+            <a href={reference.sourceUrl} target="_blank" rel="noreferrer">Pinned reference</a>
+          </details>)}
           <a href={skill.sourceUrl} target="_blank" rel="noreferrer">Pinned source</a>
         </details>)}
         {skills?.length === 0 && <div className="ca-skill-empty">No candidates discovered.</div>}

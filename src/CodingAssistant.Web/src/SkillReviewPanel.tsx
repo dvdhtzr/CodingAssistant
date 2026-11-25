@@ -40,7 +40,8 @@ export function SkillUsagePanel({ token, taskId }: { token: string; taskId: stri
 
 type ReviewEvent = { revision: number; decision: string; createdUtc: string; reviewSha256: string };
 type Review = {
-  skill: { name: string; role: string; version: string; license: string };
+  skill: { name: string; role: string; version: string; license: string; instructions?: string;
+    references?: { relativePath: string; text: string; contentSha256: string }[] | null };
   reviewSha256: string; revision: number; reviewStatus: string;
   approvedForLocalInstructionReview: boolean; active: boolean; history: ReviewEvent[];
 };
@@ -81,10 +82,16 @@ function SkillReviewItem({ token, taskId, review, onChange }: {
         : review.reviewStatus === 'STALE_REVIEW' ? 'Review stale' : 'Not reviewed'}</summary>
     <p className="hint">{review.skill.role} · v{review.skill.version}</p>
     <p>Review does not activate model context, execute tools or grant redistribution rights.</p>
+    {review.skill.instructions && <p>{review.skill.instructions}</p>}
+    {review.skill.references?.map(reference => <details key={reference.relativePath}>
+      <summary>Review reference: {reference.relativePath}</summary>
+      <p style={{ whiteSpace: 'pre-wrap' }}>{reference.text}</p>
+      <p className="hint" style={{ overflowWrap: 'anywhere' }}>{reference.contentSha256}</p>
+    </details>)}
     {approve && <label>
       <input type="checkbox" checked={permission} disabled={busy}
         onChange={event => setPermission(event.target.checked)} />
-      I reviewed the pinned instructions and confirm permission for local instruction use.
+      I reviewed the pinned instructions and all listed references and confirm permission for local instruction use.
       License declaration: {review.skill.license}.
     </label>}
     <p className="hint" style={{ overflowWrap: 'anywhere' }}>{phrase}</p>
