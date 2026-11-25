@@ -30,6 +30,9 @@ export const CRASH_DETAILS=Object.freeze([
   'NONE','PID_LIMIT_HIT','MEMORY_LIMIT_HIT','NAMESPACE_CREDENTIALS_FATAL',
   'ZYGOTE_FATAL','SANDBOX_FATAL','THREAD_CREATION_FATAL','CRASHPAD_FATAL',
   'PROFILE_FATAL','OTHER_FATAL_PERMISSION','OTHER_FATAL','NO_FATAL_LOG',
+  'RENDERER_PROCESS_FAILED','RENDERER_THREAD_FAILED','NAMESPACE_CHILD_FAILED',
+  'EMPTY_DOM_OUTPUT','BLANK_DOM_OUTPUT','FIXTURE_PENDING','BROWSER_ERROR_PAGE',
+  'SANDBOX_NEGATIVE','SANDBOX_STATUS_PENDING','UNEXPECTED_DOM_OUTPUT','DOM_OUTPUT_OVERSIZED',
 ]);
 export const NAMESPACE_CODES=Object.freeze(['USER_NAMESPACE_OK','USER_NAMESPACE_DENIED',
   'USER_NAMESPACE_TOOL_UNAVAILABLE','USER_NAMESPACE_PROBE_FAILED']);
@@ -37,7 +40,7 @@ export const BROWSER_ARGS=Object.freeze([
   '--headless','--disable-gpu','--disable-dev-shm-usage',
   '--disable-background-networking','--disable-crash-reporter',
   '--no-first-run','--no-default-browser-check',
-  '--enable-logging=stderr','--dump-dom',
+  '--enable-logging=stderr','--virtual-time-budget=5000','--timeout=12000','--dump-dom',
 ]);
 function denied(fn){try{fn();return false;}catch{return true;}}
 function child(command){
@@ -126,10 +129,10 @@ function resourceEvents(){
     oomKill:eventCount(['/sys/fs/cgroup/memory.events','/sys/fs/cgroup/memory/memory.events'],'oom_kill')};
 }
 export function crashDetail(proc,before={},after={}){
-  if(proc.status===0)return 'NONE';
   const increased=key=>Number.isSafeInteger(before[key])&&Number.isSafeInteger(after[key])&&after[key]>before[key];
   if(increased('pids'))return 'PID_LIMIT_HIT';
   if(increased('oom')||increased('oomKill'))return 'MEMORY_LIMIT_HIT';
+  if(proc.status===0)return 'NONE';
   const stderr=String(proc.stderr??'').slice(0,65536);
   if(/FATAL[^\n]*credentials\.cc/i.test(stderr))return 'NAMESPACE_CREDENTIALS_FATAL';
   if(/pthread_create|failed to create (?:a |new )?thread|thread creation failed/i.test(stderr))return 'THREAD_CREATION_FATAL';
@@ -140,6 +143,34 @@ export function crashDetail(proc,before={},after={}){
   if(/FATAL[^\n]*(?:permission denied|operation not permitted)/i.test(stderr))return 'OTHER_FATAL_PERMISSION';
   if(/FATAL|Check failed:/i.test(stderr))return 'OTHER_FATAL';
   return 'NO_FATAL_LOG';
+}
+// A normal browser-process exit can hide renderer errors and exhausted
+// guest resources. Only bounded diagnostic categories leave the fixture.
+export function outputDetail(proc,kind,before={},after={}){
+  const resources=crashDetail(proc,before,after);
+  if(resources!=='NONE')return resources;
+  const stderr=String(proc.stderr??'').slice(0,65536);
+  if(/pthread_create|failed to create (?:a |new )?thread|thread creation failed/i.test(stderr))
+    return 'RENDERER_THREAD_FAILED';
+  if(/(?:zygote|namespace)[^\n]*(?:failed|denied|operation not permitted)|(?:failed|denied)[^\n]*(?:zygote|namespace)/i.test(stderr))
+    return 'NAMESPACE_CHILD_FAILED';
+  if(/(?:renderer|render process|fork|child process)[^\n]*(?:crash|failed|exited|killed|resource temporarily unavailable)|failed to (?:launch|start|fork)[^\n]*(?:renderer|child|process)/i.test(stderr))
+    return 'RENDERER_PROCESS_FAILED';
+  const html=typeof proc.stdout==='string'?proc.stdout:'';
+  if(html.length>32768)return 'DOM_OUTPUT_OVERSIZED';
+  if(!html.trim())return 'EMPTY_DOM_OUTPUT';
+  if(/chrome-error:\/\/|id=["']main-frame-error["']|ERR_(?:FILE_NOT_FOUND|ACCESS_DENIED|FAILED|BLOCKED_BY_CLIENT)/i.test(html))
+    return 'BROWSER_ERROR_PAGE';
+  const body=html.replace(/<(script|style|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,' ')
+    .replace(/<!--[^]*?-->/g,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+  if(!body)return 'BLANK_DOM_OUTPUT';
+  if(kind==='dom'&&/<output\s+id=["']result["']\s*>\s*PENDING\s*<\/output>/i.test(html))
+    return 'FIXTURE_PENDING';
+  if(kind==='status'){
+    if(/not adequately sandboxed/i.test(body))return 'SANDBOX_NEGATIVE';
+    if(/sandbox status|sandbox internals/i.test(body))return 'SANDBOX_STATUS_PENDING';
+  }
+  return 'UNEXPECTED_DOM_OUTPUT';
 }
 function userNamespaceProbe(){
   // Fixed, harmless command in the already isolated guest. No UID mapping,
@@ -169,17 +200,14 @@ function runBrowser(browser,url,kind){
     env:{HOME:home,PATH:process.env.PATH,XDG_CONFIG_HOME:dirs.config,
       XDG_CACHE_HOME:dirs.cache,XDG_RUNTIME_DIR:dirs.runtime},
   });
+  const after=resourceEvents();
   if(result.status!==0)
-    return {passed:false,code:classifyBrowser(result),detail:crashDetail(result,before,resourceEvents())};
-  if(typeof result.stdout!=='string'||result.stdout.length>32768)
-    return {passed:false,code:'CHROMIUM_FIXED_DOM_MISSING',detail:'NONE'};
-  if(kind==='dom'){
-    const passed=fixedDomPassed(result.stdout);
-    return {passed,code:passed?'PASS':'CHROMIUM_FIXED_DOM_MISSING',detail:'NONE'};
-  }
-  // Ambiguous status-page responses are BLOCKED, not accepted as sandboxed.
-  const passed=sandboxStatusPassed(result.stdout);
-  return {passed,code:passed?'PASS':'CHROMIUM_SANDBOX_STATUS_UNPROVEN',detail:'NONE'};
+    return {passed:false,code:classifyBrowser(result),detail:crashDetail(result,before,after)};
+  const valid=typeof result.stdout==='string'&&result.stdout.length<=32768;
+  // A zero exit is insufficient: require actual, bounded rendered evidence.
+  const passed=valid&&(kind==='dom'?fixedDomPassed(result.stdout):sandboxStatusPassed(result.stdout));
+  return {passed,code:passed?'PASS':kind==='dom'?'CHROMIUM_FIXED_DOM_MISSING':'CHROMIUM_SANDBOX_STATUS_UNPROVEN',
+    detail:passed?'NONE':outputDetail(result,kind,before,after)};
 }
 export async function runFixedCompatibility(){
   const cases={};

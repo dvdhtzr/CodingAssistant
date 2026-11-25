@@ -8,7 +8,7 @@ import {
   validateFixtureSeccompBytes,FIXTURE_SECCOMP_VARIANT,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
-  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,
+  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,outputDetail,
 } from '../tools/m4/windows_chromium_sandbox_guest.mjs';
 
 const NAME='ca-win-m47-012345abcdef';
@@ -288,7 +288,8 @@ test('crash details distinguish kernel resource limits from sandbox startup with
   assert.equal(crashDetail({status:null,stderr:'pthread_create: Resource temporarily unavailable SECRET'}),'THREAD_CREATION_FATAL');
   assert.equal(crashDetail({status:null,stderr:'FATAL:zygote_host_impl_linux.cc:126 SECRET'}),'ZYGOTE_FATAL');
   assert.equal(crashDetail({status:null,stderr:'SECRET'}),'NO_FATAL_LOG');
-  assert.equal(crashDetail({status:0},{pids:0},{pids:1}),'NONE');
+  assert.equal(crashDetail({status:0},{pids:0},{pids:1}),'PID_LIMIT_HIT');
+  assert.equal(crashDetail({status:0},{pids:0},{pids:0}),'NONE');
 });
 
 test('owner-approved fixture policy differs by exactly one unconditional chroot syscall rule',()=>{
@@ -317,4 +318,23 @@ test('owner-approved fixture policy differs by exactly one unconditional chroot 
     assert.throws(()=>validateFixtureSeccompBytes(original,Buffer.from(JSON.stringify(changed,null,2)+'\n')));
   }
   assert.throws(()=>validateFixtureSeccompBytes(Buffer.from(original.toString('utf8')+' '),derived));
+});
+
+test('normal exit without rendered evidence yields actionable bounded diagnostics',()=>{
+  const result=(stdout,stderr='')=>({status:0,stdout,stderr});
+  assert.equal(outputDetail(result(''),'dom'),'EMPTY_DOM_OUTPUT');
+  assert.equal(outputDetail(result('<html><body></body></html>'),'dom'),'BLANK_DOM_OUTPUT');
+  assert.equal(outputDetail(result('<output id="result">PENDING</output>'),'dom'),'FIXTURE_PENDING');
+  assert.equal(outputDetail(result('<div id="main-frame-error">SECRET</div>'),'dom'),'BROWSER_ERROR_PAGE');
+  assert.equal(outputDetail(result('<h1>Sandbox Status</h1>'),'status'),'SANDBOX_STATUS_PENDING');
+  assert.equal(outputDetail(result('<p>You are not adequately sandboxed.</p>'),'status'),'SANDBOX_NEGATIVE');
+  assert.equal(outputDetail(result('','pthread_create: Resource temporarily unavailable SECRET'),'dom'),'RENDERER_THREAD_FAILED');
+  assert.equal(outputDetail(result('','zygote failed SECRET'),'dom'),'NAMESPACE_CHILD_FAILED');
+  assert.equal(outputDetail(result('','renderer process crashed SECRET'),'dom'),'RENDERER_PROCESS_FAILED');
+  assert.equal(outputDetail(result(''),'status',{pids:0},{pids:1}),'PID_LIMIT_HIT');
+  assert.equal(outputDetail(result(''),'status',{oom:0},{oom:1}),'MEMORY_LIMIT_HIT');
+  assert.equal(outputDetail(result('x'.repeat(40000)),'dom'),'DOM_OUTPUT_OVERSIZED');
+  assert.equal(outputDetail(result('<p>SECRET</p>'),'dom'),'UNEXPECTED_DOM_OUTPUT');
+  assert.ok(BROWSER_ARGS.includes('--virtual-time-budget=5000'));
+  assert.ok(BROWSER_ARGS.includes('--timeout=12000'));
 });
