@@ -22,3 +22,35 @@ The Idea Vault owner-local trial reached independent QA but reported almost the 
 The initial PR extends the existing real MAF QA adapter with optional project companion evidence: at most six complete companion files and 4,800 serialized characters of companion data, further constrained by the existing prompt budget. Files omitted due to budget or outside allowed web-source extensions are explicitly identified when the envelope fits; otherwise the policy treats all companions as uninspected. The primary file remains exact-snapshot bound and the existing Code Atlas broker retains its one-file limit and two-request cap. The agent has zero callable functions. It must route uncertain observations to manual checks, rather than automatically treating every feature missing from a primary file as a defect.
 
 This is not an entire project-level acceptance engine, a semantic proof of defect correctness, or an interactive preview. Model-free tests establish the context and restrictions, not that a local model follows every instruction. The original per-file report and owner-confirmed repair API are preserved. Subsequent increments must add enforceable evidence classification/consolidation and the qualified runtime.
+
+
+## Second implementation slice — plan-bound acceptance evidence
+
+The saved QA snapshot adds a read-only acceptance projection, built from the
+exact formerly approved plan revision and the review's immutable source
+fingerprint. It checks saved file identities and report hashes in a single
+SQLite read transaction, including historical plans. Criterion IDs are
+`work-item-id:ordinal` within the immutable plan SHA-256 namespace.
+New QA prompts include these IDs and ask the model to copy the corresponding
+criterion text; existing reports remain readable. The projection links an
+observation only when its requirement text matches exactly (case and whitespace
+normalized) and the identity is unambiguous, or a supplied ID disambiguates
+that exact text. Unknown IDs, ambiguous matches, and paraphrases remain
+unmapped observations rather than invented coverage.
+
+Identical same-file observations (requirement, evidence, recommendation and
+resolved criterion) are grouped for presentation and repair selection. The
+highest-severity original observation represents the group; its exact original
+path/index remains the repair identity. Different files, evidence or proposed
+actions are deliberately not merged. Raw reports and the existing durable
+proposal/triage/admission contracts remain unchanged. The repair UI now displays
+the actual evidence and recommendation and resets selection when the project,
+review, source or plan changes.
+
+Every criterion still requires testing. A linked static concern is a hypothesis,
+and no linked concern does not establish implementation. This slice does not
+validate the semantics of model evidence, automatically classify absence or
+implementation, merge paraphrased defects, perform tests, or qualify a preview.
+These are subsequent increments. Model-free tests exercise exact historical
+bindings, ambiguous and invalid identity mapping, duplicate consolidation,
+and the authenticated persisted QA response.

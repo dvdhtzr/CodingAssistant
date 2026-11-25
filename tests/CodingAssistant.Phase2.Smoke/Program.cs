@@ -988,6 +988,68 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         "post-repair independent QA receives owner-confirmed target as a recheck, not proof of repair");
 }
 
+// Acceptance identities and consolidation are deterministic and do not turn
+// static silence or model assertions into runtime evidence.
+{
+    var evidencePlan = new ImplementationPlan(new string('a', 32), 2, 1,
+        new string('b', 64), new string('c', 64), "qwen3.5:4b",
+        new ImplementationOutline("Bounded acceptance evidence fixture.",
+            [new ImplementationWorkItem("save", "Save notes", "Implement saving.", [],
+                ["Save notes across browser restarts", "Handle invalid input"]),
+             new ImplementationWorkItem("edit", "Edit notes", "Implement editing.", ["save"],
+                ["Handle invalid input", "Edit an existing note"])], [], []),
+        new string('d', 64), "Superseded", "2026-11-21T00:00:00Z",
+        "2026-11-21T00:01:00Z", false, "STALE_APPROVALS");
+    var evidenceReview = new QaReviewRun(new string('e', 32), evidencePlan.TaskId,
+        new string('f', 32), new string('1', 64), evidencePlan.Revision,
+        evidencePlan.PlanSha256, evidencePlan.SpecificationVersion,
+        evidencePlan.SpecificationSha256, evidencePlan.ArchitectureSha256,
+        evidencePlan.Model, "Reviewed", "StaticReviewComplete", null,
+        "2026-11-21T00:02:00Z", "2026-11-21T00:03:00Z");
+    var saveConcern = new QaFinding("Minor", "Save notes across browser restarts",
+        "The source does not restore saved notes on startup.",
+        "Inspect the initialization path and independently test restart.", "save:1");
+    var ambiguousConcern = new QaFinding("Major", "Handle invalid input",
+        "The submitted form handler does not reject an empty string.",
+        "Check the handler against empty input.");
+    var invalidLink = ambiguousConcern with { CriterionId = "unknown:1" };
+    var explicitLink = ambiguousConcern with { CriterionId = "edit:1" };
+    var evidenceReports = new[] {
+        new QaFileReport("app.js", new string('2', 64),
+            new QaFileAssessment("Static observations only.",
+                [saveConcern, saveConcern with { Severity = "Major" },
+                    ambiguousConcern, explicitLink, invalidLink], ["Test saving notes in a browser."]),
+            "2026-11-21T00:03:00Z"),
+        new QaFileReport("index.html", new string('3', 64),
+            new QaFileAssessment("Static observations only.", [saveConcern],
+                ["Test saving notes in a browser."]), "2026-11-21T00:03:00Z")
+    };
+    var evidence = QaAcceptanceProjection.Build(evidenceReview, evidencePlan, evidenceReports);
+    Check(evidence.PlanSha256 == evidencePlan.PlanSha256 &&
+          evidence.SourceSha256 == evidenceReview.SourceSha256 &&
+          evidence.Criteria.Count == 4 && evidence.RawFindingCount == 6 &&
+          evidence.Findings.Count == 4 && evidence.UnmappedFindingCount == 1,
+        "acceptance projection binds historical plan and groups exact same-file observations");
+    var savedGroup = evidence.Findings.Single(g => g.Path == "app.js" && g.CriterionId == "save:1");
+    Check(savedGroup.Index == 1 && savedGroup.OriginalIndices.SequenceEqual([0, 1]) &&
+          evidence.Findings.Any(g => g.Path == "index.html" && g.CriterionId == "save:1") &&
+          evidence.Criteria.Single(c => c.Criterion.Id == "save:1").ConcernCount == 2 &&
+          evidence.Criteria.Single(c => c.Criterion.Id == "edit:1").ConcernCount == 1 &&
+          evidence.Criteria.All(c => c.VerificationStatus == "RequiresTesting") &&
+          evidence.Criteria.Single(c => c.Criterion.Id == "edit:2").StaticStatus == "NoLinkedConcern",
+        "duplicate group keeps exact repair index and differing file scope; no criterion passes");
+    try
+    {
+        _ = QaAcceptanceProjection.Build(evidenceReview,
+            evidencePlan with { PlanSha256 = new string('9', 64) }, evidenceReports);
+        Check(false, "acceptance must reject another plan");
+    }
+    catch (StoreFailure error) when (error.Code == "SOURCE_CHANGED")
+    {
+        Check(true, "acceptance rejects mismatched plan identity");
+    }
+}
+
 // M8.18: independent MAF QA selects bounded source inspections, receives
 // host-issued evidence, and still cannot access another file or run tools.
 {
@@ -2529,6 +2591,21 @@ try
         "/api/tasks/" + task.Id + "/qa-reviews/" + qaReviewId))
         Check(cross.StatusCode == HttpStatusCode.NotFound,
             "QA report cannot be read through another project's URL");
+
+    using (var acceptanceResponse = await client.GetAsync(qaPath + "/" + qaReviewId))
+    using (var acceptanceBody = await Body(acceptanceResponse))
+    {
+        var savedAcceptance = acceptanceBody.RootElement.GetProperty("acceptance");
+        Check(acceptanceResponse.StatusCode == HttpStatusCode.OK &&
+            savedAcceptance.GetProperty("reviewId").GetString() == qaReviewId &&
+            savedAcceptance.GetProperty("planSha256").GetString() == secondPlanHash &&
+            savedAcceptance.GetProperty("sourceSha256").GetString() == qaResult!.Job.SourceSha256 &&
+            savedAcceptance.GetProperty("criteria").GetArrayLength() > 0 &&
+            savedAcceptance.GetProperty("criteria").EnumerateArray().All(c =>
+                c.GetProperty("verificationStatus").GetString() == "RequiresTesting") &&
+            savedAcceptance.GetProperty("findings").GetArrayLength() == 1,
+            "HTTP QA acceptance view is derived from persisted exact plan and reports, never a test pass");
+    }
 
     // R1 proposals are host-admitted evidence, never executable repair grants.
     var proposalPath = "/api/tasks/" + taskBound.Id + "/repair-proposals";
