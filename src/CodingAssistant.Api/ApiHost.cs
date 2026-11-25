@@ -166,6 +166,9 @@ public static class ApiHost
             ? WebApplication.CreateBuilder(args)
             : WebApplication.CreateBuilder(new WebApplicationOptions
                 { Args = args, WebRootPath = webRoot });
+        // Default hosting request logs can include raw URLs and query strings.
+        // The Studio already exposes bounded, redacted route-template metadata.
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.None);
         builder.WebHost.UseUrls(settings.BindUrl);
         builder.WebHost.ConfigureKestrel(options =>
         {

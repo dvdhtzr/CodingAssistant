@@ -27,9 +27,7 @@ public static class WindowsOwnerTokenStore
             throw new InvalidOperationException("Owner-private data directory is required");
 
         var directory = Path.GetFullPath(privateDataDirectory);
-        Directory.CreateDirectory(directory);
-        if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidOperationException("Refusing redirected owner-token directory");
+        PrivateDataDirectory.Ensure(directory);
 
         var path = Path.Combine(directory, FileName);
         if (!File.Exists(path))
@@ -66,8 +64,7 @@ public static class WindowsOwnerTokenStore
 
         // An invalid, moved, corrupted or inaccessible credential is a hard
         // failure. Never silently rotate it and lock out an open browser.
-        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidOperationException("Refusing redirected owner-token file");
+        PrivateDataDirectory.ValidateFile(path);
         try
         {
             var file = new FileInfo(path);

@@ -19,3 +19,14 @@ Thumbs.db
 
 # Compiled Mission Control SPA (built in CI before .NET publish)
 src/CodingAssistant.Api/wwwroot/
+
+# Owner-local control-plane state and recovery metadata, including misplaced copies
+codingassistant.db
+codingassistant.db-*
+runs.sqlite3
+runs.sqlite3-*
+owner-token.dpapi
+owner-token-*.tmp
+private-ledger/
+private-task-ledger/
+ca-m114-recovery-*/

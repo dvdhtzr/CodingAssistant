@@ -41,11 +41,20 @@ public sealed class TaskStore
         if (string.IsNullOrWhiteSpace(directory))
             throw new InvalidOperationException("Private data directory is required");
         var full = Path.GetFullPath(directory);
-        EnsurePrivateDirectory(full);
+        PrivateDataDirectory.Ensure(full);
         _databasePath = Path.Combine(full, "codingassistant.db");
-        if (File.Exists(_databasePath) &&
-            (File.GetAttributes(_databasePath) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidOperationException("Refusing symlinked SQLite database");
+        PrivateDataDirectory.ValidateFile(_databasePath);
+        // Create the Unix database privately before SQLite can open it.
+        if (!OperatingSystem.IsWindows() && !File.Exists(_databasePath))
+        {
+            using var created = new FileStream(_databasePath, new FileStreamOptions
+            {
+                Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite,
+                Share = FileShare.ReadWrite, UnixCreateMode = UnixFileMode.UserRead |
+                    UnixFileMode.UserWrite
+            });
+        }
+        ValidateDatabasePaths();
 
         _connectionString = new SqliteConnectionStringBuilder
         {
@@ -78,49 +87,30 @@ public sealed class TaskStore
               PRIMARY KEY(task_id,version)
             );
             """);
-        RestrictDatabasePermissions();
+        ValidateDatabasePaths();
     }
 
-    private static void EnsurePrivateDirectory(string path)
+    private void ValidateDatabasePaths()
     {
-        if (Directory.Exists(path))
-        {
-            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidOperationException("Refusing symlinked data directory");
-        }
-        else if (!OperatingSystem.IsWindows())
-        {
-            Directory.CreateDirectory(path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
-        else
-        {
-            Directory.CreateDirectory(path);
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            var allowed = UnixFileMode.UserRead | UnixFileMode.UserWrite |
-                          UnixFileMode.UserExecute;
-            if ((File.GetUnixFileMode(path) & ~allowed) != 0)
-                throw new InvalidOperationException("Data directory must be owner-private");
-        }
-    }
-
-    private void RestrictDatabasePermissions()
-    {
-        if (OperatingSystem.IsWindows())
-            return;
-        var privateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-        File.SetUnixFileMode(_databasePath, privateFile);
+        foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" })
+            PrivateDataDirectory.ValidateFile(_databasePath + suffix);
     }
 
     internal SqliteConnection Open()
     {
+        ValidateDatabasePaths();
         var db = new SqliteConnection(_connectionString);
-        db.Open();
-        Execute(db, null, "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
-        return db;
+        try
+        {
+            db.Open();
+            Execute(db, null, "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;");
+            return db;
+        }
+        catch
+        {
+            db.Dispose();
+            throw;
+        }
     }
 
     internal static SqliteCommand Command(
@@ -266,7 +256,7 @@ public sealed class TaskStore
         var runningExecution = Scalar(db, tx, """
             SELECT 1 FROM run_executions AS e
             JOIN run_intents AS r ON r.id=e.run_id
-            WHERE r.task_id=@id AND e.state IN ('Starting','Running','Cancelling')
+            WHERE r.task_id=@id AND e.state IN ('Starting','Running','Cancelling','RecoveryBlocked')
             LIMIT 1
             """, ("@id", id));
         if (runningExecution is not null)
