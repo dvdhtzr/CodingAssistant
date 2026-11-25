@@ -122,9 +122,8 @@ or package ID from a request is opened. The deliberately narrow
 frontmatter subset is two plain scalar fields, with bounded content
 and exact pinned hashes. General YAML, references, third-party
 installation, activation, and activation audit are not implemented yet.
-Project-specific owner review and revocation are described below. The catalog does not
-supply any text to MAF or Ollama and cannot grant a tool or execution
-permission. Existing agent instructions and approvals are unchanged.
+Project-specific owner review and revocation are described below. The catalog itself does not supply any text to MAF or Ollama and
+cannot grant a tool or execution permission. Existing agent instructions and approvals are unchanged.
 
 The existing API project references Microsoft.Agents.AI 1.28.0 on
 .NET 10 and uses the local Ollama chat client. Native skills API
@@ -153,9 +152,50 @@ the prior review stale; it does not silently transfer to another role,
 project, version, or package. A current approval is
 `APPROVED_LOCAL_REVIEW_NOT_ACTIVE`, never an execution grant. The
 global catalog remains unapproved/inactive because reviews are local
-to projects. No agent reads this ledger yet.
+to projects. The Solution Architect can now use a current review via the separate
+per-recommendation opt-in described below. There is no standing activation.
 
 Still outstanding: phase-specific exact task activation and usage
 evidence, native MAF skills compatibility, reference loader and
 independent live local Ollama acceptance. No external installation,
 script execution, network or filesystem access is enabled.
+
+## First role-specific activation increment (#110)
+
+The Solution Architect can optionally use the reviewed
+`architecture-tradeoffs` skill for **one** architecture recommendation.
+After reviewing the skill in Skills, open Solution Architecture and select
+the per-topic checkbox before requesting a recommendation. The checkbox
+resets on submission. Unselected recommendations use the original model
+path with no skill context.
+
+The existing recommendation POST accepts optional `skill` with
+`name`, `reviewRevision`, `reviewSha256`, and a fresh 32-character
+lowercase hexadecimal `requestId`. The host checks current project
+review, exact skill identity/role/scope, approved spec version and
+hash, current decision revision and selected local model before
+admitting an immutable single-use context in SQLite. Unknown skill
+names, replay, stale review/revision, unapproved specification and
+unsupported adapters fail closed. Only the fixed embedded instructions
+are appended to the MAF Solution Architect's policy as subordinate
+advisory context. No native tools, scripts or filesystem/network
+permissions are added. The normal strict proposal validation and
+separate owner decision approval still apply.
+
+Authenticated GET `/api/tasks/{id}/skill-uses` exposes bounded usage
+records; the Skills destination displays them. `Admitted` is not proof
+a call ran (a stopped process may leave its outcome unknown).
+`ProposalReturned` means the model response parsed successfully,
+not that a proposal was persisted or approved; `CallFailed` does not
+claim the model returned a result. Each record binds the exact review,
+content hash, spec, decision topic/revision and selected model. An
+in-flight request retains its already-admitted context; revocation
+blocks future admissions. Project deletion removes these records.
+No standing activation is granted.
+
+This uses the existing MAF ChatClientAgent instruction context path
+rather than a native portable-skills API. Model-free tests exercise the
+actual adapter with a fake IChatClient; a real local Ollama owner test
+is still required. Product Owner and QA activation, safe reviewed
+references, native skills API compatibility and full live acceptance
+remain outstanding.
