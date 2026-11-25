@@ -6,7 +6,8 @@ using Microsoft.Data.Sqlite;
 
 namespace CodingAssistant.Api;
 
-public sealed record StartQaReviewRequest(string? EngineeringRunId, string? PlanSha256);
+public sealed record StartQaReviewRequest(string? EngineeringRunId, string? PlanSha256,
+    QaSkillRequest? Skill = null);
 public sealed record QaReviewRun(
     string Id, string TaskId, string EngineeringRunId,
     string SourceSha256, int PlanRevision, string PlanSha256,
@@ -201,7 +202,12 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
 
     public QaReviewRun Start(string taskId,
         EngineeringRunSnapshot source, ImplementationPlan plan,
-        string? agentModel = null)
+        string? agentModel = null) =>
+        StartBound(taskId, source, plan, agentModel, null, out _);
+
+    internal QaReviewRun StartBound(string taskId, EngineeringRunSnapshot source,
+        ImplementationPlan plan, string? agentModel, QaSkillRequest? skill,
+        out QaSkillContext? skillContext)
     {
         ValidateId(taskId);
         if (source.Job.TaskId != taskId ||
@@ -244,6 +250,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         {
             throw new StoreFailure("BUILD_BUSY");
         }
+        skillContext = skill is null ? null : SkillReviewStore.AdmitQa(db, tx, review, skill);
         Event(db, tx, review.Id, "QaReviewAdmitted",
             source.Job.State == "Generated"
                 ? "Independent static QA of generated source; no tests executed"
