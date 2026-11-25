@@ -21,6 +21,14 @@ public sealed class RepairCycleCoordinator(
 
     public RepairCycle Start(string taskId, StartRepairCycleRequest request,
         string? engineerModel = null, string? qaModel = null)
+        => StartCore(taskId,request,engineerModel,qaModel,false);
+
+    internal RepairCycle StartRoutine(string taskId,StartRepairCycleRequest request,
+        string engineerModel,string qaModel)
+        => StartCore(taskId,request,engineerModel,qaModel,true);
+
+    private RepairCycle StartCore(string taskId,StartRepairCycleRequest request,
+        string? engineerModel,string? qaModel,bool routine)
     {
         var plan = plans.Read(taskId).Plan;
         if (plan is null || !plan.Current || plan.Status != "Approved")
@@ -35,7 +43,9 @@ public sealed class RepairCycleCoordinator(
             architecture.ArchitectureSha256 != plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
 
-        var admitted = cycles.Start(taskId, request, plan, engineerModel);
+        var admitted = routine ? cycles.StartRoutine(taskId,request,plan,
+            engineerModel ?? throw new StoreFailure("INVALID_MODEL")) :
+            cycles.Start(taskId, request, plan, engineerModel);
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[admitted.Id] = cancellation;
