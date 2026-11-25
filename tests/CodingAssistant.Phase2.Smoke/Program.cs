@@ -3823,7 +3823,7 @@ try
     engineeringStore.StartTask(taskBound.Id,aetSmokeRun.Id,"timer-state");
     engineeringStore.CompleteTask(taskBound.Id,aetSmokeRun.Id,"timer-state",
         new EngineeringChangeSet("Saved linked local JavaScript behavior.",
-            [new EngineeringFileChange("app.js","Timer behavior","document.getElementById('start').addEventListener('click',()=>{});")],
+            [new EngineeringFileChange("app.js","Timer behavior","document.getElementById('start').addEventListener('click',()=>{console.log('routine-one');console.log('routine-two');});")],
             ["Independently verify timer behavior."]));
     engineeringStore.Finish(taskBound.Id,aetSmokeRun.Id,true,null);
     var aetScopeRoot=engineeringPath+"/"+aetSmokeRun.Id;
@@ -3921,6 +3921,49 @@ try
     Check(stalePolicy.Current && stalePolicy.EffectiveStatus == "Approved" &&
           stalePolicy.RoutineRepair?.MaximumRepairs == 4,
         "delegation explicitly active before architecture revision");
+    // Two actual bounded delegated source repairs, no owner triage or
+    // per-finding repair POST. A lead finding and then an exact QA criterion
+    // drive the same persisted candidate/recheck workflow.
+    softwareModel.RoutineMode=true;
+    aetLeadModel.RoutineMode=true;
+    aetIssueVerifier.RoutineMode=true;
+    qaModel.RoutineMode=true;
+    var routineRequest=new StartCollaborationRequest(aetSmokeRun.Id,
+        routineScope.BaselineSourceSha256,secondPlanHash,stalePolicy.Revision,stalePolicy.PolicySha256);
+    string routineCollabId;
+    using(var admittedRoutine=await Post(client,aetCollabPath,routineRequest))
+    using(var routineBody=await Body(admittedRoutine))
+    {
+        Check(admittedRoutine.StatusCode==HttpStatusCode.Accepted,"owner starts exact delegated coordination once");
+        routineCollabId=routineBody.RootElement.GetProperty("id").GetString()!;
+    }
+    CollaborationSnapshot? routineResult=null;
+    for(var i=0;i<600;i++)
+    {
+        routineResult=aetCollabStore.Latest(taskBound.Id);
+        if(routineResult?.Job.State is "AwaitingVerification" or "Escalated" or "Failed") break;
+        await Task.Delay(25);
+    }
+    Check(routineResult?.Job.State=="AwaitingVerification" &&
+        routineResult.Job.Id!=routineCollabId &&
+        routineResult.Job.Reason=="QUALIFIED_VERIFICATION_REQUIRED",
+        "two scoped routine repairs independently rechecked and stop at functional verification gate");
+    var routineFinal=engineeringStore.Latest(taskBound.Id)!;
+    var routineProgress=new RepairProgressStore(tasks).Read(taskBound.Id,routineFinal.Job.Id);
+    Check(routineProgress.Attempts.Count==2 &&
+        routineProgress.Attempts.All(a=>a.IndependentStaticResolution) &&
+        routineProgress.Attempts[0].OriginalRunId==aetSmokeRun.Id &&
+        routineProgress.Attempts[0].Origin=="LeadSoftwareEngineer" &&
+        routineProgress.Attempts[1].Origin=="QaEngineer" &&
+        routineFinal.Files.Single(f=>f.Path=="app.js").Content.Contains("routine-fixed-one") &&
+        routineFinal.Files.Single(f=>f.Path=="app.js").Content.Contains("routine-fixed-two"),
+        "two distinct independent findings are repaired and rechecked in a single owner-delegated lineage");
+    var originalRoutineSource=engineeringStore.Get(taskBound.Id,aetSmokeRun.Id);
+    Check(QaReviewStore.Fingerprint(originalRoutineSource.Files)==routineScope.BaselineSourceSha256 &&
+        routineProgress.Attempts.All(a=>new EngineeringIssueStore(tasks).Read(taskBound.Id,a.OriginalRunId).Issues
+            .Where(issue=>issue.RepairCycleId==a.CycleId).All(issue=>issue.TriageHistory.Count==0)),
+        "routine repair retains immutable original source and does not fabricate owner triage");
+    var routineQaCount=qaModel.ReviewedFiles.Count;
     var boundStore = new ProjectDraftStore(tasks);
     var changedJob = boundStore.Start(taskBound.Id,
         specBound.Version, specBound.Sha256, specBound.Model, architectureSha);
@@ -3988,7 +4031,7 @@ try
     using (var blockedQa = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
         Check(blockedQa.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 10,
+              qaModel.ReviewedFiles.Count == routineQaCount,
             "stale architecture cannot initiate new QA review of old source");
     Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId).Issues
         .Single(x=>x.Id==aetLeadRepairedIssue.Id).Verifications.All(x=>!x.Current),
@@ -4236,6 +4279,7 @@ sealed class Phase2TechnicalLeadPlanner : IImplementationPlanner
 
 sealed class Phase4EngineeringModel : IEngineeringTaskModel
 {
+    public bool RoutineMode { get; set; }
     public List<string> AssignedIds { get; } = [];
     public int PreviousFileCountOnSecondTask { get; private set; } = -1;
 
@@ -4260,8 +4304,12 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
             // replacement through the existing SQLite/QA coordinator.
             var source = input.ExistingFiles.Single(f => f.Path == "app.js");
             var before = source.Content.TrimEnd('\r', '\n');
-            var after = before.Replace("console.log('start')",
-                "console.log('repaired start')", StringComparison.Ordinal);
+            var after = RoutineMode
+                ? repair.Findings.Single().Evidence.Contains("routine-one",StringComparison.Ordinal)
+                    ? before.Replace("routine-one","routine-fixed-one",StringComparison.Ordinal)
+                    : before.Replace("routine-two","routine-fixed-two",StringComparison.Ordinal)
+                : before.Replace("console.log('start')",
+                    "console.log('repaired start')", StringComparison.Ordinal);
             if (after == before)
                 throw new Exception("Fixture repair did not find exact source");
             var edits = JsonSerializer.Serialize(new {
@@ -4360,6 +4408,7 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
 
 sealed class Phase5QaModel : IQaSourceReviewer
 {
+    public bool RoutineMode { get; set; }
     public List<string> ReviewedFiles { get; } = [];
     public List<string> ReviewedSourceStates { get; } = [];
     public List<string> RepairFocusPaths { get; } = [];
@@ -4388,6 +4437,13 @@ sealed class Phase5QaModel : IQaSourceReviewer
                 throw new Exception("Repair QA got foreign file scope or unconfirmed finding");
             RepairFocusPaths.Add(input.File.Path);
         }
+        if(RoutineMode)
+            return Task.FromResult(new QaFileAssessment("Independent static routine fixture review.",
+                input.File.Path=="app.js" && input.File.Content.Contains("routine-two",StringComparison.Ordinal)
+                    ? [new QaFinding("Major","Start advances the displayed timer",
+                        "console.log('routine-two')","Replace the second fixture defect in the exact source.")]
+                    : [],
+                ["Check timer behavior in a separately authorized runtime test."]));
         return Task.FromResult(input.File.Path == "app.js"
             ? new QaFileAssessment(
                 "The timer code registers a button listener but lacks a persistent timer.",
@@ -4468,11 +4524,19 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
 
 sealed class AetLeadReviewFixture : ILeadSourceReviewer
 {
+    public bool RoutineMode { get; set; }
     public Task<LeadFileAssessment> ReviewAsync(QaReviewInput input,CancellationToken cancellation)
     {
         cancellation.ThrowIfCancellationRequested();
         if(input.AgentModel!="qwen3.5:4b" || input.SourceRun.PlanSha256!=input.Plan.PlanSha256)
             throw new Exception("Unexpected independent review scope");
+        if(RoutineMode)
+            return Task.FromResult(input.File.Path=="app.js" && input.File.Content.Contains("routine-one",StringComparison.Ordinal)
+                ? new LeadFileAssessment("ChangesRequested","First exact routine fixture concern.",
+                    [new LeadFinding("Major","Correctness","app.js",1,"console.log('routine-one')",
+                        "First fixture marker requires correction.","Replace the first fixture marker.",
+                        "Independently recheck the exact changed source.")])
+                : new LeadFileAssessment("Approved","No remaining lead fixture concern.",[]));
         if(input.File.Path!="app.js")
             return Task.FromResult(new LeadFileAssessment("Approved","No static concern in this fixture file.",[]));
         var lines=input.File.Content.Split('\n');
@@ -4488,9 +4552,19 @@ sealed class AetLeadReviewFixture : ILeadSourceReviewer
 
 sealed class AetIssueVerifierFixture : IEngineeringIssueVerifier
 {
+    public bool RoutineMode { get; set; }
     public Task<IssueVerificationAssessment> VerifyAsync(IssueVerificationInput input,string model,CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+        if(RoutineMode)
+        {
+            var excerpt=input.Issue.Origin=="QaEngineer"?"console.log('routine-fixed-two')":"console.log('routine-fixed-one')";
+            if(model!="qwen3.5:4b" || input.Before.Sha256==input.After.Sha256 ||
+                !input.After.Content.Contains(excerpt,StringComparison.Ordinal))
+                throw new Exception("Routine fixture recheck did not receive expected candidate");
+            return Task.FromResult(new IssueVerificationAssessment("ResolvedByStaticEvidence",
+                "Exact fixture marker changed; runtime verification is still required.",1,excerpt,null));
+        }
         if(model!="qwen3.5:4b" || input.Before.Sha256==input.After.Sha256 ||
             !input.After.Content.Contains("console.log('repaired start')",StringComparison.Ordinal))
             throw new Exception("Fixture verifier received wrong role model or source revision");
@@ -4515,8 +4589,14 @@ sealed class AetCollaborationLeadFixture:ICollaborationLead
             input.AllowedActions.Contains("ClassifyIssue")?
             new("ClassifyIssue","The actual source concern needs a scoped correction.",
                 input.Issues.Single(x=>x.State=="NeedsTriage").Id,"ImplementationDefect"):
-            new("RequestOwnerRepair","Request exact owner authorization rather than silently edit the source.",
-                input.Issues.Single(x=>x.State=="ConfirmedDefect").Id);
+            input.AllowedActions.Contains("RequestOwnerRepair")?
+            new("RequestOwnerRepair","Request exact scoped repair for the confirmed finding.",
+                input.Issues.Single(x=>x.State=="ConfirmedDefect").Id):
+            input.AllowedActions.Contains("ReviewAcceptance")?
+            new("ReviewAcceptance","Request independent acceptance review of this revision."):
+            input.AllowedActions.Contains("AwaitQualifiedVerification")?
+            new("AwaitQualifiedVerification","Independent runtime evidence remains required."):
+            new("Escalate","No safe further source correction is currently admitted.");
         return Task.FromResult(decision);
     }
 }
