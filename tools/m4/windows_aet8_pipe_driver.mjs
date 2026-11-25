@@ -111,16 +111,20 @@ function makePage(transport,sessionId,url){
     if(r.exceptionDetails)throw Error('FIXTURE_DOM_EVALUATION_FAILED');
     return r.result?.value;
   };
-  const ready=async(deadline=Date.now()+8000)=>{
+  const ready=async(expected=url,deadline=Date.now()+8000)=>{
     while(Date.now()<deadline){
       try{
-        if(await evaluate('location.href==='+JSON.stringify(url)+'&&document.readyState==="complete"',Math.min(2000,deadline-Date.now())))return;
+        if(await evaluate('location.href==='+JSON.stringify(expected)+'&&document.readyState==="complete"',Math.min(2000,deadline-Date.now())))return;
       }catch(e){if(!['BROWSER_TIMEOUT_RUNTIME_EVALUATE','BROWSER_PROTOCOL_ERROR','FIXTURE_DOM_EVALUATION_FAILED'].includes(e?.message))throw e;}
       await sleep(100);
     }
     throw Error('FIXTURE_NAVIGATION_TIMEOUT');
   };
-  const navigate=async()=>{const r=await send('Page.navigate',{url});if(r.errorText)throw Error('FIXTURE_NAVIGATION_FAILED');await ready();};
+  const navigate=async(destination=url,readyMs=8000)=>{
+    if(destination!==url&&destination!=='about:blank')throw Error('FIXED_FIXTURE_REQUIRED');
+    const r=await send('Page.navigate',{url:destination});if(r.errorText)throw Error('FIXTURE_NAVIGATION_FAILED');
+    await ready(destination,Date.now()+readyMs);
+  };
   const loc=(query)=>({
     async innerText(){const v=await evaluate('(()=>{const e=('+query+')[0];return e?e.innerText:null})()');if(typeof v!=='string')throw Error('MISSING_RESULT');return v;},
     async count(){return await evaluate('('+query+').length');},
@@ -149,7 +153,7 @@ function makePage(transport,sessionId,url){
       await send('Page.reload');
       const deadline=Date.now()+8000;
       while(Date.now()<deadline){
-        try{if(await evaluate('performance.timeOrigin',Math.min(1000,deadline-Date.now()))!==previous){await ready(deadline);return;}}catch{}
+        try{if(await evaluate('performance.timeOrigin',Math.min(1000,deadline-Date.now()))!==previous){await ready(url,deadline);return;}}catch{}
         await sleep(100);
       }
       throw Error('BROWSER_RELOAD_TIMEOUT');
@@ -161,8 +165,11 @@ export async function createTrustedDriver(origin,fixture){
   const root=fs.mkdtempSync('/tmp/ca-aet8-browser-');
   for(const d of ['profile','config','cache','runtime'])fs.mkdirSync(path.join(root,d),{mode:0o700});
   const profile=path.join(root,'profile'),url=origin+'/'+fixture+'.html';
-  let browser;
-  async function target(reset=false){
+  let browser,active=null;
+  // Reuse a single attached target per browser. Creating/closing a new
+  // renderer for every check is unnecessary and can accumulate processes
+  // under constrained Docker Desktop. Reset storage on a blank document.
+  async function target(){
     browser??=await launch(profile);
     const t=browser.transport;
     let targetId;
@@ -170,23 +177,34 @@ export async function createTrustedDriver(origin,fixture){
     try{
       let sessionId;
       try{({sessionId}=await t.send('Target.attachToTarget',{targetId,flatten:true}));}catch{throw Error('BROWSER_TARGET_ATTACH_FAILED');}
-      // Storage is a page-target domain; use its attached session rather
-      // than the browser-level transport. Reset before opening the fixture.
-      if(reset)try{await t.send('Storage.clearDataForOrigin',{origin,storageTypes:'all'},sessionId);}catch{throw Error('BROWSER_STORAGE_RESET_FAILED');}
       const page=makePage(t,sessionId,url);
-      await page.navigate();return {targetId,page};
+      return {targetId,sessionId,page};
     }catch(e){try{await t.send('Target.closeTarget',{targetId});}catch{}throw e;}
   }
+  let inUse=false;
   async function openFresh(){
-    browser??=await launch(profile);
-    let active=await target(true);
-    return {page:active.page,close:async()=>{if(active){await browser.transport.send('Target.closeTarget',{targetId:active.targetId});active=null;}},
-      restart:async()=>{
-        const previous=browser;active=null;
-        // No new process is launched unless the previous one really exited 0.
-        await previous.close();browser=null;
-        active=await target();return active.page;
-      }};
+    if(inUse)throw Error('BROWSER_SESSION_BUSY');
+    inUse=true;
+    try{
+      active??=await target();
+      await active.page.navigate('about:blank');
+      try{await browser.transport.send('Storage.clearDataForOrigin',{origin,storageTypes:'all'},active.sessionId);}catch{throw Error('BROWSER_STORAGE_RESET_FAILED');}
+      await active.page.navigate();
+      return {page:active.page,close:async()=>{inUse=false;},
+        restart:async()=>{
+          const previous=browser;
+          // No new process is launched unless the previous one really exited 0.
+          await previous.close();browser=null;active=null;
+          try{active=await target();}catch(e){throw Error('RESTART_BROWSER_TARGET_FAILED',{cause:e});}
+          // A cold renderer on the reopened profile has a separate finite
+          // readiness allowance. Never clear or rewrite saved history here.
+          try{await active.page.navigate(url,15000);}catch(e){
+            if(e?.message==='FIXTURE_NAVIGATION_TIMEOUT')throw Error('RESTART_NAVIGATION_TIMEOUT');
+            throw e;
+          }
+          return active.page;
+        }};
+    }catch(e){inUse=false;throw e;}
   }
   return {openFresh,close:async()=>{try{await browser?.close();}finally{fs.rmSync(root,{recursive:true,force:true});}}};
 }

@@ -20,7 +20,7 @@ export const FIXTURE_CASES=Object.freeze([
   'forged_receipt_rejected','trusted_source_unchanged',
 ]);
 export const FAILURE_STAGES=Object.freeze(['PAYLOAD','MODULES','SECURITY','COMPATIBILITY','SERVER','WORKING','BROKEN','SPOOF','COMPLETE',...['WORKING','BROKEN','SPOOF'].flatMap(name=>["mouse_2_plus_3_equals_5","keyboard_12_5_divided_by_2","decimal_0_1_plus_0_2","backspace_and_divide_by_zero","back_and_history_recall","history_survives_page_reload","history_survives_browser_restart"].map(test=>name+'/'+test))]);
-export const FAILURE_CODES=Object.freeze(['FIXED_SOURCE_MANIFEST_INVALID','FIXED_SOURCE_CHANGED','FULL_CHROMIUM_REQUIRED','BROWSER_PIPE_MISSING','BROWSER_PIPE_CLOSED','BROWSER_PIPE_BUSY','BROWSER_COMMAND_TIMEOUT','BROWSER_PROTOCOL_ERROR','BROWSER_STORAGE_RESET_FAILED','BROWSER_LAUNCH_FAILED','BROWSER_TARGET_FAILED','BROWSER_TARGET_ATTACH_FAILED','FIXTURE_DOM_EVALUATION_FAILED','FIXTURE_NAVIGATION_TIMEOUT','FIXTURE_NAVIGATION_FAILED','FIXTURE_CONTROL_MISSING','MISSING_RESULT','FIXTURE_CONTROL_NOT_LOADED','FIXED_FIXTURE_REQUIRED','BROWSER_RELOAD_TIMEOUT','SECURITY_OPERATION_FAILED','GUEST_STAGE_FAILED','BROWSER_EXIT_TIMEOUT','BROWSER_SHUTDOWN_NOT_GRACEFUL','GUEST_DEADLINE_EXCEEDED','BROWSER_GRACEFUL_EXIT_TIMEOUT','BROWSER_EXIT_SIGNAL','BROWSER_EXIT_NONZERO',...["BROWSER_TIMEOUT_BROWSER_GET_VERSION","BROWSER_TIMEOUT_BROWSER_CLOSE","BROWSER_TIMEOUT_RUNTIME_EVALUATE","BROWSER_TIMEOUT_PAGE_NAVIGATE","BROWSER_TIMEOUT_PAGE_RELOAD","BROWSER_TIMEOUT_INPUT_DISPATCH_MOUSE_EVENT","BROWSER_TIMEOUT_INPUT_DISPATCH_KEY_EVENT","BROWSER_TIMEOUT_STORAGE_CLEAR_DATA_FOR_ORIGIN","BROWSER_TIMEOUT_TARGET_CREATE_TARGET","BROWSER_TIMEOUT_TARGET_ATTACH_TO_TARGET","BROWSER_TIMEOUT_TARGET_CLOSE_TARGET"]]);
+export const FAILURE_CODES=Object.freeze(['FIXED_SOURCE_MANIFEST_INVALID','FIXED_SOURCE_CHANGED','FULL_CHROMIUM_REQUIRED','BROWSER_PIPE_MISSING','BROWSER_PIPE_CLOSED','BROWSER_PIPE_BUSY','BROWSER_COMMAND_TIMEOUT','BROWSER_PROTOCOL_ERROR','BROWSER_STORAGE_RESET_FAILED','BROWSER_LAUNCH_FAILED','BROWSER_TARGET_FAILED','BROWSER_TARGET_ATTACH_FAILED','FIXTURE_DOM_EVALUATION_FAILED','FIXTURE_NAVIGATION_TIMEOUT','FIXTURE_NAVIGATION_FAILED','FIXTURE_CONTROL_MISSING','MISSING_RESULT','FIXTURE_CONTROL_NOT_LOADED','FIXED_FIXTURE_REQUIRED','BROWSER_RELOAD_TIMEOUT','SECURITY_OPERATION_FAILED','GUEST_STAGE_FAILED','BROWSER_EXIT_TIMEOUT','BROWSER_SHUTDOWN_NOT_GRACEFUL','GUEST_DEADLINE_EXCEEDED','BROWSER_GRACEFUL_EXIT_TIMEOUT','BROWSER_EXIT_SIGNAL','BROWSER_EXIT_NONZERO','BROWSER_SESSION_BUSY','RESTART_BROWSER_TARGET_FAILED','RESTART_NAVIGATION_TIMEOUT',...["BROWSER_TIMEOUT_BROWSER_GET_VERSION","BROWSER_TIMEOUT_BROWSER_CLOSE","BROWSER_TIMEOUT_RUNTIME_EVALUATE","BROWSER_TIMEOUT_PAGE_NAVIGATE","BROWSER_TIMEOUT_PAGE_RELOAD","BROWSER_TIMEOUT_INPUT_DISPATCH_MOUSE_EVENT","BROWSER_TIMEOUT_INPUT_DISPATCH_KEY_EVENT","BROWSER_TIMEOUT_STORAGE_CLEAR_DATA_FOR_ORIGIN","BROWSER_TIMEOUT_TARGET_CREATE_TARGET","BROWSER_TIMEOUT_TARGET_ATTACH_TO_TARGET","BROWSER_TIMEOUT_TARGET_CLOSE_TARGET"]]);
 const denied=f=>{try{f();return false;}catch{return true;}};
 function connectDenied(host,port){
   return new Promise(resolve=>{
@@ -112,13 +112,18 @@ async function main(){
               }
             }finally{await s.close();}
             if(!loaded)throw Error('FIXTURE_CONTROL_NOT_LOADED');
-            const report=await contract.evaluateCalculationJournal(d.openFresh,{onCaseStart:key=>move(name.toUpperCase()+'/'+key),onCaseError:error=>{
+            const key={working:'working_seven_checks',broken:'inert_negative_rejected',spoof:'forged_receipt_rejected'}[name];
+            observations[name]=Object.fromEntries(contract.CALCULATION_CASES.map(k=>[k,null]));
+            const report=await contract.evaluateCalculationJournal(d.openFresh,{onCaseStart:key=>move(name.toUpperCase()+'/'+key),onCaseComplete:(caseId,passed)=>{
+              observations[name][caseId]=passed;
+              fixture[key]=contract.CALCULATION_CASES.every(k=>observations[name][k]===(name==='working'));
+              // Next case's start checkpoint retains all completed observations.
+            },onCaseError:error=>{
               // Missing controls are genuine negative observations. A broken
               // driver is not evidence that an inert/forged app was rejected.
               if(!['FIXTURE_CONTROL_MISSING','MISSING_RESULT'].includes(error?.message))throw error;
             }});
             observations[name]=report.checks;
-            const key={working:'working_seven_checks',broken:'inert_negative_rejected',spoof:'forged_receipt_rejected'}[name];
             fixture[key]=contract.CALCULATION_CASES.every(k=>report.checks[k]===(name==='working'));progress();
           }finally{await d.close();}
         }

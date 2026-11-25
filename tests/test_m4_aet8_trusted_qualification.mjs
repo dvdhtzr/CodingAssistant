@@ -148,3 +148,29 @@ test('timeout diagnostics name the actual fixed protocol method and functional c
   const x=good();x.failure={stage:'WORKING/'+CALCULATION_CASES[0],code:COMMAND_TIMEOUT_CODES['Runtime.evaluate']};
   assert.deepEqual(parseTrustedReport(JSON.stringify(x)).failure,x.failure);
 });
+
+test('partial functional evidence retains completed cases, never certifies unrun cases',()=>{
+  const x=good();
+  x.fixture.working_seven_checks=false;x.fixture.inert_negative_rejected=false;x.fixture.forged_receipt_rejected=false;x.fixture.trusted_source_unchanged=false;
+  x.observations.working[CALCULATION_CASES[6]]=null;x.observations.broken=null;x.observations.spoof=null;
+  const stage='WORKING/'+CALCULATION_CASES[6];
+  const partial={...x,failure:{stage,code:'RESTART_NAVIGATION_TIMEOUT'}};
+  assert.equal(parseTrustedReport(JSON.stringify(partial)).observations.working[CALCULATION_CASES[6]],null);
+  assert.throws(()=>parseTrustedReport(JSON.stringify(x)));
+  const checkpoint=parseGuestStream(JSON.stringify({kind:'progress',stage,...x})+'\n').checkpoint;
+  assert.equal(Object.values(checkpoint.observations.working).filter(v=>v===true).length,6);
+  const mock=dockerMock({report:partial,exit:2});
+  const result=qualifyTrusted({platform:'win32',env:{},name,docker:mock.docker});
+  assert.equal(result.status,'BLOCKED');
+  assert.equal(result.generatedCodeExecutionEnabled,false);
+  assert.equal(result.containerRemoved,true);
+});
+test('contract reports completed negative observation before a later driver fault',async()=>{
+  const completed=[];let opened=0;
+  const open=async()=>{
+    if(++opened===2)throw Error('FIXTURE_NAVIGATION_TIMEOUT');
+    return {page:{locator:()=>({innerText:async()=>'not initial'})},close:async()=>{}};
+  };
+  await assert.rejects(evaluateCalculationJournal(open,{onCaseError:e=>{throw e;},onCaseComplete:(k,v)=>completed.push([k,v])}),/FIXTURE_NAVIGATION_TIMEOUT/);
+  assert.deepEqual(completed,[[CALCULATION_CASES[0],false]]);
+});

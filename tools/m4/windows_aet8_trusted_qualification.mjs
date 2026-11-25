@@ -29,6 +29,7 @@ export function trustedDockerArgs(id,name){
   args.splice(1,0,'--init');return args;
 }
 function booleans(x,keys){return x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===keys.length&&keys.every(k=>Object.hasOwn(x,k)&&typeof x[k]==='boolean');}
+function caseObservations(x,partial){return x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===CALCULATION_CASES.length&&CALCULATION_CASES.every(k=>Object.hasOwn(x,k)&&(typeof x[k]==='boolean'||(partial&&x[k]===null)));}
 export function parseTrustedReport(raw){
   if(typeof raw!=='string'||raw.length<2||raw.length>10000)fail('GUEST_REPORT_INVALID');
   let x;try{x=JSON.parse(raw);}catch{fail('GUEST_REPORT_INVALID');}
@@ -36,7 +37,7 @@ export function parseTrustedReport(raw){
   const validFailure=failure&&Object.keys(failure).length===2&&FAILURE_STAGES.includes(failure.stage)&&FAILURE_CODES.includes(failure.code);
   if(!x||Object.keys(x).length!==(failure?5:4)||(failure&&!validFailure)||x.schemaVersion!==1||
     !(booleans(x.security,SECURITY_CASES)||(validFailure&&x.security===null))||!booleans(x.fixture,FIXTURE_CASES)||
-    !x.observations||Object.keys(x.observations).length!==3||!['working','broken','spoof'].every(k=>Object.hasOwn(x.observations,k)&&(x.observations[k]===null||booleans(x.observations[k],CALCULATION_CASES))))
+    !x.observations||Object.keys(x.observations).length!==3||!['working','broken','spoof'].every(k=>Object.hasOwn(x.observations,k)&&(x.observations[k]===null||caseObservations(x.observations[k],validFailure))))
     fail('GUEST_REPORT_INVALID');
   const all=(name,want)=>CALCULATION_CASES.every(k=>x.observations[name]?.[k]===want);
   if(x.fixture.working_seven_checks!==all('working',true)||x.fixture.inert_negative_rejected!==all('broken',false)||x.fixture.forged_receipt_rejected!==all('spoof',false)||
@@ -131,8 +132,8 @@ export function main(argv=process.argv.slice(2)){
     if(values)for(const [key,value] of Object.entries(values))if(!value)console.log('    failed: '+key);
   }
   if(r.observations)for(const [name,values] of Object.entries(r.observations)){
-    console.log('  '+name+': '+(values?Object.values(values).filter(Boolean).length+'/'+CALCULATION_CASES.length:'NOT_RUN'));
-    if(values)for(const key of CALCULATION_CASES)if(values[key]!== (name==='working'))console.log('    unexpected: '+key);
+    console.log('  '+name+': '+(values?Object.values(values).filter(v=>v===true).length+'/'+CALCULATION_CASES.length+' ('+Object.values(values).filter(v=>typeof v==='boolean').length+' completed)':'NOT_RUN'));
+    if(values)for(const key of CALCULATION_CASES){if(values[key]===null)console.log('    not completed: '+key);else if(values[key]!== (name==='working'))console.log('    unexpected: '+key);}
   }
   console.log('  container removed: '+r.containerRemoved);
   if(r.lastGuestStage)console.log('  last guest stage: '+r.lastGuestStage);

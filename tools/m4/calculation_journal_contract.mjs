@@ -26,10 +26,15 @@ const run=async(open,check,onCaseError)=>{
 // openFresh is a trusted fixture driver returning {page,close,restart}.
 // A restart must create an actual new browser process with the same private
 // profile. The candidate page never supplies a test name or result record.
-export async function evaluateCalculationJournal(openFresh,{onCaseError,onCaseStart}={}){
+export async function evaluateCalculationJournal(openFresh,{onCaseError,onCaseStart,onCaseComplete}={}){
   if(typeof openFresh!=='function')throw Error('Trusted driver required');
   const checks={};
-  const runCase=(name,check)=>{onCaseStart?.(name);return run(openFresh,check,onCaseError);};
+  const runCase=async(name,check)=>{
+    onCaseStart?.(name);
+    const passed=await run(openFresh,check,onCaseError);
+    onCaseComplete?.(name,passed);
+    return passed;
+  };
   checks.mouse_2_plus_3_equals_5=await runCase('mouse_2_plus_3_equals_5',async p=>{
     if(await result(p)!=='0')return false;
     for(const key of ['2','Add','3','Equals'])await click(p,key);
