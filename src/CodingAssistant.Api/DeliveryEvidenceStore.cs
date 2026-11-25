@@ -9,6 +9,7 @@ public sealed record DeliveryRepair(string Id,string BaseRunId,string RunId,int 
 public sealed record DeliveryModelUse(string AgentId,string Model,string State,int RecordedRequests);
 public sealed record DeliverySmoke(string Id,string RunId,string SourceSha256,string State,string? Status,bool Current);
 public sealed record DeliveryArtifact(string Path,string Sha256);
+public sealed record DeliveryRoutineCandidate(string RunId,string BaseRunId,string BaseSourceSha256,string Disposition);
 public sealed record DeliveryVerification(string StaticReviewStatus,string BuildStatus,string FunctionalStatus,
     string? RuntimeProfileId,string RuntimeQualificationStatus,IReadOnlyList<string> MandatoryRuntimeChecks);
 public sealed record DeliveryEvidence(string TaskId,string? RunId,string? SourceSha256,
@@ -19,7 +20,8 @@ public sealed record DeliveryEvidence(string TaskId,string? RunId,string? Source
     IReadOnlyList<DeliveryRepair> Repairs,IReadOnlyList<DeliverySmoke> Smoke,
     IReadOnlyList<DeliveryModelUse> ModelUse,IReadOnlyList<DraftArchitectureChoice> Decisions,
     IReadOnlyList<string> RequiredVerification,IReadOnlyList<string> PlannedRisks,string? ApprovedSpecification,
-    DeliveryVerification Verification,IReadOnlyList<DeliveryArtifact> Artifacts);
+    DeliveryVerification Verification,IReadOnlyList<DeliveryArtifact> Artifacts,
+    DeliveryRoutineCandidate? RoutineCandidate=null);
 
 /// <summary>Revision-bound, owner-private delivery readiness and retrospective evidence.
 /// Deliberately fail closed: no currently supported runtime profile supplies qualified
@@ -55,11 +57,32 @@ public sealed class DeliveryEvidenceStore(TaskStore tasks)
             risks=plan.Outline.Risks;
         }
         string? source=null;
+        DeliveryRoutineCandidate? routineCandidate=null;
         var implementation=false;var currentSource=false;
         if(run is null)blockers.Add("NO_SOURCE_RUN");
         else
         {
             source=EngineeringMessageStore.SourceFingerprint(db,tx,run.Id);
+            // Latest saved source is not synonymous with an accepted
+            // candidate. Preserve the predecessor identity and durable
+            // negative review outcome in delivery evidence.
+            using(var command=TaskStore.Command(db,tx,"""
+                SELECT c.base_run_id,c.base_source_sha256,c.state,
+                    EXISTS(SELECT 1 FROM engineering_collaborations j
+                        WHERE j.task_id=c.task_id AND j.run_id=c.engineering_run_id
+                        AND j.source_sha256=@source AND j.plan_sha256=@plan
+                        AND j.state='Escalated' AND j.reason='POTENTIAL_CANDIDATE_REGRESSION')
+                FROM repair_cycles c JOIN engineering_routine_repair_admissions a
+                    ON a.cycle_id=c.id AND a.task_id=c.task_id
+                WHERE c.task_id=@task AND c.engineering_run_id=@run
+                """,("@task",taskId),("@run",run.Id),("@source",source),("@plan",run.PlanSha256)))
+            using(var reader=command.ExecuteReader())
+                if(reader.Read())
+                    routineCandidate=new(run.Id,reader.GetString(0),reader.GetString(1),
+                        reader.GetInt64(3)!=0?"REJECTED_POTENTIAL_REGRESSION":
+                        reader.GetString(2) is "Failed" or "Interrupted"?"STOPPED_UNVERIFIED":"UNVERIFIED_CANDIDATE");
+            if(routineCandidate?.Disposition=="REJECTED_POTENTIAL_REGRESSION")
+                blockers.Add("POTENTIAL_CANDIDATE_REGRESSION");
             var bindingCurrent=false;
             try{EngineeringRunStore.RequireBinding(db,tx,run);bindingCurrent=true;currentSource=run.State=="Generated";}
             catch(StoreFailure e){blockers.Add(e.Code);}
@@ -142,7 +165,7 @@ public sealed class DeliveryEvidenceStore(TaskStore tasks)
         return new(taskId,runId,source,run?.PlanSha256??plan?.PlanSha256,
             run?.SpecificationSha256??plan?.SpecificationSha256,run?.ArchitectureSha256??plan?.ArchitectureSha256,
             currentSource,implementation,false,false,false,blockers.Distinct().ToArray(),work,reviews,findings,repairs,
-            smoke,models,decisions,required,risks,specification,verification,artifacts);
+            smoke,models,decisions,required,risks,specification,verification,artifacts,routineCandidate);
     }
 
     private static int Count(SqliteConnection db,SqliteTransaction tx,string sql,params (string Key,object Value)[] args)
