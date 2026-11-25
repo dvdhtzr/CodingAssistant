@@ -9,10 +9,12 @@ public sealed record QaImplementationIndicator(string Path, string SourceSha256,
 public sealed record QaCriterionCoverage(QaCriterionIdentity Criterion,
     string StaticStatus, string VerificationStatus, int ConcernCount,
     IReadOnlyList<QaImplementationIndicator> ImplementationIndicators);
+public sealed record QaCrossFileEvidence(string CriterionId, string ObservedFromPath,
+    string CausePath, string CauseExcerpt, string Explanation, int? RelatedFindingIndex);
 public sealed record QaAcceptanceSummary(string PlanSha256, string SourceSha256,
     string ReviewId, IReadOnlyList<QaCriterionCoverage> Criteria,
     IReadOnlyList<QaFindingGroup> Findings, int RawFindingCount,
-    int UnmappedFindingCount);
+    int UnmappedFindingCount, IReadOnlyList<QaCrossFileEvidence> CrossFileEvidence);
 
 /// <summary>
 /// Deterministic, read-only projection of the exact approved plan and recorded
@@ -61,6 +63,25 @@ public static class QaAcceptanceProjection
         };
     }
 
+    // Companion references are read-only context, never repair targets.
+    // Match exact path and text only among host-admitted source files.
+    public static QaFileAssessment GroundCrossFile(ImplementationPlan plan,
+        string primaryPath, IReadOnlyList<EngineeringSourceFile> companions,
+        QaFileAssessment assessment)
+    {
+        var ids = Identify(plan).Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+        return assessment with {
+            CrossFileObservations = (assessment.CrossFileObservations ?? [])
+                .Where(item => ids.Contains(item.CriterionId) &&
+                    item.CausePath != primaryPath && QaProjectContext.IsWebSource(item.CausePath) &&
+                    item.CauseExcerpt is { Length: >= 8 and <= 240 } &&
+                    !string.IsNullOrWhiteSpace(item.CauseExcerpt) &&
+                    companions.Any(file => file.Path == item.CausePath &&
+                        file.Content.Contains(item.CauseExcerpt, StringComparison.Ordinal)))
+                .DistinctBy(item => (item.CriterionId, item.CausePath, item.CauseExcerpt)).ToArray()
+        };
+    }
+
     public static QaAcceptanceSummary Build(QaReviewRun review, ImplementationPlan plan,
         IReadOnlyList<QaFileReport> reports)
     {
@@ -106,8 +127,21 @@ public static class QaAcceptanceProjection
                     : (indicators.Length > 0 ? "ImplementationEvidence" : "NoLinkedConcern"),
                 "RequiresTesting", count, indicators);
         }).ToArray();
+        var crossFile = reports.OrderBy(report => report.Path, StringComparer.Ordinal)
+            .SelectMany(report => (report.Assessment.CrossFileObservations ?? [])
+                .Where(item => identities.Any(c => c.Id == item.CriterionId))
+                .Select(item => {
+                    // A unique independently reviewed cause can be linked;
+                    // a shared excerpt or ambiguous cause stays unresolved.
+                    var matches = groups.Where(group => group.Path == item.CausePath &&
+                        group.CriterionId == item.CriterionId &&
+                        group.Finding.SourceExcerpt == item.CauseExcerpt).Take(2).ToArray();
+                    return new QaCrossFileEvidence(item.CriterionId, report.Path,
+                        item.CausePath, item.CauseExcerpt, item.Explanation,
+                        matches.Length == 1 ? matches[0].Index : null);
+                })).ToArray();
         return new QaAcceptanceSummary(plan.PlanSha256, review.SourceSha256,
             review.Id, coverage, groups, raw.Length,
-            groups.Count(row => row.CriterionId is null));
+            groups.Count(row => row.CriterionId is null), crossFile);
     }
 }
