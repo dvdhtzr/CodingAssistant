@@ -518,6 +518,7 @@ public sealed class EngineeringRunStore(
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireBinding(db, tx, job);
+        EngineeringDelegationStore.RequireRoutineWrite(db,tx,job);
         _=StartTaskCore(db,tx,job,workItemId);
         tx.Commit();
         tasks.SignalEngineeringActivity(taskId);
@@ -618,6 +619,7 @@ public sealed class EngineeringRunStore(
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireBinding(db, tx, job);
+        EngineeringDelegationStore.RequireRoutineWrite(db,tx,job,safe.Files);
         if (TaskStore.Scalar(db, tx, """
             SELECT 1 FROM engineering_run_tasks
             WHERE run_id=@run AND work_item_id=@item AND state='Running'
@@ -826,6 +828,7 @@ public sealed class EngineeringRunStore(
         if (success)
         {
             RequireBinding(db, tx, job);
+            EngineeringDelegationStore.RequireRoutineWrite(db,tx,job);
             _=AdaptiveWorkPlanStore.RequireBound(db,tx,job);
             if (TaskStore.Scalar(db, tx, """
                 SELECT 1 FROM engineering_run_tasks
