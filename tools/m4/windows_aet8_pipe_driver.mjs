@@ -150,14 +150,36 @@ function makePage(transport,sessionId,url){
     keyboard:{press:key,type:async value=>{for(const k of value)await key(k);}},
     reload:async()=>{
       const previous=await evaluate('performance.timeOrigin');
-      await send('Page.reload');
+      if(!Number.isFinite(previous))throw Error('BROWSER_RELOAD_TIMEOUT');
+      await send('Page.reload',{ignoreCache:true});
       const deadline=Date.now()+8000;
       while(Date.now()<deadline){
-        try{if(await evaluate('performance.timeOrigin',Math.min(1000,deadline-Date.now()))!==previous){await ready(url,deadline);return;}}catch{}
+        try{
+          const current=await evaluate('performance.timeOrigin',Math.min(1000,deadline-Date.now()));
+          if(Number.isFinite(current)&&current!==previous){await ready(url,deadline);return;}
+        }catch(e){
+          if(!['BROWSER_TIMEOUT_RUNTIME_EVALUATE','BROWSER_PROTOCOL_ERROR','FIXTURE_DOM_EVALUATION_FAILED'].includes(e?.message))throw e;
+        }
         await sleep(100);
       }
       throw Error('BROWSER_RELOAD_TIMEOUT');
     }};
+}
+// Fixed reviewed fixtures write history only on explicit calculator actions.
+// Clearing their origin while the page is idle, then performing a real
+// reload, resets JS state without the extra cross-origin blank navigation.
+// The initial session still clears storage before the first navigation.
+// A cold restart never uses this helper: it preserves the profile.
+export async function resetTrustedFixture(transport,active,origin,loaded){
+  if(!/^http:\/\/127\.0\.0\.1:\d+$/.test(origin))throw Error('FIXED_FIXTURE_REQUIRED');
+  try{await transport.send('Storage.clearDataForOrigin',{origin,storageTypes:'all'},active.sessionId);}
+  catch{throw Error('BROWSER_STORAGE_RESET_FAILED');}
+  if(loaded)await active.page.reload();else await active.page.navigate();
+  // Fresh state must be observed, never assumed from a successful command.
+  // The frozen working, inert and spoof fixtures all declare this region.
+  const initial=(await active.page.locator('output#display').innerText()).trim()==='0';
+  const history=await active.page.getByRole('region',{name:'Calculation history',exact:true}).locator('li').count();
+  if(!initial||history!==0)throw Error('FIXTURE_FRESH_STATE_NOT_RESET');
 }
 export async function createTrustedDriver(origin,fixture){
   if(!/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)||!['working','broken','spoof'].includes(fixture))
@@ -165,10 +187,9 @@ export async function createTrustedDriver(origin,fixture){
   const root=fs.mkdtempSync('/tmp/ca-aet8-browser-');
   for(const d of ['profile','config','cache','runtime'])fs.mkdirSync(path.join(root,d),{mode:0o700});
   const profile=path.join(root,'profile'),url=origin+'/'+fixture+'.html';
-  let browser,active=null;
-  // Reuse a single attached target per browser. Creating/closing a new
-  // renderer for every check is unnecessary and can accumulate processes
-  // under constrained Docker Desktop. Reset storage on a blank document.
+  let browser,active=null,loaded=false;
+  // Reuse a single attached target per browser. Avoid repeated blank-page
+  // navigations, which can replace renderer contexts under constrained hosts.
   async function target(){
     browser??=await launch(profile);
     const t=browser.transport;
@@ -187,14 +208,13 @@ export async function createTrustedDriver(origin,fixture){
     inUse=true;
     try{
       active??=await target();
-      await active.page.navigate('about:blank');
-      try{await browser.transport.send('Storage.clearDataForOrigin',{origin,storageTypes:'all'},active.sessionId);}catch{throw Error('BROWSER_STORAGE_RESET_FAILED');}
-      await active.page.navigate();
+      await resetTrustedFixture(browser.transport,active,origin,loaded);
+      loaded=true;
       return {page:active.page,close:async()=>{inUse=false;},
         restart:async()=>{
           const previous=browser;
           // No new process is launched unless the previous one really exited 0.
-          await previous.close();browser=null;active=null;
+          await previous.close();browser=null;active=null;loaded=false;
           try{active=await target();}catch(e){throw Error('RESTART_BROWSER_TARGET_FAILED',{cause:e});}
           // A cold renderer on the reopened profile has a separate finite
           // readiness allowance. Never clear or rewrite saved history here.
@@ -202,6 +222,7 @@ export async function createTrustedDriver(origin,fixture){
             if(e?.message==='FIXTURE_NAVIGATION_TIMEOUT')throw Error('RESTART_NAVIGATION_TIMEOUT');
             throw e;
           }
+          loaded=true;
           return active.page;
         }};
     }catch(e){inUse=false;throw e;}
