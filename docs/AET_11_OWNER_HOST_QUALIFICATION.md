@@ -26,12 +26,15 @@ inference capacity at its default of one for the first live scenario.
 Start the normal Windows launcher or Visual Studio F5, without enabling
 the M1 execution bridge. Reuse the existing localhost session mechanism.
 
-## 2. Mandatory runtime blocker
+## 2. Fixed compatibility demonstrated; runtime qualification still required
 
-The last reported owner-host M4.7 result was 9/11, with the sandboxed DOM
-and sandbox status failing and container cleanup confirmed. From the same
-branch, with Docker Desktop running in local Linux-container mode, the
-existing fixed-fixture probe is:
+On November 24, 2026 the owner reported M4.7 11/11 at `9d78e08`,
+full Chromium DOM PASS, internal sandbox status PASS, USER_NAMESPACE_OK,
+confirmed container cleanup, fixture-only chroot policy and PID ceiling 256.
+The private evidence JSON remains on the owner host. This is reported
+owner evidence, not an independently retrieved artifact. No further repeat
+of the unchanged fixed probe is required absent relevant configuration or
+revision changes. For requalification when needed, the command is:
 
 ~~~powershell
 node tools/m4/windows_chromium_sandbox_qualification.mjs --run
@@ -102,8 +105,12 @@ Never convert a model-free fixture pass to live qualification.
 
 ## Current disposition
 
-AET-9 model-free regressions were green at `54c9792`. AET-10 has a
-fail-closed delivery evidence foundation and UI; the final positive
-acceptance/delivery path is not complete. AET-8's executable qualification
-and AET-11 live acceptance remain unqualified. This runbook is a preparation
-artifact only; it makes no execution, security qualification or delivery claim.
+AET-9 model-free regressions were green at `54c9792`. AET-10 delivery
+evidence foundation and UI were green on Windows and Ubuntu at `28a408d`
+(run 45464643358). M4.7 fixed compatibility is owner-reported PASS at
+`9d78e08`. The final positive acceptance/delivery path is not complete.
+AET-8's executable qualification and AET-11 live acceptance remain
+unqualified. The next executable work must satisfy the separately approved
+scope and integrated adversarial gates (#76, #92, #111); no runtime promotion
+or delivery claim follows from fixed compatibility.
+

@@ -1,6 +1,6 @@
 # M4.7 — Windows Chromium sandbox-on compatibility qualification
 
-**Status: pending Windows Docker Desktop owner-host acceptance.**
+**Status: owner-reported Windows Docker Desktop fixed-fixture compatibility PASS (11/11), November 24, 2026. Untrusted generated-source qualification remains pending.**
 The owner reports M4.2 fixed guest 18/18, M4.3 scoped disposable
 workspace 17/17 + independent host 9/9, and M4.4 trusted Calculation
 Journal evaluator GREEN. M4.5 and M4.6 implement non-executable,
@@ -183,3 +183,7 @@ After the approved PID ceiling increase, the owner observed actual fixed DOM PAS
 ## Internal WebUI navigation correction
 
 The owner-host 10/11 result now reports UNEXPECTED_DOM_OUTPUT rather than an oversized document; the ordinary fixture continues to pass. Chrome's official Headless CLI documentation specifies that from Chrome 123, internal chrome:// URLs require the --allow-chrome-scheme-url option (https://developer.chrome.com/docs/automation-and-testing/headless-cli). The flag was missing. It is now restricted to the fixed chrome://sandbox status invocation; neither the ordinary HTML fixture nor any generated-source execution path receives it. The actual target URL is fixed by the invocation kind, not caller-supplied input. No sandbox-disable flag, remote debugging, privilege, network, seccomp, or resource-policy change. Existing affirmative-status and eleven-check gates remain mandatory. This is a documented navigation correction, not evidence of a successful owner-host run.
+
+## Owner-host compatibility acceptance — November 24, 2026
+
+The owner supplied the actual Windows console result at branch revision `9d78e08c464198ba0ce91ef26d762f00f85f945f`: `WINDOWS_SANDBOX_COMPATIBILITY_PASS`, all 11 fixed checks, full Chromium, DOM PASS, sandbox status PASS, user namespace OK, no browser diagnostics, and container removed true. The approved policy variant is `m47-fixed-chromium-chroot-v1`, with fixed fixture PID ceiling 256. The owner retains the original private evidence JSON locally; the repository records the reported observation, not a copied or independently parsed evidence file. This closes the fixed compatibility blocker only. The owner expressly limited both policy adjustments to this fixed fixture. Do not reuse them for generated source, or mark the planning registry qualified, without separately reviewed executable scope and independent adversarial qualification. Continue the task-specific workflow rather than adding redundant compatibility stages.

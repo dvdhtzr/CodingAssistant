@@ -8,7 +8,7 @@ Contradictory runner results are blocked by the existing strict contract.
 The evidence is always Verified=false. No additional runtime or execution
 permission is created.
 
-Static Web remains UNQUALIFIED in RuntimeProfileRegistry. The existing
-Windows Chromium sandbox issue and independent functional tests require
-actual owner-host qualification. CI's injected runner checks only
+Static Web remains UNQUALIFIED in RuntimeProfileRegistry. The Windows fixed-fixture Chromium compatibility blocker was resolved on the
+owner host (11/11 reported at 9d78e08, November 24, 2026). Separate
+adversarial runtime qualification and independent functional tests remain required. CI's injected runner checks only
 admission/persistence and does not execute or qualify generated source.
