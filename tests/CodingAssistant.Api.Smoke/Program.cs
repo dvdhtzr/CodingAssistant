@@ -58,6 +58,31 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     };
 }
 
+// The activity display is ephemeral metadata, not a logging or approval system.
+{
+    var activity = new LocalHttpActivityLedger();
+    for (var index = 0; index < LocalHttpActivityLedger.MaxEntries + 12; index++)
+        activity.Record("GET", "/api/tasks/{id}/engineering-runs/latest",
+            200, 12.8);
+    var recent = activity.Read(after: 1, limit: 200);
+    Check(recent.Capacity == 120 && recent.Events.Count == 40 &&
+          recent.Truncated && recent.LastSequence == 132 &&
+          recent.Events[0].Sequence == 93,
+        "activity buffer has a bounded window, bounded page and explicit cursor gap");
+    Check(recent.Events.All(item => item.Route ==
+            "/api/tasks/{id}/engineering-runs/latest" &&
+          item.DurationMs == 13 && item.StatusCode == 200),
+        "activity summaries contain route templates, statuses and bounded durations");
+    activity.Record("POST",
+        "/api/tasks/real-id?sessionToken=do-not-expose",
+        403, double.PositiveInfinity);
+    var unsafeRoute = activity.Read(after: 132).Events.Single();
+    Check(unsafeRoute.Route == "API request" &&
+          unsafeRoute.DurationMs == 0 &&
+          unsafeRoute.Method == "POST" && unsafeRoute.StatusCode == 403,
+        "unsafe paths, query strings and nonfinite durations fail closed");
+}
+
 // Reproduce the Windows Visual Studio stale-wwwroot failure using a safe,
 // temporary fake bundle. The real API program rebuilds the current source
 // before selecting a static WebRoot; no old Owner session should be served.
@@ -216,6 +241,76 @@ if (OperatingSystem.IsWindows())
           !LocalOllamaModelCatalog.ValidLocalName("evil\nmodel") &&
           !LocalOllamaModelCatalog.ValidLocalName("https://ollama.com"),
         "cloud and malformed identifiers never become local inference targets");
+}
+
+// Per-role model configuration is durable and does not alter approved contracts.
+{
+    var local = Path.Combine(Path.GetTempPath(),
+        "ca-role-models-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var tasksForRoles = new TaskStore(local);
+        var roleTask = tasksForRoles.CreateTask(new CreateTaskRequest(
+            "Model assignments", "Use independent local MAF models.",
+            Guid.NewGuid().ToString("N")));
+        var settingsForRoles = new AgentRoleModelSettings(tasksForRoles);
+        settingsForRoles.Initialize();
+        var initial = settingsForRoles.Read(roleTask.Id, "qwen3-coder:30b");
+        Check(initial.Count == 5 &&
+              initial.Single(x => x.Role == "ProductOwner").Model ==
+                "qwen3-coder:30b" &&
+              initial.Single(x => x.Role == "SolutionArchitect").Model ==
+                "qwen3-coder:30b" &&
+              initial.Single(x => x.Role == "TechnicalLead").Model ==
+                "qwen3-coder:30b" &&
+              initial.Single(x => x.Role == "SoftwareEngineer").Model ==
+                "qwen2.5-coder:14b" &&
+              initial.Single(x => x.Role == "QaEngineer").Model ==
+                "qwen2.5-coder:14b",
+            "five separate team roles with 14b coder preferred only for engineer and QA");
+        settingsForRoles.Set(roleTask.Id, "QaEngineer", "gemma4:latest",
+            "qwen3-coder:30b");
+        settingsForRoles.Set(roleTask.Id, "SoftwareEngineer", "qwen3.5:4b",
+            "qwen3-coder:30b");
+        var persisted = new AgentRoleModelSettings(tasksForRoles)
+            .Read(roleTask.Id, "qwen3-coder:30b");
+        Check(persisted.Single(x => x.Role == "QaEngineer").Model ==
+                "gemma4:latest" &&
+              persisted.Single(x => x.Role == "SoftwareEngineer").Model ==
+                "qwen3.5:4b" &&
+              persisted.Single(x => x.Role == "TechnicalLead").Model ==
+                "qwen3-coder:30b",
+            "agent assignment survives a new settings instance without cross-role leakage");
+        settingsForRoles.Set(roleTask.Id, "QaEngineer", null, "qwen3-coder:30b");
+        Check(settingsForRoles.Resolve(roleTask.Id, "QaEngineer",
+                "qwen3-coder:30b") == "qwen2.5-coder:14b",
+            "restoring QA default does not change Software Engineer");
+        try
+        {
+            settingsForRoles.Set(roleTask.Id, "ProductOwner", "gemma4:latest",
+                "qwen3-coder:30b");
+            throw new Exception("Product Owner interview model changed silently");
+        }
+        catch (StoreFailure error) when (error.Code == "INVALID_AGENT_ROLE")
+        {
+            Check(true, "existing Product Owner interview pin remains authoritative");
+        }
+        try
+        {
+            settingsForRoles.Set(roleTask.Id, "QaEngineer", "cloud/model",
+                "qwen3-coder:30b");
+            throw new Exception("Cloud model accepted for QA");
+        }
+        catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+        {
+            Check(true, "per-role model settings reject cloud and malformed identifiers");
+        }
+    }
+    finally
+    {
+        try { Directory.Delete(local, recursive: true); }
+        catch (IOException) { /* Windows AV may briefly hold SQLite handles. */ }
+    }
 }
 
 // Regression: MAF must use the SAME guided-answer schema as the parser.
@@ -465,6 +560,9 @@ try
         using var noToken = await unauthenticated.GetAsync("/api/tasks");
         Check(noToken.StatusCode == HttpStatusCode.Unauthorized,
             "unauthenticated owner history blocked");
+        using (var activity = await unauthenticated.GetAsync("/api/studio/http-activity"))
+            Check(activity.StatusCode == HttpStatusCode.Unauthorized,
+                "anonymous users cannot read live request activity");
         using var noAuthPost = await Post(unauthenticated, "/api/tasks", new
         {
             title = "unauthorized",
@@ -585,6 +683,29 @@ try
             "control plane cannot start the agent");
         Check(status.RootElement.GetProperty("model").GetString() == "qwen3.5:4b",
             "fixed local model reported");
+    }
+
+    using (var response = await client.GetAsync("/api/studio/http-activity"))
+    using (var body = await ReadJson(response))
+    {
+        var cursor = body.RootElement.GetProperty("lastSequence").GetInt64();
+        var items = body.RootElement.GetProperty("events").EnumerateArray().ToArray();
+        Check(response.StatusCode == HttpStatusCode.OK && cursor > 0 &&
+              items.Any(item =>
+                item.GetProperty("method").GetString() == "GET" &&
+                item.GetProperty("route").GetString() == "/api/status" &&
+                item.GetProperty("statusCode").GetInt32() == 200),
+            "authenticated activity endpoint reports real, templated HTTP completions");
+        var serialized = body.RootElement.GetRawText();
+        Check(!serialized.Contains(OwnerToken, StringComparison.Ordinal) &&
+              !serialized.Contains("sessionToken", StringComparison.Ordinal),
+            "request activity never exposes a bearer or session token");
+        using var self = await client.GetAsync(
+            "/api/studio/http-activity?after=" + cursor);
+        using var selfBody = await ReadJson(self);
+        Check(selfBody.RootElement.GetProperty("lastSequence").GetInt64() == cursor &&
+              selfBody.RootElement.GetProperty("events").GetArrayLength() == 0,
+            "watching activity never generates self-referential request traffic");
     }
 
     var requestId = Guid.NewGuid().ToString("N");
@@ -1588,6 +1709,59 @@ try
                     .Select(m => m.GetString()).SequenceEqual(
                         new[] { "gemma4:latest", "qwen2.5-coder:3b", "qwen3.5:4b" }),
                 "authenticated catalog returns current installed local models");
+        // Authenticated per-role selection: exact installed models only, and
+        // Product Owner remains bound to the existing interview picker.
+        using (var choices = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/agent-models"))
+        using (var json = await ReadJson(choices))
+        {
+            var roles = json.RootElement.GetProperty("agents").EnumerateArray().ToArray();
+            Check(choices.StatusCode == HttpStatusCode.OK &&
+                  roles.Length == 5 &&
+                  roles.Single(x => x.GetProperty("role").GetString() ==
+                    "SoftwareEngineer").GetProperty("model").GetString() ==
+                    "qwen2.5-coder:14b" &&
+                  roles.Single(x => x.GetProperty("role").GetString() ==
+                    "QaEngineer").GetProperty("model").GetString() ==
+                    "qwen2.5-coder:14b",
+                "role defaults prefer 14b coder, independently of the interview model");
+        }
+        using (var missing = await Post(interviewClient,
+            $"/api/tasks/{id}/agent-models/QaEngineer",
+            new { model = "qwen2.5-coder:14b" }))
+            Check(missing.StatusCode == HttpStatusCode.ServiceUnavailable,
+                "model assignment cannot save an undownloaded Ollama tag");
+        using (var cloud = await Post(interviewClient,
+            $"/api/tasks/{id}/agent-models/SoftwareEngineer",
+            new { model = "cloud/model" }))
+            Check(cloud.StatusCode == HttpStatusCode.BadRequest,
+                "model assignment cannot use a cloud or proxy name");
+        using (var pinned = await Post(interviewClient,
+            $"/api/tasks/{id}/agent-models/ProductOwner",
+            new { model = "gemma4:latest" }))
+            Check(pinned.StatusCode == HttpStatusCode.BadRequest,
+                "team settings cannot silently replace the saved Product Owner model");
+        using (var chosen = await Post(interviewClient,
+            $"/api/tasks/{id}/agent-models/QaEngineer",
+            new { model = "qwen2.5-coder:3b" }))
+        using (var json = await ReadJson(chosen))
+            Check(chosen.StatusCode == HttpStatusCode.OK &&
+                  json.RootElement.GetProperty("model").GetString() ==
+                    "qwen2.5-coder:3b",
+                "QA can use its own downloaded coder without modifying any agent's work");
+        using (var selected = await interviewClient.GetAsync(
+            $"/api/tasks/{id}/agent-models"))
+        using (var json = await ReadJson(selected))
+        {
+            var roles = json.RootElement.GetProperty("agents").EnumerateArray().ToArray();
+            Check(roles.Single(x => x.GetProperty("role").GetString() ==
+                    "QaEngineer").GetProperty("model").GetString() ==
+                    "qwen2.5-coder:3b" &&
+                  roles.Single(x => x.GetProperty("role").GetString() ==
+                    "SoftwareEngineer").GetProperty("model").GetString() ==
+                    "qwen2.5-coder:14b",
+                "role changes are persisted independently through authenticated API");
+        }
         using (var anonymous = new HttpClient(new SocketsHttpHandler {
             UseProxy = false
         }) { BaseAddress = interviewClient.BaseAddress })

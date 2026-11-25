@@ -80,7 +80,7 @@ test('mission overview keeps user text escaped and labels evidence boundaries', 
   const markup = renderToStaticMarkup(React.createElement(ProjectOverview, {
     token: 'f'.repeat(64), task, onContinue: noop, onDiagnostics: noop,
   }));
-  assert.match(markup, /MISSION CONTROL \/ PROJECT OVERVIEW/);
+  assert.match(markup, /PROJECT OVERVIEW \/ SAVED STATUS/);
   assert.match(markup, /Research &lt;Lab&gt;/);
   assert.match(markup, /&lt;script&gt; text/);
   assert.doesNotMatch(markup, /<script>/);
@@ -151,10 +151,72 @@ test('engineering task board communicates saved task and file evidence without f
   assert.match(html, /Recorded active assignment: Build dashboard/);
   assert.match(html, /data-task-state="Completed"/);
   assert.match(html, /data-task-state="Running"/);
-  assert.match(html, /1 saved file\(s\) last changed by this task/);
+  assert.match(html, /Assignment 1 · 1 source file\(s\) last saved by this assignment/);
   assert.match(html, /Source saved/);
   assert.doesNotMatch(html, /% complete/);
   assert.match(html, /not built, executed or independently tested/);
+});
+
+test('failed task names are separated from file counts and show exact persisted code', () => {
+  const html = renderToStaticMarkup(React.createElement(EngineeringGenerationPanel, {
+    legacyRunning: false,
+    engine: {
+      snapshot: {
+        job: { state: 'Failed', phase: 'Failed', planRevision: 1,
+          model: 'qwen3-coder:30b', errorCode: 'MODEL_OUTPUT_REJECTED' },
+        tasks: [
+          { id: 'final-step', ordinal: 5, title: 'Launch Preparation and Testing',
+            state: 'Failed', summary: null, startedUtc: '2026-11-23T10:47:14Z',
+            completedUtc: null },
+        ],
+        files: [], events: [
+          { sequence: 2, kind: 'EngineerOutputRejected',
+            detail: 'final-step: attempt 3/3, category JSON_SYNTAX; no source saved for this attempt' },
+          { sequence: 3, kind: 'EngineeringRunFailed',
+            detail: 'Stopped safely: MODEL_OUTPUT_REJECTED' },
+        ],
+      },
+      plan: { status: 'Approved', current: true },
+      error: '', busy: '', start: noop, cancel: noop, refresh: noop, download: noop,
+    },
+  }));
+  assert.match(html, /Assignment 6 · 0 source file\(s\) last saved by this assignment/);
+  assert.match(html, /Launch Preparation and Testing/);
+  assert.match(html, /Reason code: <code>MODEL_OUTPUT_REJECTED<\/code>/);
+  assert.match(html, /Last model-output diagnostic: final-step: attempt 3\/3, category JSON_SYNTAX/);
+  assert.match(html, /Earlier completed source remains saved/);
+  assert.doesNotMatch(html, /Task 60 saved/);
+});
+
+test('failed run offers scoped resume and clearly distinguishes restarting from task one', () => {
+  const priorRun = {
+    id: 'a'.repeat(32), taskId: 'b'.repeat(32), state: 'Failed',
+    phase: 'Failed', planRevision: 2, planSha256: 'c'.repeat(64),
+    model: 'qwen3-coder:30b', errorCode: 'MODEL_OUTPUT_REJECTED',
+  };
+  const html = renderToStaticMarkup(React.createElement(EngineeringGenerationPanel, {
+    legacyRunning: false,
+    engine: {
+      snapshot: {
+        job: priorRun,
+        tasks: [
+          { id: 'first', ordinal: 0, title: 'Website foundation', state: 'Completed',
+            summary: 'Saved source', startedUtc: null, completedUtc: '2026-11-23T10:00:00Z' },
+          { id: 'final', ordinal: 1, title: 'Launch preparation', state: 'Failed',
+            summary: null, startedUtc: '2026-11-23T10:47:14Z', completedUtc: null },
+        ],
+        files: [{ path: 'index.html', lastWorkItemId: 'first' }], events: [],
+      },
+      plan: { revision: 2, planSha256: priorRun.planSha256,
+        status: 'Approved', current: true },
+      error: '', busy: '', start: noop, resume: noop, cancel: noop,
+      refresh: noop, download: noop,
+    },
+  }));
+  assert.match(html, /Resume remaining 1 assignment\(s\)/);
+  assert.match(html, /Start a separate new run from task 1/);
+  assert.match(html, /MODEL_OUTPUT_REJECTED/);
+  assert.match(html, /Assignment 2 · 0 source file\(s\)/);
 });
 
 test('agent presence stylesheet is loaded after the base Mission Control design', () => {

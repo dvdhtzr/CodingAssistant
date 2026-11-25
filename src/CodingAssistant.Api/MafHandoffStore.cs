@@ -48,19 +48,21 @@ public sealed class MafHandoffStore(TaskStore tasks, InterviewStore interviews)
     }
 
     public void RecordProposal(string taskId, string topic,
-        InterviewSpecification spec, int revision)
+        InterviewSpecification spec, int revision, string? roleModel = null)
     {
         if (topic is not ("technology-stack" or "architecture-style") || revision < 1)
             throw new StoreFailure("INVALID_INPUT");
         Record(taskId, "ArchitectureProposalSaved", topic,
-            "SolutionArchitect", "HumanOwner", spec, revision);
+            "SolutionArchitect", "HumanOwner", spec, revision, roleModel);
     }
 
     private void Record(string taskId, string kind, string topic,
-        string from, string to, InterviewSpecification spec, int revision)
+        string from, string to, InterviewSpecification spec, int revision,
+        string? roleModel = null)
     {
         if (!Id.IsMatch(taskId) || spec.Status != "Approved" ||
-            spec.Sha256.Length != 64 || !LocalInterviewModel.AllowedModel(spec.Model))
+            spec.Sha256.Length != 64 ||
+            !LocalInterviewModel.AllowedModel(roleModel ?? spec.Model))
             throw new StoreFailure("INVALID_INPUT");
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
@@ -79,7 +81,7 @@ public sealed class MafHandoffStore(TaskStore tasks, InterviewStore interviews)
             """, ("@id", taskId), ("@kind", kind), ("@topic", topic),
             ("@from", from), ("@to", to), ("@version", spec.Version),
             ("@sha", spec.Sha256), ("@revision", revision),
-            ("@model", spec.Model),
+            ("@model", roleModel ?? spec.Model),
             ("@utc", DateTimeOffset.UtcNow.ToString("O")));
         tx.Commit();
     }

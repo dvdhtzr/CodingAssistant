@@ -15,7 +15,8 @@ public sealed class EngineeringRunCoordinator(
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
-    public EngineeringRun Start(string taskId, StartEngineeringRunRequest request)
+    public EngineeringRun Start(string taskId, StartEngineeringRunRequest request,
+        string? agentModel = null)
     {
         if (request.PlanRevision < 1 || string.IsNullOrEmpty(request.PlanSha256))
             throw new StoreFailure("INVALID_INPUT");
@@ -34,7 +35,12 @@ public sealed class EngineeringRunCoordinator(
         if (!arch.ReadyForSourceGeneration ||
             arch.ArchitectureSha256 != plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
-        var job = store.Start(taskId, plan);
+        // Resuming is an explicit owner request. Store.Resume rechecks the
+        // exact latest terminal run, plan/architecture/spec binding and
+        // source hashes in one transaction before copying prior completions.
+        var job = request.ResumeRunId is { } previousRunId
+            ? store.Resume(taskId, plan, previousRunId, agentModel)
+            : store.Start(taskId, plan, agentModel);
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = cancellation;
@@ -55,6 +61,11 @@ public sealed class EngineeringRunCoordinator(
             foreach (var item in plan.Outline.Tasks)
             {
                 token.ThrowIfCancellationRequested();
+                // Never invoke the model again for a carried-forward completed
+                // assignment; its source and status were copied atomically.
+                var saved = store.Get(job.TaskId, job.Id);
+                if (saved.Tasks.Any(t => t.Id == item.Id && t.State == "Completed"))
+                    continue;
                 store.StartTask(job.TaskId, job.Id, item.Id);
                 var prior = store.Get(job.TaskId, job.Id).Files;
                 var result = await engineer.ImplementAsync(
@@ -62,7 +73,11 @@ public sealed class EngineeringRunCoordinator(
                         architecture, item, prior,
                         OnAtlasInspection: observation =>
                             store.RecordAtlasInspection(job.TaskId,
-                                job.Id, item.Id, observation)), token);
+                                job.Id, item.Id, observation),
+                        OnOutputRejected: rejection =>
+                            store.RecordOutputRejection(job.TaskId,
+                                job.Id, item.Id, rejection),
+                        AgentModel: job.Model), token);
                 token.ThrowIfCancellationRequested();
                 var committed = store.CompleteTask(job.TaskId, job.Id, item.Id, result);
                 // Notification is best effort AFTER the durable transaction.

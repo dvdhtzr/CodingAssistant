@@ -139,8 +139,7 @@ public sealed class RepairProposalStore(TaskStore tasks)
             source.PlanSha256 != review.PlanSha256 ||
             source.SpecificationVersion != review.SpecificationVersion ||
             source.SpecificationSha256 != review.SpecificationSha256 ||
-            source.ArchitectureSha256 != review.ArchitectureSha256 ||
-            source.Model != review.Model)
+            source.ArchitectureSha256 != review.ArchitectureSha256)
             throw new StoreFailure("SOURCE_CHANGED");
         EngineeringRunStore.RequireBinding(db, tx, source);
 

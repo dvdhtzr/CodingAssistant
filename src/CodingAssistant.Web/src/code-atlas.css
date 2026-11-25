@@ -32,8 +32,9 @@
 .atlas-node.atlas-selected .atlas-node-core,.atlas-node:focus-visible .atlas-node-core{fill:#30aa9b;stroke:#cefff2;stroke-width:3}
 .atlas-node.atlas-selected .atlas-node-halo{fill:#50ecd0;fill-opacity:.3}
 .atlas-node.atlas-connected .atlas-node-core{stroke:#62e4c5;stroke-width:2}
-@keyframes atlas-arrival{0%{fill-opacity:.65;stroke-opacity:1;stroke-width:7}100%{fill-opacity:.12;stroke-opacity:0;stroke-width:1}}
-.atlas-node.atlas-new .atlas-node-halo{fill:#48efc5;stroke:#48efc5;animation:atlas-arrival 1.5s ease-out both}
+/* Source arrivals are legible but intentionally static: repeated flashes during
+   fast agent output are distracting and can trigger photosensitivity. */
+.atlas-node.atlas-new .atlas-node-halo{fill:#48efc5;fill-opacity:.28;stroke:#48efc5;stroke-opacity:.7;stroke-width:1.5}
 .atlas-node.atlas-modified .atlas-node-core{stroke:#e7ba6f;stroke-width:2.5}
 .atlas-node.atlas-modified .atlas-node-halo{fill:#e7ba6f;fill-opacity:.18}
 .atlas-change-label{color:#edbe77!important;font-size:.69rem}
@@ -59,7 +60,7 @@
 .atlas-error{color:#f2baba}
 .atlas-coverage-note{padding:.7rem;margin:0}
 @media(max-width:730px){.atlas-workspace{grid-template-columns:1fr}.atlas-details{border-left:0;border-top:1px solid #2d4354;max-height:240px}.atlas-canvas-wrap{min-height:280px}.atlas-canvas{min-height:250px}.atlas-heading{flex-direction:column;gap:.3rem}}
-@media(prefers-reduced-motion:reduce){.atlas-node-core{transition:none}.atlas-node.atlas-new .atlas-node-halo{animation:none}}
+@media(prefers-reduced-motion:reduce){.atlas-node-core{transition:none}}
 
 .atlas-source-history{margin:.8rem 0 .1rem;border:1px solid #395363;border-radius:10px;overflow:hidden;background:#112231;color:#b8cbd7}
 .atlas-source-history summary{padding:.7rem .9rem;cursor:pointer;font-size:.74rem;font-weight:650}
@@ -233,3 +234,18 @@
 .atlas-search-jumps button span{color:#9fb8c7;font-size:.65rem;min-width:0;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:630px){.atlas-search-jumps{grid-template-columns:1fr}}
+
+/* The live graph owns a fixed viewport. New files/symbols must not change the
+   page height (or make the owner's scroll position jump) during generation. */
+.atlas-workspace { height: min(54vh, 430px); min-height: 330px; }
+.atlas-canvas-wrap { height: 100%; min-height: 0; overflow: hidden; }
+.atlas-canvas { height: 100%; min-height: 0; flex: 1 1 0; }
+.atlas-graph-footer { flex: 0 0 auto; }
+.atlas-details { height: 100%; max-height: none; overflow: auto; overscroll-behavior: contain; }
+.atlas-loading-space { min-height: min(54vh, 430px); display: flex; align-items: center; }
+.atlas-panel { overflow-anchor: none; }
+@media(max-width:730px) {
+  .atlas-workspace { height: auto; min-height: 0; }
+  .atlas-canvas-wrap { height: 330px; min-height: 330px; }
+  .atlas-details { height: auto; max-height: 230px; }
+}

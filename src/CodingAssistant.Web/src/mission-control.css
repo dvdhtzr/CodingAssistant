@@ -1012,3 +1012,13 @@ a { color: #91e2d8; }
 @media(max-width:640px){
   .ca-command-work-order button,.ca-work-order-action button{width:100%}
 }
+
+/* Browser scroll anchoring treats each expanding code/task card as a new
+   anchor and may repeatedly move the viewport during live polling. Keep the
+   owner's scroll location stable until they scroll or navigate themselves. */
+.wb-main, .wb-main .journey-stage-body, .journey-shell {
+  overflow-anchor: none;
+}
+@media(max-width:650px) {
+  body { overflow-anchor: none; }
+}

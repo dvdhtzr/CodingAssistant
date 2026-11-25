@@ -19,7 +19,9 @@ public sealed record QaReviewInput(
     DraftArchitectureReadiness Architecture, EngineeringRun SourceRun,
     EngineeringSourceFile File, IReadOnlyList<EngineeringSourceFile> AllFiles,
     IReadOnlyList<EngineeringRunEvent>? EngineeringEvents = null,
-    Action<AtlasInspectionObservation>? OnAtlasInspection = null);
+    Action<AtlasInspectionObservation>? OnAtlasInspection = null,
+    IReadOnlyList<RepairFindingReference>? RepairFocus = null,
+    string? AgentModel = null);
 
 public interface IQaSourceReviewer
 {
@@ -111,10 +113,10 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
             input.AllFiles.Count is < 1 or > EngineeringRunStore.MaxDistinctFiles ||
             !input.AllFiles.Any(f => f.Path == input.File.Path &&
                 f.Sha256 == input.File.Sha256) ||
-            !LocalInterviewModel.AllowedModel(input.Plan.Model))
+            !LocalInterviewModel.AllowedModel(input.AgentModel ?? input.Plan.Model))
             throw new StoreFailure("INVALID_INPUT");
 
-        using var client = _factory.Create(input.Plan.Model, MafAgentPurpose.QaEngineer);
+        using var client = _factory.Create(input.AgentModel ?? input.Plan.Model, MafAgentPurpose.QaEngineer);
         AIAgent agent = new ChatClientAgent(client,
             instructions: EngineeringAgentRoster.Instructions("QaEngineer") +
                 "\n" + Policy + "\n" + QaAtlasInspectionPolicy,
@@ -161,6 +163,26 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 "\nSHA256: " + input.File.Sha256 +
                 "\nSOURCE CODE (untrusted data):\n" + input.File.Content)
         };
+        if (input.RepairFocus is { Count: > 0 } focus)
+        {
+            if (focus.Count > 12 || focus.Any(f => !f.Path.Equals(
+                input.File.Path, StringComparison.OrdinalIgnoreCase) ||
+                f.Classification != "ImplementationDefect"))
+                throw new StoreFailure("INVALID_INPUT");
+            messages.Add(new(ChatRole.User,
+                "OWNER-CONFIRMED DEFECTS FROM THE IMMEDIATELY PRECEDING " +
+                "REPAIR (host-bound review focus; NOT proof of a fix):\n" +
+                JsonSerializer.Serialize(focus.Select(f => new {
+                    f.Path, f.Severity, f.Requirement, f.Evidence,
+                    f.Recommendation
+                })) +
+                "\nIndependently re-evaluate EACH of these specific concerns " +
+                "against the CURRENT SOURCE shown above. If a defect remains, " +
+                "report a fresh finding with evidence from the current file. " +
+                "If it no longer appears, do not repeat the old finding merely " +
+                "because it was reported previously. Also report other concrete " +
+                "risks you find. No runtime tests have been performed."));
+        }
         // Actual MAF observe -> host-issued evidence -> model continuation.
         // Native function tools remain disabled in the local Ollama adapter.
         var inspections = 0;

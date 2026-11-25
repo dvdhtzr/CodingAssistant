@@ -110,15 +110,17 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
                 return new ChatResponse(new ChatMessage(
                     ChatRole.Assistant, ReadAssistantContent(payload, purpose)));
             }
-            catch (StoreFailure error) when (purpose == MafAgentPurpose.Specification &&
-                error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
-                    "MODEL_OUTPUT_TRUNCATED")
+            catch (StoreFailure error) when (
+                (purpose is MafAgentPurpose.Specification or
+                    MafAgentPurpose.SoftwareEngineer) &&
+                (error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
+                    "MODEL_OUTPUT_TRUNCATED"))
             {
                 // Metadata only: no interview text, answer content, thinking,
                 // credentials or full Ollama response is written to logs.
                 Console.Error.WriteLine(
-                    "Ollama specification output: " + SafeCompletionSummary(payload) +
-                    " result=" + error.Code);
+                    "Ollama " + purpose + " output: " +
+                    SafeCompletionSummary(payload) + " result=" + error.Code);
                 throw;
             }
         }
@@ -216,7 +218,14 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         // inside message.content even when think:false. Use ONLY the content
         // after a properly terminated reasoning block as the proposed answer.
         // Never save or expose anything from the thinking section.
-        return purpose == MafAgentPurpose.Specification
+        // Engineering answers are JSON. A real source string can itself
+        // contain literal "<think>" markup; do not mistake a tag inside a
+        // syntactically JSON-prefixed answer for hidden model reasoning.
+        if (purpose == MafAgentPurpose.SoftwareEngineer &&
+            finalText.TrimStart().StartsWith("{", StringComparison.Ordinal))
+            return finalText.Trim();
+        return purpose is MafAgentPurpose.Specification or
+            MafAgentPurpose.SoftwareEngineer
             ? StripClosedThinkingPrefix(finalText) : finalText;
     }
 

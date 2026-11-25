@@ -13,6 +13,7 @@ import './code-atlas.css';
 import './team-workroom.css';
 import './verification-timeline.css';
 import './design-system.css';
+import './engineering-studio.css';
 
 // Theme foundation: dark-first, with an opt-in light palette honored once a
 // stored preference exists. A visible toggle ships after screens are migrated.
@@ -24,5 +25,5 @@ try {
 }
 
 const target = document.getElementById('root');
-if (!target) throw new Error('Missing Mission Control mount');
+if (!target) throw new Error('Missing CodingAssistant mount');
 createRoot(target).render(<React.StrictMode><App /></React.StrictMode>);

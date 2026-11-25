@@ -78,9 +78,11 @@ export function buildCommandDecisionQueue(saved: CommandEvidence): QueueDecision
     a.id.localeCompare(b.id));
 }
 
-export function DecisionQueueView({ items, onInspect }: {
+export function DecisionQueueView({ items, onInspect, maxVisible, onViewAll }: {
   items: readonly QueueDecision[];
   onInspect: (id: string) => void;
+  maxVisible?: number;
+  onViewAll?: () => void;
 }) {
   const approvals = items.filter(item => item.requiresApproval).length;
   return <section className="mc-decision-queue" aria-label="Decision Queue">
@@ -90,7 +92,7 @@ export function DecisionQueueView({ items, onInspect }: {
       <span className="pill">{approvals} saved approval{approvals === 1 ? '' : 's'} to review
         {' · '}{items.length} action{items.length === 1 ? '' : 's'}</span>
     </div>
-    {items.length ? <ol className="mc-queue-list">{items.map(item =>
+    {items.length ? <ol className="mc-queue-list">{items.slice(0, maxVisible).map(item =>
       <li key={item.id} data-kind={item.category}>
         <button type="button" aria-haspopup="dialog"
           onClick={() => onInspect(item.id)}>
@@ -103,7 +105,9 @@ export function DecisionQueueView({ items, onInspect }: {
       </li>)}</ol> :
       <p className="hint">No current decision or outstanding source blocker was found
         in the saved records. This does not establish verification.</p>}
-    <p className="hint">Decision Queue is read-only navigation. Viewing a request
-      never approves source, starts repairs or authorizes execution.</p>
+    {maxVisible !== undefined && items.length > maxVisible && onViewAll &&
+      <button type="button" className="link ca-console-more"
+        onClick={onViewAll}>Review remaining {items.length - maxVisible} action(s) in Work</button>}
+    <p className="hint">Inspecting a decision does not authorize repair or execution.</p>
   </section>;
 }

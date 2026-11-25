@@ -13,6 +13,8 @@ let CommandDrawer;
 let buildCommandDecisionQueue;
 let DecisionQueueView;
 let collaborationEvidence;
+let workAgentStatuses;
+let WorkTeamStrip;
 const time1 = '2026-11-22T12:01:00Z';
 const time2 = '2026-11-22T12:02:00Z';
 const agent = (id, role) => ({
@@ -62,6 +64,8 @@ before(async () => {
     await vite.ssrLoadModule('/src/CommandActivity.tsx'));
   ({ CommandDrawer } = await vite.ssrLoadModule('/src/CommandDrawer.tsx'));
   ({ collaborationEvidence } = await vite.ssrLoadModule('/src/MissionDestinations.tsx'));
+  ({ workAgentStatuses, WorkTeamStrip } =
+    await vite.ssrLoadModule('/src/WorkTeamStrip.tsx'));
   ({ buildCommandDecisionQueue, DecisionQueueView } =
     await vite.ssrLoadModule('/src/DecisionQueue.tsx'));
 });
@@ -108,6 +112,25 @@ test('agent collaboration trail requires saved exact-source investigation and QA
   assert.equal(collaborationEvidence(data).qaReceived, false);
 });
 
+test('compact Work agent strip reports only saved running roles and repair handoff', () => {
+  const data = evidence();
+  const status = workAgentStatuses({ ...data, repair: null });
+  assert.equal(status.find(x => x.agent.id === 'SoftwareEngineer').active, true);
+  assert.equal(status.find(x => x.agent.id === 'QaEngineer').active, false);
+  data.engineering.job.state = 'Generated';
+  const repair = { cycle: { state: 'QaRunning', attempt: 4 } };
+  const duringQa = workAgentStatuses({ ...data, repair });
+  assert.equal(duringQa.find(x => x.agent.id === 'SoftwareEngineer').active, false);
+  assert.equal(duringQa.find(x => x.agent.id === 'QaEngineer').active, true);
+  assert.equal(duringQa.find(x => x.agent.id === 'ProductOwner').active, false);
+  const html = renderToStaticMarkup(React.createElement(WorkTeamStrip, {
+    token: 'f'.repeat(64), taskId: task.id, onOpen: () => {},
+  }));
+  assert.match(html, /Agent collaboration status/);
+  assert.match(html, /Open Team Console/);
+  assert.doesNotMatch(html, /MISSION CONTROL|Mission Control/);
+});
+
 test('agent status is host-backed, not fabricated presence', () => {
   const data = evidence();
   const items = commandAgents(data);
@@ -134,6 +157,10 @@ test('Command gives a next action but no permission or fabricated verification',
   }));
   assert.match(html, /Agent Activity Board/);
   assert.match(html, /Recent activity/);
+  assert.match(html, /Team Console/);
+  assert.match(html, /Handoffs/);
+  assert.match(html, /TechnicalLead.*SoftwareEngineer/s);
+  assert.doesNotMatch(html, /MISSION STATE|ACTIVE MISSION|NEXT HANDOFF · SOFTWARE ENGINEER/);
   assert.match(html, /Inspect ongoing engineering/);
   assert.match(html, /Recorded running/);
   assert.match(html, /Work item W1/);
@@ -290,9 +317,9 @@ test('incomplete server source appears as Software Engineer work, not a complete
   }));
   assert.match(html, /Engineering needs attention/);
   assert.match(html, /Open engineering work order/);
-  assert.match(html, /NEXT HANDOFF · SOFTWARE ENGINEER/);
-  assert.match(html, /Project source is incomplete/);
-  assert.match(html, /Inspect source issues/);
+  assert.match(html, /Source needs attention:/);
+  assert.match(html, /blocking completeness issue/);
+  assert.match(html, /Inspect source/);
   assert.match(html, /Agent Activity Board/);
   assert.doesNotMatch(html, /Verified application|build passed|Tests passed/);
 });

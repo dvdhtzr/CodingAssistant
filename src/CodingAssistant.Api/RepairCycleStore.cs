@@ -29,7 +29,6 @@ public sealed class RepairCycleStore(
 {
     private static readonly Regex Id = new("^[0-9a-f]{32}$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
-    public const int MaxCycles = 3;
 
     public void Initialize()
     {
@@ -46,7 +45,7 @@ public sealed class RepairCycleStore(
                 work_item_id TEXT NOT NULL,
                 state TEXT NOT NULL CHECK(state IN
                     ('Running','Generated','QaRunning','QaReviewed','Failed','Interrupted')),
-                attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 3),
+                attempt INTEGER NOT NULL CHECK(attempt >= 1),
                 error_code TEXT,
                 findings_json TEXT NOT NULL,
                 created_utc TEXT NOT NULL, updated_utc TEXT NOT NULL
@@ -54,6 +53,47 @@ public sealed class RepairCycleStore(
             CREATE INDEX IF NOT EXISTS repair_cycles_latest
                 ON repair_cycles(task_id,created_utc DESC,id DESC);
             """);
+        // Older installations have a physical CHECK(attempt BETWEEN 1 AND 3).
+        // Migrate that table atomically, preserving all source-bound cycle
+        // receipts, foreign keys, proposal uniqueness and historical attempts.
+        var schema = TaskStore.Scalar(db, null, """
+            SELECT sql FROM sqlite_master WHERE type='table' AND name='repair_cycles'
+            """) ?? "";
+        if (schema.Contains("BETWEEN 1 AND 3", StringComparison.OrdinalIgnoreCase))
+        {
+            using var migration = db.BeginTransaction();
+            TaskStore.Execute(db, migration, """
+                CREATE TABLE repair_cycles_unbounded (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    task_id TEXT NOT NULL REFERENCES tasks(id),
+                    proposal_id TEXT NOT NULL UNIQUE REFERENCES repair_proposals(id),
+                    base_run_id TEXT NOT NULL REFERENCES engineering_runs(id),
+                    engineering_run_id TEXT NOT NULL UNIQUE REFERENCES engineering_runs(id),
+                    qa_review_id TEXT REFERENCES qa_reviews(id),
+                    base_source_sha256 TEXT NOT NULL,
+                    work_item_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN
+                        ('Running','Generated','QaRunning','QaReviewed','Failed','Interrupted')),
+                    attempt INTEGER NOT NULL CHECK(attempt >= 1),
+                    error_code TEXT,
+                    findings_json TEXT NOT NULL,
+                    created_utc TEXT NOT NULL, updated_utc TEXT NOT NULL
+                );
+                INSERT INTO repair_cycles_unbounded (
+                    id,task_id,proposal_id,base_run_id,engineering_run_id,
+                    qa_review_id,base_source_sha256,work_item_id,state,
+                    attempt,error_code,findings_json,created_utc,updated_utc)
+                SELECT id,task_id,proposal_id,base_run_id,engineering_run_id,
+                    qa_review_id,base_source_sha256,work_item_id,state,
+                    attempt,error_code,findings_json,created_utc,updated_utc
+                FROM repair_cycles;
+                DROP TABLE repair_cycles;
+                ALTER TABLE repair_cycles_unbounded RENAME TO repair_cycles;
+                CREATE INDEX repair_cycles_latest
+                    ON repair_cycles(task_id,created_utc DESC,id DESC);
+                """);
+            migration.Commit();
+        }
         TaskStore.Execute(db, null, """
             UPDATE repair_cycles SET state='Interrupted',
                 error_code='PROCESS_INTERRUPTED',updated_utc=@now
@@ -133,7 +173,7 @@ public sealed class RepairCycleStore(
     }
 
     public RepairCycle Start(string taskId, StartRepairCycleRequest request,
-        ImplementationPlan plan)
+        ImplementationPlan plan, string? agentModel = null)
     {
         CheckId(taskId);
         CheckId(request.ProposalId);
@@ -180,8 +220,8 @@ public sealed class RepairCycleStore(
             SELECT COUNT(*) FROM repair_cycles WHERE task_id=@task
             """, ("@task", taskId));
         var attempt = int.Parse(countValue ?? "0") + 1;
-        if (attempt > MaxCycles)
-            throw new StoreFailure("REPAIR_LIMIT_REACHED");
+        // Each next cycle requires fresh owner triage and exact source-bound
+        // approval. Count is historical information, not an automatic ban.
         if (TaskStore.Scalar(db, tx, """
             SELECT 1 FROM repair_cycles
             WHERE task_id=@task AND state IN ('Running','QaRunning') LIMIT 1
@@ -288,7 +328,7 @@ public sealed class RepairCycleStore(
                 ("@sv", baseRun.SpecificationVersion),
                 ("@spec", baseRun.SpecificationSha256),
                 ("@arch", baseRun.ArchitectureSha256),
-                ("@model", baseRun.Model), ("@now", now));
+                ("@model", agentModel ?? baseRun.Model), ("@now", now));
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_tasks
                     (run_id,work_item_id,ordinal,title,state)

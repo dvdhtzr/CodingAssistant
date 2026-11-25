@@ -19,7 +19,8 @@ public sealed class RepairCycleCoordinator(
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
-    public RepairCycle Start(string taskId, StartRepairCycleRequest request)
+    public RepairCycle Start(string taskId, StartRepairCycleRequest request,
+        string? engineerModel = null, string? qaModel = null)
     {
         var plan = plans.Read(taskId).Plan;
         if (plan is null || !plan.Current || plan.Status != "Approved")
@@ -34,19 +35,20 @@ public sealed class RepairCycleCoordinator(
             architecture.ArchitectureSha256 != plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
 
-        var admitted = cycles.Start(taskId, request, plan);
+        var admitted = cycles.Start(taskId, request, plan, engineerModel);
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[admitted.Id] = cancellation;
         var objective = tasks.GetTask(taskId).Task.Objective;
         _ = Task.Run(() => RunAsync(objective, specification.Content,
-            plan, architecture, admitted, cancellation));
+            plan, architecture, admitted, qaModel, cancellation));
         return admitted;
     }
 
     private async Task RunAsync(string objective, string specification,
         ImplementationPlan plan, DraftArchitectureReadiness architecture,
-        RepairCycle cycle, CancellationTokenSource cancellation)
+        RepairCycle cycle, string? qaModel,
+        CancellationTokenSource cancellation)
     {
         try
         {
@@ -66,7 +68,10 @@ public sealed class RepairCycleCoordinator(
                     new RepairTaskContext(cycle.ProposalId, cycle.BaseSourceSha256,
                         cycle.Findings, allowed),
                     observation => engineering.RecordAtlasInspection(
-                        taskId, runId, workItemId, observation)), token);
+                        taskId, runId, workItemId, observation),
+                    rejection => engineering.RecordOutputRejection(
+                        taskId, runId, workItemId, rejection),
+                    AgentModel: engineering.Get(taskId, runId).Job.Model), token);
             token.ThrowIfCancellationRequested();
             // Recheck model output independently of its claims and prompt.
             var safe = MafSoftwareEngineer.Parse(
@@ -92,7 +97,7 @@ public sealed class RepairCycleCoordinator(
             // Only static source inspection follows automatically. No browser,
             // Docker, shell or arbitrary generated code is ever executed here.
             var nextQa = qa.Start(taskId, new StartQaReviewRequest(
-                runId, plan.PlanSha256));
+                runId, plan.PlanSha256), qaModel);
             cycles.SetState(taskId, cycle.Id, "QaRunning", qaId: nextQa.Id);
             while (true)
             {

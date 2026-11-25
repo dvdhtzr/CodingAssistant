@@ -7,7 +7,8 @@ using Microsoft.Data.Sqlite;
 
 namespace CodingAssistant.Api;
 
-public sealed record StartEngineeringRunRequest(int PlanRevision, string? PlanSha256);
+public sealed record StartEngineeringRunRequest(
+    int PlanRevision, string? PlanSha256, string? ResumeRunId = null);
 public sealed record EngineeringRun(
     string Id, string TaskId, int PlanRevision, string PlanSha256,
     int SpecificationVersion, string SpecificationSha256,
@@ -101,6 +102,17 @@ public sealed class EngineeringRunStore(
     {
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
+        // Record every restart interruption with the same transaction that
+        // updates the run and active assignment. Previously a running process
+        // would silently turn into Interrupted with NO terminal audit event.
+        var interruptedRuns = new List<string>();
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT id FROM engineering_runs WHERE state='Running'
+            ORDER BY created_utc,id
+            """))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                interruptedRuns.Add(reader.GetString(0));
         TaskStore.Execute(db, tx, """
             UPDATE engineering_run_tasks SET state='Interrupted'
             WHERE state='Running' AND run_id IN (
@@ -111,6 +123,28 @@ public sealed class EngineeringRunStore(
                 phase='RestartInterrupted',error_code='PROCESS_INTERRUPTED',
                 updated_utc=@now WHERE state='Running'
             """, ("@now", DateTimeOffset.UtcNow.ToString("O")));
+        foreach (var runId in interruptedRuns)
+            Event(db, tx, runId, "EngineeringRunInterrupted",
+                "PROCESS_INTERRUPTED: app restarted while generation was active; completed source remains saved");
+
+        // Recover an audit gap left by older versions for an ALREADY
+        // interrupted run. This only appends a missing explanatory receipt:
+        // never reactivates a task, changes its approval or alters source.
+        var unreported = new List<string>();
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT id FROM engineering_runs AS r
+            WHERE state='Interrupted' AND error_code='PROCESS_INTERRUPTED'
+              AND NOT EXISTS (
+                SELECT 1 FROM engineering_run_events e
+                WHERE e.run_id=r.id AND e.kind='EngineeringRunInterrupted')
+            ORDER BY created_utc,id
+            """))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                unreported.Add(reader.GetString(0));
+        foreach (var runId in unreported)
+            Event(db, tx, runId, "EngineeringRunInterrupted",
+                "Recovered missing PROCESS_INTERRUPTED receipt from an earlier app restart; saved source unchanged");
         tx.Commit();
     }
 
@@ -172,11 +206,12 @@ public sealed class EngineeringRunStore(
             ("@now", DateTimeOffset.UtcNow.ToString("O")));
     }
 
-    public EngineeringRun Start(string taskId, ImplementationPlan approved)
+    public EngineeringRun Start(string taskId, ImplementationPlan approved,
+        string? agentModel = null)
     {
         ValidId(taskId);
         if (approved.TaskId != taskId || approved.Status != "Approved" ||
-            !approved.Current || !LocalInterviewModel.AllowedModel(approved.Model))
+            !approved.Current || !LocalInterviewModel.AllowedModel(agentModel ?? approved.Model))
             throw new StoreFailure("PLAN_NOT_APPROVED");
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
@@ -185,7 +220,7 @@ public sealed class EngineeringRunStore(
         var candidate = new EngineeringRun(id, taskId, approved.Revision,
             approved.PlanSha256, approved.SpecificationVersion,
             approved.SpecificationSha256, approved.ArchitectureSha256,
-            approved.Model, "Running", "Queued", null, now, now);
+            agentModel ?? approved.Model, "Running", "Queued", null, now, now);
         RequireBinding(db, tx, candidate);
         try
         {
@@ -200,7 +235,7 @@ public sealed class EngineeringRunStore(
                 ("@sv", approved.SpecificationVersion),
                 ("@ss", approved.SpecificationSha256),
                 ("@arch", approved.ArchitectureSha256),
-                ("@model", approved.Model), ("@now", now));
+                ("@model", candidate.Model), ("@now", now));
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
@@ -221,6 +256,166 @@ public sealed class EngineeringRunStore(
             " assigned to SoftwareEngineer; unverified source only");
         tx.Commit();
         return candidate;
+    }
+
+    /// <summary>
+    /// Creates a NEW run from the exact latest failed/interrupted source.
+    /// The original run is immutable. Only a contiguous, completed prefix of
+    /// owner-approved tasks is carried forward; the first incomplete task is
+    /// retried through the normal MAF/host boundary. No execution is authorized.
+    /// </summary>
+    public EngineeringRun Resume(string taskId, ImplementationPlan approved,
+        string sourceRunId, string? agentModel = null)
+    {
+        ValidId(taskId);
+        ValidId(sourceRunId);
+        if (approved.TaskId != taskId || approved.Status != "Approved" ||
+            !approved.Current || !LocalInterviewModel.AllowedModel(agentModel ?? approved.Model))
+            throw new StoreFailure("PLAN_NOT_APPROVED");
+
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var original = Find(db, tx, sourceRunId);
+        if (original is null || original.TaskId != taskId)
+            throw new StoreFailure("NOT_FOUND");
+        if (original.State is not ("Failed" or "Interrupted"))
+            throw new StoreFailure("RESUME_NOT_AVAILABLE");
+        RequireBinding(db, tx, original);
+        if (original.PlanRevision != approved.Revision ||
+            original.PlanSha256 != approved.PlanSha256 ||
+            original.SpecificationVersion != approved.SpecificationVersion ||
+            original.SpecificationSha256 != approved.SpecificationSha256 ||
+            original.ArchitectureSha256 != approved.ArchitectureSha256)
+            throw new StoreFailure("STALE_IMPLEMENTATION_PLAN");
+
+        var latest = TaskStore.Scalar(db, tx, """
+            SELECT id FROM engineering_runs WHERE task_id=@task
+            ORDER BY created_utc DESC,id DESC LIMIT 1
+            """, ("@task", taskId));
+        if (latest != sourceRunId)
+            throw new StoreFailure("STALE_SOURCE_RUN");
+
+        var carried = new List<EngineeringAssignedTask>();
+        var ordinal = 0;
+        var sawIncomplete = false;
+        using (var cmd = TaskStore.Command(db, tx, """
+            SELECT work_item_id,ordinal,title,state,summary,started_utc,completed_utc
+            FROM engineering_run_tasks WHERE run_id=@run ORDER BY ordinal
+            """, ("@run", sourceRunId)))
+        using (var reader = cmd.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                if (ordinal >= approved.Outline.Tasks.Count ||
+                    reader.GetInt32(1) != ordinal ||
+                    reader.GetString(0) != approved.Outline.Tasks[ordinal].Id ||
+                    reader.GetString(2) != approved.Outline.Tasks[ordinal].Title)
+                    throw new StoreFailure("STALE_IMPLEMENTATION_PLAN");
+                var state = reader.GetString(3);
+                if (state == "Completed")
+                {
+                    if (sawIncomplete || reader.IsDBNull(6) || reader.IsDBNull(4))
+                        throw new StoreFailure("RESUME_NOT_AVAILABLE");
+                    carried.Add(new EngineeringAssignedTask(reader.GetString(0),
+                        ordinal, reader.GetString(2), state,
+                        reader.GetString(4),
+                        reader.IsDBNull(5) ? null : reader.GetString(5),
+                        reader.GetString(6)));
+                }
+                else if (state is "Failed" or "Interrupted" or "Pending")
+                    sawIncomplete = true;
+                else
+                    throw new StoreFailure("RESUME_NOT_AVAILABLE");
+                ordinal++;
+            }
+        }
+        if (ordinal != approved.Outline.Tasks.Count || !sawIncomplete ||
+            carried.Count == 0 || carried.Count == ordinal)
+            throw new StoreFailure("RESUME_NOT_AVAILABLE");
+
+        var savedCount = 0;
+        long characters = 0;
+        using (var cmd = TaskStore.Command(db, tx, """
+            SELECT path,content,sha256,work_item_id
+            FROM engineering_run_files WHERE run_id=@run
+            """, ("@run", sourceRunId)))
+        using (var reader = cmd.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                var path = reader.GetString(0);
+                var content = reader.GetString(1);
+                var sha = reader.GetString(2);
+                var owner = reader.GetString(3);
+                if (!carried.Any(t => t.Id == owner) ||
+                    ProjectDraftStore.SafePath(path) != path ||
+                    Convert.ToHexString(SHA256.HashData(
+                        Encoding.UTF8.GetBytes(content))).ToLowerInvariant() != sha)
+                    throw new StoreFailure("SOURCE_CHANGED");
+                savedCount++;
+                characters += content.Length;
+            }
+        }
+        if (savedCount == 0 || savedCount > MaxDistinctFiles ||
+            characters > MaxTotalCharacters)
+            throw new StoreFailure("RESUME_NOT_AVAILABLE");
+
+        var id = Guid.NewGuid().ToString("N");
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var job = original with {
+            Id = id, Model = agentModel ?? original.Model,
+            State = "Running", Phase = "Resumed",
+            ErrorCode = null, CreatedUtc = now, UpdatedUtc = now
+        };
+        try
+        {
+            TaskStore.Execute(db, tx, """
+                INSERT INTO engineering_runs(
+                    id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
+                    architecture_sha256,model,state,phase,created_utc,updated_utc)
+                VALUES(@id,@task,@revision,@sha,@sv,@ss,@arch,@model,
+                       'Running','Resumed',@now,@now)
+                """, ("@id", id), ("@task", taskId),
+                ("@revision", job.PlanRevision), ("@sha", job.PlanSha256),
+                ("@sv", job.SpecificationVersion),
+                ("@ss", job.SpecificationSha256),
+                ("@arch", job.ArchitectureSha256),
+                ("@model", job.Model), ("@now", now));
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+        {
+            throw new StoreFailure("BUILD_BUSY");
+        }
+
+        foreach (var item in approved.Outline.Tasks.Select((task, i) => (task, i)))
+        {
+            var prior = item.i < carried.Count ? carried[item.i] : null;
+            TaskStore.Execute(db, tx, """
+                INSERT INTO engineering_run_tasks(
+                    run_id,work_item_id,ordinal,title,state,summary,started_utc,completed_utc)
+                VALUES(@run,@item,@ordinal,@title,@state,@summary,@started,@completed)
+                """, ("@run", id), ("@item", item.task.Id),
+                ("@ordinal", item.i), ("@title", item.task.Title),
+                ("@state", prior is null ? "Pending" : "Completed"),
+                ("@summary", (object?)prior?.Summary ?? DBNull.Value),
+                ("@started", (object?)prior?.StartedUtc ?? DBNull.Value),
+                ("@completed", (object?)prior?.CompletedUtc ?? DBNull.Value));
+        }
+        var copied = TaskStore.Execute(db, tx, """
+            INSERT INTO engineering_run_files(
+                run_id,path,purpose,content,sha256,work_item_id,updated_utc)
+            SELECT @new,path,purpose,content,sha256,work_item_id,updated_utc
+            FROM engineering_run_files WHERE run_id=@previous
+            """, ("@new", id), ("@previous", sourceRunId));
+        if (copied != savedCount)
+            throw new StoreFailure("SOURCE_CHANGED");
+
+        Event(db, tx, id, "EngineeringRunResumed",
+            "Carried forward " + carried.Count + " approved task(s), " +
+            savedCount + " saved file(s) from run " + sourceRunId +
+            "; remaining assignments unverified");
+        tx.Commit();
+        return job;
     }
 
     public EngineeringRunSnapshot? Latest(string taskId)
@@ -354,6 +549,59 @@ public sealed class EngineeringRunStore(
             " on accepted source revision " +
             observation.SourceRevision[..12] + " (" +
             observation.ResultCount + " results)");
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Model-free, bounded rejection metadata for a single authorized active
+    /// assignment. Never persist model output, generated source or prompt text.
+    /// A failure can now be diagnosed after the third rejected response.
+    /// </summary>
+    public void RecordOutputRejection(string taskId, string runId,
+        string workItemId, EngineeringOutputRejection rejection)
+    {
+        ValidId(taskId);
+        ValidId(runId);
+        if (rejection.Attempt is < 1 or > 3 ||
+            rejection.Category is not (
+                "EMPTY_RESPONSE" or "OUTPUT_TOO_LONG" or "ROOT_SHAPE" or
+                "EXTRA_FIELDS" or "SUMMARY" or "FILES_COUNT" or
+                "FILE_SHAPE" or "FILE_EXTRA_FIELDS" or "FILE_PATH" or
+                "FILE_PURPOSE" or "FILE_CONTENT" or "VERIFICATION_NOTES" or
+                "SOURCE_SYNTAX" or "SOURCE_CONTRACT" or "JSON_SYNTAX" or
+                "STATIC_WEB_PATH" or "STATIC_WEB_ENTRY" or
+                "REPAIR_SCOPE" or "REPAIR_EDIT_INVALID" or "REPAIR_EDIT_NOT_UNIQUE" or
+                "REPAIR_EDIT_NO_CHANGE" or "OUTPUT_TRUNCATED" or
+                "MODEL_THINKING_ONLY" or "EMPTY_OR_INVALID_RESPONSE"))
+            throw new StoreFailure("INVALID_INPUT");
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var job = Find(db, tx, runId);
+        if (job is null || job.TaskId != taskId)
+            throw new StoreFailure("NOT_FOUND");
+        if (job.State != "Running")
+            throw new StoreFailure("INVALID_STATE");
+        RequireBinding(db, tx, job);
+        if (TaskStore.Scalar(db, tx, """
+            SELECT 1 FROM engineering_run_tasks
+            WHERE run_id=@run AND work_item_id=@item AND state='Running'
+            """, ("@run", runId), ("@item", workItemId)) is null)
+            throw new StoreFailure("INVALID_STATE");
+        var previous = 0;
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT detail FROM engineering_run_events
+            WHERE run_id=@run AND kind='EngineerOutputRejected'
+            """, ("@run", runId)))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                if (reader.GetString(0).StartsWith(workItemId + ":",
+                    StringComparison.Ordinal))
+                    previous++;
+        if (previous + 1 != rejection.Attempt)
+            throw new StoreFailure("INVALID_STATE");
+        Event(db, tx, runId, "EngineerOutputRejected",
+            workItemId + ": attempt " + rejection.Attempt + "/3, category " +
+            rejection.Category + "; no source saved for this attempt");
         tx.Commit();
     }
 

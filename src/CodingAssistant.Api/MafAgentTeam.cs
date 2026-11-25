@@ -174,6 +174,14 @@ public sealed class MafAgentTeam(IMafChatClientFactory? clientFactory = null)
         Each task must have one stable kebab-case id, a concise title,
         description, dependsOn containing ONLY earlier IDs, and
         1-5 independently checkable acceptanceCriteria.
+        Every implementation task MUST have a concrete, SOURCE-ONLY deliverable
+        (new or updated code, configuration, or test-source files). The Software
+        Engineer has NO permission to launch, compile, execute, deploy, or
+        independently test the generated project. Do not create standalone
+        tasks whose deliverable is running tests, deployment, launch,
+        performance measurements, or announcing verification. Put those
+        executable checks in testStrategy as future independent verification.
+        A task may AUTHOR test code, but not claim its execution passed.
         Provide nonempty whole-project testStrategy, including checks
         that can eventually be independently performed and a brief risk list.
         This response does NOT execute, test, or verify any code.

@@ -32,6 +32,53 @@ after(async () => {
   await server?.close();
 });
 
+test('Team Console is a compact stable agent workspace with contextual inspection', async () => {
+  const consolePage = await browser.newPage({
+    viewport: { width: 1440, height: 900 },
+    reducedMotion: 'reduce',
+  });
+  try {
+    await consolePage.goto(fixtureBaseUrl +
+      '/tests/browser/fixture.html?compact-command-acceptance');
+    const work = consolePage.getByRole('region', { name: 'Team Console' });
+    await work.getByRole('heading', { name: 'Agent Activity Board' }).waitFor();
+    assert.equal(await work.locator('.ca-node').count(), 5);
+    assert.match(await work.getByRole('region', {
+      name: 'Agent collaboration board',
+    }).textContent(), /TechnicalLead.*SoftwareEngineer/s);
+    const floor = await work.locator('.ca-console-floor').boundingBox();
+    const side = await work.locator('.ca-console-side').boundingBox();
+    const whole = await work.boundingBox();
+    assert.ok(floor && side && whole && side.x > floor.x + floor.width - 3 &&
+      Math.abs(side.y - floor.y) < 5,
+    'agent floor and owner attention must be adjacent columns on desktop');
+    assert.ok(whole.height < 1000, 'Command should not be an unbounded long panel');
+    assert.equal(await consolePage.locator('.ca-console-crew .ca-node.ca-running')
+      .count(), 1);
+    const animation = await consolePage.locator(
+      '.ca-console-crew .ca-node.ca-running .ca-orb').evaluate(el =>
+      getComputedStyle(el, '::before').animationName);
+    assert.equal(animation, 'none', 'active agent indication must not pulse');
+    const inspector = work.getByRole('button', {
+      name: /Inspect Software Engineer: Source run: Running/,
+    });
+    await inspector.click();
+    await consolePage.getByRole('dialog').waitFor();
+    await consolePage.keyboard.press('Escape');
+    assert.equal(await consolePage.getByRole('dialog').count(), 0);
+    await consolePage.setViewportSize({ width: 390, height: 820 });
+    const mobileFloor = await work.locator('.ca-console-floor').boundingBox();
+    const mobileSide = await work.locator('.ca-console-side').boundingBox();
+    assert.ok(mobileFloor && mobileSide &&
+      mobileSide.y >= mobileFloor.y + mobileFloor.height - 4,
+    'narrow screen stacks the attention panel below agent board');
+    assert.ok(await consolePage.evaluate(() => document.documentElement.scrollWidth) <= 400,
+      'compact console must not create horizontal document scrolling');
+  } finally {
+    await consolePage.close();
+  }
+});
+
 for (const outcome of ['success', 'failure']) {
   test('completed 27-message interview specification button ' + outcome, async () => {
     const acceptancePage = await browser.newPage({

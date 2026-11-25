@@ -247,7 +247,7 @@ export function ProjectOverview({ token, task, onContinue, onDiagnostics }: {
   return <section className="wb-overview" aria-label="Project overview">
     <div className="wb-overview-hero">
       <div>
-        <p className="wb-kicker">MISSION CONTROL / PROJECT OVERVIEW</p>
+        <p className="wb-kicker">PROJECT OVERVIEW / SAVED STATUS</p>
         <h2>{task.title}</h2>
         <p className="wb-objective">{task.objective}</p>
       </div>

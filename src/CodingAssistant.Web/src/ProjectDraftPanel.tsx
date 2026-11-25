@@ -57,14 +57,14 @@ interface DraftResponse {
 }
 
 export function ProjectDraftPanel({ token, taskId, spec, expanded,
-  onExpand, onGenerated, onStageChange }: {
+  onExpand, onStageChange, studioCanvas = false }: {
   token: string;
   taskId: string;
   spec: SpecContract | null;
   expanded: JourneyId | null;
   onExpand: (stage: JourneyId) => void;
-  onGenerated: () => void;
   onStageChange: (generation: JourneyStep, delivery: JourneyStep) => void;
+  studioCanvas?: boolean;
 }) {
   const [result, setResult] = useState<DraftSnapshot | null>(null);
   const [architecture, setArchitecture] = useState<ArchitectureReadiness | null>(null);
@@ -269,28 +269,17 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
     [onStageChange, generationStep.tone, generationStep.status,
       deliveryStep.tone, deliveryStep.status]);
 
-  // Navigate forward only when an observed running job completes. Merely opening
-  // a saved completed project must not silently interrupt the owner's navigation.
-  const previousJobState = useRef<string | null>(null);
-  const previousEngineerState = useRef<string | null>(null);
-  useEffect(() => {
-    if (previousJobState.current === 'Running' && job?.state === 'Generated')
-      onGenerated();
-    previousJobState.current = job?.state ?? null;
-  }, [job?.state, onGenerated]);
-  useEffect(() => {
-    if (previousEngineerState.current === 'Running' &&
-        engineerJob?.state === 'Generated')
-      onGenerated();
-    previousEngineerState.current = engineerJob?.state ?? null;
-  }, [engineerJob?.state, onGenerated]);
+  // Never redirect the entire workspace when a long-running build finishes.
+  // Completion is visible here; the owner opens Delivery deliberately.
 
   return <>
     <JourneyStage step={generationStep} index={4}
       open={expanded === 'generation'} onOpen={onExpand}>
       <section className="build-stage" aria-label="Task-specific project draft generation">
         <EngineeringGenerationPanel engine={engineer}
-          legacyRunning={running} />
+          legacyRunning={running} studioMode={studioCanvas} />
+        {(engineerGenerated || generated) && <button type="button" className="outline"
+          onClick={() => onExpand('delivery')}>View generated artifacts and delivery</button>}
         <details className="mc-work-secondary" open={running || !!job?.errorCode}>
           <summary>Additional source-generation options</summary>
           <div className="mc-work-secondary-content">
@@ -398,9 +387,24 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
 
     <JourneyStage step={deliveryStep} index={5}
       open={expanded === 'delivery'} onOpen={onExpand}>
-      <section className="build-stage" aria-label="Project files and delivery">
-        <EngineeringDeliveryPanel engine={engineer} />
-        {!!engineer.snapshot?.files.length && <div className="ca-work-order-action">
+      <section className="build-stage ca-studio-delivery" aria-label="Project files and delivery">
+        {studioCanvas && !!engineer.snapshot?.files.length && <>
+          <div className="ca-studio-qa-heading">
+            <div><span className="ca-studio-eyebrow">CURRENT WORK / QUALITY</span>
+              <h3>Independent QA & repair</h3>
+              <p>Review saved source, inspect findings, and authorize only the repairs you confirm.</p>
+            </div>
+            <span className="pill">Static review · not a verified build</span>
+          </div>
+          <QaReviewPanel token={token} taskId={taskId} engineering={engineer}/>
+          <details className="ca-studio-source-disclosure">
+            <summary>Saved engineering source, Code Atlas and exports</summary>
+            <EngineeringDeliveryPanel engine={engineer}/>
+          </details>
+        </>}
+        {(!studioCanvas || !engineer.snapshot?.files.length) &&
+          <EngineeringDeliveryPanel engine={engineer}/>}
+        {!studioCanvas && !!engineer.snapshot?.files.length && <div className="ca-work-order-action">
           <div><strong>Next responsible role: QA Engineer</strong>
             <p>Review the saved code, then decide whether an authorized repair is
               possible. No code will run when you open this review.</p></div>
@@ -408,16 +412,22 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
             Open QA review & repair options
           </button>
         </div>}
-        <details ref={qaRef} className="mc-work-qa-details"
+        {!studioCanvas && <details ref={qaRef} className="mc-work-qa-details"
           open={qaOpen} onToggle={event => setQaOpen(event.currentTarget.open)}>
           <summary tabIndex={0}><strong>QA review, findings & repair history</strong>
             <span>Static inspection, triage and explicitly authorized repairs</span>
           </summary>
           <QaReviewPanel token={token} taskId={taskId} engineering={engineer} />
-        </details>
+        </details>}
         <p className="hint">Inspect saved source files and export them. Generated source
           is not an independently tested or verified build.</p>
-        {error && <div className="alert" role="alert">{error}</div>}
+        {error && (!studioCanvas || !engineer.snapshot?.files.length) &&
+          <div className="alert" role="alert">{error}</div>}
+        {error && studioCanvas && !!engineer.snapshot?.files.length &&
+          <details className="ca-studio-source-disclosure">
+            <summary>Additional draft source diagnostics</summary>
+            <div className="alert" role="alert">{error}</div>
+          </details>}
         {job && <p className="hint">
           Source job: {job.state} · specification v{job.specificationVersion}.
           {!currentSpec && ' These files belong to an earlier specification.'}

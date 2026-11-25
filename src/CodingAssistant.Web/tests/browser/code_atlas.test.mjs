@@ -109,6 +109,123 @@ test('new persisted source creates method node and honest live indicator', async
   assert.doesNotMatch(await atlas.textContent(), /VERIFIED BUILD/);
 });
 
+test('live updates do not move existing nodes or hijack the graph camera', async () => {
+  const calmPage = await browser.newPage({ viewport: { width: 1400, height: 980 } });
+  try {
+    await calmPage.goto(page.url());
+    const atlas = calmPage.getByRole('region', { name: 'Code Atlas', exact: true });
+    const graph = atlas.getByRole('group', {
+      name: 'Interactive Code Atlas graph of saved source',
+    });
+    const follow = atlas.getByRole('checkbox', { name: 'Follow build' });
+    assert.equal(await follow.isChecked(), false);
+    await atlas.getByRole('checkbox', { name: 'Methods' }).check();
+    const existing = graph.getByRole('button', { name: 'Class: Demo.TaskService' });
+    const original = await existing.getAttribute('transform');
+    const originalCamera = await graph.locator('g[transform]').first()
+      .getAttribute('transform');
+    await follow.check();
+    await calmPage.getByRole('button', { name: 'Persist next source revision' }).click();
+    await graph.getByRole('button', {
+      name: 'Method: Demo.TaskService.CreateTask()',
+    }).waitFor();
+    assert.equal(await existing.getAttribute('transform'), original);
+    assert.equal(await graph.locator('g[transform]').first()
+      .getAttribute('transform'), originalCamera);
+    assert.match(await atlas.getByRole('complementary',
+      { name: 'Selected source entity' }).textContent(), /CreateTask/);
+  } finally {
+    await calmPage.close();
+  }
+});
+
+test('engineering event refresh preserves the existing Code Atlas canvas', async () => {
+  const probePage = await browser.newPage({ viewport: { width: 1400, height: 980 } });
+  try {
+    await probePage.goto(page.url());
+    await probePage.getByRole('button', {
+      name: 'Show engineering refresh probe',
+    }).click();
+    const section = probePage.getByRole('region', {
+      name: 'Engineering refresh regression',
+    });
+    const receipt = section.getByTestId('refresh-receipt');
+    const canvas = section.locator('[data-testid="refresh-probe-atlas"] .atlas-canvas');
+    await canvas.waitFor();
+    await probePage.evaluate(() => {
+      window.__originalEngineeringCanvas = document.querySelector(
+        '[data-testid="refresh-probe-atlas"] .atlas-canvas');
+    });
+    const first = Number((await receipt.textContent()).replace('Refresh #', ''));
+    await section.getByRole('button', {
+      name: 'Refresh engineering snapshot',
+    }).click();
+    await probePage.waitForFunction(value => {
+      const receipt = document.querySelector('[data-testid="refresh-receipt"]');
+      return Number((receipt?.textContent ?? '').replace('Refresh #', '')) > value;
+    }, first);
+    assert.equal(await probePage.evaluate(() =>
+      window.__originalEngineeringCanvas?.isConnected &&
+      window.__originalEngineeringCanvas === document.querySelector(
+        '[data-testid="refresh-probe-atlas"] .atlas-canvas'),
+    ), true, 'refresh must not unmount or replace the live graph canvas');
+  } finally {
+    await probePage.close();
+  }
+});
+
+test('generation status indicators do not animate regardless of OS preferences', async () => {
+  const calmPage = await browser.newPage();
+  try {
+    await calmPage.goto(page.url());
+    const computed = await calmPage.evaluate(() => {
+      const classes = ['activity-dot', 'activity-scan', 'ca-stage-live'];
+      return classes.map(name => {
+        const element = document.createElement('span');
+        element.className = name;
+        document.body.append(element);
+        const animation = getComputedStyle(element).animationName;
+        element.remove();
+        return animation;
+      });
+    });
+    assert.deepEqual(computed, ['none', 'none', 'none']);
+  } finally {
+    await calmPage.close();
+  }
+});
+
+test('adding source keeps the graph viewport height steady, without page scroll anchoring', async () => {
+  const steadyPage = await browser.newPage({ viewport: { width: 1400, height: 960 } });
+  try {
+    await steadyPage.goto(page.url());
+    const atlas = steadyPage.getByRole('region', { name: 'Code Atlas', exact: true });
+    const viewport = atlas.locator('.atlas-workspace');
+    const before = await viewport.boundingBox();
+    assert.ok(before && before.height >= 330, 'Atlas must reserve a stable viewing area');
+    await steadyPage.getByRole('button', { name: 'Persist next source revision' }).click();
+    await atlas.getByText('Recorded source changes (1)').waitFor();
+    const after = await viewport.boundingBox();
+    assert.ok(after && Math.abs(after.height - before.height) < 2,
+      'new saved symbols must not change the graph area height');
+    const properties = await steadyPage.evaluate(() => {
+      const workspace = document.createElement('main');
+      workspace.className = 'wb-main';
+      document.body.appendChild(workspace);
+      const properties = {
+        anchor: getComputedStyle(workspace).overflowAnchor,
+        animation: getComputedStyle(workspace).animationName,
+      };
+      workspace.remove();
+      return properties;
+    });
+    assert.equal(properties.anchor, 'none');
+    assert.equal(properties.animation, 'none');
+  } finally {
+    await steadyPage.close();
+  }
+});
+
 test('manual graph exploration disables follow-build focus stealing', async () => {
   const atlas = page.getByRole('region', { name: 'Code Atlas', exact: true });
   await atlas.getByRole('checkbox', { name: 'Follow build' }).check();

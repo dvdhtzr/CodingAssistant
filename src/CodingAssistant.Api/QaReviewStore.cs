@@ -177,8 +177,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             source.PlanSha256 != job.PlanSha256 ||
             source.SpecificationVersion != job.SpecificationVersion ||
             source.SpecificationSha256 != job.SpecificationSha256 ||
-            source.ArchitectureSha256 != job.ArchitectureSha256 ||
-            source.Model != job.Model)
+            source.ArchitectureSha256 != job.ArchitectureSha256)
             throw new StoreFailure("STALE_IMPLEMENTATION_PLAN");
         EngineeringRunStore.RequireBinding(db, tx, source);
         if (CurrentFingerprint(db, tx, source.Id) != job.SourceSha256)
@@ -201,7 +200,8 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
     }
 
     public QaReviewRun Start(string taskId,
-        EngineeringRunSnapshot source, ImplementationPlan plan)
+        EngineeringRunSnapshot source, ImplementationPlan plan,
+        string? agentModel = null)
     {
         ValidateId(taskId);
         if (source.Job.TaskId != taskId ||
@@ -216,7 +216,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             Guid.NewGuid().ToString("N"), taskId, source.Job.Id,
             Fingerprint(source.Files), plan.Revision, plan.PlanSha256,
             plan.SpecificationVersion, plan.SpecificationSha256,
-            plan.ArchitectureSha256, plan.Model,
+            plan.ArchitectureSha256, agentModel ?? plan.Model,
             "Running", "Queued", null, now, now);
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();

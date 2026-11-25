@@ -57,7 +57,9 @@ interface RepairCycleView {
     attempt: number; errorCode: string | null;
     engineeringRunId: string; qaReviewId: string | null;
   };
-  engineering: { job: { state: string; errorCode: string | null }; files: unknown[] };
+  engineering: { job: { state: string; errorCode: string | null };
+    files: unknown[];
+    events?: { sequence: number; kind: string; detail: string; createdUtc: string }[] };
   review: { job: { state: string }; reports: QaFileReport[] } | null;
   staticPreflight: { status: string; verificationStatus: string; findings: unknown[] };
 }
@@ -188,7 +190,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const selectedFiles = new Set(selectedFindings.map(f => f.path.toLowerCase()));
   const canRequestRepair = currentReport && result?.job.state === 'Reviewed' &&
     result.sourceState === 'Generated' && potentialIssues > 0 &&
-    !repairRunning && (repair?.cycle.attempt ?? 0) < 3;
+    !repairRunning;
   async function requestRepairs() {
     if (!canRequestRepair || busy || !confirmed ||
         selectedFindings.length === 0 || selectedFiles.size !== 1 ||
@@ -297,7 +299,8 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       </button>
       {repairOpen && <div className="qa-repair-selection">
         <p className="hint">Select findings in <strong>one source file</strong>
-          per repair cycle. Up to three source-bound cycles are permitted.</p>
+          for this owner-approved cycle. After independent QA, you can
+          authorize another cycle against fresh evidence if needed.</p>
         {availableFindings.map(({ path, index, finding, key }) =>
           <label key={key} className="qa-repair-choice">
             <input type="checkbox" checked={selected.includes(key)}
@@ -329,7 +332,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       </div>}
     </div>}
     {repair && <div className="qa-repair-progress" role="status">
-      <p><strong>Repair cycle {repair.cycle.attempt} of 3</strong>
+      <p><strong>Repair cycle {repair.cycle.attempt}</strong>
         {' · '}{repair.cycle.state}</p>
       <p className="hint">Software Engineer source: {repair.engineering.job.state}
         {' · '}Static inspection: {repair.staticPreflight.status}
@@ -337,7 +340,23 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         {' · '}Functional verification: NOT VERIFIED
       </p>
       {repair.cycle.errorCode && <p className="activity-warning">
-        Repair stopped: {repair.cycle.errorCode}</p>}
+        Repair stopped: {repair.cycle.errorCode}.
+        {' '}Previously saved source is preserved.</p>}
+      {repair.engineering.events?.filter(event =>
+        event.kind === 'EngineerOutputRejected').slice(-1).map(event =>
+        <p key={event.sequence} className="activity-warning">
+          <strong>Last repair output diagnostic:</strong>{' '}
+          {event.detail}
+        </p>)}
+      {repair.cycle.state === 'QaReviewed' &&
+        <p className="hint" role="status">
+          Independent QA reassessment recorded:
+          {' '}{repair.review?.reports.reduce((sum, report) =>
+            sum + (report.assessment?.findings?.length ?? 0), 0) ?? 0}
+          {' '}potential finding(s). Inspect the current QA report and classify
+          any remaining defects before authorizing another repair.
+          {' '}A static review does not prove functional correctness.
+        </p>}
       {repairRunning && <button type="button" className="danger"
         disabled={!!busy} onClick={() => void cancelRepair()}>
         Stop repair cycle

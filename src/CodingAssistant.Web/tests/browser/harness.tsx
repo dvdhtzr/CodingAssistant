@@ -6,6 +6,7 @@ import { InterviewStudio } from '../../src/InterviewStudio';
 import { DecisionInboxView, buildDecisionInbox } from '../../src/OwnerDecisionInbox';
 import { SourceArtifactExplorer } from '../../src/SourceArtifactExplorer';
 import { TeamWorkroomView, type TeamEvidence } from '../../src/TeamWorkroom';
+import { CommandActivityView, type CommandEvidence } from '../../src/CommandActivity';
 import { VerificationTimelineView } from '../../src/VerificationTimeline';
 import { VerificationScopeView, type VerificationScope }
   from '../../src/VerificationScope';
@@ -19,6 +20,7 @@ import '../../src/owner-decision-inbox.css';
 import '../../src/source-explorer.css';
 import '../../src/team-workroom.css';
 import '../../src/verification-timeline.css';
+import '../../src/design-system.css';
 
 const seed: WorkroomMessage[] = Array.from({ length: 12 }, (_, index) => ({
   sequence: index + 1,
@@ -201,6 +203,44 @@ function BrowserScenario() {
   </main>;
 }
 
+function CompactCommandScenario() {
+  const saved: CommandEvidence = {
+    agents: teamFixture.agents,
+    handoffs: teamFixture.events,
+    engineering: { ...teamFixture.engineering!,
+      job: { ...teamFixture.engineering!.job, state: 'Running' },
+      tasks: teamFixture.engineering!.tasks.map((item, i) =>
+        i === 1 ? { ...item, state: 'Running' } : item),
+      events: [{ sequence: 1, kind: 'EngineeringTaskStarted',
+        detail: 'The saved website dashboard assignment is running.',
+        createdUtc: '2026-11-21T15:04:00Z' }],
+    },
+    qa: null,
+    decisions: {
+      specification: { version: 2, sha256: 'a'.repeat(64), status: 'Approved' },
+      ownerAnswers: 12, readyForSpecification: true,
+      decisions: [
+        { topic: 'technology-stack', revision: 1, status: 'Approved',
+          specificationCurrent: true, specificationSha256: 'a'.repeat(64) },
+        { topic: 'architecture-style', revision: 1, status: 'Approved',
+          specificationCurrent: true, specificationSha256: 'a'.repeat(64) },
+      ],
+      plan: { revision: 1, current: true, status: 'Approved' },
+    },
+  };
+  const example = {
+    id: 'a'.repeat(32), title: 'Oddville',
+    objective: 'Build a residents dashboard with durable project handoffs.',
+    status: 'Active', currentVersion: 1,
+    createdUtc: '2026-11-21T14:00:00Z',
+  };
+  return <main className="ca-compact-acceptance" style={{
+    maxWidth: 1250, margin: '20px auto', padding: '0 12px',
+  }}>
+    <CommandActivityView task={example} evidence={saved} onNavigate={() => {}}/>
+  </main>;
+}
+
 function CompleteInterviewScenario() {
   const task = {
     id: 'a'.repeat(32), title: 'Podcast analytics',
@@ -212,6 +252,8 @@ function CompleteInterviewScenario() {
 }
 
 createRoot(document.getElementById('root')!).render(
-  window.location.search.includes('specification-acceptance')
-    ? <CompleteInterviewScenario/>
-    : <BrowserScenario/>);
+  window.location.search.includes('compact-command-acceptance')
+    ? <CompactCommandScenario/>
+    : window.location.search.includes('specification-acceptance')
+      ? <CompleteInterviewScenario/>
+      : <BrowserScenario/>);

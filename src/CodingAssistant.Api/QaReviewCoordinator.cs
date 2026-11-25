@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 
 namespace CodingAssistant.Api;
 
@@ -18,7 +19,8 @@ public sealed class QaReviewCoordinator(
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
-    public QaReviewRun Start(string taskId, StartQaReviewRequest request)
+    public QaReviewRun Start(string taskId, StartQaReviewRequest request,
+        string? agentModel = null)
     {
         if (string.IsNullOrWhiteSpace(request.EngineeringRunId) ||
             string.IsNullOrWhiteSpace(request.PlanSha256))
@@ -42,7 +44,7 @@ public sealed class QaReviewCoordinator(
         if (!architecture.ReadyForSourceGeneration ||
             architecture.ArchitectureSha256 != plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
-        var job = reviews.Start(taskId, source, plan);
+        var job = reviews.Start(taskId, source, plan, agentModel);
         var token = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = token;
@@ -60,6 +62,28 @@ public sealed class QaReviewCoordinator(
         try
         {
             var token = cancellation.Token;
+            // Preserve the owner-confirmed issue across the engineer→QA
+            // handoff. Only an exact bound repair run supplies this evidence.
+            // QA must independently inspect the changed file and decide
+            // whether the concern still appears in current source.
+            IReadOnlyList<RepairFindingReference> previousFindings = [];
+            using (var db = tasks.Open())
+            {
+                var recorded = TaskStore.Scalar(db, null, """
+                    SELECT findings_json FROM repair_cycles
+                    WHERE engineering_run_id=@run AND task_id=@task
+                    """, ("@run", source.Job.Id), ("@task", source.Job.TaskId));
+                if (recorded is not null)
+                {
+                    previousFindings = JsonSerializer.Deserialize<RepairFindingReference[]>(
+                        recorded) ?? throw new StoreFailure("INVALID_STATE");
+                    if (previousFindings.Count is < 1 or > 12 ||
+                        previousFindings.Any(f => f.Classification != "ImplementationDefect" ||
+                            !source.Files.Any(file => file.Path.Equals(f.Path,
+                                StringComparison.OrdinalIgnoreCase))))
+                        throw new StoreFailure("INVALID_STATE");
+                }
+            }
             foreach (var file in source.Files)
             {
                 token.ThrowIfCancellationRequested();
@@ -68,7 +92,10 @@ public sealed class QaReviewCoordinator(
                     architecture, source.Job, file, source.Files,
                     source.Events,
                     observation => reviews.RecordAtlasInspection(
-                        review.TaskId, review.Id, file, observation));
+                        review.TaskId, review.Id, file, observation),
+                    previousFindings.Where(f => f.Path.Equals(file.Path,
+                        StringComparison.OrdinalIgnoreCase)).ToArray(),
+                    AgentModel: review.Model);
                 var report = await reviewer.ReviewAsync(input, token);
                 token.ThrowIfCancellationRequested();
                 reviews.SaveFileReport(review.TaskId, review.Id, file, report);

@@ -132,6 +132,11 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
   const awaiting = fresh.filter(d => d.status === 'Proposed').length;
   const stale = decisions.some(d => !d.specificationCurrent ||
     d.specificationSha256 !== spec?.sha256);
+  // Saved alternatives never authorize a decision when their source spec
+  // changed. Show a route back to an approved spec, then new alternatives.
+  const needsApprovedSpec = spec?.status !== 'Approved';
+  const staleTopics = topics.filter(topic => decisions.some(d => d.topic === topic.id &&
+    (!d.specificationCurrent || d.specificationSha256 !== spec?.sha256)));
   const step: JourneyStep = { id: 'architecture', title: 'Solution Architecture',
     detail: 'Technology stack and design choices',
     ...((spec?.status !== 'Approved')
@@ -155,8 +160,27 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
     <h2>3. Review the Solution Architect's recommendations</h2>
     <p className="hint">The selected local Ollama model compares options for your approved
       specification. AI recommendations are not owner approval or executable permission.</p>
-    {spec?.status !== 'Approved' &&
-      <p className="hint">Approve the Product Owner specification first.</p>}
+    {!loading && needsApprovedSpec && <div className="architect-recovery"
+      role="status" data-reason="specification-needs-approval">
+      <div><strong>The current specification needs approval</strong>
+        <p>These saved architecture alternatives are not available for approval
+          until you review and approve the current requirements. Historical
+          recommendations are kept read-only.</p></div>
+      <button type="button" className="primary"
+        onClick={() => onExpand(spec ? 'specification' : 'discovery')}>
+        {spec ? 'Review current specification' : 'Return to Product Discovery'}
+      </button>
+    </div>}
+    {!loading && !needsApprovedSpec && staleTopics.length > 0 &&
+      <div className="architect-recovery" role="status" data-reason="stale-recommendations">
+        <div><strong>{staleTopics.length} architecture recommendation{
+          staleTopics.length === 1 ? '' : 's'} need refreshing</strong>
+          <p>Your current specification is approved, but the alternatives below
+            were created for older requirements. Use the
+            <strong> Refresh recommendations</strong> action in each affected section.
+            You'll be able to select alternatives after the updated proposal is
+            saved. Nothing will be approved automatically.</p></div>
+      </div>}
     {loading && <p className="hint">Loading saved architecture decisions…</p>}
     {error && <div className="alert" role="alert">{error}
       {error.includes('MODEL_OUTPUT_REJECTED') &&
@@ -178,12 +202,22 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
           <span className="pill">{!decision ? 'Not proposed' :
             !fresh ? 'Stale specification' : decision.status}</span>
         </div>
-        <button type="button" className="outline"
-          disabled={!!busy || spec?.status !== 'Approved'}
-          onClick={() => void recommend(topic.id)}>
-          {busy === topic.id + ':recommend' ? 'Asking local model…' :
-            decision ? 'Request updated recommendations' : 'Ask Solution Architect'}
-        </button>
+        {needsApprovedSpec ?
+          <button type="button" className="outline architect-unblock"
+            disabled={!!busy}
+            onClick={() => onExpand(spec ? 'specification' : 'discovery')}>
+            {spec ? 'Open specification to continue' :
+              'Complete Product Discovery to continue'}
+          </button> :
+          <button type="button" className={!fresh && decision ?
+            'primary architect-unblock' : 'outline'}
+            disabled={!!busy}
+            onClick={() => void recommend(topic.id)}>
+            {busy === topic.id + ':recommend' ? 'Asking local model…' :
+              decision && !fresh ? 'Refresh ' + topic.label.toLowerCase() +
+                ' recommendations' :
+              decision ? 'Request updated recommendations' : 'Ask Solution Architect'}
+          </button>}
         {busy === topic.id + ':recommend' && <div className="activity" role="status">
           <span className="activity-dot" aria-hidden="true" />
           <strong>Waiting for the local Solution Architect</strong>
@@ -192,11 +226,15 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
         {decision && <>
           <p className="hint">Proposal v{decision.revision}. SHA-256:
             <code className="architect-hash"> {decision.proposalSha256}</code></p>
-          {!fresh && <p className="activity-warning">
-            Requirements have changed. Request a new recommendation.</p>}
+          {!fresh && <p className="architect-stale-note" role="note">
+            These alternatives belong to an older specification. They are preserved
+            for reference and cannot be selected or approved. {
+              needsApprovedSpec ? 'Approve the current specification first.' :
+                'Refresh recommendations above to continue.'}
+          </p>}
           <p className="architect-rationale">{decision.rationale}</p>
-          <fieldset className="architect-options" disabled={!pending || !!busy}>
-            <legend>Alternatives and tradeoffs</legend>
+          {pending ? <fieldset className="architect-options" disabled={!!busy}>
+            <legend>Select an alternative for review</legend>
             {decision.options.map(option => {
               const profile = profiles.find(p => p.id === option.runtimeProfileId);
               return <label className="architect-option" key={option.id}>
@@ -220,7 +258,31 @@ export function ArchitectureStudio({ token, taskId, spec, expanded, onExpand, on
                 </span>
               </label>;
             })}
-          </fieldset>
+          </fieldset> : <details className="architect-archived">
+            <summary>{!fresh ? 'View older alternatives (read-only)' :
+              decision.status === 'Approved' ? 'View approved alternatives (read-only)' :
+                'View saved alternatives (read-only)'}</summary>
+            <div className="architect-archived-list">
+              {decision.options.map(option => {
+                const profile = profiles.find(p => p.id === option.runtimeProfileId);
+                return <div className="architect-option" key={option.id}>
+                  <span>
+                    <strong>{option.label}</strong>
+                    {decision.selectedOptionId === option.id && fresh &&
+                      decision.status === 'Approved' &&
+                      <span className="pill">Owner-approved choice</span>}
+                    <small>Benefit: {option.benefit}</small>
+                    <small>Tradeoff: {option.tradeoff}</small>
+                    <small>{profile
+                      ? 'Runtime ' + profile.id + ' v' + profile.version + ': ' +
+                        profile.qualificationStatus +
+                        (profile.executableViaRegistry ? '' : ' (not executable)')
+                      : 'No qualified execution profile assigned'}</small>
+                  </span>
+                </div>;
+              })}
+            </div>
+          </details>}
           {fresh && decision.status === 'Approved' &&
             <p className="success">✓ Owner approved: {decision.options.find(o =>
               o.id === decision.selectedOptionId)?.label}.

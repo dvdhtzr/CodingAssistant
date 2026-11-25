@@ -66,12 +66,23 @@ export function useEngineeringRun(token: string, taskId: string) {
   const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(() => setRefreshKey(value => value + 1), []);
+  // Clear the displayed run only when the owner/task scope changes.
+  // Clearing on every refresh unmounts Code Atlas, which replays events,
+  // requests another refresh, and creates an endless flash/remount cycle.
   useEffect(() => {
-    let closed = false;
     setSnapshot(null);
     setPlan(null);
     setError('');
+  }, [token, taskId]);
+
+  useEffect(() => {
+    let closed = false;
+    // A slow response must not race with the next interval and overwrite
+    // newer terminal events with an older snapshot.
+    let inFlight = false;
     async function load() {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const [result, currentPlan] = await Promise.all([
           api<{ snapshot: EngineerSnapshot | null }>(
@@ -86,6 +97,8 @@ export function useEngineeringRun(token: string, taskId: string) {
       } catch (cause) {
         if (!closed) setError(cause instanceof Error ? cause.message :
           'Cannot load Software Engineer history');
+      } finally {
+        inFlight = false;
       }
     }
     void load();
@@ -120,6 +133,40 @@ export function useEngineeringRun(token: string, taskId: string) {
       refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Could not start engineering');
+    } finally { setBusy(''); }
+  }
+
+  async function resume() {
+    const prior = snapshot;
+    if (busy || !prior ||
+        !['Failed', 'Interrupted'].includes(prior.job.state) ||
+        prior.tasks.filter(t => t.state === 'Completed').length === 0 ||
+        prior.tasks.every(t => t.state === 'Completed')) return;
+    setBusy('resume');
+    setError('');
+    try {
+      const approval = await api<PlanResponse>(token,
+        '/api/tasks/' + taskId + '/implementation-plan');
+      setPlan(approval.plan);
+      if (!approval.plan || !approval.plan.current ||
+          approval.plan.status !== 'Approved' ||
+          approval.plan.planSha256 !== prior.job.planSha256 ||
+          approval.plan.revision !== prior.job.planRevision)
+        throw new Error('The approved plan changed; cannot resume an older run.');
+      const resumed = await api<EngineerRun>(token,
+        '/api/tasks/' + taskId + '/engineering-runs', {
+          planRevision: approval.plan.revision,
+          planSha256: approval.plan.planSha256,
+          resumeRunId: prior.job.id,
+        });
+      // Load the exact returned run so inherited files and task receipts
+      // appear immediately; do not briefly replace them with an empty graph.
+      const saved = await api<EngineerSnapshot>(token,
+        '/api/tasks/' + taskId + '/engineering-runs/' + resumed.id);
+      setSnapshot(saved);
+      refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not resume saved assignments');
     } finally { setBusy(''); }
   }
 
@@ -167,14 +214,15 @@ export function useEngineeringRun(token: string, taskId: string) {
     } finally { setBusy(''); }
   }
 
-  return { token, taskId, snapshot, plan, busy, error, refresh, start, cancel, download };
+  return { token, taskId, snapshot, plan, busy, error, refresh, start, resume, cancel, download };
 }
 
 export type EngineeringState = ReturnType<typeof useEngineeringRun>;
 
-export function EngineeringGenerationPanel({ engine, legacyRunning }: {
+export function EngineeringGenerationPanel({ engine, legacyRunning, studioMode = false }: {
   engine: EngineeringState;
   legacyRunning: boolean;
+  studioMode?: boolean;
 }) {
   const job = engine.snapshot?.job;
   const running = job?.state === 'Running';
@@ -183,7 +231,13 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
   const activeTask = assignments.find(item => item.state === 'Running');
   const approved = engine.plan?.status === 'Approved' &&
     engine.plan.current === true;
+  const resumable = approved &&
+    (job?.state === 'Failed' || job?.state === 'Interrupted') &&
+    job.planRevision === engine.plan?.revision &&
+    job.planSha256 === engine.plan?.planSha256 &&
+    completedCount > 0 && completedCount < assignments.length;
   return <section className="engineering-workspace"
+    data-has-run={!!job}
     aria-label="MAF Software Engineer tasks">
     <div className="technical-plan-heading">
       <strong>Software Engineer · MAF task-by-task</strong>
@@ -197,10 +251,17 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
       Approve the current Technical Lead plan to enable this workflow.
       Existing source generation remains available below.</p>}
     <div className="actions">
-      <button type="button" className="primary"
+      {resumable && <button type="button" className="primary"
+        disabled={!!engine.busy || legacyRunning}
+        onClick={() => void engine.resume()}>
+        {engine.busy === 'resume' ? 'Resuming saved source…' :
+          'Resume remaining ' + (assignments.length - completedCount) + ' assignment(s)'}
+      </button>}
+      <button type="button" className={resumable ? 'outline' : 'primary'}
         disabled={!approved || !!engine.busy || legacyRunning || running}
         onClick={() => void engine.start()}>
         {engine.busy === 'start' ? 'Admitting tasks…' :
+          resumable ? 'Start a separate new run from task 1' :
           'Ask Software Engineer to implement approved tasks'}
       </button>
       {running && <button type="button" className="danger"
@@ -211,6 +272,11 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
         disabled={!!engine.busy}>Refresh saved task progress</button>
     </div>
     {engine.error && <div className="alert" role="alert">{engine.error}</div>}
+    {studioMode && job && <div className="ca-studio-atlas-focus">
+      <span className="ca-studio-eyebrow">LIVE WORKSPACE / SAVED SOURCE</span>
+      <CodeAtlasPanel token={engine.token} taskId={job.taskId}
+        runId={job.id} files={engine.snapshot?.files ?? []} running={running}/>
+    </div>}
     <details className="atlas-repository-entry">
       <summary>Code Atlas · Explore an existing GitHub repository</summary>
       <CodeAtlasRepositoryPanel token={engine.token}
@@ -220,32 +286,45 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
       <p className="hint" role="status"><strong>{job.state}</strong>
         {' · '}plan v{job.planRevision}{' · '}{job.phase}
         {' · '}model {job.model}
-        {job.errorCode ? ' · ' + job.errorCode : ''}
+        {' · '}{engine.snapshot?.events.length ?? 0} saved activity events
+        {job.id ? ' · run ' + job.id.slice(0, 8) : ''}
+        {job.errorCode ? ' · reason: ' + job.errorCode : ''}
       </p>
       {running && <p className="hint">Your selected model is working on the
         recorded tasks. This is not a fabricated progress percentage.</p>}
-      {job.state === 'Failed' && <p className="activity-warning" role="alert">
-        Source generation stopped safely. Completed task files remain inspectable.
-        No verification or successful full build is claimed.</p>}
-      <CodeAtlasPanel token={engine.token} taskId={job.taskId}
-        runId={job.id} files={engine.snapshot?.files ?? []} running={running}
-        onSourceChanged={engine.refresh}/>
+      {(job.state === 'Failed' || job.state === 'Interrupted') &&
+        <p className="activity-warning" role="alert">
+          <strong>{job.state === 'Interrupted' ? 'Engineering run interrupted' :
+            'Engineering run failed'}.</strong>
+          {' '}Recorded reason: <code>{job.errorCode ?? 'NOT_RECORDED'}</code>.
+          {' '}Earlier completed source remains saved and inspectable.
+          {job.errorCode === 'PROCESS_INTERRUPTED' &&
+            ' The application restarted while generation was active; this is not a failed build or test.'}
+          {' '}No independent build or runtime verification is claimed.
+        </p>}
+      {!studioMode && <CodeAtlasPanel token={engine.token} taskId={job.taskId}
+        runId={job.id} files={engine.snapshot?.files ?? []} running={running}/>}
       <div className="engineering-board-header">
         <div><span className="wb-kicker">SAVED ENGINEERING ASSIGNMENTS</span>
           <h3>Implementation workstream</h3></div>
         <span className="engineering-board-count">{completedCount} of
           {' '}{assignments.length} completed</span>
       </div>
-      {running && <div className="engineering-now-working" role="status">
+      {job && <div className="engineering-now-working" role="status">
         <span className="engineering-run-dot" aria-hidden="true" />
-        {activeTask ? 'Recorded active assignment: ' + activeTask.title :
-          'Engineering run active · waiting for a persisted assignment'}
+        {running ? activeTask ?
+          'Recorded active assignment: ' + activeTask.title :
+          'Engineering run active · waiting for a persisted assignment' :
+          'Engineering run: ' + job.state}
       </div>}
       <ol className="engineering-tasks engineering-task-board"
         aria-label="Saved Software Engineer task progression">
         {assignments.map(item => {
           const changedFiles = engine.snapshot?.files.filter(file =>
             file.lastWorkItemId === item.id).length ?? 0;
+          const lastRejection = engine.snapshot?.events.filter(event =>
+            event.kind === 'EngineerOutputRejected' &&
+            event.detail.startsWith(item.id + ':')).slice(-1)[0];
           return <li key={item.id} data-task-state={item.state}>
             <div className="engineering-task-heading">
               <span className="engineering-task-number" aria-hidden="true">
@@ -254,13 +333,29 @@ export function EngineeringGenerationPanel({ engine, legacyRunning }: {
               <span className="engineering-task-state">{item.state}</span>
             </div>
             <div className="engineering-task-evidence">
-              <span>Task {item.ordinal + 1}</span>
-              <span>{changedFiles} saved file(s) last changed by this task</span>
+              <span>Assignment {item.ordinal + 1} · {changedFiles} source file(s)
+                {' '}last saved by this assignment</span>
               {item.completedUtc && <span>Completed
                 {' '}{new Date(item.completedUtc).toLocaleString()}</span>}
               {item.startedUtc && !item.completedUtc && <span>Started
                 {' '}{new Date(item.startedUtc).toLocaleString()}</span>}
             </div>
+            {(item.state === 'Failed' || item.state === 'Interrupted') &&
+              <p role="alert" className="engineering-task-failure">
+              <strong>{item.state === 'Interrupted' ?
+                'Assignment interrupted before completion.' :
+                'Source generation failed on this assignment.'}</strong>
+              {' '}Reason code: <code>{job.errorCode ?? 'NOT_RECORDED'}</code>.
+              {lastRejection && <span className="engineering-rejection-reason">
+                {' '}Last model-output diagnostic: {lastRejection.detail}.
+              </span>}
+              Earlier completed source remains saved. Open
+              {' '}<strong>Saved engineering activity</strong> for the event history.
+              No build or runtime testing was performed by this agent.
+              {job.state === 'Interrupted' &&
+                !engine.snapshot?.events.some(e => e.kind === 'EngineeringRunInterrupted') &&
+                ' This older run has no terminal interruption event; restart recovery now repairs that missing receipt.'}
+            </p>}
             {item.summary && <p className="hint">{item.summary}</p>}
           </li>;
         })}

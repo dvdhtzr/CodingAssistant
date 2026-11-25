@@ -450,6 +450,52 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     // Repair broken JSON, unsafe source paths and model refusals without
     // accepting any invalid files or attempting code execution.
     const string goodSource = """{"summary":"Implemented complete recipe ingredient input interactions.","files":[{"path":"index.html","purpose":"Complete ingredient input screen","content":"<!doctype html><html><body><input id='ingredients'><button>Compare</button></body></html>"}],"verificationNotes":["Verify ingredient entry in a browser"]}""";
+    // Qwen may include a closed reasoning prefix even with think:false.
+    // Never turn the private reasoning into source; only parse final JSON.
+    foreach (var answer in new[] {
+        "<think>PRIVATE reasoning not source</think>\n" + goodSource,
+        "</think>\n" + goodSource,
+        goodSource
+    })
+    {
+        var payload = JsonSerializer.Serialize(new {
+            done_reason = "stop", message = new { role = "assistant", content = answer }
+        });
+        var final = LocalMafChatClient.ReadAssistantContent(
+            payload, MafAgentPurpose.SoftwareEngineer);
+        Check(MafSoftwareEngineer.Parse(final).Files.Single().Path == "index.html" &&
+              !final.Contains("PRIVATE reasoning", StringComparison.Ordinal),
+            "Software Engineer accepts only JSON after CLOSED Qwen thinking prefix");
+    }
+    var literalThink = goodSource.Replace(
+        "<button>Compare</button>", "<span><think>literal HTML</think></span>",
+        StringComparison.Ordinal);
+    var literalPayload = JsonSerializer.Serialize(new {
+        done_reason = "stop",
+        message = new { role = "assistant", content = literalThink }
+    });
+    Check(LocalMafChatClient.ReadAssistantContent(
+        literalPayload, MafAgentPurpose.SoftwareEngineer) == literalThink,
+        "literal think-like markup inside a JSON string is not stripped as reasoning");
+    foreach (var response in new[] {
+        "<think>never closed\n" + goodSource,
+        "<think>private</think><think>restarted</think>" + goodSource
+    })
+    {
+        var payload = JsonSerializer.Serialize(new {
+            done_reason = "stop",
+            message = new { role = "assistant", content = response }
+        });
+        try {
+            _ = LocalMafChatClient.ReadAssistantContent(
+                payload, MafAgentPurpose.SoftwareEngineer);
+            Check(false, "incomplete or reopened reasoning prefix accepted");
+        }
+        catch (StoreFailure error) when (error.Code == "MODEL_THINKING_ONLY")
+        {
+            Check(true, "Software Engineer rejects unfinished or reopened thinking");
+        }
+    }
     Check(MafSoftwareEngineer.TryParse(goodSource, out var parsedSource,
         out var acceptedReason) && parsedSource!.Files.Count == 1 &&
         acceptedReason == "", "valid engineer output remains accepted");
@@ -575,6 +621,166 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           correctedFactory.CorrectionReasons.All(reason =>
               !reason.Contains("SECRET_MODEL_CONTENT", StringComparison.Ordinal)),
         "Software Engineer uses safe targeted correction and recovers");
+
+    var thoughtOnly = new Phase4FakeMafFactory();
+    thoughtOnly.Failures.Enqueue("MODEL_THINKING_ONLY");
+    thoughtOnly.Responses.Enqueue(goodSource);
+    var thoughtRejections = new List<EngineeringOutputRejection>();
+    var resumedFromThinking = await new MafSoftwareEngineer(thoughtOnly)
+        .ImplementAsync(assignment with {
+            OnOutputRejected = reason => thoughtRejections.Add(reason)
+        }, CancellationToken.None);
+    Check(resumedFromThinking.Files.Single().Path == "index.html" &&
+          thoughtOnly.Attempts == 2 &&
+          thoughtRejections.Count == 1 &&
+          thoughtRejections[0].Attempt == 1 &&
+          thoughtRejections[0].Category == "MODEL_THINKING_ONLY" &&
+          thoughtOnly.CorrectionReasons.Any(message =>
+              message.Contains("MODEL_THINKING_ONLY", StringComparison.Ordinal)),
+        "MAF recovers from thinking-only reply without exposing private thoughts");
+
+    var launchTask = new ImplementationWorkItem(
+        "launch-preparation", "Launch Preparation and Testing",
+        "Prepare release setup documentation and source-only launch checklist.",
+        ["create-ui"], ["A release checklist describes manual verification steps"]);
+    var launchPlan = fakePlan with {
+        Outline = fakePlan.Outline with {
+            Tasks = [fakePlan.Outline.Tasks[0], launchTask]
+        }
+    };
+    var launchFactory = new Phase4FakeMafFactory();
+    launchFactory.Responses.Enqueue(JsonSerializer.Serialize(new {
+        summary = "Prepared a source-only manual launch and verification checklist.",
+        files = new[] { new { path = "README.md",
+            purpose = "Complete launch checklist and manual testing guide",
+            content = "# Launch readiness\\nReview the saved website source, " +
+                "inspect authentication, and verify payment integration manually. " +
+                "No tests have been executed by the Software Engineer." } },
+        verificationNotes = new[] { "Independent QA must test the saved application" }
+    }));
+    var launchSource = await new MafSoftwareEngineer(launchFactory).ImplementAsync(
+        assignment with {
+            Plan = launchPlan, WorkItem = launchTask,
+            ExistingFiles = [
+                new EngineeringSourceFile("index.html", "Existing page",
+                    new string('x', 16000), new string('d', 64),
+                    "create-ui", "2026-11-23T00:00:00Z")
+            ]
+        }, CancellationToken.None);
+    var launchPrior = launchFactory.UserPrompts.Single(message =>
+        message.StartsWith("PREVIOUS SOURCE FILES", StringComparison.Ordinal));
+    Check(launchFactory.Attempts == 1 &&
+          launchSource.Files.Single().Path == "README.md" &&
+          launchPrior.Length < 3000 &&
+          launchPrior.Contains("originalLength", StringComparison.Ordinal) &&
+          launchFactory.UserPrompts.Any(message =>
+              message.Contains("SOURCE-ONLY LAUNCH PREPARATION",
+                  StringComparison.Ordinal)),
+        "legacy launch task is guided toward concise source-only deliverable with bounded prior context");
+
+    // A QA repair must NOT require the full index.html entry point again
+    // when the owner authorized a precise change in app.js. Large saved
+    // source must be editable with a short JSON answer and preserve all
+    // unrelated content and exact owner file scope.
+    var brokenHandler =
+        "document.getElementById('save').addEventListener('click', () => save(false));";
+    var correctedHandler =
+        "document.getElementById('save').addEventListener('click', () => save(true));";
+    var largeScript = "const marker = 'preserve-all-existing-state';\n" +
+        new string('x', 14000) + "\n" + brokenHandler + "\n" +
+        "const footer = 'preserve-footer';\n";
+    var savedRepairFiles = new[] {
+        new EngineeringSourceFile("index.html", "Existing approved entry point",
+            "<!doctype html><html><body><script src='app.js'></script></body></html>\n",
+            new string('1', 64), "create-ui", "2026-11-22T00:00:00Z"),
+        new EngineeringSourceFile("app.js", "Original interactive behavior",
+            largeScript, new string('2', 64), "create-ui", "2026-11-22T00:00:00Z")
+    };
+    var authorizedRepair = new RepairTaskContext(
+        new string('3', 32), new string('4', 64),
+        [new RepairFindingReference("app.js", 0, "Major",
+            "Save handler ignores the checkbox state",
+            "The saved handler calls save(false) unconditionally",
+            "Read checkbox state in the Save handler", "ImplementationDefect")],
+        ["app.js"]);
+    var patchJson = JsonSerializer.Serialize(new {
+        summary = "Correct the exact saved Save handler while preserving all other code.",
+        edits = new[] { new {
+            path = "app.js", oldText = brokenHandler, newText = correctedHandler
+        } },
+        verificationNotes = new[] {
+            "Independent QA must inspect the handler and test checkbox behavior."
+        }
+    });
+    var appliedPatch = MafSoftwareEngineer.ApplyRepairEdits(
+        patchJson, authorizedRepair, savedRepairFiles);
+    Check(appliedPatch.Files.Count == 1 &&
+          appliedPatch.Files[0].Path == "app.js" &&
+          appliedPatch.Files[0].Content.Contains(correctedHandler, StringComparison.Ordinal) &&
+          appliedPatch.Files[0].Content.Contains(
+              "preserve-all-existing-state", StringComparison.Ordinal) &&
+          appliedPatch.Files[0].Content.Contains(
+              "preserve-footer", StringComparison.Ordinal) &&
+          !appliedPatch.Files[0].Content.Contains(
+              brokenHandler, StringComparison.Ordinal) &&
+          savedRepairFiles[1].Content.Contains(brokenHandler, StringComparison.Ordinal),
+        "exact repair patch updates selected file only and leaves immutable original untouched");
+    var patchFactory = new Phase4FakeMafFactory();
+    patchFactory.Responses.Enqueue(patchJson);
+    var engineerRepair = await new MafSoftwareEngineer(patchFactory)
+        .ImplementAsync(assignment with {
+            ExistingFiles = savedRepairFiles,
+            Repair = authorizedRepair
+        }, CancellationToken.None);
+    Check(patchFactory.Attempts == 1 &&
+          engineerRepair.Files.Single().Path == "app.js" &&
+          engineerRepair.Files.Single().Content.Contains(
+              correctedHandler, StringComparison.Ordinal) &&
+          patchFactory.UserPrompts.Any(message => message.Contains(
+              "FULL REPAIR TARGET SOURCE app.js", StringComparison.Ordinal)),
+        "QA repair uses short exact edit even for a first-task-owned static web file");
+    // Build rejected variants from typed JSON. String.Replace on
+    // serialized JSON is unreliable because System.Text.Json escapes
+    // apostrophes inside source as Unicode escape sequences.
+    string EditJson(string path, string oldText, string newText) =>
+        JsonSerializer.Serialize(new {
+            summary = "Update only the precise authorized source handler.",
+            edits = new[] { new { path, oldText, newText } },
+            verificationNotes = new[] { "Check saved interaction manually" }
+        });
+    var invalidPatches = new[] {
+        (Raw: EditJson("app.js", "missing uniquely anchored source",
+            correctedHandler), Code: "REPAIR_EDIT_NOT_UNIQUE"),
+        (Raw: EditJson("index.html", brokenHandler, correctedHandler),
+            Code: "REPAIR_SCOPE"),
+        (Raw: EditJson("app.js", brokenHandler, brokenHandler),
+            Code: "REPAIR_EDIT_NO_CHANGE"),
+        (Raw: EditJson("app.js", new string('x', 32), "changed repeated text"),
+            Code: "REPAIR_EDIT_NOT_UNIQUE")
+    };
+    foreach (var (raw, expectedCode) in invalidPatches)
+    {
+        Check(!MafSoftwareEngineer.TryParseRepair(raw, authorizedRepair,
+              savedRepairFiles, out _, out var failure) &&
+              failure.StartsWith(expectedCode + ":", StringComparison.Ordinal),
+            "unsafe or ambiguous exact edits reject with safe category " + expectedCode);
+    }
+    var correctionFactory = new Phase4FakeMafFactory();
+    correctionFactory.Responses.Enqueue(invalidPatches[0].Raw);
+    correctionFactory.Responses.Enqueue(patchJson);
+    var patchRejections = new List<EngineeringOutputRejection>();
+    var correctedPatch = await new MafSoftwareEngineer(correctionFactory)
+        .ImplementAsync(assignment with {
+            ExistingFiles = savedRepairFiles, Repair = authorizedRepair,
+            OnOutputRejected = notice => patchRejections.Add(notice)
+        }, CancellationToken.None);
+    Check(correctedPatch.Files.Single().Path == "app.js" &&
+          correctionFactory.Attempts == 2 &&
+          patchRejections.Count == 1 &&
+          patchRejections[0].Category == "REPAIR_EDIT_NOT_UNIQUE" &&
+          correctionFactory.CorrectionReasons.Any(reason =>
+              reason.Contains("REPAIR_EDIT_NOT_UNIQUE", StringComparison.Ordinal)),
+        "engineer retries stale exact-match target with bounded diagnostic and no source leak");
 
     var firstTaskFactory = new Phase4FakeMafFactory();
     firstTaskFactory.Responses.Enqueue(goodSource.Replace(
@@ -730,6 +936,18 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           fakeFactory.InspectionContextSeen &&
           fakeFactory.NoTools,
         "independent QA receives bounded host-logged engineering investigation context without gaining tools");
+    var focusedReview = await new MafQaEngineer(fakeFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file], [investigation], null,
+            [new RepairFindingReference("index.html", 0, "Major",
+                "Save button is not connected to persistent storage",
+                "Current source declares button without working save logic",
+                "Recheck Save behavior after source edit", "ImplementationDefect")]),
+        CancellationToken.None);
+    Check(focusedReview.Findings.Count == 1 &&
+          fakeFactory.RepairFocusSeen &&
+          fakeFactory.NoTools,
+        "post-repair independent QA receives owner-confirmed target as a recheck, not proof of repair");
 }
 
 // M8.18: independent MAF QA selects bounded source inspections, receives
@@ -1577,6 +1795,7 @@ try
         break;
     }
     Check(engineeringResult?.Job.State == "Generated" &&
+          engineeringResult.Job.Model == "qwen2.5-coder:14b" &&
           engineeringResult.Tasks.Count == 2 &&
           engineeringResult.Tasks.All(t => t.State == "Completed") &&
           engineeringResult.Files.Count == 2 &&
@@ -1585,6 +1804,13 @@ try
           engineeringResult.Events.Any(e => e.Kind == "EngineeringTaskStarted") &&
           engineeringResult.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 2,
         "each approved engineer task persists source and exact durable event history");
+    // Keep the generated source pinned to 14B but change QA alone.
+    // A different selected QA model must NOT invalidate source/plan binding.
+    using (var assignment = await Post(client,
+        "/api/tasks/" + taskBound.Id + "/agent-models/QaEngineer",
+        new { model = "qwen3.5:4b" }))
+        Check(assignment.StatusCode == HttpStatusCode.OK,
+            "owner can assign a distinct installed QA model before a new review");
     Check(softwareModel.AssignedIds.SequenceEqual(["timer-interface","timer-state"]) &&
           softwareModel.PreviousFileCountOnSecondTask == 1 &&
           engineeringResult!.Files.Single(f => f.Path == "app.js")
@@ -1696,6 +1922,8 @@ try
         break;
     }
     Check(qaResult?.Job.State == "Reviewed" &&
+          qaResult.Job.Model == "qwen3.5:4b" &&
+          engineeringResult!.Job.Model == "qwen2.5-coder:14b" &&
           qaResult.Reports.Count == 2 &&
           qaResult.Reports.Sum(report =>
               report.Assessment.Findings.Count) == 1 &&
@@ -1901,12 +2129,82 @@ try
               .Sha256 != engineeringResult.Files.Single(f => f.Path == "app.js")
                   .Sha256 &&
           repairOutcome.StaticPreflight.VerificationStatus ==
-              "GENERATED_NOT_TESTED",
-        "repaired source is distinct, original evidence immutable, QA independently reassessed and no fake PASS");
+              "GENERATED_NOT_TESTED" &&
+          qaModel.RepairFocusPaths.SequenceEqual(["app.js"]),
+        "repaired source is distinct, original evidence immutable, QA independently rechecks owner-confirmed defect and no fake PASS");
     Check(engineeringStore.Get(taskBound.Id, engineeringRunId).Files
               .Single(f => f.Path == "app.js").Sha256 ==
           engineeringResult!.Files.Single(f => f.Path == "app.js").Sha256,
         "prior engineering run is unchanged after source-only repair");
+
+    // A real Windows installation can already contain 1-3 approved repairs.
+    // Exercise in-place migration of its populated SQLite CHECK constraint,
+    // including preservation of all original cycle metadata and source refs.
+    var repairDatabasePath = Path.Combine(root, "codingassistant.db");
+    using (var oldDb = new Microsoft.Data.Sqlite.SqliteConnection(
+        "Data Source=" + repairDatabasePath))
+    {
+        oldDb.Open();
+        using var migration = oldDb.BeginTransaction();
+        using (var old = oldDb.CreateCommand())
+        {
+            old.Transaction = migration;
+            old.CommandText = """
+                CREATE TABLE repair_cycles_old_fixture (
+                    id TEXT PRIMARY KEY NOT NULL,
+                    task_id TEXT NOT NULL REFERENCES tasks(id),
+                    proposal_id TEXT NOT NULL UNIQUE REFERENCES repair_proposals(id),
+                    base_run_id TEXT NOT NULL REFERENCES engineering_runs(id),
+                    engineering_run_id TEXT NOT NULL UNIQUE REFERENCES engineering_runs(id),
+                    qa_review_id TEXT REFERENCES qa_reviews(id),
+                    base_source_sha256 TEXT NOT NULL,
+                    work_item_id TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state IN
+                        ('Running','Generated','QaRunning','QaReviewed','Failed','Interrupted')),
+                    attempt INTEGER NOT NULL CHECK(attempt BETWEEN 1 AND 3),
+                    error_code TEXT,
+                    findings_json TEXT NOT NULL,
+                    created_utc TEXT NOT NULL, updated_utc TEXT NOT NULL
+                );
+                INSERT INTO repair_cycles_old_fixture
+                SELECT * FROM repair_cycles;
+                DROP TABLE repair_cycles;
+                ALTER TABLE repair_cycles_old_fixture RENAME TO repair_cycles;
+                CREATE INDEX repair_cycles_latest
+                    ON repair_cycles(task_id,created_utc DESC,id DESC);
+                """;
+            _ = old.ExecuteNonQuery();
+        }
+        migration.Commit();
+    }
+    var upgradedRepairs = new RepairCycleStore(tasks, engineeringStore,
+        reviewStore, repairProposal);
+    upgradedRepairs.Initialize();
+    var keptCycle = upgradedRepairs.Get(taskBound.Id, cycleId);
+    using (var inspectedDb = new Microsoft.Data.Sqlite.SqliteConnection(
+        "Data Source=" + repairDatabasePath))
+    {
+        inspectedDb.Open();
+        using var schemaCheck = inspectedDb.CreateCommand();
+        schemaCheck.CommandText = """
+            SELECT sql FROM sqlite_master
+            WHERE type='table' AND name='repair_cycles'
+            """;
+        var newSchema = (string?)schemaCheck.ExecuteScalar() ?? "";
+        Check(keptCycle.Cycle.Id == cycleId &&
+              keptCycle.Cycle.Attempt == 1 &&
+              keptCycle.Cycle.ProposalId == selectedRepairProposal.Id &&
+              keptCycle.Cycle.BaseSourceSha256 ==
+                  repairOutcome!.Cycle.BaseSourceSha256 &&
+              keptCycle.Engineering.Files.Count == repairOutcome.Engineering.Files.Count &&
+              newSchema.Contains("attempt >= 1", StringComparison.OrdinalIgnoreCase) &&
+              !newSchema.Contains("BETWEEN 1 AND 3", StringComparison.OrdinalIgnoreCase),
+            "legacy populated three-cycle table migrates atomically with evidence intact and no project-wide limit");
+    }
+    upgradedRepairs.Initialize();
+    Check(upgradedRepairs.Get(taskBound.Id, cycleId).Cycle.Attempt == 1,
+        "repair schema migration is idempotent on repeated app startup");
+
     using (var cycleList = await client.GetAsync(latestRepairPath + "/latest"))
     using (var body = await Body(cycleList))
         Check(cycleList.StatusCode == HttpStatusCode.OK &&
@@ -1940,6 +2238,35 @@ try
               qaModel.ReviewedFiles.Count == 6,
             "QA cannot read an active engineering job even when it saved source");
     engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-state");
+    // Persist only a bounded response-failure category, never returned text.
+    engineeringStore.RecordOutputRejection(taskBound.Id, failedEngineerRun.Id,
+        "timer-state", new EngineeringOutputRejection(1, "JSON_SYNTAX"));
+    engineeringStore.RecordOutputRejection(taskBound.Id, failedEngineerRun.Id,
+        "timer-state", new EngineeringOutputRejection(2, "MODEL_THINKING_ONLY"));
+    var rejectedLedger = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
+    Check(rejectedLedger.Events.Count(e => e.Kind == "EngineerOutputRejected") == 2 &&
+          rejectedLedger.Events.Any(e => e.Detail.Contains("timer-state: attempt 2/3, category MODEL_THINKING_ONLY",
+              StringComparison.Ordinal)) &&
+          rejectedLedger.Events.All(e => !e.Detail.Contains("SECRET_SOURCE_TEXT",
+              StringComparison.Ordinal)),
+        "each rejected model response produces a task-scoped content-free receipt");
+    foreach (var invalid in new[] {
+        new EngineeringOutputRejection(3, "SECRET_SOURCE_TEXT"),
+        new EngineeringOutputRejection(1, "JSON_SYNTAX")
+    })
+    {
+        try
+        {
+            engineeringStore.RecordOutputRejection(taskBound.Id,
+                failedEngineerRun.Id, "timer-state", invalid);
+            Check(false, "untrusted diagnostic category or duplicate attempt persisted");
+        }
+        catch (StoreFailure error) when (
+            error.Code is "INVALID_INPUT" or "INVALID_STATE")
+        {
+            Check(true, "diagnostics require allowlisted category and next attempt number");
+        }
+    }
     // M8.16: only a running, approved engineering task may persist host
     // observations. Stored metadata never contains a model query or source.
     var savedForAtlas = engineeringStore.Get(taskBound.Id, failedEngineerRun.Id);
@@ -2135,6 +2462,87 @@ try
           interruptedReport.Reports.Count == 1 &&
           qaModel.ReviewedSourceStates.Last() == "Interrupted",
         "Interrupted saved source receives a clearly labeled partial review");
+
+    // A Windows launcher/API restart must not silently truncate the event
+    // ledger after the final completed assignment. Both the terminal code and
+    // event are committed atomically, while already saved source survives.
+    var recovered = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, recovered.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, recovered.Id, "timer-interface",
+        new EngineeringChangeSet("Saved a first file before restart.",
+            [new EngineeringFileChange("index.html", "Offline browser entry point",
+                "<!doctype html><html><body>Saved before restart</body></html>")],
+            ["Not executed"]));
+    engineeringStore.StartTask(taskBound.Id, recovered.Id, "timer-state");
+    var eventsBeforeRestart = engineeringStore.Get(taskBound.Id, recovered.Id).Events.Count;
+    engineeringStore.MarkInterruptedOnStartup();
+    var restartSnapshot = engineeringStore.Get(taskBound.Id, recovered.Id);
+    Check(restartSnapshot.Job.State == "Interrupted" &&
+          restartSnapshot.Job.ErrorCode == "PROCESS_INTERRUPTED" &&
+          restartSnapshot.Events.Count == eventsBeforeRestart + 1 &&
+          restartSnapshot.Events[^1].Sequence == eventsBeforeRestart + 1 &&
+          restartSnapshot.Events[^1].Kind == "EngineeringRunInterrupted" &&
+          restartSnapshot.Events[^1].Detail.Contains("PROCESS_INTERRUPTED",
+              StringComparison.Ordinal) &&
+          restartSnapshot.Tasks.Count == 2 &&
+          restartSnapshot.Tasks[0].State == "Completed" &&
+          restartSnapshot.Tasks[1].State == "Interrupted" &&
+          restartSnapshot.Files.Count == 1 &&
+          restartSnapshot.Files[0].Path == "index.html",
+        "restart interruption persists one terminal event and preserves committed source");
+    engineeringStore.MarkInterruptedOnStartup();
+    Check(engineeringStore.Get(taskBound.Id, recovered.Id).Events.Count ==
+          eventsBeforeRestart + 1,
+        "repeated startup recovery does not duplicate interruption events");
+
+    // Upgrade an older database that recorded an Interrupted run but lacked
+    // the final activity receipt. Recovery must be additive and idempotent.
+    var legacyInterrupted = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, legacyInterrupted.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, legacyInterrupted.Id, "timer-interface",
+        new EngineeringChangeSet("First file persisted by legacy run.",
+            [new EngineeringFileChange("index.html", "Offline browser entry point",
+                "<!doctype html><html><body>Persisted earlier</body></html>")],
+            ["Not executed"]));
+    engineeringStore.StartTask(taskBound.Id, legacyInterrupted.Id, "timer-state");
+    var priorLegacyEvents = engineeringStore.Get(
+        taskBound.Id, legacyInterrupted.Id).Events.Count;
+    using (var legacyDb = new Microsoft.Data.Sqlite.SqliteConnection(
+        "Data Source=" + Path.Combine(root, "codingassistant.db")))
+    {
+        legacyDb.Open();
+        using var tx = legacyDb.BeginTransaction();
+        using (var cmd = legacyDb.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                UPDATE engineering_run_tasks SET state='Interrupted'
+                  WHERE run_id=$id AND state='Running';
+                UPDATE engineering_runs SET state='Interrupted',
+                  phase='RestartInterrupted',error_code='PROCESS_INTERRUPTED'
+                  WHERE id=$id AND state='Running';
+                """;
+            cmd.Parameters.AddWithValue("$id", legacyInterrupted.Id);
+            _ = cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+    engineeringStore.MarkInterruptedOnStartup();
+    var backfilled = engineeringStore.Get(taskBound.Id, legacyInterrupted.Id);
+    Check(backfilled.Job.State == "Interrupted" &&
+          backfilled.Job.ErrorCode == "PROCESS_INTERRUPTED" &&
+          backfilled.Events.Count == priorLegacyEvents + 1 &&
+          backfilled.Events[^1].Kind == "EngineeringRunInterrupted" &&
+          backfilled.Events[^1].Detail.Contains("Recovered missing",
+              StringComparison.Ordinal) &&
+          backfilled.Files.Count == 1 &&
+          backfilled.Files[0].Content.Contains("Persisted earlier",
+              StringComparison.Ordinal),
+        "older interrupted run gets missing receipt with no source or state mutation");
+    engineeringStore.MarkInterruptedOnStartup();
+    Check(engineeringStore.Get(taskBound.Id, legacyInterrupted.Id).Events.Count ==
+          priorLegacyEvents + 1,
+        "legacy interruption event is backfilled once");
 
     // Even an approved plan does not make an older engineering submission
     // authoritative after a newer run exists; retain historical QA safely.
@@ -2364,6 +2772,91 @@ try
         "unsafe paths remain forbidden after the single correction attempt");
     boundModel.InvalidPath = false;
 
+    // Failure recovery: the owner explicitly resumes the same immutable
+    // approved plan from saved tasks, without replaying earlier model work.
+    var resumeSource = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id, resumeSource.Id, "timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id, resumeSource.Id, "timer-interface",
+        new EngineeringChangeSet("Saved the entry point before model failure.",
+            [new EngineeringFileChange("index.html", "Offline browser entry point",
+                "<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
+            ["Test source remains unverified"]));
+    engineeringStore.StartTask(taskBound.Id, resumeSource.Id, "timer-state");
+    engineeringStore.Finish(taskBound.Id, resumeSource.Id, false,
+        "MODEL_OUTPUT_REJECTED");
+    var sourceCheckpoint = engineeringStore.Get(taskBound.Id, resumeSource.Id);
+    Check(sourceCheckpoint.Job.State == "Failed" &&
+          sourceCheckpoint.Job.ErrorCode == "MODEL_OUTPUT_REJECTED" &&
+          sourceCheckpoint.Tasks[0].State == "Completed" &&
+          sourceCheckpoint.Tasks[1].State == "Failed" &&
+          sourceCheckpoint.Files.Count == 1,
+        "failed run retains a valid one-file resume checkpoint");
+
+    using (var deniedResume = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, new string('f', 64), resumeSource.Id)))
+        Check(deniedResume.StatusCode == HttpStatusCode.Conflict,
+            "resume does not bypass current approved plan digest");
+    using (var deniedResume = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, secondPlanHash,
+            new string('f', 32))))
+        Check(deniedResume.StatusCode != HttpStatusCode.Accepted,
+            "resume rejects foreign or nonexistent source run");
+    var engineerCallsBeforeResume = softwareModel.AssignedIds.Count;
+    string resumedRunId;
+    using (var resumed = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, secondPlanHash, resumeSource.Id)))
+    using (var body = await Body(resumed))
+    {
+        Check(resumed.StatusCode == HttpStatusCode.Accepted,
+            "owner explicitly starts a fresh resume run for the exact failed source");
+        resumedRunId = body.RootElement.GetProperty("id").GetString()!;
+    }
+    EngineeringRunSnapshot? resumedDone = null;
+    for (var attempt = 0; attempt < 160; attempt++)
+    {
+        var saved = engineeringStore.Get(taskBound.Id, resumedRunId);
+        if (saved.Job.State != "Running")
+        {
+            resumedDone = saved;
+            break;
+        }
+        await Task.Delay(25);
+    }
+    Console.WriteLine("Resume probe (source-only): state=" +
+        (resumedDone?.Job.State ?? "NO_TERMINAL_STATE") +
+        " error=" + (resumedDone?.Job.ErrorCode ?? "none") +
+        " tasks=" + string.Join(",", resumedDone?.Tasks.Select(t => t.State) ??
+            Enumerable.Empty<string>()) +
+        " files=" + string.Join(",", resumedDone?.Files.Select(f => f.Path) ??
+            Enumerable.Empty<string>()) +
+        " events=" + string.Join(",", resumedDone?.Events.Select(e => e.Kind) ??
+            Enumerable.Empty<string>()) +
+        " modelCalls=" + string.Join(",",
+            softwareModel.AssignedIds.Skip(engineerCallsBeforeResume)));
+    Check(resumedDone?.Job.State == "Generated" &&
+          resumedDone.Tasks.Count == 2 &&
+          resumedDone.Tasks.All(item => item.State == "Completed") &&
+          resumedDone.Files.Count == 2 &&
+          resumedDone.Files.Any(file => file.Path == "index.html" &&
+              file.LastWorkItemId == "timer-interface" &&
+              file.Sha256 == sourceCheckpoint.Files.Single().Sha256) &&
+          resumedDone.Files.Any(file => file.Path == "app.js" &&
+              file.LastWorkItemId == "timer-state") &&
+          resumedDone.Events.First().Kind == "EngineeringRunResumed" &&
+          resumedDone.Events.Count(e => e.Kind == "EngineeringTaskStarted") == 1 &&
+          resumedDone.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 1 &&
+          softwareModel.AssignedIds.Skip(engineerCallsBeforeResume).SequenceEqual(["timer-state"]),
+        "resume carries completed work and asks MAF to implement only failed assignment");
+    var unchangedCheckpoint = engineeringStore.Get(taskBound.Id, resumeSource.Id);
+    Check(unchangedCheckpoint.Job.State == "Failed" &&
+          unchangedCheckpoint.Events.Count == sourceCheckpoint.Events.Count &&
+          unchangedCheckpoint.Files.Single().Sha256 == sourceCheckpoint.Files.Single().Sha256,
+        "resume never mutates original failed source or its failure event");
+    using (var staleResume = await Post(client, engineeringPath,
+        new StartEngineeringRunRequest(2, secondPlanHash, resumeSource.Id)))
+        Check(staleResume.StatusCode == HttpStatusCode.Conflict,
+            "cannot resume superseded failure checkpoint after a newer run exists");
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
     var boundStore = new ProjectDraftStore(tasks);
@@ -2432,7 +2925,7 @@ finally
 sealed class Phase2Catalog : IOllamaModelCatalog
 {
     public Task<IReadOnlyList<string>> ListAsync(CancellationToken cancellation) =>
-        Task.FromResult<IReadOnlyList<string>>(new[] { "qwen3.5:4b" });
+        Task.FromResult<IReadOnlyList<string>>(new[] { "qwen3.5:4b", "qwen2.5-coder:14b" });
 }
 sealed class Phase2Advisor : IArchitectureAdvisor
 {
@@ -2673,11 +3166,24 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
                 repair.AllowedPaths.Single() != "app.js" ||
                 !input.ExistingFiles.Any(f => f.Path == "app.js"))
                 throw new Exception("Repair context was not bound to original QA source");
-            return Task.FromResult(new EngineeringChangeSet(
-                "Repaired the approved Start handler without modifying the browser entry.",
-                [new EngineeringFileChange("app.js", "Repaired timer interactions",
-                    "document.getElementById('start').addEventListener('click', () => { console.log('repaired start'); });")],
-                ["Independently check Start button behavior"]));
+            // End-to-end acceptance uses the same exact-edit materialization
+            // as the actual MAF agent, then persists its COMPLETE validated
+            // replacement through the existing SQLite/QA coordinator.
+            var source = input.ExistingFiles.Single(f => f.Path == "app.js");
+            var before = source.Content.TrimEnd('\r', '\n');
+            var after = before.Replace("console.log('start')",
+                "console.log('repaired start')", StringComparison.Ordinal);
+            if (after == before)
+                throw new Exception("Fixture repair did not find exact source");
+            var edits = JsonSerializer.Serialize(new {
+                summary = "Repaired the approved Start handler without modifying browser entry.",
+                edits = new[] { new {
+                    path = source.Path, oldText = before, newText = after
+                } },
+                verificationNotes = new[] { "Independently check Start button behavior" }
+            });
+            return Task.FromResult(MafSoftwareEngineer.ApplyRepairEdits(
+                edits, repair, input.ExistingFiles));
         }
         if (input.WorkItem.Id == "timer-interface")
             return Task.FromResult(new EngineeringChangeSet(
@@ -2701,7 +3207,9 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
 sealed class Phase4FakeMafFactory : IMafChatClientFactory
 {
     public Queue<string> Responses { get; } = new();
+    public Queue<string> Failures { get; } = new();
     public List<string> CorrectionReasons { get; } = [];
+    public List<string> UserPrompts { get; } = [];
     public List<string> AtlasObservations { get; } = [];
     public int Attempts { get; private set; }
     public List<MafAgentPurpose> Purposes { get; } = [];
@@ -2724,7 +3232,11 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
             CancellationToken cancellationToken = default)
         {
             parent.Attempts++;
+            if (parent.Failures.Count > 0)
+                throw new StoreFailure(parent.Failures.Dequeue());
             var history = messages.ToArray();
+            parent.UserPrompts.AddRange(history.Where(m => m.Role == ChatRole.User)
+                .Select(m => m.Text ?? ""));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
             parent.AtlasObservations.AddRange(history.Where(m =>
                 m.Role == ChatRole.User && m.Text?.StartsWith(
@@ -2761,6 +3273,7 @@ sealed class Phase5QaModel : IQaSourceReviewer
 {
     public List<string> ReviewedFiles { get; } = [];
     public List<string> ReviewedSourceStates { get; } = [];
+    public List<string> RepairFocusPaths { get; } = [];
 
     public Task<QaFileAssessment> ReviewAsync(
         QaReviewInput input, CancellationToken cancellation)
@@ -2778,6 +3291,14 @@ sealed class Phase5QaModel : IQaSourceReviewer
             throw new Exception("Independent QA received wrong source or stale approval");
         ReviewedFiles.Add(input.File.Path);
         ReviewedSourceStates.Add(input.SourceRun.State);
+        if (input.RepairFocus is { Count: > 0 } focus)
+        {
+            if (input.File.Path != "app.js" ||
+                focus.Any(f => f.Path != input.File.Path ||
+                    f.Classification != "ImplementationDefect"))
+                throw new Exception("Repair QA got foreign file scope or unconfirmed finding");
+            RepairFocusPaths.Add(input.File.Path);
+        }
         return Task.FromResult(input.File.Path == "app.js"
             ? new QaFileAssessment(
                 "The timer code registers a button listener but lacks a persistent timer.",
@@ -2799,6 +3320,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool QaRoleSeen { get; private set; }
     public bool SourceSeen { get; private set; }
     public bool InspectionContextSeen { get; private set; }
+    public bool RepairFocusSeen { get; private set; }
     public bool NoTools { get; private set; }
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
@@ -2830,6 +3352,11 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                 m.Text?.Contains("EngineerAtlasInspected",
                     StringComparison.Ordinal) == true &&
                 m.Text.Contains("0123456789ab", StringComparison.Ordinal));
+            parent.RepairFocusSeen |= history.Any(m =>
+                m.Role.Value == "user" &&
+                m.Text?.Contains("OWNER-CONFIRMED DEFECTS", StringComparison.Ordinal) == true &&
+                m.Text.Contains("NOT proof of a fix", StringComparison.Ordinal) &&
+                m.Text.Contains("Save button is not connected", StringComparison.Ordinal));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
             parent.HostObservationSeen |= history.Any(m =>
                 m.Role.Value == "user" &&
