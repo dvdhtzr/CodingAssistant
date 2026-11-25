@@ -3881,11 +3881,45 @@ try
 
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
+    // AET-210: scope is optional, exact, bounded and included in the
+    // approved policy digest. A proposal alone is never a repair admission.
+    var routineScope = new RoutineRepairScope(aetSmokeRun.Id,
+        QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,aetSmokeRun.Id).Files),
+        ["index.html","app.js"], 4);
+    string[] routineOps = ["SendMessage","ScheduleWork","ReviewCode","ReviewAcceptance","RequestRepair","WriteSource"];
+    foreach (var invalidScope in new[] {
+        routineScope with { MaximumRepairs = 0 },
+        routineScope with { MaximumRepairs = 9 },
+        routineScope with { Paths = ["app.js","APP.js"] },
+        routineScope with { Paths = ["missing.js"] },
+        routineScope with { BaselineSourceSha256 = new string('0',64) }
+    })
+    {
+        try
+        {
+            delegationStore.Propose(taskBound.Id,new ProposeDelegationRequest(5,secondPlanHash,routineOps,invalidScope));
+            Check(false,"invalid routine repair scope cannot be proposed");
+        }
+        catch(StoreFailure e) when(e.Code is "INVALID_INPUT" or "REPAIR_SCOPE_VIOLATION" or "SOURCE_CHANGED")
+        { Check(true,"invalid routine repair scope rejected"); }
+    }
+    try
+    {
+        delegationStore.Propose(taskBound.Id,new ProposeDelegationRequest(5,secondPlanHash,["SendMessage"],routineScope));
+        Check(false,"routine scope without required role permissions cannot be proposed");
+    }
+    catch(StoreFailure e) when(e.Code=="INVALID_INPUT")
+    { Check(true,"routine scope requires explicit source and independent review operations"); }
     var stalePolicy = delegationStore.Propose(taskBound.Id,
-        new ProposeDelegationRequest(5,secondPlanHash,["SendMessage"]));
+        new ProposeDelegationRequest(5,secondPlanHash,routineOps,routineScope));
+    Check(stalePolicy.RoutineRepair is { MaximumRepairs:4 } &&
+        stalePolicy.RoutineRepair.Paths.SequenceEqual(["app.js","index.html"]) &&
+        delegationStore.Read(taskBound.Id)?.RoutineRepair?.BaselineRunId==aetSmokeRun.Id &&
+        stalePolicy.Status=="Proposed","routine repair scope is canonical, durable and initially unapproved");
     stalePolicy = delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
         stalePolicy.Revision,stalePolicy.PolicySha256,"APPROVE " + stalePolicy.PolicySha256));
-    Check(stalePolicy.Current && stalePolicy.EffectiveStatus == "Approved",
+    Check(stalePolicy.Current && stalePolicy.EffectiveStatus == "Approved" &&
+          stalePolicy.RoutineRepair?.MaximumRepairs == 4,
         "delegation explicitly active before architecture revision");
     var boundStore = new ProjectDraftStore(tasks);
     var changedJob = boundStore.Start(taskBound.Id,
