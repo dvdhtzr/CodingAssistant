@@ -8,12 +8,14 @@ interface QaFinding {
   evidence: string;
   recommendation: string;
   criterionId?: string | null;
+  sourceExcerpt?: string | null;
 }
 interface QaAcceptanceSummary {
   planSha256: string; sourceSha256: string; reviewId: string;
   criteria: { criterion: { id: string; workItemId: string; workItemTitle: string;
     requirement: string }; staticStatus: string; verificationStatus: string;
-    concernCount: number }[];
+    concernCount: number; implementationIndicators?: { path: string; sourceSha256: string;
+      sourceExcerpt: string; explanation: string }[] }[];
   findings: { path: string; index: number; finding: QaFinding;
     criterionId: string | null; originalIndices: number[] }[];
   rawFindingCount: number;
@@ -363,6 +365,9 @@ export function QaReviewPanel({ token, taskId, engineering }: {
               <small className="hint"> · {criterionId ?? 'No exact criterion link'}
                 {originalIndices.length > 1 && ' · ' + originalIndices.length + ' duplicate observations consolidated'}</small>
               <span className="hint">Source evidence: {finding.evidence}</span>
+              <span className="hint">{finding.sourceExcerpt
+                ? 'Exact source excerpt: ' + finding.sourceExcerpt
+                : 'No host-matched source excerpt; verify before repair.'}</span>
               <span className="hint">Proposed action: {finding.recommendation}</span>
             </span>
           </label>)}
@@ -450,6 +455,9 @@ export function QaReviewPanel({ token, taskId, engineering }: {
           {!currentReport && ' Historical revision.'}</p>
         <p><strong>{acceptance.criteria.filter(row => row.concernCount > 0).length}
           {' '}criteria with linked static concerns</strong> · all require testing.</p>
+        <p className="hint">{acceptance.criteria.filter(row =>
+          (row.implementationIndicators?.length ?? 0) > 0).length}
+          {' '}criteria with source-grounded implementation indicators (not functional passes).</p>
         <details>
           <summary>Inspect criteria and evidence links ({acceptance.criteria.length})</summary>
           {acceptance.criteria.map(row => <div key={row.criterion.id} className="qa-finding">
@@ -459,6 +467,14 @@ export function QaReviewPanel({ token, taskId, engineering }: {
               ? row.concernCount + ' linked static concern(s)'
               : 'No linked static concern (not proof of implementation)'}
               {' · '}<strong>Requires testing</strong></p>
+            {(row.implementationIndicators?.length ?? 0) > 0 && <details>
+              <summary>Implementation evidence ({row.implementationIndicators?.length})</summary>
+              {row.implementationIndicators?.map((indicator, index) => <div key={index}>
+                <p><strong>{indicator.path}</strong> · exact saved excerpt</p>
+                <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{indicator.sourceExcerpt}</pre>
+                <p className="hint">{indicator.explanation} — QA interpretation, not a test result.</p>
+              </div>)}
+            </details>}
           </div>)}
         </details>
       </section>}
@@ -499,6 +515,8 @@ export function QaReviewPanel({ token, taskId, engineering }: {
           <article className="qa-finding" key={i}>
             <p><strong>{finding.severity}: {finding.requirement}</strong></p>
             <p><strong>Source evidence:</strong> {finding.evidence}</p>
+            {finding.sourceExcerpt ? <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{finding.sourceExcerpt}</pre>
+              : <p className="hint">No host-matched source excerpt. This remains a hypothesis.</p>}
             <p><strong>Proposed action:</strong> {finding.recommendation}</p>
           </article>)}
         <h4>Checks still to perform</h4>
