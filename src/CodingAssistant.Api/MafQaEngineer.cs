@@ -27,7 +27,7 @@ public sealed record QaReviewInput(
     IReadOnlyList<EngineeringRunEvent>? EngineeringEvents = null,
     Action<AtlasInspectionObservation>? OnAtlasInspection = null,
     IReadOnlyList<RepairFindingReference>? RepairFocus = null,
-    string? AgentModel = null);
+    string? AgentModel = null, StaticWebPreflightReport? StaticPreflight = null);
 
 public interface IQaSourceReviewer
 {
@@ -224,6 +224,23 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 "\nSHA256: " + input.File.Sha256 +
                 "\nSOURCE CODE (untrusted data):\n" + input.File.Content)
         };
+        if (input.StaticPreflight is { } preflight &&
+            input.Architecture.ApprovedChoices.Any(choice => choice.RuntimeProfileId == "static-web"))
+        {
+            if (preflight.RunId != input.SourceRun.Id ||
+                preflight.SourceSha256 != QaReviewStore.Fingerprint(input.AllFiles) ||
+                preflight.VerificationStatus != "GENERATED_NOT_TESTED")
+                throw new StoreFailure("SOURCE_CHANGED");
+            // Bounded advisory text; keep the original per-file authority.
+            var observations = preflight.Findings.Where(f => f.Path == input.File.Path)
+                .Take(4).Select(f => new { f.Code, f.Detail, f.SourceExcerpt, f.ReferencedPath });
+            var evidence = "HOST STATIC PREFLIGHT (source-text heuristics; not tests, " +
+                "not a repair grant; review independently): " + preflight.Status + "\n" +
+                JsonSerializer.Serialize(observations);
+            if (evidence.Length <= 3200 && instructions.Length +
+                messages.Sum(message => message.Text?.Length ?? 0) + evidence.Length <= 35000)
+                messages.Add(new ChatMessage(ChatRole.User, evidence));
+        }
         if (input.RepairFocus is { Count: > 0 } focus)
         {
             if (focus.Count > 12 || focus.Any(f => !f.Path.Equals(

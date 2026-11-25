@@ -90,6 +90,8 @@ public sealed class QaReviewCoordinator(
                         throw new StoreFailure("INVALID_STATE");
                 }
             }
+            token.ThrowIfCancellationRequested();
+            var staticPreflight = reviews.CaptureStaticPreflight(review.TaskId, review.Id);
             foreach (var file in source.Files)
             {
                 token.ThrowIfCancellationRequested();
@@ -101,7 +103,7 @@ public sealed class QaReviewCoordinator(
                         review.TaskId, review.Id, file, observation),
                     previousFindings.Where(f => f.Path.Equals(file.Path,
                         StringComparison.OrdinalIgnoreCase)).ToArray(),
-                    AgentModel: review.Model);
+                    AgentModel: review.Model, StaticPreflight: staticPreflight);
                 var report = skillContext is null
                     ? await reviewer.ReviewAsync(input, token)
                     : await ((MafQaEngineer)reviewer).ReviewWithSkillAsync(input, skillContext, token);

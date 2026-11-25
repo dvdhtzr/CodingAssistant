@@ -51,6 +51,9 @@ interface QaReviewSnapshot {
   sourceState: 'Generated' | 'Failed' | 'Interrupted' | 'Unavailable';
   reports: QaFileReport[];
   acceptance?: QaAcceptanceSummary | null;
+  staticPreflight?: { runId: string; sourceSha256: string; status: string;
+    verificationStatus: string; findings: { code: string; severity: string; path: string;
+      detail: string; sourceExcerpt?: string | null; referencedPath?: string | null }[] } | null;
   events: {
     sequence: number;
     kind: string;
@@ -447,6 +450,18 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         {' · '} {potentialIssues} potential issue(s)
         {result.job.errorCode ? ' · ' + result.job.errorCode : ''}
       </p>
+      {result.staticPreflight && result.staticPreflight.runId === result.job.engineeringRunId &&
+        result.staticPreflight.sourceSha256 === result.job.sourceSha256 && <details>
+        <summary>Host source preflight · {result.staticPreflight.findings.length} observation(s)</summary>
+        <p className="hint">{result.staticPreflight.status} · deterministic text checks,
+          not executed tests or confirmed runtime defects.</p>
+        {result.staticPreflight.findings.map((finding, index) => <div className="qa-finding" key={index}>
+          <p><strong>{finding.path} · {finding.code}</strong></p>
+          <p>{finding.detail}</p>
+          {finding.sourceExcerpt && <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{finding.sourceExcerpt}</pre>}
+          {finding.referencedPath && <p className="hint">Candidate referenced path: {finding.referencedPath}</p>}
+        </div>)}
+      </details>}
       {acceptance && <section aria-label="Acceptance evidence" className="qa-acceptance">
         <h3>Acceptance criteria</h3>
         <p className="hint">Exact approved plan v{result.job.planRevision} ·

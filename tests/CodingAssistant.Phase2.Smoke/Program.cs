@@ -1222,10 +1222,16 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var companionFactory = new Phase5FakeMafFactory();
     companionFactory.ScriptedReplies.Enqueue(
         """{"summary":"The linked script contains a Save handler; browser behavior remains unverified.","findings":[],"implementationEvidence":[{"criterionId":"qa:1","sourceExcerpt":"id='save'","explanation":"The primary file declares a named control."}],"crossFileObservations":[{"criterionId":"qa:1","causePath":"app.js","causeExcerpt":"localStorage.setItem","explanation":"The control depends on the companion persistence handler."},{"criterionId":"qa:1","causePath":"large.js","causeExcerpt":"zzzzzzzzzzzz","explanation":"This companion was omitted from the review context."},{"criterionId":"qa:1","causePath":"secrets.cs","causeExcerpt":"RestrictedDetails","explanation":"This non-web file was not admitted as context."}],"manualChecks":["Click Save and reload in an independent browser"]}""");
+    var hostPreflight = new StaticWebPreflightReport(run.Id, run.State,
+        QaReviewStore.Fingerprint(webInput.AllFiles), "POTENTIAL_ISSUES",
+        "GENERATED_NOT_TESTED", 1, 1,
+        [new StaticWebPreflightFinding("MISSING_LINKED_ASSET", "Error", htmlFile.Path,
+            "Fixture source-text observation only.", "<script src='app.js'>", "app.js")]);
     var companionReport = await new MafQaEngineer(companionFactory).ReviewAsync(
-        webInput, CancellationToken.None);
+        webInput with { StaticPreflight = hostPreflight }, CancellationToken.None);
     var companionEvidence = companionFactory.LastCompanionContext ?? "";
-    Check(companionFactory.NoTools && companionReport.Findings.Count == 0 &&
+    Check(companionFactory.NoTools && companionFactory.StaticPreflightSeen &&
+          companionReport.Findings.Count == 0 &&
           companionReport.ImplementationEvidence?.Single().SourceExcerpt == "id='save'" &&
           companionReport.CrossFileObservations?.Count == 1 &&
           companionReport.CrossFileObservations?.Single().CausePath == "app.js" &&
@@ -1238,8 +1244,19 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           !companionEvidence.Contains("RestrictedDetails", StringComparison.Ordinal) &&
           companionEvidence.Contains("2 full companion file(s)", StringComparison.Ordinal),
         "static-web QA receives bounded linked-file evidence and explicit omissions, not unrelated source");
-    Check(factory.LastCompanionContext is null,
+    Check(factory.LastCompanionContext is null && !factory.StaticPreflightSeen,
         "non-static-web QA does not receive expanded companion context");
+    try
+    {
+        _ = await new MafQaEngineer(companionFactory).ReviewAsync(
+            webInput with { StaticPreflight = hostPreflight with { SourceSha256 = new string('0', 64) } },
+            CancellationToken.None);
+        Check(false, "QA must reject a preflight from another snapshot");
+    }
+    catch (StoreFailure error) when (error.Code == "SOURCE_CHANGED")
+    {
+        Check(true, "QA rejects preflight evidence with mismatched fingerprint");
+    }
     try
     {
         _ = await new MafQaEngineer(companionFactory).ReviewAsync(
@@ -1325,6 +1342,12 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           escapes.Findings.Any(f => f.Code == "MISSING_LINKED_ASSET") &&
           escapes.VerificationStatus == "GENERATED_NOT_TESTED",
         "source preflight rejects escapes/external references without running scripts");
+    var missingAsset = escapes.Findings.Single(f => f.Code == "MISSING_LINKED_ASSET");
+    Check(missingAsset.Path == "pages/index.html" &&
+          missingAsset.SourceExcerpt == "<link rel='stylesheet' href='../missing.css'>" &&
+          missingAsset.ReferencedPath == "missing.css" &&
+          escapes.VerificationStatus == "GENERATED_NOT_TESTED",
+        "deterministic preflight exposes exact source candidate and resolved missing asset without runtime claims");
     var notWeb = CheckFiles("Generated", Source("Program.cs", "class Program {}"));
     Check(notWeb.Status == "NOT_STATIC_WEB" &&
           notWeb.Findings.Count == 0 &&
@@ -2681,6 +2704,12 @@ try
     using (var acceptanceBody = await Body(acceptanceResponse))
     {
         var savedAcceptance = acceptanceBody.RootElement.GetProperty("acceptance");
+        var savedPreflight = acceptanceBody.RootElement.GetProperty("staticPreflight");
+        Check(savedPreflight.GetProperty("runId").GetString() == engineeringRunId &&
+            savedPreflight.GetProperty("sourceSha256").GetString() == qaResult!.Job.SourceSha256 &&
+            savedPreflight.GetProperty("verificationStatus").GetString() == "GENERATED_NOT_TESTED" &&
+            qaResult.Events.Count(e => e.Kind == "QaStaticPreflightCaptured") == 1,
+            "QA persists one host-owned preflight bound to exact saved source; no runtime claims");
         Check(acceptanceResponse.StatusCode == HttpStatusCode.OK &&
             savedAcceptance.GetProperty("reviewId").GetString() == qaReviewId &&
             savedAcceptance.GetProperty("planSha256").GetString() == secondPlanHash &&
@@ -4127,6 +4156,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public string? LastCompanionContext { get; private set; }
     public int SkillContextsSeen { get; private set; }
     public int ReferenceContextsSeen { get; private set; }
+    public bool StaticPreflightSeen { get; private set; }
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
 
@@ -4176,6 +4206,9 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                     m.Text?.Contains("OWNER-REVIEWED ADVISORY REFERENCE (references/review-checklist.md)", StringComparison.Ordinal) == true &&
                     m.Text.Contains("Identify state persistence and restoration paths", StringComparison.Ordinal)))
                 parent.ReferenceContextsSeen++;
+            parent.StaticPreflightSeen |= history.Any(m =>
+                m.Role.Value == "user" && m.Text?.StartsWith("HOST STATIC PREFLIGHT", StringComparison.Ordinal) == true &&
+                m.Text.Contains("MISSING_LINKED_ASSET", StringComparison.Ordinal));
             parent.HostObservationSeen |= history.Any(m =>
                 m.Role.Value == "user" &&
                 m.Text?.Contains("HOST QA CODE ATLAS OBSERVATION",
