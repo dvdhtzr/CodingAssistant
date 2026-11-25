@@ -12,8 +12,10 @@ internal static class QaProjectContext
     internal const int MaximumCompanionCharacters = 4800;
     internal const int MaximumCompanionFiles = 6;
 
-    internal static string? Build(QaReviewInput input, int availableCharacters)
+    internal static string? Build(QaReviewInput input, int availableCharacters,
+        out IReadOnlyList<EngineeringSourceFile> supplied)
     {
+        supplied = [];
         if (!input.Architecture.ApprovedChoices.Any(choice =>
                 choice.RuntimeProfileId == "static-web"))
             return null;
@@ -64,10 +66,12 @@ internal static class QaProjectContext
         // Large manifests may consume the remaining prompt budget. An
         // absent message is explicitly treated as no companion coverage
         // by the agent policy, not as evidence of missing behavior.
-        return context.Length <= availableCharacters ? context : null;
+        if (context.Length > availableCharacters) return null;
+        supplied = included.AsReadOnly();
+        return context;
     }
 
-    private static bool IsWebSource(string path) =>
+    internal static bool IsWebSource(string path) =>
         Path.GetExtension(path).ToLowerInvariant() is ".html" or ".htm" or ".js" or ".mjs" or ".css";
 
     private static int Priority(string path) =>
