@@ -52,6 +52,14 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
                 PRIMARY KEY(task_id,revision),
                 FOREIGN KEY(task_id,revision) REFERENCES engineering_delegation(task_id,revision) ON DELETE CASCADE
             );
+            CREATE TABLE IF NOT EXISTS engineering_routine_repair_admissions (
+                task_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                policy_sha256 TEXT NOT NULL, cycle_id TEXT NOT NULL UNIQUE,
+                base_run_id TEXT NOT NULL, candidate_run_id TEXT NOT NULL UNIQUE,
+                path TEXT NOT NULL, created_utc TEXT NOT NULL,
+                PRIMARY KEY(task_id,revision,cycle_id),
+                FOREIGN KEY(task_id,revision) REFERENCES engineering_delegation(task_id,revision) ON DELETE CASCADE
+            );
             """);
 
     private static DelegationPolicy? Latest(SqliteConnection db,
@@ -156,7 +164,11 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
         IReadOnlyList<string> operations, RoutineRepairScope? scope)
     {
         if (scope is null) return null;
-        if (scope.MaximumRepairs is < 1 or > 8 || scope.Paths is null ||
+        if (scope.BaselineRunId is not { Length: 32 } ||
+            !scope.BaselineRunId.All(Uri.IsHexDigit) ||
+            scope.BaselineSourceSha256 is not { Length: 64 } ||
+            !scope.BaselineSourceSha256.All(Uri.IsHexDigit) ||
+            scope.MaximumRepairs is < 1 or > 8 || scope.Paths is null ||
             scope.Paths.Length is < 1 or > 12 ||
             scope.Paths.Any(p => string.IsNullOrWhiteSpace(p) || ProjectDraftStore.SafePath(p) != p) ||
             scope.Paths.Distinct(StringComparer.OrdinalIgnoreCase).Count() != scope.Paths.Length ||
@@ -278,6 +290,86 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
         tx.Commit();
         tasks.SignalEngineeringActivity(taskId);
         return result;
+    }
+
+    // Admission is host-internal and must be called in the same transaction
+    // as the original exact-source repair checks and candidate creation.
+    internal static void AdmitRoutineRepair(SqliteConnection db, SqliteTransaction tx,
+        CollaborationRun parent, RepairProposal proposal, string path,
+        string cycleId, string candidateRunId)
+    {
+        var taskId = parent.TaskId;
+        Require(db,tx,taskId,parent.PolicyRevision,parent.PolicySha256,"TechnicalLead","RequestRepair");
+        Require(db,tx,taskId,parent.PolicyRevision,parent.PolicySha256,"SoftwareEngineer","WriteSource");
+        var policy = Latest(db,tx,taskId)!;
+        var scope = policy.RoutineRepair ?? throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+        if (!scope.Paths.Contains(path,StringComparer.Ordinal) ||
+            parent.RunId != proposal.EngineeringRunId ||
+            parent.SourceSha256 != proposal.SourceSha256 ||
+            parent.PlanSha256 != proposal.PlanSha256)
+            throw new StoreFailure("REPAIR_SCOPE_VIOLATION");
+        if (EngineeringMessageStore.SourceFingerprint(db,tx,scope.BaselineRunId) != scope.BaselineSourceSha256)
+            throw new StoreFailure("SOURCE_CHANGED");
+        var count = int.Parse(TaskStore.Scalar(db,tx,"""
+            SELECT COUNT(*) FROM engineering_routine_repair_admissions
+            WHERE task_id=@task AND revision=@rev
+            """,("@task",taskId),("@rev",policy.Revision)) ?? "0");
+        if (count >= scope.MaximumRepairs)
+            throw new StoreFailure("ROUTINE_REPAIR_BUDGET_EXHAUSTED");
+        // No unrelated rerun or manually created repair can silently inherit
+        // the delegation. Each later candidate must descend from a previous
+        // admission under the same policy and have independent recheck evidence.
+        var cursor = parent.RunId;
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        while (cursor != scope.BaselineRunId)
+        {
+            if (!visited.Add(cursor) || visited.Count > scope.MaximumRepairs)
+                throw new StoreFailure("SOURCE_CHANGED");
+            cursor = TaskStore.Scalar(db,tx,"""
+                SELECT a.base_run_id FROM engineering_routine_repair_admissions a
+                JOIN repair_cycles c ON c.id=a.cycle_id
+                WHERE a.task_id=@task AND a.revision=@rev AND a.policy_sha256=@sha
+                AND a.candidate_run_id=@run AND c.engineering_run_id=@run
+                AND c.state IN ('Generated','QaReviewed')
+                """,("@task",taskId),("@rev",policy.Revision),("@sha",policy.PolicySha256),
+                ("@run",cursor)) ?? throw new StoreFailure("SOURCE_CHANGED");
+        }
+        if (parent.RunId != scope.BaselineRunId)
+        {
+            var progress = RepairProgressStore.Read(db,tx,taskId,parent.RunId);
+            if (progress.StrategyChangeRequired ||
+                progress.Attempts.LastOrDefault() is not { IndependentStaticResolution:true })
+                throw new StoreFailure("ROUTINE_REPAIR_RECHECK_REQUIRED");
+        }
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO engineering_routine_repair_admissions(task_id,revision,policy_sha256,
+                cycle_id,base_run_id,candidate_run_id,path,created_utc)
+            VALUES(@task,@rev,@sha,@cycle,@base,@candidate,@path,@utc)
+            """,("@task",taskId),("@rev",policy.Revision),("@sha",policy.PolicySha256),
+            ("@cycle",cycleId),("@base",parent.RunId),("@candidate",candidateRunId),
+            ("@path",path),("@utc",DateTimeOffset.UtcNow.ToString("O")));
+    }
+
+    // Revalidate revocation and source-only scope at each candidate write,
+    // not merely when the agent was dispatched. The manual path is unchanged.
+    internal static void RequireRoutineWrite(SqliteConnection db,SqliteTransaction tx,
+        EngineeringRun job,IReadOnlyList<EngineeringFileChange>? files=null)
+    {
+        int revision; string sha; string path;
+        using (var cmd=TaskStore.Command(db,tx,"""
+            SELECT revision,policy_sha256,path FROM engineering_routine_repair_admissions
+            WHERE task_id=@task AND candidate_run_id=@run
+            """,("@task",job.TaskId),("@run",job.Id)))
+        using (var reader=cmd.ExecuteReader())
+        {
+            if (!reader.Read()) return;
+            revision=reader.GetInt32(0);sha=reader.GetString(1);path=reader.GetString(2);
+        }
+        Require(db,tx,job.TaskId,revision,sha,"SoftwareEngineer","WriteSource");
+        var scope=Latest(db,tx,job.TaskId)?.RoutineRepair;
+        if (scope is null || !scope.Paths.Contains(path,StringComparer.Ordinal) ||
+            (files is not null && files.Any(f=>f.Path!=path)))
+            throw new StoreFailure("REPAIR_SCOPE_VIOLATION");
     }
 
     // Called inside the same transaction as a future autonomous action.
