@@ -22,9 +22,10 @@ public sealed record CollaborationInput(string Objective,CollaborationRun Job,
     IReadOnlyList<CollaborationStep> Steps,RepairProgressReport? RepairProgress=null,
     IReadOnlyList<EngineeringIssue>? RecheckCandidates=null);
 public sealed record CollaborationAdmission(string JobId,int Sequence);
+public sealed record RoutineRepairCandidate(string RunId,string SourceSha256,IReadOnlyList<string> Paths);
 public sealed record CollaborationPreview(string? PlanSha256,DelegationPolicy? Policy,
     CollaborationSnapshot? Snapshot,StartCollaborationRequest? Candidate,bool CanStart,bool CanResume,
-    string Reason,InferenceCapacity Capacity);
+    string Reason,InferenceCapacity Capacity,RoutineRepairCandidate? RoutineRepairCandidate=null);
 
 public interface ICollaborationLead
 {
@@ -187,20 +188,27 @@ public sealed class CollaborationStore(TaskStore tasks)
         var snapshot=id is null?null:new CollaborationSnapshot(Find(db,tx,taskId,id),Steps(db,tx,id));
         string? planSha=null;
         StartCollaborationRequest? candidate=null;
+        RoutineRepairCandidate? routineCandidate=null;
         var reason="PLAN_NOT_APPROVED";var start=false;var resume=false;
         try
         {
             var plan=ImplementationPlanStore.RequireCurrentApproved(db,tx,taskId);
             planSha=plan.PlanSha256;
-            if(policy is null || policy.Status!="Approved" || !policy.Current)
-                throw new StoreFailure("DELEGATION_NOT_AUTHORIZED");
-            foreach(var (role,operation) in new[]{("TechnicalLead","ScheduleWork"),("LeadSoftwareEngineer","ReviewCode"),("QaEngineer","ReviewAcceptance")})
-                EngineeringDelegationStore.Require(db,tx,taskId,policy.Revision,policy.PolicySha256,role,operation);
             var runId=TaskStore.Scalar(db,tx,"SELECT id FROM engineering_runs WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1",("@task",taskId));
             var run=runId is null?null:EngineeringRunStore.Find(db,tx,runId);
             if(run is null || run.State!="Generated")throw new StoreFailure("BUILD_NOT_COMPLETE");
             EngineeringRunStore.RequireBinding(db,tx,run);
-            candidate=new(run.Id,EngineeringMessageStore.SourceFingerprint(db,tx,run.Id),plan.PlanSha256,policy.Revision,policy.PolicySha256);
+            var fingerprint=EngineeringMessageStore.SourceFingerprint(db,tx,run.Id);
+            var paths=new List<string>();
+            using(var command=TaskStore.Command(db,tx,"SELECT path FROM engineering_run_files WHERE run_id=@run ORDER BY path",("@run",run.Id)))
+            using(var reader=command.ExecuteReader())
+                while(reader.Read())paths.Add(reader.GetString(0));
+            if(paths.Count>0)routineCandidate=new(run.Id,fingerprint,paths.AsReadOnly());
+            if(policy is null || policy.Status!="Approved" || !policy.Current)
+                throw new StoreFailure("DELEGATION_NOT_AUTHORIZED");
+            foreach(var (role,operation) in new[]{("TechnicalLead","ScheduleWork"),("LeadSoftwareEngineer","ReviewCode"),("QaEngineer","ReviewAcceptance")})
+                EngineeringDelegationStore.Require(db,tx,taskId,policy.Revision,policy.PolicySha256,role,operation);
+            candidate=new(run.Id,fingerprint,plan.PlanSha256,policy.Revision,policy.PolicySha256);
             RequireNoActive(db,tx,taskId);
             if(TaskStore.Scalar(db,tx,"SELECT 1 FROM lead_reviews WHERE task_id=@task AND state='Running' UNION SELECT 1 FROM qa_reviews WHERE task_id=@task AND state='Running'",("@task",taskId)) is not null)
                 throw new StoreFailure("BUILD_BUSY");
@@ -210,7 +218,7 @@ public sealed class CollaborationStore(TaskStore tasks)
             start=!same || snapshot!.Job.State is ("Failed" or "Escalated");
             reason=resume?"RESUME_AVAILABLE":start?"READY":snapshot!.Job.Reason??snapshot.Job.State;
         }catch(StoreFailure e){reason=e.Code;}
-        tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,LocalInferenceScheduler.Shared.Snapshot());
+        tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,LocalInferenceScheduler.Shared.Snapshot(),routineCandidate);
     }
 
     public CollaborationSnapshot? Latest(string taskId)
