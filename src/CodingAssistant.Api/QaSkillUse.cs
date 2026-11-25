@@ -79,7 +79,7 @@ public sealed partial class SkillReviewStore
             ("@skill", skill.Name), ("@role", skill.Role), ("@revision", review.Revision),
             ("@review", review.ReviewSha256), ("@content", skill.ContentSha256),
             ("@utc", DateTimeOffset.UtcNow.ToString("O")));
-        return new QaSkillContext(job, skill.Instructions);
+        return new QaSkillContext(job, SkillCatalog.ReviewedInstructionContext(skill));
     }
 
     public IReadOnlyList<QaSkillUseEvent> ReadQaUses(string taskId)
