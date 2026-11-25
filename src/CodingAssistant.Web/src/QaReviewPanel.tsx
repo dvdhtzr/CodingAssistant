@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from './api';
+import { api, newRequestId } from './api';
 import type { EngineeringState } from './EngineeringWorkspace';
 
 interface QaFinding {
@@ -78,6 +78,19 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const [repairOpen, setRepairOpen] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [confirmed, setConfirmed] = useState(false);
+  const [qaSkill, setQaSkill] = useState<{ skill: { name: string; role: string };
+    revision: number; reviewSha256: string; approvedForLocalInstructionReview: boolean } | null>(null);
+  const [useQaSkill, setUseQaSkill] = useState(false);
+  useEffect(() => {
+    let closed = false;
+    setQaSkill(null); setUseQaSkill(false);
+    void api<{ skills: NonNullable<typeof qaSkill>[] }>(token, '/api/tasks/' + taskId + '/skill-reviews')
+      .then(value => { if (!closed) setQaSkill(value.skills.find(item =>
+        item.skill.name === 'static-web-verification' && item.skill.role === 'QaEngineer' &&
+        item.approvedForLocalInstructionReview) ?? null); })
+      .catch(() => { if (!closed) setQaSkill(null); });
+    return () => { closed = true; };
+  }, [token, taskId, reload, engineering.snapshot?.job.id]);
 
   useEffect(() => {
     let closed = false;
@@ -143,6 +156,8 @@ export function QaReviewPanel({ token, taskId, engineering }: {
 
   async function start() {
     if (busy || !eligible || !source || running) return;
+    const selectedSkill = useQaSkill ? qaSkill : null;
+    setUseQaSkill(false);
     setBusy('start');
     setError('');
     try {
@@ -150,6 +165,9 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         '/api/tasks/' + taskId + '/qa-reviews', {
           engineeringRunId: source.id,
           planSha256: source.planSha256,
+          ...(selectedSkill ? { skill: { name: selectedSkill.skill.name,
+            reviewRevision: selectedSkill.revision, reviewSha256: selectedSkill.reviewSha256,
+            requestId: newRequestId() } } : {}),
         });
       setResult({ job: admitted, reports: [], events: [],
         sourceState: source.state as 'Generated' | 'Failed' | 'Interrupted' });
@@ -269,6 +287,12 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       {' '}A failed or interrupted run with saved files is eligible for
       explicitly requested partial-source review.</p>}
 
+    {qaSkill && eligible && !running && <label className="hint">
+      <input type="checkbox" checked={useQaSkill} disabled={!!busy}
+        onChange={event => setUseQaSkill(event.target.checked)} />
+      Use reviewed static-web-verification skill for this static-web QA review only
+      (not a runtime test; other project types are rejected)
+    </label>}
     <div className="actions">
       <button type="button" className="primary"
         disabled={!eligible || running || !!busy}
