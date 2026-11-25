@@ -16,6 +16,7 @@ interface Preview { planSha256: string | null; policy: Policy | null;
   snapshot: CollaborationSnapshot | null; candidate: Candidate | null;
   canStart: boolean; canResume: boolean; reason: string;
   routineRepairCandidate?: {runId:string;sourceSha256:string;paths:string[]}|null;
+  linkedRepair?: {cycleId:string;state:string;errorCode:string|null}|null;
   capacity: { capacity: number; active: number; waiting: number } }
 const operations=['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','SendMessage'];
 const actionLabel: Record<string,string>={
@@ -145,7 +146,10 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
   },[token,root,version]);
   const policy=preview?.policy;
   const job=preview?.snapshot?.job;
-  const running=job?.state==='Running';
+  const linkedRepair=preview?.linkedRepair;
+  const repairing=linkedRepair?.state==='Running'||linkedRepair?.state==='QaRunning';
+  const continuing=linkedRepair?.state==='Generated';
+  const running=job?.state==='Running'||repairing||continuing;
   async function act(action:'propose'|'approve'|'revoke'|'start'|'resume'|'cancel'){
     if(busy||!preview||loadError)return;
     setBusy(true);setError('');
@@ -166,7 +170,9 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
         await api(token,root+'/collaboration',{...preview.candidate});
       else if(action==='resume'&&preview.canResume&&preview.candidate&&job)
         await api(token,root+'/collaboration/'+job.id+'/resume',{...preview.candidate});
-      else if(action==='cancel'&&running&&job)
+      else if(action==='cancel'&&repairing&&linkedRepair)
+        await api(token,root+'/repair-cycles/'+linkedRepair.cycleId+'/cancel',{});
+      else if(action==='cancel'&&job?.state==='Running')
         await api(token,root+'/collaboration/'+job.id+'/cancel',{});
       else throw Error('This action is no longer available.');
       setVersion(v=>v+1);
@@ -180,7 +186,8 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
   const proposed=policy?.status==='Proposed'&&policy.current;
   return <section className="ca-coordination" aria-label="Team coordination">
     <div className="ca-coordination-state"><h3>Team coordination</h3>
-      <strong role="status">{job?stateLabel[job.state]??job.state:'Not started'}</strong></div>
+      <strong role="status">{repairing?'Repairing saved source':continuing?'Saved candidate · independent review pending':
+        linkedRepair?'Repair '+linkedRepair.state:job?stateLabel[job.state]??job.state:'Not started'}</strong></div>
     <p>Inference: {preview.capacity.active}/{preview.capacity.capacity} active · {preview.capacity.waiting} queued</p>
     {loadError&&<p role="alert">Refresh unavailable. Actions are disabled until evidence is current.</p>}
     {!approved&&!proposed&&<><p>Authorize routine reviews, scheduling and messaging. You can also delegate bounded source-only repairs. Execution always requires separate authorization.</p>
@@ -225,12 +232,15 @@ export function CollaborationPanel({token,taskId}:{token:string;taskId:string}) 
       onClick={()=>void act('start')}>Start team coordination</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('resume')}>Resume saved coordination</button>}
-    {running&&<button type="button" disabled={busy||loadError} onClick={()=>void act('cancel')}>Stop coordination</button>}
-    {approved&&job?.state==='AwaitingOwner'&&job.reason==='EXACT_REPAIR_APPROVAL_REQUIRED'&&preview.snapshot&&
+    {(repairing||job?.state==='Running')&&<button type="button" disabled={busy||loadError} onClick={()=>void act('cancel')}>Stop coordination</button>}
+    {linkedRepair&&<p>{repairing?'The Software Engineer is working within the admitted scope.':
+      continuing?'The repair is saved but not verified. Waiting for the independent review handoff.':
+      'The linked repair has stopped.'}{linkedRepair.errorCode?' · '+linkedRepair.errorCode:''}</p>}
+    {!linkedRepair&&approved&&job?.state==='AwaitingOwner'&&job.reason==='EXACT_REPAIR_APPROVAL_REQUIRED'&&preview.snapshot&&
       <ScopedRepairPanel key={job.id} token={token} root={root} snapshot={preview.snapshot}
         disabled={busy||loadError||preview.candidate?.sourceSha256!==job.sourceSha256||preview.candidate?.policySha256!==job.policySha256}
         onSaved={()=>setVersion(v=>v+1)} />}
-    {job?.reason&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
+    {!linkedRepair&&job?.reason&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {!job&&!preview.canStart&&approved&&<p>{preview.reason==='BUILD_NOT_COMPLETE'?
       'Complete approved source generation before coordinating independent reviews.':preview.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {preview.snapshot?.steps.length ? <details>
