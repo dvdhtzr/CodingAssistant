@@ -7,6 +7,17 @@ interface QaFinding {
   requirement: string;
   evidence: string;
   recommendation: string;
+  criterionId?: string | null;
+}
+interface QaAcceptanceSummary {
+  planSha256: string; sourceSha256: string; reviewId: string;
+  criteria: { criterion: { id: string; workItemId: string; workItemTitle: string;
+    requirement: string }; staticStatus: string; verificationStatus: string;
+    concernCount: number }[];
+  findings: { path: string; index: number; finding: QaFinding;
+    criterionId: string | null; originalIndices: number[] }[];
+  rawFindingCount: number;
+  unmappedFindingCount: number;
 }
 interface QaFileReport {
   path: string;
@@ -34,6 +45,7 @@ interface QaReviewSnapshot {
   job: QaReviewJob;
   sourceState: 'Generated' | 'Failed' | 'Interrupted' | 'Unavailable';
   reports: QaFileReport[];
+  acceptance?: QaAcceptanceSummary | null;
   events: {
     sequence: number;
     kind: string;
@@ -153,6 +165,10 @@ export function QaReviewPanel({ token, taskId, engineering }: {
     result?.job.engineeringRunId === source.id &&
     result.job.planSha256 === plan?.planSha256 &&
     plan?.current === true;
+  // A new review or source revision invalidates previous owner selection.
+  useEffect(() => {
+    setRepairOpen(false); setSelected([]); setConfirmed(false);
+  }, [taskId, result?.job.id, source?.id, plan?.planSha256]);
 
   async function start() {
     if (busy || !eligible || !source || running) return;
@@ -192,18 +208,24 @@ export function QaReviewPanel({ token, taskId, engineering }: {
     } finally { setBusy(''); }
   }
 
-  const potentialIssues = result?.reports.reduce((total, report) =>
+  const acceptance = result?.acceptance &&
+    result.acceptance.reviewId === result.job.id &&
+    result.acceptance.planSha256 === result.job.planSha256 &&
+    result.acceptance.sourceSha256 === result.job.sourceSha256
+    ? result.acceptance : null;
+  const rawIssueCount = result?.reports.reduce((total, report) =>
     total + report.assessment.findings.length, 0) ?? 0;
+  const potentialIssues = acceptance?.findings.length ?? rawIssueCount;
   const qaAtlasInvestigations = result?.events.filter(
     event => event.kind === 'QaAtlasInspected').length ?? 0;
 
   const repairRunning = repair?.cycle.state === 'Running' ||
     repair?.cycle.state === 'QaRunning';
-  const availableFindings = result?.reports.flatMap(report =>
-    report.assessment.findings.map((finding, index) => ({
-      path: report.path, index, finding,
-      key: report.path + ':' + index,
-    }))) ?? [];
+  const availableFindings = (acceptance?.findings ??
+    result?.reports.flatMap(report =>
+      report.assessment.findings.map((finding, index) => ({
+        path: report.path, index, finding, criterionId: null, originalIndices: [index],
+      }))) ?? []).map(row => ({ ...row, key: row.path + ':' + row.index }));
   const selectedFindings = availableFindings.filter(f => selected.includes(f.key));
   const selectedFiles = new Set(selectedFindings.map(f => f.path.toLowerCase()));
   const canRequestRepair = currentReport && result?.job.state === 'Reviewed' &&
@@ -328,7 +350,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         <p className="hint">Select findings in <strong>one source file</strong>
           for this owner-approved cycle. After independent QA, you can
           authorize another cycle against fresh evidence if needed.</p>
-        {availableFindings.map(({ path, index, finding, key }) =>
+        {availableFindings.map(({ path, finding, key, criterionId, originalIndices }) =>
           <label key={key} className="qa-repair-choice">
             <input type="checkbox" checked={selected.includes(key)}
               onChange={event => {
@@ -337,7 +359,12 @@ export function QaReviewPanel({ token, taskId, engineering }: {
                 setConfirmed(false);
               }}/>
             <span><strong>{finding.severity}:</strong>{' '}
-              {finding.requirement} <small>({path})</small></span>
+              {finding.requirement} <small>({path})</small>
+              <small className="hint"> · {criterionId ?? 'No exact criterion link'}
+                {originalIndices.length > 1 && ' · ' + originalIndices.length + ' duplicate observations consolidated'}</small>
+              <span className="hint">Source evidence: {finding.evidence}</span>
+              <span className="hint">Proposed action: {finding.recommendation}</span>
+            </span>
           </label>)}
         <label className="qa-repair-choice">
           <input type="checkbox" checked={confirmed}
@@ -412,6 +439,24 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         {' · '} {potentialIssues} potential issue(s)
         {result.job.errorCode ? ' · ' + result.job.errorCode : ''}
       </p>
+      {acceptance && <section aria-label="Acceptance evidence" className="qa-acceptance">
+        <h3>Acceptance criteria</h3>
+        <p className="hint">Exact approved plan v{result.job.planRevision} ·
+          {' '}{acceptance.criteria.length} criteria · no functional tests run.
+          {rawIssueCount > potentialIssues &&
+            ' ' + (rawIssueCount - potentialIssues) + ' exact duplicate observation(s) consolidated.'}
+          {acceptance.unmappedFindingCount > 0 &&
+            ' ' + acceptance.unmappedFindingCount + ' concern(s) have no exact criterion link.'}
+          {!currentReport && ' Historical revision.'}</p>
+        {acceptance.criteria.map(row => <div key={row.criterion.id} className="qa-finding">
+          <p><strong>{row.criterion.requirement}</strong></p>
+          <p className="hint">{row.criterion.workItemTitle} · {row.criterion.id}</p>
+          <p>{row.concernCount > 0
+            ? row.concernCount + ' linked static concern(s)'
+            : 'No linked static concern (not proof of implementation)'}
+            {' · '}<strong>Requires testing</strong></p>
+        </div>)}
+      </section>}
       {qaAtlasInvestigations > 0 && <p className="hint"
         aria-label="Independent QA Code Atlas investigations">
         QA independently requested <strong>{qaAtlasInvestigations} Code Atlas
