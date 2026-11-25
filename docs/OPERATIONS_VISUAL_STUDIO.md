@@ -87,3 +87,27 @@ Git does not synchronize task history or run evidence.
 
 The existing Linux `start.sh`, CI scripts, .NET project, and Vite project
 remain otherwise unchanged.
+
+
+## Intermittent Windows SQLite sidecar permission checks
+
+If Visual Studio breaks in `PrivateDataDirectory.ValidateFile` with
+`UnauthorizedAccessException` during agent activity, a short-lived SQLite
+WAL/SHM/journal file may be pending deletion. Windows can return access
+denied rather than file not found during this transition. The stack trace
+alone does not distinguish this from a genuine ACL problem.
+
+The Windows sidecar validator now reads attributes and owner/DACL from a
+single non-following metadata handle. It reobserves only expected transient
+Win32 access/delete/sharing statuses with a bounded 75 ms cumulative delay.
+An unreadable or unsafe file is never silently accepted; persistent failures
+produce a sanitized `PRIVATE_DATA_UNAVAILABLE` HTTP 503 during database access.
+Startup still rejects unsafe existing storage. No ACL changes, elevation,
+credential changes, or SQLite journal-mode changes are required.
+
+Validate locally by running the application normally under Visual Studio
+while multiple panels poll during source generation and QA. Confirm normal
+progress, no unexpected debugger breaks, and persisted history after restart.
+Do not disable all unauthorized-access exceptions or grant broad permissions
+as a workaround. If the issue persists, record the operation, error and file
+suffix (not the private path, token, or data) for further investigation.
