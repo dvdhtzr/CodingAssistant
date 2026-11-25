@@ -158,28 +158,35 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
         File.Delete(sidecar);
         if (OperatingSystem.IsWindows())
         {
-            // A genuine persistent sharing denial is not an absent file.
-            // Opening with no sharing prevents metadata access while the
-            // handle lives; the bounded validation must not open SQLite.
-            using (var held = new FileStream(sidecar, FileMode.CreateNew,
-                FileAccess.ReadWrite, FileShare.None))
+            // Deterministic error sequences complement actual SQLite churn.
+            foreach (var finalStatus in new[] { 0, 2 })
             {
-                // Explicitly deny READ_CONTROL on the file instead of assuming
-                // metadata access conflicts with every Windows sharing mode.
-                var acl = held.GetAccessControl();
-                using var identity = WindowsIdentity.GetCurrent();
-                acl.AddAccessRule(new FileSystemAccessRule(identity.User!,
-                    FileSystemRights.ReadPermissions, AccessControlType.Deny));
-                held.SetAccessControl(acl);
-                var denied = false;
-                try { _ = owner.GetTask(task.Id); }
-                catch (StoreFailure failure) { denied = failure.Code == "PRIVATE_DATA_UNAVAILABLE"; }
-                Check(denied, "persistent sidecar access denial is not treated as absence");
-                acl.RemoveAccessRuleSpecific(new FileSystemAccessRule(identity.User!,
-                    FileSystemRights.ReadPermissions, AccessControlType.Deny));
-                held.SetAccessControl(acl);
+                var sequence = new Queue<int>(new[] { 5, 303, 32, finalStatus });
+                var delays = new List<int>();
+                WindowsSidecarSecurity.ValidateObserved(sequence.Dequeue, delays.Add);
+                Check(sequence.Count == 0 && delays.SequenceEqual(new[] { 5, 10, 20 }),
+                    "transient access/delete/sharing errors require reobservation");
             }
-            File.Delete(sidecar);
+            var observations = 0;
+            var deniedDelays = new List<int>();
+            var denied = false;
+            try
+            {
+                WindowsSidecarSecurity.ValidateObserved(() => { observations++; return 5; },
+                    deniedDelays.Add);
+            }
+            catch (InvalidOperationException) { denied = true; }
+            Check(denied && observations == 5 &&
+                deniedDelays.SequenceEqual(new[] { 5, 10, 20, 40 }),
+                "persistent sidecar access denial never becomes absence");
+            var unexpectedDenied = false;
+            try
+            {
+                WindowsSidecarSecurity.ValidateObserved(() => 3,
+                    _ => throw new Exception("Unexpected error must not be retried"));
+            }
+            catch (InvalidOperationException) { unexpectedDenied = true; }
+            Check(unexpectedDenied, "missing parent path is not an absent sidecar");
         }
         Check(owner.GetTask(task.Id).Task.Id == task.Id,
             "private database reads recover after unsafe sidecar removal");
