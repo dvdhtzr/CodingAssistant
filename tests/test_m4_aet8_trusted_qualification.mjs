@@ -6,7 +6,7 @@ import {spawnSync} from 'node:child_process';
 import {trustedDockerArgs,parseTrustedReport,parseGuestStream,trustedPayload,qualifyTrusted} from '../tools/m4/windows_aet8_trusted_qualification.mjs';
 import {SECURITY_CASES,FIXTURE_CASES} from '../tools/m4/windows_aet8_trusted_guest.mjs';
 import {QUALIFICATION_BROWSER_ARGS,createPipeTransport,waitForBrowserExit,closeBrowserProcess} from '../tools/m4/windows_aet8_pipe_driver.mjs';
-import {CALCULATION_CASES} from '../tools/m4/calculation_journal_contract.mjs';
+import {CALCULATION_CASES,evaluateCalculationJournal} from '../tools/m4/calculation_journal_contract.mjs';
 const name='ca-win-aet8-012345abcdef',id='sha256:'+'a'.repeat(64);
 const booleans=(keys,value)=>Object.fromEntries(keys.map(k=>[k,value]));
 const good=()=>({schemaVersion:1,security:booleans(SECURITY_CASES,true),fixture:booleans(FIXTURE_CASES,true),observations:{working:booleans(CALCULATION_CASES,true),broken:booleans(CALCULATION_CASES,false),spoof:booleans(CALCULATION_CASES,false)}});
@@ -27,7 +27,7 @@ function dockerMock(change={}){
 }
 test('trusted integrated profile reuses only approved fixture restrictions',()=>{
   const args=trustedDockerArgs(id,name);
-  for(const a of ['--network=none','--read-only','--cap-drop=all','--security-opt=no-new-privileges','--user=1000:1000','--pids-limit=256','--memory=2g','--cpus=2','--ipc=private','--run-trusted-aet8'])assert.ok(args.includes(a),a);
+  for(const a of ['--network=none','--read-only','--cap-drop=all','--security-opt=no-new-privileges','--user=1000:1000','--pids-limit=256','--memory=2g','--cpus=2','--ipc=private','--init','--run-trusted-aet8'])assert.ok(args.includes(a),a);
   for(const a of ['--mount','-v','--cap-add','--privileged','--publish','--network=host'])assert.ok(!args.includes(a),a);
   assert.ok(QUALIFICATION_BROWSER_ARGS.includes('--remote-debugging-pipe'));
   assert.ok(!QUALIFICATION_BROWSER_ARGS.some(a=>/no-sandbox|disable-setuid-sandbox|disable-web-security|remote-debugging-port|allow-chrome-scheme-url|single-process|no-zygote/.test(a)));
@@ -117,4 +117,22 @@ test('stream checkpoints retain exact security observations on outer timeout but
   const finished=parseGuestStream(line+JSON.stringify(good())+'\n');assert.ok(finished.final);
   assert.throws(()=>parseGuestStream(JSON.stringify(good())+'\n'+line));
   assert.throws(()=>parseGuestStream(line.repeat(33)));
+});
+
+test('forced exit or nonzero browser process exit never satisfies persistence',async()=>{
+  const transport={send:async()=>{},close:()=>{}};
+  const child=new EventEmitter();child.exitCode=null;child.signalCode=null;child.stdio=[];
+  child.kill=()=>{child.signalCode='SIGKILL';child.emit('exit',null,'SIGKILL');};
+  await assert.rejects(closeBrowserProcess(child,transport,{graceMs:10,killMs:10}),/BROWSER_GRACEFUL_EXIT_TIMEOUT/);
+  const failed=new EventEmitter();failed.exitCode=1;failed.signalCode=null;failed.stdio=[];
+  await assert.rejects(closeBrowserProcess(failed,transport,{graceMs:10,killMs:10}),/BROWSER_EXIT_NONZERO/);
+  const signal=new EventEmitter();signal.exitCode=null;signal.signalCode='SIGABRT';signal.stdio=[];
+  await assert.rejects(closeBrowserProcess(signal,transport,{graceMs:10,killMs:10}),/BROWSER_EXIT_SIGNAL/);
+});
+test('strict trusted qualification cannot count infrastructure exceptions as negative functional cases',async()=>{
+  const broken=async()=>{throw Error('BROWSER_PIPE_CLOSED');};
+  await assert.rejects(evaluateCalculationJournal(broken,{onCaseError:e=>{throw e;}}),/BROWSER_PIPE_CLOSED/);
+  const observations=await evaluateCalculationJournal(broken);
+  assert.equal(observations.passed,0);
+  assert.equal(observations.generatedArtifactVerified,false);
 });

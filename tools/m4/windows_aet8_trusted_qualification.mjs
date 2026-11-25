@@ -23,7 +23,10 @@ const fail=code=>{throw Error(code);};
 export function trustedDockerArgs(id,name){
   if(!NAME.test(name))fail('INVALID_FIXED_QUALIFICATION_NAME');
   const m47='ca-win-m47-'+name.slice(-12);
-  return sandboxDockerArgs(id,m47).map(a=>a===m47?name:a==='codingassistant.m47='+m47?'codingassistant.aet8='+name:a==='--run-fixed-sandbox-probe'?'--run-trusted-aet8':a);
+  const args=sandboxDockerArgs(id,m47).map(a=>a===m47?name:a==='codingassistant.m47='+m47?'codingassistant.aet8='+name:a==='--run-fixed-sandbox-probe'?'--run-trusted-aet8':a);
+  // Docker's private init reaps orphaned Chromium descendants; no host PID
+  // namespace or additional capabilities. Only this fixed integrated guest.
+  args.splice(1,0,'--init');return args;
 }
 function booleans(x,keys){return x&&typeof x==='object'&&!Array.isArray(x)&&Object.keys(x).length===keys.length&&keys.every(k=>Object.hasOwn(x,k)&&typeof x[k]==='boolean');}
 export function parseTrustedReport(raw){
@@ -127,7 +130,10 @@ export function main(argv=process.argv.slice(2)){
     console.log('  '+name+': '+(values?Object.values(values).filter(Boolean).length+'/'+Object.keys(values).length:'NOT_RUN'));
     if(values)for(const [key,value] of Object.entries(values))if(!value)console.log('    failed: '+key);
   }
-  if(r.observations)for(const [name,values] of Object.entries(r.observations))console.log('  '+name+': '+(values?Object.values(values).filter(Boolean).length+'/'+CALCULATION_CASES.length:'NOT_RUN'));
+  if(r.observations)for(const [name,values] of Object.entries(r.observations)){
+    console.log('  '+name+': '+(values?Object.values(values).filter(Boolean).length+'/'+CALCULATION_CASES.length:'NOT_RUN'));
+    if(values)for(const key of CALCULATION_CASES)if(values[key]!== (name==='working'))console.log('    unexpected: '+key);
+  }
   console.log('  container removed: '+r.containerRemoved);
   if(r.lastGuestStage)console.log('  last guest stage: '+r.lastGuestStage);
   if(r.guestFailure)console.log('  guest failure: '+r.guestFailure.stage+' / '+r.guestFailure.code);

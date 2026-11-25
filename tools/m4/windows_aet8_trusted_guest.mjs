@@ -20,7 +20,7 @@ export const FIXTURE_CASES=Object.freeze([
   'forged_receipt_rejected','trusted_source_unchanged',
 ]);
 export const FAILURE_STAGES=Object.freeze(['PAYLOAD','MODULES','SECURITY','COMPATIBILITY','SERVER','WORKING','BROKEN','SPOOF','COMPLETE']);
-export const FAILURE_CODES=Object.freeze(['FIXED_SOURCE_MANIFEST_INVALID','FIXED_SOURCE_CHANGED','FULL_CHROMIUM_REQUIRED','BROWSER_PIPE_MISSING','BROWSER_PIPE_CLOSED','BROWSER_PIPE_BUSY','BROWSER_COMMAND_TIMEOUT','BROWSER_PROTOCOL_ERROR','BROWSER_STORAGE_RESET_FAILED','BROWSER_LAUNCH_FAILED','BROWSER_TARGET_FAILED','BROWSER_TARGET_ATTACH_FAILED','FIXTURE_DOM_EVALUATION_FAILED','FIXTURE_NAVIGATION_TIMEOUT','FIXTURE_NAVIGATION_FAILED','FIXTURE_CONTROL_MISSING','MISSING_RESULT','FIXTURE_CONTROL_NOT_LOADED','FIXED_FIXTURE_REQUIRED','BROWSER_RELOAD_TIMEOUT','SECURITY_OPERATION_FAILED','GUEST_STAGE_FAILED','BROWSER_EXIT_TIMEOUT','BROWSER_SHUTDOWN_NOT_GRACEFUL','GUEST_DEADLINE_EXCEEDED']);
+export const FAILURE_CODES=Object.freeze(['FIXED_SOURCE_MANIFEST_INVALID','FIXED_SOURCE_CHANGED','FULL_CHROMIUM_REQUIRED','BROWSER_PIPE_MISSING','BROWSER_PIPE_CLOSED','BROWSER_PIPE_BUSY','BROWSER_COMMAND_TIMEOUT','BROWSER_PROTOCOL_ERROR','BROWSER_STORAGE_RESET_FAILED','BROWSER_LAUNCH_FAILED','BROWSER_TARGET_FAILED','BROWSER_TARGET_ATTACH_FAILED','FIXTURE_DOM_EVALUATION_FAILED','FIXTURE_NAVIGATION_TIMEOUT','FIXTURE_NAVIGATION_FAILED','FIXTURE_CONTROL_MISSING','MISSING_RESULT','FIXTURE_CONTROL_NOT_LOADED','FIXED_FIXTURE_REQUIRED','BROWSER_RELOAD_TIMEOUT','SECURITY_OPERATION_FAILED','GUEST_STAGE_FAILED','BROWSER_EXIT_TIMEOUT','BROWSER_SHUTDOWN_NOT_GRACEFUL','GUEST_DEADLINE_EXCEEDED','BROWSER_GRACEFUL_EXIT_TIMEOUT','BROWSER_EXIT_SIGNAL','BROWSER_EXIT_NONZERO']);
 const denied=f=>{try{f();return false;}catch{return true;}};
 function connectDenied(host,port){
   return new Promise(resolve=>{
@@ -112,7 +112,11 @@ async function main(){
               }
             }finally{await s.close();}
             if(!loaded)throw Error('FIXTURE_CONTROL_NOT_LOADED');
-            const report=await contract.evaluateCalculationJournal(d.openFresh);
+            const report=await contract.evaluateCalculationJournal(d.openFresh,{onCaseError:error=>{
+              // Missing controls are genuine negative observations. A broken
+              // driver is not evidence that an inert/forged app was rejected.
+              if(!['FIXTURE_CONTROL_MISSING','MISSING_RESULT'].includes(error?.message))throw error;
+            }});
             observations[name]=report.checks;
             const key={working:'working_seven_checks',broken:'inert_negative_rejected',spoof:'forged_receipt_rejected'}[name];
             fixture[key]=contract.CALCULATION_CASES.every(k=>report.checks[k]===(name==='working'));progress();

@@ -7,7 +7,7 @@ import {spawn} from 'node:child_process';
 export const QUALIFICATION_BROWSER_ARGS=Object.freeze([
   '--headless','--disable-gpu','--disable-dev-shm-usage',
   '--disable-background-networking','--disable-crash-reporter',
-  '--no-first-run','--no-default-browser-check','--remote-debugging-pipe',
+  '--no-first-run','--no-default-browser-check','--disable-background-mode','--remote-debugging-pipe',
 ]);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function binary(){
@@ -64,15 +64,16 @@ export function waitForBrowserExit(child,timeoutMs=3000){
     timer=setTimeout(()=>finish(false),timeoutMs);
   });
 }
-export async function closeBrowserProcess(child,transport){
-  let graceful=false,exited=false;
+export async function closeBrowserProcess(child,transport,{graceMs=10000,killMs=2000}={}){
+  let graceful=false,exited=false,forced=false;
   try{
-    const wait=waitForBrowserExit(child,3500);
+    const wait=waitForBrowserExit(child,graceMs);
     try{await transport.send('Browser.close',{},undefined,1500);}catch{}
     graceful=await wait&&child.exitCode===0;
     exited=child.exitCode!==null||child.signalCode!==null;
     if(!exited){
-      const killed=waitForBrowserExit(child,2000);
+      forced=true;
+      const killed=waitForBrowserExit(child,killMs);
       child.kill('SIGKILL');exited=await killed;
     }
   }finally{
@@ -80,7 +81,8 @@ export async function closeBrowserProcess(child,transport){
     for(const stream of child.stdio??[])stream?.destroy?.();
   }
   if(!exited)throw Error('BROWSER_EXIT_TIMEOUT');
-  if(!graceful)throw Error('BROWSER_SHUTDOWN_NOT_GRACEFUL');
+  if(forced)throw Error('BROWSER_GRACEFUL_EXIT_TIMEOUT');
+  if(!graceful)throw Error(child.signalCode?'BROWSER_EXIT_SIGNAL':'BROWSER_EXIT_NONZERO');
 }
 async function launch(profile){
   const root=path.dirname(profile);
@@ -91,11 +93,8 @@ async function launch(profile){
   });
   child.stderr.resume();
   const transport=createPipeTransport(child);
-  let done=false;
-  const close=async()=>{
-    if(done)return;done=true;
-    await closeBrowserProcess(child,transport);
-  };
+  let closing;
+  const close=()=>closing??=closeBrowserProcess(child,transport);
   try{await transport.send('Browser.getVersion');return {transport,close};}
   catch(e){try{await close();}catch{}throw e;}
 }
@@ -180,7 +179,9 @@ export async function createTrustedDriver(origin,fixture){
     let active=await target(true);
     return {page:active.page,close:async()=>{if(active){await browser.transport.send('Target.closeTarget',{targetId:active.targetId});active=null;}},
       restart:async()=>{
-        await browser.close();browser=null;active=null;
+        const previous=browser;active=null;
+        // No new process is launched unless the previous one really exited 0.
+        await previous.close();browser=null;
         active=await target();return active.page;
       }};
   }
