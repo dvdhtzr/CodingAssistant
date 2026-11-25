@@ -1814,6 +1814,7 @@ try
             Version = "1", SourceCommit = "e12ea7c3b86b03abef633ddc7003d0e284722b89",
             SourceUrl = "https://github.com/dvdhtzr/CodingAssistant/blob/e12ea7c3b86b03abef633ddc7003d0e284722b89/src/CodingAssistant.Api/Skills/static-web-verification/SKILL.md",
             ContentSha256 = referenceCandidate.SkillFileSha256!, SkillFileSha256 = null,
+            Compatibility = "MAF local Ollama instruction-only candidate; live activation not qualified",
             References = null };
         var oldReferenceReviewHash = SkillReviewStore.ReviewSha256(taskBound.Id, oldReferenceDescriptor);
         var newReferenceReviewHash = SkillReviewStore.ReviewSha256(taskBound.Id, referenceCandidate);
@@ -3888,7 +3889,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                         StringComparison.Ordinal) == true))
                 parent.SkillContextsSeen++;
             if (options?.Instructions?.Contains("OWNER-REVIEWED ADVISORY REFERENCE (references/review-checklist.md)", StringComparison.Ordinal) == true &&
-                options.Instructions.Contains("Identify state persistence and restoration paths", StringComparison.Ordinal) ||
+                options?.Instructions?.Contains("Identify state persistence and restoration paths", StringComparison.Ordinal) == true ||
                 history.Any(m => m.Role.Value == "system" &&
                     m.Text?.Contains("OWNER-REVIEWED ADVISORY REFERENCE (references/review-checklist.md)", StringComparison.Ordinal) == true &&
                     m.Text.Contains("Identify state persistence and restoration paths", StringComparison.Ordinal)))
