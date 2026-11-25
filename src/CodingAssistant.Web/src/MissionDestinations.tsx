@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from './api';
 import { AgentIdentityPanel } from './AgentIdentityPanel';
+import { SkillReviewPanel } from './SkillReviewPanel';
 import { TeamWorkroom } from './TeamWorkroom';
 import type { JourneyId } from './ProjectJourney';
 
@@ -190,7 +191,7 @@ export type SkillCandidate = {
   status: string; approved: boolean; active: boolean; instructions: string;
 };
 
-export function SkillsDestination({ token }: { token: string }) {
+export function SkillsDestination({ token, taskId }: { token: string; taskId?: string }) {
   const [skills, setSkills] = useState<SkillCandidate[] | null>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
@@ -205,7 +206,7 @@ export function SkillsDestination({ token }: { token: string }) {
   return <section className="mc-destination ca-skills" aria-label="Agent skills">
     <div className="ca-dest-head">
       <div><span className="wb-kicker">AGENT CAPABILITIES</span><h2>Skills</h2></div>
-      <span className="pill">Discovery only</span>
+      <span className="pill">{taskId ? 'Review only' : 'Discovery only'}</span>
     </div>
     <p className="hint">Inspect repository-owned, hash-pinned SKILL.md instruction candidates.
       Discovery does not approve or activate a skill, or grant any tool permissions.</p>
@@ -233,7 +234,8 @@ export function SkillsDestination({ token }: { token: string }) {
       </div>
       <div className="ca-skill-col">
         <h3>Granted</h3><span className="ca-skill-cap">Permissions</span>
-        <div className="ca-skill-empty">No skill activation or execution grants.</div>
+        {taskId ? <SkillReviewPanel key={taskId} token={token} taskId={taskId} /> :
+          <div className="ca-skill-empty">No skill activation or execution grants.</div>}
       </div>
       <div className="ca-skill-col">
         <h3>Used</h3><span className="ca-skill-cap">Recorded usage</span>
