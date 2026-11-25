@@ -572,6 +572,50 @@ test('Technical Lead workstation requires explicit exact-source repair approval 
 });
 
 
+test('linked automatic repair replaces stale approval prompt with actual activity and stop control', async () => {
+  const page=await browser.newPage({viewport:{width:1600,height:900}});
+  const jobId='2'.repeat(32),cycleId='8'.repeat(32),policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:'6'.repeat(64),planSha256:sha,policyRevision:1,policySha256};
+  const snapshot={job:{...candidate,id:jobId,taskId:id,model:'qwen3-coder:30b',
+    state:'AwaitingOwner',reason:'EXACT_REPAIR_APPROVAL_REQUIRED'},steps:[]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:false,canResume:false,
+    reason:'LINKED_REPAIR_PENDING',linkedRepair:{cycleId,state:'Running',errorCode:null},
+    policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:candidate.sourceSha256,
+        paths:['index.html'],maximumRepairs:4}},
+    capacity:{capacity:1,active:1,waiting:0}};
+  const writes=[];
+  try {
+    await mockApi(page);
+    await page.route('**/api/tasks/'+id+'/**',route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(route.request().method()==='GET'){
+        if(path.endsWith('/collaboration/preview'))return done(route,preview);
+        if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      }
+      if(route.request().method()==='POST'){
+        writes.push(path);
+        if(path.endsWith('/repair-cycles/'+cycleId+'/cancel')){
+          preview.linkedRepair={cycleId,state:'Interrupted',errorCode:'OWNER_CANCELLED'};
+          return done(route,{});
+        }
+      }
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    await page.locator('aside.ca-studio-people').getByRole('button',{name:/Technical Lead/}).click();
+    const panel=page.getByRole('region',{name:'Team coordination'});
+    await panel.getByText('Repairing saved source',{exact:true}).waitFor();
+    assert.equal(await panel.getByText('Owner decision needed',{exact:true}).count(),0);
+    assert.equal(await page.getByRole('region',{name:'Exact repair authorization'}).count(),0);
+    assert.deepEqual(writes,[]);
+    await panel.getByRole('button',{name:'Stop coordination'}).click();
+    await panel.getByText('Repair Interrupted',{exact:true}).waitFor();
+    assert.deepEqual(writes,['/api/tasks/'+id+'/repair-cycles/'+cycleId+'/cancel']);
+  } finally { await page.close(); }
+});
+
 test('delivery readiness separates saved source from verified and accepted product without writes', async () => {
   const page=await browser.newPage({viewport:{width:1600,height:900}});
   const writes=[];
