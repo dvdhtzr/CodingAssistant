@@ -294,3 +294,63 @@ independent verification gates are unchanged.
 Native MAF skill-loading compatibility and real local Ollama acceptance
 remain separate tasks. No general external skills import or generated
 execution is authorized.
+
+## Native MAF skills compatibility decision (#110)
+
+The application pins Microsoft.Agents.AI 1.28.0 (.NET 10). The
+[NuGet package](https://www.nuget.org/packages/Microsoft.Agents.AI/1.28.0)
+and [Microsoft Agent Skills documentation](https://learn.microsoft.com/en-us/agent-framework/agents/skills)
+describe native inline skills and the provider's model-callable
+loading/resource tools, with script capability when configured.
+The [native inline content API](https://learn.microsoft.com/en-us/dotnet/api/microsoft.agents.ai.agentinlineskill.getcontentasync)
+can be used without a provider.
+
+Our model-free compatibility probe compiles against the actual pinned
+package, reads an in-memory AgentInlineSkill, runs a ChatClientAgent with
+AgentSkillsProvider and an injected deterministic IChatClient, observes
+its tool-bearing ChatOptions, and verifies that the actual
+LocalMafChatClient rejects those options before issuing any HTTP request.
+It does not install the provider in the application or run a skill
+script, model, network request, or generated code.
+
+**Decision:** retain the host-reviewed, hash-pinned instruction context
+path through actual MAF agents for now. Do not register a native
+AgentSkillsProvider, enable function invocation, relax the local
+adapter's tool rejection, or auto-approve skill loading. That would
+change the existing authority boundary. A future native provider
+integration requires its own approved capability design and tests.
+
+The compatibility probe must pass the exact-head Windows and Ubuntu
+regression gates. Even a green result demonstrates SDK compatibility
+and the fail-closed boundary, not live Ollama model behavior.
+
+## Owner-local skill acceptance (pending)
+
+After the compatibility increment is merged, use a disposable project,
+with a downloaded chat-capable Ollama model, and record the exact main
+commit and selected model names. Do not enable runtime execution.
+
+1. In Skills, inspect and explicitly approve the three pinned packages
+   for local instruction review, including the QA v2 reference.
+2. Start a requirements-discovery interview with the per-turn skill
+   checkbox. Confirm a relevant question and a corresponding
+   ResponseReturned discovery event; answer normally and repeat
+   without selecting a skill. Draft a specification with the skill
+   checkbox and review it before approving.
+3. Select the architecture-tradeoffs skill for an architecture
+   recommendation. Verify the recommendation is reviewable, the
+   decision remains unapproved, and the exact review/content hash,
+   model and specification identity are in the usage event.
+4. Approve a static-web architecture and implementation plan, generate
+   source only, and explicitly select the QA skill for independent
+   static review. Verify saved per-file reports and the QA package
+   digest, source fingerprint and plan hash in the usage event.
+   Do not interpret the static reports as executed tests.
+5. Revoke a review; refresh the stage and confirm the skill cannot be
+   selected for future calls. Ordinary calls must continue without
+   skill selection. Inspect usage after restarting the app.
+
+Record observed results and failures, not merely expected outcomes.
+Do not publish owner tokens, private specifications, transcripts or
+raw source. Live acceptance and issue closure remain pending until
+the owner supplies actual evidence.
