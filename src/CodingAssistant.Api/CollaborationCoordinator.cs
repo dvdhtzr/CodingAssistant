@@ -562,6 +562,19 @@ public sealed class CollaborationStore(TaskStore tasks)
             ("@ref",referenceId),("@id",id),("@seq",sequence))!=1)throw new StoreFailure("INVALID_STATE");
         tx.Commit();tasks.SignalEngineeringActivity(taskId);
     }
+    internal void EscalateRoutineCheckpoint(string taskId,string id,string reason)
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var job=Find(db,tx,taskId,id);
+        if(job.State!="AwaitingOwner" || job.Reason!="EXACT_REPAIR_APPROVAL_REQUIRED" ||
+            TaskStore.Scalar(db,tx,"SELECT 1 FROM engineering_collaboration_repairs WHERE task_id=@task AND parent_id=@id",
+                ("@task",taskId),("@id",id)) is not null) return;
+        TaskStore.Execute(db,tx,"UPDATE engineering_collaborations SET state='Escalated',reason=@reason,updated_utc=@utc WHERE id=@id",
+            ("@reason",reason),("@utc",DateTimeOffset.UtcNow.ToString("O")),("@id",id));
+        EngineeringActivityStore.Record(db,tx,taskId,"CollaborationStopped","TechnicalLead","Collaboration",id,sourceSha256:job.SourceSha256);
+        tx.Commit();tasks.SignalEngineeringActivity(taskId);
+    }
+
     public void Finish(string taskId,string id,string state,string reason)
     {
         if(state is not ("AwaitingOwner" or "AwaitingVerification" or "Escalated" or "Failed" or "Interrupted"))
@@ -702,28 +715,33 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                             policy.PolicySha256==job.PolicySha256 &&
                             policy.RoutineRepair.Paths.Contains(issue.Path,StringComparer.Ordinal))
                         {
-                            token.ThrowIfCancellationRequested();
-                            var finding=issue.References.Last();
-                            var engineerModel=models.Resolve(job.TaskId,"SoftwareEngineer",job.Model);
-                            var qaModel=models.Resolve(job.TaskId,"QaEngineer",job.Model);
-                            var installed=await catalog.ListAsync(token);
-                            if(!installed.Contains(engineerModel,StringComparer.Ordinal) ||
-                                !installed.Contains(qaModel,StringComparer.Ordinal))
-                                throw new StoreFailure("MODEL_NOT_INSTALLED");
                             try
                             {
+                                token.ThrowIfCancellationRequested();
+                                var finding=issue.References.Last();
+                                var engineerModel=models.Resolve(job.TaskId,"SoftwareEngineer",job.Model);
+                                var qaModel=models.Resolve(job.TaskId,"QaEngineer",job.Model);
+                                var installed=await catalog.ListAsync(token);
+                                if(!installed.Contains(engineerModel,StringComparer.Ordinal) ||
+                                    !installed.Contains(qaModel,StringComparer.Ordinal))
+                                    throw new StoreFailure("MODEL_NOT_INSTALLED");
+                                token.ThrowIfCancellationRequested();
                                 services.GetRequiredService<RepairCycleCoordinator>().StartRoutine(job.TaskId,
                                     new StartRepairCycleRequest(proposal.Id,null,
                                         [new RepairSelection(finding.Path,finding.FindingIndex)],job.Id),
                                     engineerModel,qaModel);
                             }
-                            catch(StoreFailure error) when(error.Code is "REPAIR_NOT_AUTHORIZED" or
-                                "ROUTINE_REPAIR_BUDGET_EXHAUSTED" or "ROUTINE_REPAIR_RECHECK_REQUIRED" or
-                                "REPAIR_SCOPE_VIOLATION" or "SOURCE_CHANGED" or "DELEGATION_NOT_AUTHORIZED")
+                            catch(StoreFailure error)
                             {
-                                // Preserve the owner checkpoint when scope, evidence or
-                                // progress is inadequate. No candidate was admitted.
-                                store.Finish(job.TaskId,job.Id,"Escalated",error.Code);
+                                store.EscalateRoutineCheckpoint(job.TaskId,job.Id,error.Code);
+                            }
+                            catch(OperationCanceledException)
+                            {
+                                store.EscalateRoutineCheckpoint(job.TaskId,job.Id,"OWNER_CANCELLED");
+                            }
+                            catch(Exception)
+                            {
+                                store.EscalateRoutineCheckpoint(job.TaskId,job.Id,"ROUTINE_REPAIR_DISPATCH_FAILED");
                             }
                         }
                         return;
@@ -779,11 +797,8 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
     public CollaborationSnapshot Cancel(string taskId,string id)
     {
         var current=store.Get(taskId,id);
-        if(current.Job.State=="Running")
-        {
-            if(_active.TryGetValue(id,out var token))token.Cancel();
-            else store.Finish(taskId,id,"Interrupted","OWNER_CANCELLED");
-        }
+        if(_active.TryGetValue(id,out var token))token.Cancel();
+        else if(current.Job.State=="Running")store.Finish(taskId,id,"Interrupted","OWNER_CANCELLED");
         return store.Get(taskId,id);
     }
 }
