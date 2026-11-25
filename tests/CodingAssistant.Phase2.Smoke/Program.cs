@@ -861,6 +861,15 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     Check(MafSoftwareEngineer.TryParseRepair(patchJson.Replace("\"edits\"", "\"Edits\"",
         StringComparison.Ordinal), authorizedRepair, savedRepairFiles, out _, out _),
         "repair dispatch agrees with case-insensitive JSON deserialization");
+    Check(!MafSoftwareEngineer.TryParseRepair(
+        """{"summary":"Repair malformed field names.","edits":[{"path":"app.js","oldText":"old text enough to match","newText":"new text","unexpected":true}],"verificationNotes":[]}""",
+        authorizedRepair, savedRepairFiles, out _, out var fieldsReason) &&
+        fieldsReason.StartsWith("REPAIR_EDIT_FIELDS:", StringComparison.Ordinal),
+        "unknown repair fields receive distinct safe diagnostic");
+    Check(!MafSoftwareEngineer.TryParseRepair(EditJson("app.js", brokenHandler,
+        new string('z', 28100)), authorizedRepair, savedRepairFiles, out _, out var sizeReason) &&
+        sizeReason.StartsWith("REPAIR_EDIT_SIZE:", StringComparison.Ordinal),
+        "oversized repair object receives distinct safe diagnostic");
     var repairInventory = patchFactory.UserPrompts.Single(message =>
         message.StartsWith("PREVIOUS SOURCE FILES", StringComparison.Ordinal));
     Check(!repairInventory.Contains("preserve-all-existing-state", StringComparison.Ordinal) &&
@@ -3083,6 +3092,61 @@ try
 
     var approvedEngineerPlan =
         new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!;
+    // Failed repair clones can be reviewed and authorized again without
+    // pretending an incomplete original build is complete. Exercise two
+    // consecutive failures with no changes and require fresh triage each time.
+    var recoveryBase = repairOutcome!.Engineering;
+    var recoveryReview = repairOutcome.Review!;
+    var triageStore = new RepairTriageStore(tasks);
+    for (var retry = 0; retry < 2; retry++)
+    {
+        var recoveryProposal = repairProposal.Propose(taskBound.Id,
+            new CreateRepairProposalRequest(recoveryReview.Job.Id));
+        triageStore.Classify(taskBound.Id, recoveryProposal.Id,
+            new ClassifyRepairFindingRequest("app.js", 0, "ImplementationDefect",
+                "Owner confirms the remaining defect for the new exact source review."));
+        var recovery = upgradedRepairs.Start(taskBound.Id,
+            new StartRepairCycleRequest(recoveryProposal.Id,
+                "REPAIR " + recoveryProposal.SourceSha256,
+                [new RepairSelection("app.js", 0)]), approvedEngineerPlan);
+        var repairWork = upgradedRepairs.WorkItemId(taskBound.Id, recovery.Id);
+        engineeringStore.StartTask(taskBound.Id, recovery.EngineeringRunId, repairWork);
+        engineeringStore.RecordOutputRejection(taskBound.Id, recovery.EngineeringRunId,
+            repairWork, new EngineeringOutputRejection(1, "REPAIR_EDIT_FIELDS"));
+        engineeringStore.Finish(taskBound.Id, recovery.EngineeringRunId, false, "MODEL_OUTPUT_REJECTED");
+        upgradedRepairs.SetState(taskBound.Id, recovery.Id, "Failed", "MODEL_OUTPUT_REJECTED");
+        var failedClone = engineeringStore.Get(taskBound.Id, recovery.EngineeringRunId);
+        Check(failedClone.Job.State == "Failed" &&
+            QaReviewStore.Fingerprint(failedClone.Files) ==
+                QaReviewStore.Fingerprint(recoveryBase.Files),
+            "failed repair preserves the exact previously generated source");
+        var freshRecovery = reviewStore.Start(taskBound.Id, failedClone, approvedEngineerPlan);
+        foreach (var file in failedClone.Files)
+            reviewStore.SaveFileReport(taskBound.Id, freshRecovery.Id, file,
+                recoveryReview.Reports.Single(report => report.Path == file.Path).Assessment);
+        reviewStore.Finish(taskBound.Id, freshRecovery.Id, true, null);
+        recoveryReview = reviewStore.Get(taskBound.Id, freshRecovery.Id);
+        Check(recoveryReview.UnchangedFailedRepair &&
+            recoveryReview.SourceState == "Failed" &&
+            recoveryReview.Acceptance!.Criteria.All(c => c.VerificationStatus == "RequiresTesting"),
+            "fresh review exposes retry eligibility only for unchanged failed repair lineage");
+        recoveryBase = failedClone;
+    }
+    var retryProposal = repairProposal.Propose(taskBound.Id,
+        new CreateRepairProposalRequest(recoveryReview.Job.Id));
+    try
+    {
+        _ = upgradedRepairs.Start(taskBound.Id,
+            new StartRepairCycleRequest(retryProposal.Id,
+                "REPAIR " + retryProposal.SourceSha256,
+                [new RepairSelection("app.js", 0)]), approvedEngineerPlan);
+        Check(false, "failed repair recovery bypassed fresh owner triage");
+    }
+    catch (StoreFailure error) when (error.Code == "REPAIR_NOT_AUTHORIZED")
+    {
+        Check(true, "failed repair recovery still requires a new owner triage");
+    }
+
     var failedEngineerRun = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
     engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-interface");
     engineeringStore.CompleteTask(taskBound.Id, failedEngineerRun.Id, "timer-interface",
@@ -3188,6 +3252,8 @@ try
     reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
         probeSource, probeObservation);
     var probeLedger = reviewStore.Get(taskBound.Id, probeReview.Id);
+    Check(!probeLedger.UnchangedFailedRepair,
+        "ordinary incomplete engineering runs never qualify for failed-repair retry");
     Check(probeLedger.Events.Any(e => e.Kind == "QaAtlasInspected" &&
           e.Detail.Contains("atlas.find_symbols", StringComparison.Ordinal) &&
           e.Detail.Contains(probeRevision[..12], StringComparison.Ordinal) &&
