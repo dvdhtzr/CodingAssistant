@@ -1169,7 +1169,7 @@ public static class ApiHost
         var status = error.Code switch
         {
             "NOT_FOUND" => StatusCodes.Status404NotFound,
-            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" =>
+            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" or "PRIVATE_DATA_UNAVAILABLE" =>
                 StatusCodes.Status503ServiceUnavailable,
             "REPAIR_NOT_AUTHORIZED" or "REPAIR_LIMIT_REACHED" or
                 "REPAIR_SCOPE_TOO_LARGE" or "REPAIR_SCOPE_VIOLATION" or
