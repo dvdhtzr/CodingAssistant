@@ -61,7 +61,9 @@ jobs:
       - name: Build same-origin React Mission Control (no model)
         working-directory: src/CodingAssistant.Web
         run: |
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
+          npm audit --omit=dev --audit-level=high
+          npm audit --audit-level=high
           npm run test:workbench
           npm run build
       # UX-6C: trusted fixed-fixture Chromium interactions on BOTH OSes.
