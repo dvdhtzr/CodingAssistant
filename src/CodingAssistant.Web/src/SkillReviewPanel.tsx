@@ -11,8 +11,9 @@ export function SkillUsagePanel({ token, taskId }: { token: string; taskId: stri
   useEffect(() => {
     let closed = false;
     setEvents(null); setError(false);
-    void api<{ events: SkillUse[] }>(token, '/api/tasks/' + taskId + '/skill-uses')
-      .then(value => { if (!closed) setEvents(value.events); })
+    void api<{ events: SkillUse[]; discoveryEvents?: SkillUse[] }>(token, '/api/tasks/' + taskId + '/skill-uses')
+      .then(value => { if (!closed) setEvents([...value.events, ...(value.discoveryEvents ?? [])]
+        .sort((a, b) => a.createdUtc.localeCompare(b.createdUtc))); })
       .catch(() => { if (!closed) setError(true); });
     return () => { closed = true; };
   }, [token, taskId, reload]);
@@ -23,10 +24,11 @@ export function SkillUsagePanel({ token, taskId }: { token: string; taskId: stri
     {events?.length === 0 && <p>No skill invocations recorded.</p>}
     {events?.map(event => <details key={event.requestId}>
       <summary>{event.skillName} · {event.status === 'ProposalReturned' ? 'Proposal returned' :
+        event.status === 'ResponseReturned' ? 'Validated response returned' :
         event.status === 'CallFailed' ? 'Call failed' : 'Admitted; outcome not recorded'}</summary>
       <p>{event.role} · {event.topic} · {event.model}</p>
       <p className="hint">{event.createdUtc} · {event.contentSha256}</p>
-      <p className="hint">Not a saved or approved decision, execution grant, or runtime verification.</p>
+      <p className="hint">Not proof of a saved or approved artifact, execution grant, or runtime verification.</p>
     </details>)}
   </>;
 }
