@@ -224,7 +224,12 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
     assert.equal(await canvas.locator('#journey-panel-generation').isVisible(), true);
     assert.equal(await canvas.locator('#journey-panel-delivery').isVisible(), false);
     await team.getByRole('button', { name: /QA Engineer/ }).click();
+    // Role selection propagates through the canvas focus request and React
+    // effect. Wait for the actual stage transition rather than sampling an
+    // intermediate render. Keep the visibility and scroll assertions.
+    await canvas.locator('#journey-panel-delivery').waitFor({ state: 'visible' });
     assert.equal(await canvas.locator('#journey-panel-delivery').isVisible(), true);
+    assert.equal(await canvas.locator('#journey-panel-generation').isVisible(), false);
     assert.equal(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0), 0,
       'role navigation must not scroll the whole document');
   } finally { await page.close(); }
