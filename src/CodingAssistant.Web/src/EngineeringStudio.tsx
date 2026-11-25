@@ -17,7 +17,7 @@ interface StudioQaSnapshot extends TeamQaSnapshot {
   events?: Array<{ sequence: number; kind: string; detail: string; createdUtc: string }>;
 }
 interface StudioRepair {
-  cycle: { state: string; attempt: number; errorCode: string | null };
+  cycle: { state: string; attempt: number; errorCode: string | null; engineeringRunId: string };
 }
 export interface StudioEvidence {
   agents: AgentIdentity[];
@@ -51,16 +51,19 @@ export function studioAttention(saved: StudioEvidence | null,
     qa.job.planSha256 === eng.planSha256;
   const findings = currentQa ? qa.reports.reduce((count, report) =>
     count + (report.assessment?.findings?.length ?? 0), 0) : 0;
-  if (saved.repair?.cycle.state === 'Failed' ||
-    saved.repair?.cycle.state === 'Interrupted') {
+  const currentRepair = saved.repair?.cycle.engineeringRunId === eng?.id ? saved.repair?.cycle : null;
+  if (currentRepair?.state === 'Failed' || currentRepair?.state === 'Interrupted') {
     items.unshift({ stage: 'delivery', kind: 'warning',
-      title: 'Repair cycle ' + saved.repair.cycle.attempt + ' stopped',
-      detail: saved.repair.cycle.errorCode ?? 'Inspect the saved repair history; prior source is preserved.' });
+      title: 'Repair cycle ' + currentRepair.attempt + ' stopped',
+      detail: currentRepair.errorCode ?? 'Inspect the saved repair history; prior source is preserved.' });
   }
   if (currentQa && qa.job.state === 'Reviewed' && findings > 0) {
     items.unshift({ stage: 'delivery', kind: 'review',
       title: findings + ' potential QA finding' + (findings === 1 ? '' : 's'),
       detail: 'Inspect current source evidence and select only confirmed defects for a separately approved repair.' });
+  } else if (eng?.state === 'Generated' && !currentQa) {
+    items.unshift({ stage: 'delivery', kind: 'next', title: 'New source ready for QA',
+      detail: 'Review the current saved source, not earlier repair history.' });
   } else if (eng && (eng.state === 'Failed' || eng.state === 'Interrupted') &&
     saved.repair?.cycle.state !== 'Running' &&
     saved.repair?.cycle.state !== 'QaRunning') {
@@ -190,8 +193,9 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   const relatedActivity = inspected ? activity.filter(item =>
     item.roleIds.includes(inspected.agent.id)) : [];
   const attention = useMemo(() => studioAttention(saved, decisions), [saved, decisions]);
-  const latest = saved?.repair?.cycle;
-  const activeQa = saved?.qa?.job.state === 'Running' || latest?.state === 'QaRunning';
+  const engId = saved?.engineering?.job.id;
+  const latest = saved?.repair?.cycle.engineeringRunId === engId ? saved?.repair?.cycle : null;
+  const activeQa = (saved?.qa?.job.engineeringRunId === engId && saved?.qa?.job.state === 'Running') || latest?.state === 'QaRunning';
   const activeEngineer = saved?.engineering?.job.state === 'Running' || latest?.state === 'Running';
   const working = activeQa ? 'QA Engineer reviewing' :
     activeEngineer ? 'Software Engineer working' : 'No active agent run recorded';
