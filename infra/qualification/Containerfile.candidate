@@ -1,0 +1,18 @@
+# Candidate evaluator image. Explicit provisioning only; never qualified by build.
+# Inference and all subsequent evaluation runs are always --network=none and
+# refer to the resulting immutable image ID, NEVER this mutable tag.
+# The full-stack dependencies are fetched only during this trusted image build.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+COPY benchmarks/fixtures/03-fullstack-feature/web/package.json /opt/qualification/web/package.json
+# These exact direct versions are from the frozen original M0 full-stack fixture.
+# CI/build network is allowed at provisioning time ONLY, not during tests.
+RUN cd /opt/qualification/web \
+    && npm install --ignore-scripts --no-audit --no-fund --package-lock=true \
+    && test -f node_modules/.bin/vitest \
+    && test -f node_modules/.bin/tsc \
+    && test -f package-lock.json \
+    && sha256sum package-lock.json > /opt/qualification/web/lock.sha256
+COPY benchmarks/acceptance/TaskSummary.acceptance.test.tsx /opt/qualification/TaskSummary.acceptance.test.tsx
+USER 65532:65532
