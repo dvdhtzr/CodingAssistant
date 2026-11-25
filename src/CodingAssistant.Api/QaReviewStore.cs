@@ -379,7 +379,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             var architecture = DraftArchitecturePolicy.Capture(db, tx, taskId,
                 job.SpecificationVersion, job.SpecificationSha256);
             var companions = new List<EngineeringSourceFile>();
-            if (architecture?.Sha256 == job.ArchitectureSha256 &&
+            if (architecture is not null && architecture.Sha256 == job.ArchitectureSha256 &&
                 architecture.Choices.Any(choice => choice.RuntimeProfileId == "static-web"))
             {
                 using var cmd = TaskStore.Command(db, tx, """
