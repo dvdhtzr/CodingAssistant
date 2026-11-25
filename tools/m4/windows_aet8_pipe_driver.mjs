@@ -176,9 +176,16 @@ export async function resetTrustedFixture(transport,active,origin,loaded){
   catch{throw Error('BROWSER_STORAGE_RESET_FAILED');}
   if(loaded)await active.page.reload();else await active.page.navigate();
   // Fresh state must be observed, never assumed from a successful command.
-  // The frozen working, inert and spoof fixtures all declare this region.
-  const initial=(await active.page.locator('output#display').innerText()).trim()==='0';
-  const history=await active.page.getByRole('region',{name:'Calculation history',exact:true}).locator('li').count();
+  // The inert fixture has no history region; its descendant count is zero.
+  // A missing baseline display is a reset failure, not a negative test pass.
+  let initial,history;
+  try{
+    initial=(await active.page.locator('output#display').innerText()).trim()==='0';
+    history=await active.page.getByRole('region',{name:'Calculation history',exact:true}).locator('li').count();
+  }catch(e){
+    if(e?.message==='MISSING_RESULT')throw Error('FIXTURE_FRESH_STATE_NOT_RESET');
+    throw e;
+  }
   if(!initial||history!==0)throw Error('FIXTURE_FRESH_STATE_NOT_RESET');
 }
 export async function createTrustedDriver(origin,fixture){
