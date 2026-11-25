@@ -174,6 +174,15 @@ public sealed class RepairCycleStore(
 
     public RepairCycle Start(string taskId, StartRepairCycleRequest request,
         ImplementationPlan plan, string? agentModel = null)
+        => StartCore(taskId,request,plan,agentModel,false);
+
+    // This method is application-internal, never an HTTP request flag.
+    internal RepairCycle StartRoutine(string taskId, StartRepairCycleRequest request,
+        ImplementationPlan plan,string agentModel)
+        => StartCore(taskId,request,plan,agentModel,true);
+
+    private RepairCycle StartCore(string taskId,StartRepairCycleRequest request,
+        ImplementationPlan plan,string? agentModel,bool routine)
     {
         CheckId(taskId);
         CheckId(request.ProposalId);
@@ -182,7 +191,9 @@ public sealed class RepairCycleStore(
         var proposal = proposals.Latest(taskId);
         if (proposal is null || proposal.Id != request.ProposalId)
             throw new StoreFailure("SOURCE_CHANGED");
-        if (request.Confirmation != "REPAIR " + proposal.SourceSha256 ||
+        if ((!routine && request.Confirmation != "REPAIR " + proposal.SourceSha256) ||
+            (routine && (request.Confirmation is not null || request.ContinueCollaborationId is null ||
+                request.Findings?.Count != 1)) ||
             request.Findings is null || request.Findings.Count is < 1 or > 12)
             throw new StoreFailure("INVALID_INPUT");
 
@@ -292,7 +303,7 @@ public sealed class RepairCycleStore(
         // triage decision must explicitly classify it as a code defect.
         foreach (var finding in selected)
         {
-            if (TaskStore.Scalar(db, tx, """
+            if (!routine && TaskStore.Scalar(db, tx, """
                 SELECT classification FROM repair_triage_decisions
                 WHERE proposal_id=@proposal AND path=@path AND finding_index=@index
                 """, ("@proposal", proposal.Id), ("@path", finding.Path),
@@ -308,6 +319,20 @@ public sealed class RepairCycleStore(
             if(issue is null || issue.State is "WithdrawnByReviewer" or "StaticResolutionRecorded")
                 throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
             var decision=issue.Decisions.LastOrDefault();
+            if(routine)
+            {
+                var file=files.Single(f=>f.Path==finding.Path);
+                var grounded=origin=="LeadSoftwareEngineer" && issue.Line is >0 &&
+                    file.Content.Split('\n').ElementAtOrDefault(issue.Line.Value-1)?.Contains(issue.Evidence,StringComparison.Ordinal)==true;
+                // QA requires a concrete excerpt and an exact approved
+                // criterion. Missing behavior and ambiguous claims escalate.
+                if(origin=="QaEngineer")
+                    grounded=issue.Evidence.Length>=8 && file.Content.Contains(issue.Evidence,StringComparison.Ordinal) &&
+                        plan.Outline.Tasks.Any(t=>t.AcceptanceCriteria.Contains(issue.Requirement,StringComparer.Ordinal));
+                if(!grounded || issue.State!="ConfirmedDefect" || !issue.LatestReview ||
+                    decision is null || decision.Classification!="ImplementationDefect")
+                    throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            }
             if((issue.Challenges.Count>0 || decision is not null) &&
                 (decision is null || decision.ReviewId!=reviewId ||
                  decision.ChallengeMessageId!=issue.Challenges.LastOrDefault()?.MessageId ||
@@ -332,7 +357,8 @@ public sealed class RepairCycleStore(
         try
         {
             if(request.ContinueCollaborationId is not null)
-                CollaborationStore.BindRepair(db,tx,taskId,request.ContinueCollaborationId,cycleId,proposal,selected);
+                CollaborationStore.BindRepair(db,tx,taskId,request.ContinueCollaborationId,cycleId,proposal,selected,
+                    routine ? runId : null);
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_runs (
                     id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
@@ -372,9 +398,10 @@ public sealed class RepairCycleStore(
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_events
                     (run_id,sequence,kind,detail,created_utc)
-                VALUES (@run,1,'RepairRunAdmitted',
-                    'Owner-authorized independent finding repair; source cloned unchanged, not tested',@now)
-                """, ("@run", runId), ("@now", now));
+                VALUES (@run,1,'RepairRunAdmitted',@detail,@now)
+                """, ("@run", runId), ("@now", now), ("@detail", routine ?
+                    "Policy-authorized routine source repair; source cloned unchanged, not tested" :
+                    "Owner-authorized independent finding repair; source cloned unchanged, not tested"));
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
