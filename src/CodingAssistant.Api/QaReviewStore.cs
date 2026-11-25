@@ -377,7 +377,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         if (review is null || review.TaskId != taskId)
             throw new StoreFailure("NOT_FOUND");
         if (review.State != "Running") throw new StoreFailure("INVALID_STATE");
-        RequireSource(db, tx, review);
+        var source = RequireSource(db, tx, review);
         var architecture = DraftArchitecturePolicy.Capture(db, tx, taskId,
             review.SpecificationVersion, review.SpecificationSha256);
         if (architecture is null || architecture.Sha256 != review.ArchitectureSha256 ||
@@ -394,16 +394,9 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             while (reader.Read())
                 files.Add(new EngineeringSourceFile(reader.GetString(0), reader.GetString(1),
                     reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5)));
-        var sourceState = TaskStore.Scalar(db, tx, """
-            SELECT state FROM engineering_runs WHERE id=@id AND task_id=@task
-            """, ("@id", review.EngineeringRunId), ("@task", taskId));
-        if (!IsReviewableSource(sourceState ?? "", files.Count) ||
+        if (!IsReviewableSource(source.State, files.Count) ||
             Fingerprint(files) != review.SourceSha256)
             throw new StoreFailure("SOURCE_CHANGED");
-        var source = new EngineeringRun(review.EngineeringRunId, taskId,
-            review.PlanRevision, review.PlanSha256, review.SpecificationVersion,
-            review.SpecificationSha256, review.ArchitectureSha256, review.Model,
-            sourceState!, "StaticPreflight", null, review.CreatedUtc, review.UpdatedUtc);
         StaticWebPreflightReport report;
         try
         {
