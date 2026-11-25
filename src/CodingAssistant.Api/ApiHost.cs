@@ -638,6 +638,8 @@ public static class ApiHost
         app.MapGet("/api/agents/roster", () =>
             Results.Ok(new { engine = "Microsoft Agent Framework",
                 agents = EngineeringAgentRoster.All }));
+        app.MapGet("/api/agents/skills", () =>
+            Safe(() => Results.Ok(new { skills = SkillCatalog.Discover() })));
 
         // Fourth real MAF agent: one task at a time from the exact current
         // owner-approved Technical Lead plan, source-only and never executed.

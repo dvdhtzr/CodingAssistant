@@ -105,7 +105,10 @@ test('Team, Quality, Skills and History expose honest destinations without autom
   assert.match(team, /Engineering team/);
   assert.match(quality, /Loading saved QA evidence/);
   assert.match(quality, /static inspection never verifies compilation or execution/);
-  assert.match(skills, /No installed registry or assignment controls/);
+  assert.match(skills, /Discovery only/);
+  assert.match(skills, /Loading skill catalog/);
+  assert.match(skills, /No skill activation or execution grants/);
+  assert.doesNotMatch(skills, /<button[^>]*>Approve|<button[^>]*>Activate/);
   assert.match(history, /Loading recorded activity/);
   assert.doesNotMatch(team + quality + skills + history, /Authorize this exact M1 plan/);
 });

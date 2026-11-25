@@ -1722,6 +1722,53 @@ try
                   a.GetProperty("backstory").GetString()!.Length > 25),
             "authenticated roster exposes distinct fourth MAF role and no tool rights");
     }
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync("/api/agents/skills"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "skill candidate catalog requires owner authentication");
+    using (var catalogResponse = await client.GetAsync("/api/agents/skills"))
+    using (var catalogBody = await Body(catalogResponse))
+    {
+        var skills = catalogBody.RootElement.GetProperty("skills");
+        Check(catalogResponse.StatusCode == HttpStatusCode.OK &&
+              skills.GetArrayLength() == 3 &&
+              skills.EnumerateArray().All(skill =>
+                  !skill.GetProperty("approved").GetBoolean() &&
+                  !skill.GetProperty("active").GetBoolean() &&
+                  skill.GetProperty("status").GetString() == "DISCOVERED_NOT_APPROVED" &&
+                  skill.GetProperty("requiredToolCategories").GetArrayLength() == 0 &&
+                  skill.GetProperty("contentSha256").GetString()!.Length == 64 &&
+                  skill.GetProperty("instructions").GetString()!.Length > 30),
+            "exact embedded skill candidates are inspectable, not approved or active");
+    }
+    var candidateSkills = SkillCatalog.Discover();
+    Check(candidateSkills.All(skill =>
+        EngineeringAgentRoster.Get(skill.Role).AllowedSkillScopes.Contains(skill.Scope)),
+        "every skill candidate is mapped to an existing role scope");
+    foreach (var malformed in new[] {
+        "---\nname: bad\ndescription: !include file\n---\n\ntext\n",
+        "---\nname: bad\ndescription: text\ntools: shell\n---\n\ntext\n",
+        "---\nname: ../bad\ndescription: text\n---\n\ntext\n",
+        "---\nname: bad\ndescription: text\n---\n\n---\n"
+    })
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(malformed);
+        var digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+        var skillInputRejected = false;
+        try { SkillCatalog.Validate(bytes, "bad", digest); }
+        catch (StoreFailure) { skillInputRejected = true; }
+        Check(skillInputRejected, "malformed or authority-bearing frontmatter rejected");
+    }
+    {
+        var candidate = candidateSkills[0];
+        var changed = System.Text.Encoding.UTF8.GetBytes(
+            "---\nname: " + candidate.Name + "\ndescription: " +
+            candidate.Description + "\n---\n\nChanged instructions\n");
+        var skillInputRejected = false;
+        try { SkillCatalog.Validate(changed, candidate.Name, candidate.ContentSha256); }
+        catch (StoreFailure) { skillInputRejected = true; }
+        Check(skillInputRejected, "changed skill text fails the reviewed content hash");
+    }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
     using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await anonymous.GetAsync(engineeringPath + "/latest"))

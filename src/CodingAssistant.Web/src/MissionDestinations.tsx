@@ -184,27 +184,56 @@ export function QualityDestination({ token, taskId, onWork }: {
   </section>;
 }
 
+export type SkillCandidate = {
+  name: string; description: string; version: string; sourceUrl: string;
+  contentSha256: string; license: string; role: string; scope: string;
+  status: string; approved: boolean; active: boolean; instructions: string;
+};
+
 export function SkillsDestination({ token }: { token: string }) {
+  const [skills, setSkills] = useState<SkillCandidate[] | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let closed = false;
+    setSkills(null);
+    setError(false);
+    void api<{ skills: SkillCandidate[] }>(token, '/api/agents/skills')
+      .then(value => { if (!closed) setSkills(value.skills); })
+      .catch(() => { if (!closed) setError(true); });
+    return () => { closed = true; };
+  }, [token]);
   return <section className="mc-destination ca-skills" aria-label="Agent skills">
     <div className="ca-dest-head">
       <div><span className="wb-kicker">AGENT CAPABILITIES</span><h2>Skills</h2></div>
-      <span className="pill">Planned · Architecture Extension A1</span>
+      <span className="pill">Discovery only</span>
     </div>
-    <p className="hint">Portable SKILL.md packages are planned. This view separates declared
-      scope from what is actually installed, granted, and used. No installed registry or
-      assignment controls are claimed here.</p>
+    <p className="hint">Inspect repository-owned, hash-pinned SKILL.md instruction candidates.
+      Discovery does not approve or activate a skill, or grant any tool permissions.</p>
     <div className="ca-skill-cols">
       <div className="ca-skill-col ca-skill-declared">
         <h3>Declared</h3><span className="ca-skill-cap">Host-defined scope</span>
         <AgentIdentityPanel token={token} />
       </div>
       <div className="ca-skill-col">
-        <h3>Installed</h3><span className="ca-skill-cap">Portable packages</span>
-        <div className="ca-skill-empty">No skill packages installed. The registry is not built yet.</div>
+        <h3>Discovered</h3><span className="ca-skill-cap">Instruction candidates</span>
+        {error && <p role="alert">The skill catalog could not be loaded.</p>}
+        {!skills && !error && <p role="status">Loading skill catalog…</p>}
+        {skills?.map(skill => <details key={skill.name}>
+          <summary>{skill.name} · v{skill.version}</summary>
+          <p>{skill.description}</p>
+          <p className="hint">{skill.role} · {skill.scope}</p>
+          <p className="hint">{skill.approved ? 'Approved' : 'Not approved'} ·
+            {skill.active ? ' Active' : ' Not active'}</p>
+          <p>{skill.instructions}</p>
+          <p className="hint">License: {skill.license}</p>
+          <p className="hint" style={{ overflowWrap: 'anywhere' }}>SHA-256: {skill.contentSha256}</p>
+          <a href={skill.sourceUrl} target="_blank" rel="noreferrer">Pinned source</a>
+        </details>)}
+        {skills?.length === 0 && <div className="ca-skill-empty">No candidates discovered.</div>}
       </div>
       <div className="ca-skill-col">
         <h3>Granted</h3><span className="ca-skill-cap">Permissions</span>
-        <div className="ca-skill-empty">Execution requires per-run approval. No standing grants.</div>
+        <div className="ca-skill-empty">No skill activation or execution grants.</div>
       </div>
       <div className="ca-skill-col">
         <h3>Used</h3><span className="ca-skill-cap">Recorded usage</span>

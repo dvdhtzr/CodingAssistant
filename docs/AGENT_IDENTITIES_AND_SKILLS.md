@@ -1,7 +1,8 @@
 # Phase 4–5 — Independent MAF agents and future portable skills
 
 **Status:** The five named MAF agents are distinct, host-owned identities. A
-fully pluggable skill loader is **not yet implemented**.
+fully pluggable skill loader is **not yet implemented**. A read-only fixed
+candidate catalog is available; see the discovery increment below.
 
 ## Independent identities (first-class, immutable)
 
@@ -68,7 +69,7 @@ Anthropic and other runtimes. The host should support:
   with Ollama; no mandatory Anthropic API subscription.
 
 The current `allowedSkillScopes` field is **metadata only** and grants
-no privilege. There is currently **no** skill import, network download,
+no privilege. There is currently **no** external skill import, network download,
 script execution, filesystem access or arbitrary tool/command handler
 in any of these five agents. That is intentional until security
 qualification is completed.
@@ -103,3 +104,30 @@ The legacy source generator remains fully available. Source is NOT
 automatically executed or independently verified; actual sandboxed build,
 browser checks and repair loops remain future qualified milestones.
 See [INDEPENDENT_QA_PHASE5.md](INDEPENDENT_QA_PHASE5.md).
+
+## Discovery increment (#110)
+
+Authenticated `GET /api/agents/skills` exposes three repository-owned
+embedded `SKILL.md` candidates (requirements discovery, architecture
+tradeoffs, static web verification), with role/scope, pinned source
+commit and canonical UTF-8 LF SHA-256, version, content limit and
+empty required tool categories. The Skills destination can inspect
+the actual instructions and pins. All entries are
+`DISCOVERED_NOT_APPROVED`, inactive, and carry an unspecified
+repository-owned license marker (no third-party license is assumed).
+Approval requires an explicit license review.
+
+Only the three fixed manifest resources are read; no filesystem path
+or package ID from a request is opened. The deliberately narrow
+frontmatter subset is two plain scalar fields, with bounded content
+and exact pinned hashes. General YAML, references, third-party
+installation, approval persistence, activation, role/task binding
+and activation audit are not implemented yet. The catalog does not
+supply any text to MAF or Ollama and cannot grant a tool or execution
+permission. Existing agent instructions and approvals are unchanged.
+
+The existing API project references Microsoft.Agents.AI 1.28.0 on
+.NET 10 and uses the local Ollama chat client. Native skills API
+compatibility and live local skill activation still require separate
+validation. #110 remains open until its complete acceptance criteria
+are satisfied.

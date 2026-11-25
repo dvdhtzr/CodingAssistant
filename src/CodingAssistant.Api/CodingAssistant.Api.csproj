@@ -11,4 +11,9 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.12.0" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.14" />
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Skills/requirements-discovery/SKILL.md" LogicalName="CodingAssistant.Api.Skills.requirements-discovery.SKILL.md" />
+    <EmbeddedResource Include="Skills/architecture-tradeoffs/SKILL.md" LogicalName="CodingAssistant.Api.Skills.architecture-tradeoffs.SKILL.md" />
+    <EmbeddedResource Include="Skills/static-web-verification/SKILL.md" LogicalName="CodingAssistant.Api.Skills.static-web-verification.SKILL.md" />
+  </ItemGroup>
 </Project>
