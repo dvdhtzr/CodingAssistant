@@ -3524,9 +3524,10 @@ try
     // The QA proposal and its populated triage/cycle children must survive
     // the old mandatory-QA foreign key migration. Work only in a DB copy.
     var aetMigrationRoot=Path.Combine(root,"aet-legacy-proposals");
-    Directory.CreateDirectory(aetMigrationRoot);
-    if(!OperatingSystem.IsWindows())
-        File.SetUnixFileMode(aetMigrationRoot,UnixFileMode.UserRead|UnixFileMode.UserWrite|UnixFileMode.UserExecute);
+    // Provision the disposable database using the same private storage
+    // creation path as production before SQLite's backup API opens it.
+    // The subsequent backup replaces its contents, not its permissions.
+    _=new TaskStore(aetMigrationRoot);
     var aetMigrationPath=Path.Combine(aetMigrationRoot,"codingassistant.db");
     using(var aetOriginalDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+Path.Combine(root,"codingassistant.db")+";Pooling=False"))
     using(var aetLegacyDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+aetMigrationPath+";Pooling=False"))
