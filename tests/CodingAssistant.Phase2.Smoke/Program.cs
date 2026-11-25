@@ -42,6 +42,44 @@ async Task<JsonDocument> Body(HttpResponseMessage response) =>
 async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj) =>
     await client.PostAsJsonAsync(path, obj);
 
+// Native MAF skill API compatibility probe. No provider is installed in
+// production; the probe uses only in-memory text and a deterministic client.
+{
+    var nativeSkill = new Microsoft.Agents.AI.AgentInlineSkill(
+        name: "compatibility-probe",
+        description: "Model-free native skill API boundary probe",
+        instructions: "Read the pinned instructions as advisory text only.");
+    var nativeSkillContent = await nativeSkill.GetContentAsync(CancellationToken.None);
+    Check(nativeSkillContent.Contains("Read the pinned instructions as advisory text only.",
+        StringComparison.Ordinal), "native MAF inline skill API preserves the instruction text");
+    var nativeProbeFactory = new Phase3FakeMafFactory();
+    using var nativeProbeClient = nativeProbeFactory.Create("qwen3.5:4b", MafAgentPurpose.Interview);
+    var nativeProbeAgent = new Microsoft.Agents.AI.ChatClientAgent(nativeProbeClient,
+        new Microsoft.Agents.AI.ChatClientAgentOptions {
+            Name = "NativeSkillCompatibilityProbe",
+            ChatOptions = new ChatOptions { Instructions = "You are a model-free compatibility probe." },
+            AIContextProviders = [new Microsoft.Agents.AI.AgentSkillsProvider(nativeSkill)]
+        });
+    _ = await nativeProbeAgent.RunAsync(
+        new[] { new ChatMessage(ChatRole.User, "Inspect the native skill declaration.") },
+        cancellationToken: CancellationToken.None);
+    Check(nativeProbeFactory.AllowedToolsSeen > 0 &&
+        nativeProbeFactory.LastNativeToolOptions?.Tools is { Count: > 0 },
+        "native MAF provider introduces callable tools even for instruction-only skills");
+    using var nativeRejectedClient = new LocalMafChatClient("qwen3.5:4b", MafAgentPurpose.Interview);
+    // Only enter the real adapter after proving tool options are present;
+    // its first validation rejects before creating an HTTP request.
+    var nativeRejected = false;
+    try
+    {
+        _ = await nativeRejectedClient.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Compatibility check; never send this request.")],
+            nativeProbeFactory.LastNativeToolOptions!, CancellationToken.None);
+    }
+    catch (StoreFailure error) { nativeRejected = error.Code == "INVALID_INPUT"; }
+    Check(nativeRejected, "actual local Ollama adapter rejects native skill tools before transport");
+}
+
 // Strict structured output is only a proposal, never owner approval.
 {
     var parsed = LocalArchitectureAdvisor.Parse(
@@ -3537,6 +3575,7 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
     public List<string> Models { get; } = [];
     public int SystemPoliciesSeen { get; private set; }
     public int AllowedToolsSeen { get; private set; }
+    public ChatOptions? LastNativeToolOptions { get; private set; }
     public int SkillContextsSeen { get; private set; }
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
@@ -3560,6 +3599,7 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                     StringComparison.Ordinal) == true)
                 parent.SystemPoliciesSeen++;
             parent.AllowedToolsSeen += options?.Tools?.Count ?? 0;
+            if (options?.Tools is { Count: > 0 }) parent.LastNativeToolOptions = options;
             if (history.Any(m => m.Role.Value == "system" &&
                 m.Text?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT", StringComparison.Ordinal) == true) ||
                 options?.Instructions?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
