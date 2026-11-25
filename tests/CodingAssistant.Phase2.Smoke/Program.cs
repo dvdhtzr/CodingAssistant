@@ -1057,6 +1057,54 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           factory.HostObservationSeen && factory.NoTools,
         "real QA MAF agent requests host observation then returns independent report");
 
+    // Static Web companion evidence is a new host-issued DATA message.
+    // The existing assigned-file Code Atlas broker still denies cross-file
+    // symbol IDs and arbitrary tools. Non-web sources remain out of scope.
+    var webArch = arch with { ApprovedChoices = [
+        new DraftArchitectureChoice("technology-stack", 1, new string('e', 64),
+            "static-web", "Static Web", "Offline", "Manual DOM", "static-web")
+    ] };
+    var htmlFile = sourceFile with { Content =
+        "<html><body><button id='save'>Save</button><script src='app.js'></script></body></html>" };
+    var scriptFile = sourceFile with { Path = "app.js",
+        Content = "document.getElementById('save').addEventListener('click', () => localStorage.setItem('notes', 'saved'));",
+        Sha256 = new string('6', 64) };
+    var styleFile = sourceFile with { Path = "styles.css",
+        Content = "button { display: block; }", Sha256 = new string('5', 64) };
+    var oversizedFile = sourceFile with { Path = "large.js",
+        Content = "/*" + new string('z', 5000) + "*/", Sha256 = new string('4', 64) };
+    var webInput = input with { Architecture = webArch, File = htmlFile,
+        AllFiles = [htmlFile, scriptFile, styleFile, oversizedFile, privateFile] };
+    var companionFactory = new Phase5FakeMafFactory();
+    companionFactory.ScriptedReplies.Enqueue(
+        """{"summary":"The linked script contains a Save handler; browser behavior remains unverified.","findings":[],"manualChecks":["Click Save and reload in an independent browser"]}""");
+    var companionReport = await new MafQaEngineer(companionFactory).ReviewAsync(
+        webInput, CancellationToken.None);
+    var companionEvidence = companionFactory.LastCompanionContext ?? "";
+    Check(companionFactory.NoTools && companionReport.Findings.Count == 0 &&
+          companionEvidence.Contains("localStorage.setItem", StringComparison.Ordinal) &&
+          companionEvidence.Contains("button { display: block; }", StringComparison.Ordinal) &&
+          companionEvidence.Contains(scriptFile.Sha256, StringComparison.Ordinal) &&
+          companionEvidence.Contains("large.js", StringComparison.Ordinal) &&
+          !companionEvidence.Contains(new string('z', 100), StringComparison.Ordinal) &&
+          companionEvidence.Contains("secrets.cs", StringComparison.Ordinal) &&
+          !companionEvidence.Contains("RestrictedDetails", StringComparison.Ordinal) &&
+          companionEvidence.Contains("2 full companion file(s)", StringComparison.Ordinal),
+        "static-web QA receives bounded linked-file evidence and explicit omissions, not unrelated source");
+    Check(factory.LastCompanionContext is null,
+        "non-static-web QA does not receive expanded companion context");
+    try
+    {
+        _ = await new MafQaEngineer(companionFactory).ReviewAsync(
+            webInput with { File = htmlFile with { Content = "different source" } },
+            CancellationToken.None);
+        Check(false, "primary file content must match saved review snapshot");
+    }
+    catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+    {
+        Check(true, "QA rejects changed primary source before review");
+    }
+
     var limited = new Phase5FakeMafFactory();
     for (var i = 0; i < 3; i++)
         limited.ScriptedReplies.Enqueue(
@@ -3885,6 +3933,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool InspectionContextSeen { get; private set; }
     public bool RepairFocusSeen { get; private set; }
     public bool NoTools { get; private set; }
+    public string? LastCompanionContext { get; private set; }
     public int SkillContextsSeen { get; private set; }
     public int ReferenceContextsSeen { get; private set; }
     public bool HostObservationSeen { get; private set; }
@@ -3923,6 +3972,8 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                 m.Text.Contains("NOT proof of a fix", StringComparison.Ordinal) &&
                 m.Text.Contains("Save button is not connected", StringComparison.Ordinal));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
+            parent.LastCompanionContext = history.Select(m => m.Text).FirstOrDefault(value =>
+                value?.StartsWith("PROJECT-WIDE STATIC WEB COMPANION EVIDENCE", StringComparison.Ordinal) == true);
             if (options?.Instructions?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
                     StringComparison.Ordinal) == true || history.Any(m =>
                     m.Role.Value == "system" && m.Text?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
