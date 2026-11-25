@@ -5,7 +5,7 @@ import {EventEmitter} from 'node:events';
 import {spawnSync} from 'node:child_process';
 import {trustedDockerArgs,parseTrustedReport,parseGuestStream,trustedPayload,qualifyTrusted} from '../tools/m4/windows_aet8_trusted_qualification.mjs';
 import {SECURITY_CASES,FIXTURE_CASES} from '../tools/m4/windows_aet8_trusted_guest.mjs';
-import {QUALIFICATION_BROWSER_ARGS,createPipeTransport,waitForBrowserExit,closeBrowserProcess,COMMAND_TIMEOUT_CODES} from '../tools/m4/windows_aet8_pipe_driver.mjs';
+import {QUALIFICATION_BROWSER_ARGS,createPipeTransport,waitForBrowserExit,closeBrowserProcess,COMMAND_TIMEOUT_CODES,resetTrustedFixture} from '../tools/m4/windows_aet8_pipe_driver.mjs';
 import {CALCULATION_CASES,evaluateCalculationJournal} from '../tools/m4/calculation_journal_contract.mjs';
 const name='ca-win-aet8-012345abcdef',id='sha256:'+'a'.repeat(64);
 const booleans=(keys,value)=>Object.fromEntries(keys.map(k=>[k,value]));
@@ -173,4 +173,33 @@ test('contract reports completed negative observation before a later driver faul
   };
   await assert.rejects(evaluateCalculationJournal(open,{onCaseError:e=>{throw e;},onCaseComplete:(k,v)=>completed.push([k,v])}),/FIXTURE_NAVIGATION_TIMEOUT/);
   assert.deepEqual(completed,[[CALCULATION_CASES[0],false]]);
+});
+
+test('fixed case reset clears origin then navigates once or reloads, and observes fresh state',async()=>{
+  const calls=[];
+  let display='0',history=0;
+  const transport={send:async(method,params,sessionId)=>calls.push({method,params,sessionId})};
+  const active={sessionId:'fixture-session',page:{
+    navigate:async()=>calls.push('navigate'),reload:async()=>calls.push('reload'),
+    locator:selector=>({innerText:async()=>{assert.equal(selector,'output#display');return display;}}),
+    getByRole:(role,options)=>({locator:selector=>({count:async()=>{
+      assert.equal(role,'region');assert.equal(options.name,'Calculation history');
+      assert.equal(selector,'li');return history;
+    }})}),
+  }};
+  const origin='http://127.0.0.1:4000';
+  const expected={method:'Storage.clearDataForOrigin',params:{origin,storageTypes:'all'},sessionId:'fixture-session'};
+  await resetTrustedFixture(transport,active,origin,false);
+  await resetTrustedFixture(transport,active,origin,true);
+  assert.deepEqual(calls,[expected,'navigate',expected,'reload']);
+  history=1;
+  await assert.rejects(resetTrustedFixture(transport,active,origin,true),/FIXTURE_FRESH_STATE_NOT_RESET/);
+  history=0;display='5';
+  await assert.rejects(resetTrustedFixture(transport,active,origin,true),/FIXTURE_FRESH_STATE_NOT_RESET/);
+  const before=calls.length;
+  await assert.rejects(resetTrustedFixture(transport,active,'https://example.com',true),/FIXED_FIXTURE_REQUIRED/);
+  assert.equal(calls.length,before);
+  await assert.rejects(resetTrustedFixture({send:async()=>{throw Error('private detail');}},active,origin,true),/BROWSER_STORAGE_RESET_FAILED/);
+  const x=good();x.failure={stage:'WORKING/'+CALCULATION_CASES[0],code:'FIXTURE_FRESH_STATE_NOT_RESET'};
+  assert.deepEqual(parseTrustedReport(JSON.stringify(x)).failure,x.failure);
 });
