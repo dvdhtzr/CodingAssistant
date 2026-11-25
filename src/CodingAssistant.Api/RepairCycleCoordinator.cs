@@ -181,6 +181,12 @@ public sealed class RepairCycleCoordinator(
     public RepairCycleSnapshot Cancel(string taskId, string cycleId)
     {
         var current = cycles.Get(taskId, cycleId);
+        if (cycles.TryInterruptRoutineRepair(taskId,cycleId))
+        {
+            if (_active.TryGetValue(cycleId,out var routineCancellation))
+                try { routineCancellation.Cancel(); } catch (ObjectDisposedException) { }
+            return cycles.Get(taskId,cycleId);
+        }
         if (current.Cycle.State is "Running" or "QaRunning")
         {
             if (_active.TryGetValue(cycleId, out var cancellation))
