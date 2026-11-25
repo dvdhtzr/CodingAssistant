@@ -4,8 +4,11 @@ public sealed record QaCriterionIdentity(string Id, string WorkItemId,
     string WorkItemTitle, string Requirement);
 public sealed record QaFindingGroup(string Path, int Index, QaFinding Finding,
     string? CriterionId, IReadOnlyList<int> OriginalIndices);
+public sealed record QaImplementationIndicator(string Path, string SourceSha256,
+    string SourceExcerpt, string Explanation);
 public sealed record QaCriterionCoverage(QaCriterionIdentity Criterion,
-    string StaticStatus, string VerificationStatus, int ConcernCount);
+    string StaticStatus, string VerificationStatus, int ConcernCount,
+    IReadOnlyList<QaImplementationIndicator> ImplementationIndicators);
 public sealed record QaAcceptanceSummary(string PlanSha256, string SourceSha256,
     string ReviewId, IReadOnlyList<QaCriterionCoverage> Criteria,
     IReadOnlyList<QaFindingGroup> Findings, int RawFindingCount,
@@ -40,6 +43,24 @@ public static class QaAcceptanceProjection
         return matches.Length == 1 ? matches[0].Id : null;
     }
 
+    // The store supplies the exact saved primary file content, not model text.
+    // Literal grounding is not a semantic proof; positive evidence cannot
+    // become a repair, approval or test result.
+    public static QaFileAssessment Ground(ImplementationPlan plan, string source,
+        QaFileAssessment assessment)
+    {
+        var ids = Identify(plan).Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+        bool HasExcerpt(string? text) => text is { Length: >= 8 and <= 240 } &&
+            !string.IsNullOrWhiteSpace(text) && source.Contains(text, StringComparison.Ordinal);
+        return assessment with {
+            Findings = assessment.Findings.Select(f => HasExcerpt(f.SourceExcerpt)
+                ? f : f with { SourceExcerpt = null }).ToArray(),
+            ImplementationEvidence = (assessment.ImplementationEvidence ?? [])
+                .Where(item => ids.Contains(item.CriterionId) && HasExcerpt(item.SourceExcerpt))
+                .DistinctBy(item => (item.CriterionId, item.SourceExcerpt)).ToArray()
+        };
+    }
+
     public static QaAcceptanceSummary Build(QaReviewRun review, ImplementationPlan plan,
         IReadOnlyList<QaFileReport> reports)
     {
@@ -61,7 +82,7 @@ public static class QaAcceptanceProjection
         // remain independent. Never collapse merely similar natural language.
         var groups = raw.GroupBy(row => (
                 row.Path, row.CriterionId, row.Finding.Requirement,
-                row.Finding.Evidence, row.Finding.Recommendation))
+                row.Finding.Evidence, row.Finding.Recommendation, row.Finding.SourceExcerpt))
             .Select(group => {
                 var representative = group.OrderByDescending(row =>
                     row.Finding.Severity switch { "Critical" => 3, "Major" => 2, _ => 1 })
@@ -74,9 +95,16 @@ public static class QaAcceptanceProjection
 
         var coverage = identities.Select(criterion => {
             var count = groups.Count(row => row.CriterionId == criterion.Id);
+            var indicators = reports.OrderBy(r => r.Path, StringComparer.Ordinal)
+                .SelectMany(report => (report.Assessment.ImplementationEvidence ?? [])
+                    .Where(item => item.CriterionId == criterion.Id)
+                    .Select(item => new QaImplementationIndicator(report.Path,
+                        report.SourceSha256, item.SourceExcerpt, item.Explanation)))
+                .DistinctBy(item => (item.Path, item.SourceExcerpt)).ToArray();
             return new QaCriterionCoverage(criterion,
-                count > 0 ? "StaticConcern" : "NoLinkedConcern",
-                "RequiresTesting", count);
+                count > 0 ? (indicators.Length > 0 ? "EvidenceAndConcern" : "StaticConcern")
+                    : (indicators.Length > 0 ? "ImplementationEvidence" : "NoLinkedConcern"),
+                "RequiresTesting", count, indicators);
         }).ToArray();
         return new QaAcceptanceSummary(plan.PlanSha256, review.SourceSha256,
             review.Id, coverage, groups, raw.Length,

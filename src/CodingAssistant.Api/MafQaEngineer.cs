@@ -7,10 +7,13 @@ namespace CodingAssistant.Api;
 
 public sealed record QaFinding(
     string Severity, string Requirement, string Evidence,
-    string Recommendation, string? CriterionId = null);
+    string Recommendation, string? CriterionId = null, string? SourceExcerpt = null);
+public sealed record QaImplementationEvidence(string CriterionId, string SourceExcerpt,
+    string Explanation);
 public sealed record QaFileAssessment(
     string Summary, IReadOnlyList<QaFinding> Findings,
-    IReadOnlyList<string> ManualChecks);
+    IReadOnlyList<string> ManualChecks,
+    IReadOnlyList<QaImplementationEvidence>? ImplementationEvidence = null);
 public sealed record QaFileReport(
     string Path, string SourceSha256, QaFileAssessment Assessment,
     string ReviewedUtc);
@@ -80,13 +83,25 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
             {"severity":"Major","requirement":"Relevant acceptance requirement",
              "evidence":"Actual source construct or omission causing concern",
              "recommendation":"Concrete change or independent check",
-             "criterionId":"work-item:1"}
+             "criterionId":"work-item:1",
+             "sourceExcerpt":"Verbatim short excerpt from the PRIMARY file, or null"}
+          ],
+          "implementationEvidence":[
+            {"criterionId":"work-item:2","sourceExcerpt":"Verbatim short PRIMARY file excerpt",
+             "explanation":"Why this construct appears relevant to the criterion"}
           ],
           "manualChecks":["Specific browser/build check that QA must later perform"]
         }
         For a concern about a listed acceptance criterion, copy its exact
         requirement text and criterion ID. Omit criterionId or use null for
         other source concerns. Never invent IDs. Criteria are not test results.
+        Optionally identify up to four positive implementation indicators with
+        exact criterion IDs and verbatim contiguous primary-file excerpts.
+        Cite existing source, including functioning-looking wiring and storage
+        constructs, not just defects. Omit uncertain or absent evidence.
+        Do not use an excerpt from a companion file as primary-file evidence.
+        A matching excerpt confirms only that text exists, not its semantics.
+        Findings may include a verbatim primary-file excerpt when available.
         Severity is only Critical, Major or Minor. 0–6 findings, 1–6
         actionable manual checks. JSON only; no markdown or status PASS.
         If the engineering source is Failed or Interrupted, it is a PARTIAL
@@ -261,7 +276,9 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                     "Your previous response did not match the bounded static QA " +
                     "report contract. Return ONLY JSON with summary, findings " +
                     "(severity Critical/Major/Minor, requirement, evidence, " +
-                    "recommendation, optional criterionId), and 1–6 actionable manualChecks. Report " +
+                    "recommendation, optional criterionId/sourceExcerpt), optional " +
+                    "implementationEvidence (criterionId, sourceExcerpt, explanation), " +
+                    "and 1–6 actionable manualChecks. Report " +
                     "hypotheses, never actual test results or invented evidence."));
             }
         }
@@ -275,6 +292,15 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
         return value;
     }
+
+    private static bool ValidCriterionId(string? id) =>
+        id is { Length: >= 3 and <= 55 } && id.All(ch =>
+            char.IsAsciiLetterLower(ch) || char.IsAsciiDigit(ch) || ch is '-' or ':');
+
+    private static string? Excerpt(string? raw) =>
+        raw is { Length: >= 8 and <= 240 } && !string.IsNullOrWhiteSpace(raw) &&
+        !raw.Any(ch => char.IsControl(ch) && ch is not ('\r' or '\n' or '\t'))
+            ? raw : null;
 
     public static QaFileAssessment Parse(string? raw)
     {
@@ -295,17 +321,29 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                 if (f is null || f.Severity is not
                     ("Critical" or "Major" or "Minor"))
                     throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-                if (f.CriterionId is { } id &&
-                    (id.Length is < 3 or > 55 || id.Any(ch =>
-                        !char.IsAsciiLetterLower(ch) && !char.IsAsciiDigit(ch) &&
-                        ch is not ('-' or ':'))))
+                if (f.CriterionId is not null && !ValidCriterionId(f.CriterionId))
                     throw new StoreFailure("MODEL_OUTPUT_REJECTED");
                 return new QaFinding(f.Severity, Text(f.Requirement, 8, 260),
                     Text(f.Evidence, 12, 500),
-                    Text(f.Recommendation, 12, 500), f.CriterionId);
+                    Text(f.Recommendation, 12, 500), f.CriterionId, Excerpt(f.SourceExcerpt));
             }).ToArray();
+            if (result.ImplementationEvidence is { Count: > 4 })
+                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            // Positive evidence is optional. Malformed or ungrounded indicators
+            // must not destroy an otherwise useful static report.
+            var positive = new List<QaImplementationEvidence>();
+            foreach (var item in result.ImplementationEvidence ?? [])
+            {
+                if (item is null || !ValidCriterionId(item.CriterionId) ||
+                    Excerpt(item.SourceExcerpt) is not { } excerpt ||
+                    item.Explanation is not { Length: >= 12 and <= 240 } explanation ||
+                    explanation.Any(ch => char.IsControl(ch) && ch is not ('\n' or '\t')))
+                    continue;
+                positive.Add(new QaImplementationEvidence(item.CriterionId, excerpt, explanation));
+            }
             return new QaFileAssessment(Text(result.Summary, 16, 1600),
-                findings, result.ManualChecks.Select(x => Text(x, 12, 350)).ToArray());
+                findings, result.ManualChecks.Select(x => Text(x, 12, 350)).ToArray(),
+                positive.ToArray());
         }
         catch (JsonException)
         {

@@ -54,3 +54,31 @@ implementation, merge paraphrased defects, perform tests, or qualify a preview.
 These are subsequent increments. Model-free tests exercise exact historical
 bindings, ambiguous and invalid identity mapping, duplicate consolidation,
 and the authenticated persisted QA response.
+
+
+## Third implementation slice — literal source grounding
+
+The independent MAF QA agent may optionally report up to four positive
+implementation indicators per primary file, with an approved criterion ID,
+a short verbatim source excerpt, and an explanation. Existing findings may
+also contain a literal excerpt. The host checks the exact saved primary
+file content and approved plan inside the existing QA report transaction.
+Unknown criterion IDs, fabricated or nonmatching excerpts and duplicate
+positive indicators cannot become acceptance evidence. A finding with no
+matching excerpt remains an unverified hypothesis; it is not silently erased.
+
+The acceptance projection distinguishes implementation indicators, static
+concerns, both together, and no linked concern. The UI shows the matched
+source and clearly labels the model's explanation as an interpretation.
+Every criterion still requires testing, including those with positive
+indicators. A literal match proves only the cited text exists in the
+saved file, not that it is reachable, relevant, correct, or working.
+Historical reports without these optional fields remain readable.
+The existing owner-confirmed repair scope and proposal contracts are
+unchanged; no automatic repair authorization is introduced.
+
+This slice establishes auditable positive evidence, not a general semantic
+defect classifier or a proof of absence. Cross-file cause reconciliation,
+deterministic confirmation of concrete static defects and independent
+functional testing remain separate work. No preview or execution authority
+is granted.
