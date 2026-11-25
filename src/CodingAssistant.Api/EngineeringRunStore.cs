@@ -875,6 +875,13 @@ public sealed class EngineeringRunStore(
         ValidId(taskId); ValidId(runId);
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
+        InterruptInTransaction(db,tx,taskId,runId);
+        tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
+    }
+
+    internal static void InterruptInTransaction(SqliteConnection db,SqliteTransaction tx,string taskId,string runId)
+    {
         var job = Find(db, tx, runId);
         if (job is null || job.TaskId != taskId)
             throw new StoreFailure("NOT_FOUND");
@@ -893,8 +900,6 @@ public sealed class EngineeringRunStore(
             Event(db, tx, runId, "EngineeringRunInterrupted",
                 "Owner stopped unverified source generation");
         }
-        tx.Commit();
-        tasks.SignalEngineeringActivity(taskId);
     }
 
     public byte[] Zip(string taskId, string runId)
