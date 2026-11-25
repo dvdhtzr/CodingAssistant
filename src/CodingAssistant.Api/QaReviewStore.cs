@@ -19,7 +19,8 @@ public sealed record QaReviewEvent(
     int Sequence, string Kind, string Detail, string CreatedUtc);
 public sealed record QaReviewSnapshot(
     QaReviewRun Job, IReadOnlyList<QaFileReport> Reports,
-    IReadOnlyList<QaReviewEvent> Events, string SourceState);
+    IReadOnlyList<QaReviewEvent> Events, string SourceState,
+    QaAcceptanceSummary? Acceptance = null);
 
 /// <summary>
 /// Evidence ledger for *static* QA source inspection. Review admission,
@@ -291,11 +292,12 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         ValidateId(taskId);
         ValidateId(reviewId);
         using var db = tasks.Open();
-        var review = Find(db, null, reviewId);
+        using var tx = db.BeginTransaction(deferred: true);
+        var review = Find(db, tx, reviewId);
         if (review is null || review.TaskId != taskId)
             throw new StoreFailure("NOT_FOUND");
         var reports = new List<QaFileReport>();
-        using (var cmd = TaskStore.Command(db, null, """
+        using (var cmd = TaskStore.Command(db, tx, """
             SELECT path,source_sha256,assessment_json,reviewed_utc
             FROM qa_review_files WHERE qa_id=@id ORDER BY path
             """, ("@id", reviewId)))
@@ -308,7 +310,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                         throw new InvalidOperationException("Invalid stored QA report"),
                     reader.GetString(3)));
         var events = new List<QaReviewEvent>();
-        using (var cmd = TaskStore.Command(db, null, """
+        using (var cmd = TaskStore.Command(db, tx, """
             SELECT sequence,kind,detail,created_utc
             FROM qa_review_events WHERE qa_id=@id ORDER BY sequence
             """, ("@id", reviewId)))
@@ -316,11 +318,14 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             while (reader.Read())
                 events.Add(new QaReviewEvent(reader.GetInt32(0),
                     reader.GetString(1), reader.GetString(2), reader.GetString(3)));
-        var sourceState = TaskStore.Scalar(db, null, """
+        var sourceState = TaskStore.Scalar(db, tx, """
             SELECT state FROM engineering_runs WHERE id=@id AND task_id=@task
             """, ("@id", review.EngineeringRunId), ("@task", taskId));
+        var boundPlan = ImplementationPlanStore.ReadForQa(db, tx, review);
+        var acceptance = QaAcceptanceProjection.Build(review, boundPlan, reports);
+        tx.Commit();
         return new QaReviewSnapshot(review, reports.AsReadOnly(),
-            events.AsReadOnly(), sourceState ?? "Unavailable");
+            events.AsReadOnly(), sourceState ?? "Unavailable", acceptance);
     }
 
     public void SaveFileReport(string taskId, string reviewId,
