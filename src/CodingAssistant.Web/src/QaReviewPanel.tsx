@@ -448,14 +448,19 @@ export function QaReviewPanel({ token, taskId, engineering }: {
           {acceptance.unmappedFindingCount > 0 &&
             ' ' + acceptance.unmappedFindingCount + ' concern(s) have no exact criterion link.'}
           {!currentReport && ' Historical revision.'}</p>
-        {acceptance.criteria.map(row => <div key={row.criterion.id} className="qa-finding">
-          <p><strong>{row.criterion.requirement}</strong></p>
-          <p className="hint">{row.criterion.workItemTitle} · {row.criterion.id}</p>
-          <p>{row.concernCount > 0
-            ? row.concernCount + ' linked static concern(s)'
-            : 'No linked static concern (not proof of implementation)'}
-            {' · '}<strong>Requires testing</strong></p>
-        </div>)}
+        <p><strong>{acceptance.criteria.filter(row => row.concernCount > 0).length}
+          {' '}criteria with linked static concerns</strong> · all require testing.</p>
+        <details>
+          <summary>Inspect criteria and evidence links ({acceptance.criteria.length})</summary>
+          {acceptance.criteria.map(row => <div key={row.criterion.id} className="qa-finding">
+            <p><strong>{row.criterion.requirement}</strong></p>
+            <p className="hint">{row.criterion.workItemTitle} · {row.criterion.id}</p>
+            <p>{row.concernCount > 0
+              ? row.concernCount + ' linked static concern(s)'
+              : 'No linked static concern (not proof of implementation)'}
+              {' · '}<strong>Requires testing</strong></p>
+          </div>)}
+        </details>
       </section>}
       {qaAtlasInvestigations > 0 && <p className="hint"
         aria-label="Independent QA Code Atlas investigations">
