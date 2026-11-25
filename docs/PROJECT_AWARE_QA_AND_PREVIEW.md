@@ -82,3 +82,33 @@ defect classifier or a proof of absence. Cross-file cause reconciliation,
 deterministic confirmation of concrete static defects and independent
 functional testing remain separate work. No preview or execution authority
 is granted.
+
+
+## Fourth implementation slice — cross-file cause reconciliation
+
+An independent primary-file review may now return up to three companion
+observations separately from repair findings. Each identifies an approved
+criterion, exact supplied companion path, literal excerpt and explanation.
+The MAF adapter filters references against the actual bounded companion
+context it supplied; omitted, non-web and foreign paths cannot qualify.
+The existing QA report transaction independently checks the approved Static
+Web architecture, exact saved run, criterion and companion source. No
+model-selected filesystem path is opened.
+
+The acceptance projection links a companion observation to an independently
+reviewed primary finding only when its criterion, cause path and matched
+excerpt select exactly one original finding group. Ambiguous or absent
+matches remain open investigation context. Cross-file observations never
+become repair proposal entries; the existing primary-file owner triage and
+approval remain mandatory. The UI retains unmatched observations even if no
+primary repair finding was recorded.
+
+All functionality is generic: the factory derives criterion IDs and source
+relationships from the owner's approved plan and generated snapshot.
+Idea Vault, Calculation Journal, and notes/timer fixtures are regression
+examples only, never production requirements. Literal evidence is not proof
+of semantic causality or runtime behavior. Model-free tests exercise
+companion admission, fabricated/omitted source rejection, unique and
+ambiguous links and the persisted HTTP response. No execution authority or
+preview is added; independent deterministic preflight and runtime qualification
+remain separate work.
