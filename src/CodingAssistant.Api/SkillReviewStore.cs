@@ -72,11 +72,11 @@ public sealed class SkillReviewStore(TaskStore tasks)
         var hash = ReviewSha256(taskId, skill);
         var history = History(db, tx, taskId, skill.Name);
         var latest = history.LastOrDefault();
-        var current = latest?.ReviewSha256 == hash &&
+        var current = latest is not null && latest.ReviewSha256 == hash &&
             latest.SkillName == skill.Name && latest.Role == skill.Role &&
             latest.Version == skill.Version &&
             latest.ContentSha256 == skill.ContentSha256 && latest.License == skill.License;
-        var approved = current && latest!.Decision == "ApproveLocalUse" &&
+        var approved = current && latest is not null && latest.Decision == "ApproveLocalUse" &&
             latest.LocalUsePermissionConfirmed;
         var status = latest is null ? "NOT_REVIEWED" :
             !current ? "STALE_REVIEW" :
@@ -130,7 +130,7 @@ public sealed class SkillReviewStore(TaskStore tasks)
             ("@revision", before.Revision + 1), ("@role", skill.Role),
             ("@version", skill.Version), ("@content", skill.ContentSha256),
             ("@license", skill.License), ("@hash", before.ReviewSha256),
-            ("@decision", request.Decision), ("@permission", approve ? 1 : 0),
+            ("@decision", request.Decision!), ("@permission", approve ? 1 : 0),
             ("@utc", DateTimeOffset.UtcNow.ToString("O")));
         var result = View(db, tx, taskId, skill);
         tx.Commit();
