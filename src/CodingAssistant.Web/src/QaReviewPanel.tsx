@@ -512,8 +512,10 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         Historical QA report: the latest engineering source or plan has changed.
         These findings are retained for reference, not current verification.</p>}
       {result.job.state === 'Reviewed' && potentialIssues === 0 && <p className="hint">
-        The static model identified no issues in this review. That does
-        <strong> not</strong> mean the application builds, runs, or passes tests.</p>}
+        No primary-file repair findings were recorded.
+        {(acceptance?.crossFileEvidence?.length ?? 0) > 0 &&
+          ' Cross-file observations still require investigation.'}
+        {' '}This does <strong>not</strong> mean the application builds, runs, or passes tests.</p>}
       {result.job.state === 'Running' && <p className="hint">
         The selected local model is reviewing each primary file with any available bounded project context.
         Only persisted findings count as progress.</p>}
