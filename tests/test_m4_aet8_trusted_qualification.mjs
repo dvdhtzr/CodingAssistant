@@ -71,3 +71,20 @@ test('private CDP pipe handles split NUL frames and rejects protocol failures',a
   await assert.rejects(second,/BROWSER_PROTOCOL_ERROR/);
   pipe.close();await assert.rejects(pipe.send('Browser.getVersion'),/BROWSER_PIPE_CLOSED/);
 });
+
+test('bounded guest stage failure preserves completed security and prior fixture observations',()=>{
+  const x=good();
+  x.fixture.inert_negative_rejected=false;x.fixture.forged_receipt_rejected=false;x.fixture.trusted_source_unchanged=false;
+  x.observations.broken=null;x.observations.spoof=null;
+  x.failure={stage:'BROKEN',code:'BROWSER_STORAGE_RESET_FAILED'};
+  assert.deepEqual(parseTrustedReport(JSON.stringify(x)),x);
+  const m=dockerMock({report:x,exit:2});
+  const r=qualifyTrusted({platform:'win32',env:{},name,docker:m.docker});
+  assert.equal(r.status,'BLOCKED');assert.equal(r.reason,'GUEST_STAGE_BLOCKED');
+  assert.equal(Object.values(r.security).filter(Boolean).length,10);
+  assert.deepEqual(r.guestFailure,x.failure);
+  assert.equal(r.containerRemoved,true);
+  const early={schemaVersion:1,security:null,fixture:booleans(FIXTURE_CASES,false),observations:{working:null,broken:null,spoof:null},failure:{stage:'MODULES',code:'GUEST_STAGE_FAILED'}};
+  assert.deepEqual(parseTrustedReport(JSON.stringify(early)),early);
+  assert.throws(()=>parseTrustedReport(JSON.stringify({...early,failure:{stage:'MODULES',code:'PRIVATE_RAW_ERROR'}})));
+});

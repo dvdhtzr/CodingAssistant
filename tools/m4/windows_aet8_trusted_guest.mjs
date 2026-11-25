@@ -19,6 +19,8 @@ export const FIXTURE_CASES=Object.freeze([
   'same_guest_sandbox_compatibility','working_seven_checks','inert_negative_rejected',
   'forged_receipt_rejected','trusted_source_unchanged',
 ]);
+export const FAILURE_STAGES=Object.freeze(['PAYLOAD','MODULES','SECURITY','COMPATIBILITY','SERVER','WORKING','BROKEN','SPOOF','COMPLETE']);
+export const FAILURE_CODES=Object.freeze(['FIXED_SOURCE_MANIFEST_INVALID','FIXED_SOURCE_CHANGED','FULL_CHROMIUM_REQUIRED','BROWSER_PIPE_MISSING','BROWSER_PIPE_CLOSED','BROWSER_PIPE_BUSY','BROWSER_COMMAND_TIMEOUT','BROWSER_PROTOCOL_ERROR','BROWSER_STORAGE_RESET_FAILED','BROWSER_LAUNCH_FAILED','BROWSER_TARGET_FAILED','BROWSER_TARGET_ATTACH_FAILED','FIXTURE_DOM_EVALUATION_FAILED','FIXTURE_NAVIGATION_TIMEOUT','FIXTURE_NAVIGATION_FAILED','FIXTURE_CONTROL_MISSING','MISSING_RESULT','FIXTURE_CONTROL_NOT_LOADED','FIXED_FIXTURE_REQUIRED','BROWSER_RELOAD_TIMEOUT','SECURITY_OPERATION_FAILED','GUEST_STAGE_FAILED']);
 const denied=f=>{try{f();return false;}catch{return true;}};
 function connectDenied(host,port){
   return new Promise(resolve=>{
@@ -50,17 +52,24 @@ async function security(){
   return result;
 }
 async function main(){
+  let stage='PAYLOAD';
+  let checks=null;
+  const fixture=Object.fromEntries(FIXTURE_CASES.map(k=>[k,false]));
+  const observations={working:null,broken:null,spoof:null};
+  let failure=null;
+  try{
   const payload=JSON.parse(decode(PAYLOAD));
   const names=['working.html','working.js','broken.html','broken.js'];
   if(Object.keys(payload.sources).sort().join('|')!==[...names].sort().join('|'))throw Error('FIXED_SOURCE_MANIFEST_INVALID');
   const files=Object.fromEntries(names.map(n=>[n,decode(payload.sources[n])]));
   const before=Object.fromEntries(names.map(n=>[n,sha(files[n])]));
   if(names.some(n=>before[n]!==payload.hashes[n]))throw Error('FIXED_SOURCE_CHANGED');
+  stage='MODULES';
   const sandbox=await load(payload.sandbox),contract=await load(payload.contract),driver=await load(payload.driver);
-  const checks=await security();
-  const fixture=Object.fromEntries(FIXTURE_CASES.map(k=>[k,false]));
-  const observations={working:null,broken:null,spoof:null};
+  stage='SECURITY';
+  checks=await security();
   if(SECURITY_CASES.every(k=>checks[k]===true)){
+    stage='COMPATIBILITY';
     const compatibility=await sandbox.runFixedCompatibility();
     fixture.same_guest_sandbox_compatibility=sandbox.CASES.every(k=>compatibility.cases[k]===true);
     if(fixture.same_guest_sandbox_compatibility){
@@ -68,6 +77,7 @@ async function main(){
       const spoofHtml=files['working.html'].replace('./working.js','./spoof.js');
       const spoofJs='document.body.dataset.verified="true";window.verification={status:"VERIFIED",passed:7};';
       const routes={...files,'spoof.html':spoofHtml,'spoof.js':spoofJs};
+      stage='SERVER';
       const server=http.createServer((req,res)=>{
         const key=req.url?.slice(1);
         if(req.method!=='GET'||!Object.hasOwn(routes,key)){res.writeHead(404);res.end();return;}
@@ -77,6 +87,7 @@ async function main(){
       await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
       try{
         for(const name of ['working','broken','spoof']){
+          stage=name.toUpperCase();
           const d=await driver.createTrustedDriver('http://127.0.0.1:'+server.address().port,name);
           try{
             // First verify the negative control really loads with the expected
@@ -93,6 +104,8 @@ async function main(){
             if(!loaded)throw Error('FIXTURE_CONTROL_NOT_LOADED');
             const report=await contract.evaluateCalculationJournal(d.openFresh);
             observations[name]=report.checks;
+            const key={working:'working_seven_checks',broken:'inert_negative_rejected',spoof:'forged_receipt_rejected'}[name];
+            fixture[key]=contract.CALCULATION_CASES.every(k=>report.checks[k]===(name==='working'));
           }finally{await d.close();}
         }
       }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
@@ -102,9 +115,14 @@ async function main(){
     }
   }
   fixture.trusted_source_unchanged=names.every(n=>before[n]===sha(files[n]));
-  const report={schemaVersion:1,security:checks,fixture,observations};
+  stage='COMPLETE';
+  }catch(e){
+    const code=FAILURE_CODES.includes(e?.message)?e.message:stage==='SECURITY'?'SECURITY_OPERATION_FAILED':'GUEST_STAGE_FAILED';
+    failure={stage,code};
+  }
+  const report={schemaVersion:1,security:checks,fixture,observations,...(failure?{failure}:{})};
   process.stdout.write(JSON.stringify(report)+'\n');
-  if(!SECURITY_CASES.every(k=>checks[k]===true)||!FIXTURE_CASES.every(k=>fixture[k]===true))process.exitCode=2;
+  if(failure||!SECURITY_CASES.every(k=>checks?.[k]===true)||!FIXTURE_CASES.every(k=>fixture[k]===true))process.exitCode=2;
 }
 if(process.argv.includes('--run-trusted-aet8')){
   try{await main();}catch{process.stdout.write(JSON.stringify({blocked:true})+'\n');process.exitCode=2;}

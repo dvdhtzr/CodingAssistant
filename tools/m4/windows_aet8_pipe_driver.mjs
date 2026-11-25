@@ -121,7 +121,15 @@ function makePage(transport,sessionId,url){
   return {navigate,locator:selector=>loc(selectorQuery(selector)),
     getByRole:(role,{name})=>loc(selectorQuery(null,role,name)),
     keyboard:{press:key,type:async value=>{for(const k of value)await key(k);}},
-    reload:async()=>{await send('Page.reload');await ready();}};
+    reload:async()=>{
+      const previous=await evaluate('performance.timeOrigin');
+      await send('Page.reload');
+      for(let i=0;i<40;i++){
+        try{if(await evaluate('performance.timeOrigin')!==previous){await ready();return;}}catch{}
+        await sleep(100);
+      }
+      throw Error('BROWSER_RELOAD_TIMEOUT');
+    }};
 }
 export async function createTrustedDriver(origin,fixture){
   if(!/^http:\/\/127\.0\.0\.1:\d+$/.test(origin)||!['working','broken','spoof'].includes(fixture))
@@ -130,20 +138,24 @@ export async function createTrustedDriver(origin,fixture){
   for(const d of ['profile','config','cache','runtime'])fs.mkdirSync(path.join(root,d),{mode:0o700});
   const profile=path.join(root,'profile'),url=origin+'/'+fixture+'.html';
   let browser;
-  async function target(){
+  async function target(reset=false){
     browser??=await launch(profile);
     const t=browser.transport;
-    const {targetId}=await t.send('Target.createTarget',{url:'about:blank'});
+    let targetId;
+    try{({targetId}=await t.send('Target.createTarget',{url:'about:blank'}));}catch{throw Error('BROWSER_TARGET_FAILED');}
     try{
-      const {sessionId}=await t.send('Target.attachToTarget',{targetId,flatten:true});
+      let sessionId;
+      try{({sessionId}=await t.send('Target.attachToTarget',{targetId,flatten:true}));}catch{throw Error('BROWSER_TARGET_ATTACH_FAILED');}
+      // Storage is a page-target domain; use its attached session rather
+      // than the browser-level transport. Reset before opening the fixture.
+      if(reset)try{await t.send('Storage.clearDataForOrigin',{origin,storageTypes:'all'},sessionId);}catch{throw Error('BROWSER_STORAGE_RESET_FAILED');}
       const page=makePage(t,sessionId,url);
       await page.navigate();return {targetId,page};
     }catch(e){try{await t.send('Target.closeTarget',{targetId});}catch{}throw e;}
   }
   async function openFresh(){
     browser??=await launch(profile);
-    await browser.transport.send('Storage.clearDataForOrigin',{origin,storageTypes:'all'});
-    let active=await target();
+    let active=await target(true);
     return {page:active.page,close:async()=>{if(active){await browser.transport.send('Target.closeTarget',{targetId:active.targetId});active=null;}},
       restart:async()=>{
         await browser.close();browser=null;active=null;

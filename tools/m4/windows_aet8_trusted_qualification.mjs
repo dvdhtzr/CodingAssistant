@@ -9,7 +9,7 @@ import {IMAGE_TAG,validateDockerContext,validatePinnedImage,shellDocker,writePri
 import {checkedChromiumSeccomp,sandboxDockerArgs,FIXTURE_PID_LIMIT} from './windows_chromium_sandbox_qualification.mjs';
 import {readPinnedSources} from './windows_calculator_evaluator_qualification.mjs';
 import {CALCULATION_CASES,CALCULATION_CONTRACT_VERSION} from './calculation_journal_contract.mjs';
-import {SECURITY_CASES,FIXTURE_CASES} from './windows_aet8_trusted_guest.mjs';
+import {SECURITY_CASES,FIXTURE_CASES,FAILURE_STAGES,FAILURE_CODES} from './windows_aet8_trusted_guest.mjs';
 
 const NAME=/^ca-win-aet8-[0-9a-f]{12}$/;
 const read=name=>fs.readFileSync(new URL(name,import.meta.url),'utf8').replace(/\r\n/g,'\n');
@@ -29,12 +29,15 @@ function booleans(x,keys){return x&&typeof x==='object'&&!Array.isArray(x)&&Obje
 export function parseTrustedReport(raw){
   if(typeof raw!=='string'||raw.length<2||raw.length>10000)fail('GUEST_REPORT_INVALID');
   let x;try{x=JSON.parse(raw);}catch{fail('GUEST_REPORT_INVALID');}
-  if(!x||Object.keys(x).length!==4||x.schemaVersion!==1||!booleans(x.security,SECURITY_CASES)||!booleans(x.fixture,FIXTURE_CASES)||
+  const failure=x?.failure;
+  const validFailure=failure&&Object.keys(failure).length===2&&FAILURE_STAGES.includes(failure.stage)&&FAILURE_CODES.includes(failure.code);
+  if(!x||Object.keys(x).length!==(failure?5:4)||(failure&&!validFailure)||x.schemaVersion!==1||
+    !(booleans(x.security,SECURITY_CASES)||(validFailure&&x.security===null))||!booleans(x.fixture,FIXTURE_CASES)||
     !x.observations||Object.keys(x.observations).length!==3||!['working','broken','spoof'].every(k=>Object.hasOwn(x.observations,k)&&(x.observations[k]===null||booleans(x.observations[k],CALCULATION_CASES))))
     fail('GUEST_REPORT_INVALID');
   const all=(name,want)=>CALCULATION_CASES.every(k=>x.observations[name]?.[k]===want);
   if(x.fixture.working_seven_checks!==all('working',true)||x.fixture.inert_negative_rejected!==all('broken',false)||x.fixture.forged_receipt_rejected!==all('spoof',false)||
-    (x.fixture.same_guest_sandbox_compatibility&&!SECURITY_CASES.every(k=>x.security[k]))||
+    (x.fixture.same_guest_sandbox_compatibility&&!SECURITY_CASES.every(k=>x.security?.[k]===true))||
     (!x.fixture.same_guest_sandbox_compatibility&&Object.values(x.observations).some(v=>v!==null)))
     fail('GUEST_REPORT_CONTRADICTORY');
   return x;
@@ -53,7 +56,7 @@ export function qualifyTrusted({platform=process.platform,env=process.env,docker
     imageTag:IMAGE_TAG,imageId:null,registryDigest:null,seccompSha256:null,fixturePidLimit:FIXTURE_PID_LIMIT,
     evaluatorVersion:CALCULATION_CONTRACT_VERSION,evaluatorSha256:sha(contract),driverSha256:sha(driver),guestSha256:null,
     trustedSourceHashes:null,security:null,fixture:null,observations:null,containerRemoved:false,
-    generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false,reason:null};
+    generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false,reason:null,guestFailure:null};
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT||!NAME.test(name)){report.reason='LOCAL_WINDOWS_ONLY';return report;}
   let attempted=false;
   const json=args=>{const x=docker(args,9000);if(x.status!==0||!x.stdout)fail('DOCKER_METADATA_UNAVAILABLE');try{return JSON.parse(x.stdout);}catch{fail('DOCKER_METADATA_INVALID');}};
@@ -71,7 +74,8 @@ export function qualifyTrusted({platform=process.platform,env=process.env,docker
     const execution=docker(trustedDockerArgs(pin.imageId,name),180000,payload.source);
     if(execution.timedOut)fail('FIXED_EVALUATOR_TIMEOUT');
     const x=parseTrustedReport(execution.stdout);
-    report.security=x.security;report.fixture=x.fixture;report.observations=x.observations;
+    report.security=x.security;report.fixture=x.fixture;report.observations=x.observations;report.guestFailure=x.failure??null;
+    if(x.failure)fail('GUEST_STAGE_BLOCKED');
     if(execution.status!==0||!Object.values(x.security).every(Boolean)||!Object.values(x.fixture).every(Boolean))fail('FIXED_EVALUATOR_CHECKS_FAILED');
     report.status='TRUSTED_INTEGRATED_EVALUATOR_PASS';
   }catch(e){report.reason=/^[A-Z_]{3,80}$/.test(e?.message??'')?e.message:'QUALIFICATION_BLOCKED';}
@@ -101,6 +105,7 @@ export function main(argv=process.argv.slice(2)){
   }
   if(r.observations)for(const [name,values] of Object.entries(r.observations))console.log('  '+name+': '+(values?Object.values(values).filter(Boolean).length+'/'+CALCULATION_CASES.length:'NOT_RUN'));
   console.log('  container removed: '+r.containerRemoved);
+  if(r.guestFailure)console.log('  guest failure: '+r.guestFailure.stage+' / '+r.guestFailure.code);
   if(r.reason)console.log('  blocker: '+r.reason);
   console.log('  generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED');
   console.log('Evidence: '+writePrivateEvidence(r));
