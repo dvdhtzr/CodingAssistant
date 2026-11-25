@@ -32,3 +32,31 @@ The owner-host checkpoint reported all 10 security cases passing, the same-guest
 The next owner-host result again passed 10/10 security and same-guest compatibility, but the strict evaluator stopped on a generic CDP command timeout in WORKING. The transport now reports the specific allowlisted command timeout and checkpoints the exact functional case before each check; readiness polls tolerate bounded transient document-context replacement during navigation. No other timeouts or security limits are expanded. A separate Ubuntu GitHub Actions job now provisions the existing versioned Playwright image in CI and runs the actual trusted integrated guest with the same no-mount/no-network sandbox profile, private-pipe driver and pinned fixtures. This is a real runtime regression, not a mocked Docker success or a substitute for Windows owner-host evidence. The production Windows runner remains offline, Windows-only, and generated execution remains disabled. Linux CI failure is diagnostic and does not establish Windows compatibility failure.
 
 Owner Windows at ee1b1b3: security 10/10, same-guest sandbox compatible, cleanup confirmed; WORKING/history_survives_browser_restart blocked on FIXTURE_NAVIGATION_TIMEOUT. Linux real-runtime CI 45601423246 passed every check. The driver now reuses one page target per process rather than creating and destroying a target for each test. A fresh check navigates to about:blank before clearing the fixed origin and reopening the fixture. Restart still requires previous process exit 0 and a new process using the same profile, without clearing storage, with a bounded 15-second cold-page readiness allowance; host/guest deadlines stay unchanged. Restart target and navigation failures are separate. Case completion is recorded individually with null for not-completed tests, accepted only for blocked/checkpoint evidence; a final successful report must still contain exact booleans. This reduces renderer churn and improves diagnostics but does not establish the underlying Windows failure cause. No sandbox, capability, memory, PID, network or authorization changes.
+
+
+## Fixed-fixture reset sequencing follow-up
+
+Real Linux trusted-runtime CI at 746cb05 (run 45603851530) stopped in
+WORKING/backspace_and_divide_by_zero after three successful functional
+checks. All ten security observations, same-guest compatibility and
+container removal passed; the failure was FIXTURE_NAVIGATION_TIMEOUT.
+The earlier owner Windows evidence stopped at cold browser restart.
+Neither establishes the exact reason Chromium failed to navigate.
+
+The trusted driver now clears the fixed fixture origin on its attached
+session and performs a real reload for subsequent fresh cases, instead
+of repeatedly crossing from the fixture origin to about:blank and back.
+This is safe for the immutable reviewed fixtures because they write
+history only on explicit actions, not on unload. Each reset must observe
+the initial display and zero saved history items. A failed reset or
+missing initial display is an infrastructure blocker, never a successful
+negative-control observation. Reload requires a finite changed document
+time origin and completed document readiness. Cold restart still requires
+a clean process exit and a new browser process on the same private
+profile without clearing storage.
+
+All pinned fixtures, security cases, functional assertions, guest/host
+deadlines, container limits and sandbox restrictions remain unchanged.
+This change is restricted to the isolated AET branch. It is a candidate
+repair for renderer lifecycle instability, not proof of qualification;
+real Linux regression and owner Windows evidence remain required.
