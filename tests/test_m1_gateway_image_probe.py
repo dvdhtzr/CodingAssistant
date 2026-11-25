@@ -17,7 +17,7 @@ probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
 
 ID = "a" * 64
-DIGEST = "b" * 64
+DIGEST = probe.APPROVED_REPO_DIGEST.split("sha256:")[1]
 INFO = [{"Id": "sha256:" + ID,
          "RepoDigests": ["ghcr.io/openclaw/openclaw@sha256:" + DIGEST]}]
 
@@ -55,13 +55,19 @@ class GatewayImageContracts(unittest.TestCase):
 
     def test_official_digest_must_be_pinned(self):
         with mock.patch.object(probe, "fixed",
-                               return_value=completed([], output=json.dumps(INFO))):
+                               return_value=completed([], output=json.dumps(INFO))) as process:
             image = probe.inspected_image()
+        process.assert_called_once_with(["podman", "image", "inspect",
+                                         probe.APPROVED_REPO_DIGEST])
         self.assertEqual(image["image_id"], ID)
         self.assertEqual(image["repo_digest"],
                          "ghcr.io/openclaw/openclaw@sha256:" + DIGEST)
         for bad in (
             [{"Id": "sha256:" + ID, "RepoDigests": []}],
+            [{"Id": "sha256:" + ID, "RepoDigests": [
+                "ghcr.io/openclaw/openclaw@sha256:" + "b" * 64]}],
+            [{"Id": "sha256:" + ID, "RepoDigests": [
+                probe.APPROVED_REPO_DIGEST, None]}],
             [{"Id": "sha256:" + ID,
               "RepoDigests": ["docker.io/untrusted/openclaw@sha256:" + DIGEST]}],
             [{"Id": "notsha", "RepoDigests": [
@@ -110,7 +116,7 @@ class GatewayImageContracts(unittest.TestCase):
         self.assertEqual(with_pull["status"], "RUNTIME_IMAGE_PASS", with_pull)
         self.assertEqual(sum(cmd[1] == "pull" for cmd in calls), 1)
         self.assertEqual(next(cmd for cmd in calls if cmd[1] == "pull"),
-                         ("podman", "pull", probe.IMAGE))
+                         ("podman", "pull", probe.APPROVED_REPO_DIGEST))
 
     @mock.patch.object(probe.sys, "platform", "linux")
     @mock.patch.object(probe.os, "geteuid", return_value=1000, create=True)
@@ -141,6 +147,38 @@ class GatewayImageContracts(unittest.TestCase):
             report = probe.probe()
         self.assertEqual(report["status"], "BLOCKED")
         self.assertIn("differs", report["reason"])
+
+    @mock.patch.object(probe.sys, "platform", "linux")
+    @mock.patch.object(probe.os, "geteuid", return_value=1000, create=True)
+    def test_wrong_registry_digest_never_runs_a_guest(self, *_platform_mocks):
+        calls = []
+
+        def fake(argv, timeout=50):
+            calls.append(tuple(argv))
+            if argv[1] == "info":
+                return completed(argv, output="true")
+            if argv[1] == "image":
+                return completed(argv, output=json.dumps([{
+                    "Id": "sha256:" + ID,
+                    "RepoDigests": ["ghcr.io/openclaw/openclaw@sha256:" + "b" * 64],
+                }]))
+            raise AssertionError(argv)
+
+        with mock.patch.object(probe, "fixed", side_effect=fake):
+            report = probe.probe()
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertIn("exact approved", report["reason"])
+        self.assertFalse(any(cmd[1] in ("pull", "run") for cmd in calls))
+
+    def test_exact_digest_selected_even_if_other_digests_present(self):
+        info = [{"Id": "sha256:" + ID, "RepoDigests": [
+            "ghcr.io/openclaw/openclaw@sha256:" + "0" * 64,
+            probe.APPROVED_REPO_DIGEST,
+        ]}]
+        with mock.patch.object(probe, "fixed",
+                               return_value=completed([], output=json.dumps(info))):
+            self.assertEqual(probe.inspected_image()["repo_digest"],
+                             probe.APPROVED_REPO_DIGEST)
 
     @mock.patch.object(probe.sys, "platform", "linux")
     @mock.patch.object(probe.os, "geteuid", return_value=1000, create=True)

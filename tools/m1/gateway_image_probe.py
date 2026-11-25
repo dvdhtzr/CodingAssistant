@@ -3,7 +3,7 @@
 
 By default: inspect ALREADY-LOCAL image and run ONLY two fixed --version
 commands in an isolated, network-disabled, non-root, read-only container.
-With explicit --prepare: pull the ONE official versioned GHCR image first.
+With explicit --prepare: pull the ONE official digest-pinned GHCR image first.
 Does NOT install host Node/OpenClaw, start a Gateway or ACP, create
 provider config, mount home/workspaces, or perform model inference.
 """
@@ -25,6 +25,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "artifacts/m1/gateway-image-probe.json"
 IMAGE = "ghcr.io/openclaw/openclaw:2026.11.5"
 VERSION = "2026.11.5"
+# The previously owner-verified registry manifest, not a mutable version tag.
+APPROVED_REPO_DIGEST = (
+    "ghcr.io/openclaw/openclaw@sha256:"
+    "97781490d6cd01cec8d1f0ad300ff8bedfaae18ec5b8c30666aaebc470a6309f"
+)
 IMAGE_ID = re.compile(r"(?:sha256:)?([a-f0-9]{64})\Z")
 REPO_DIGEST = re.compile(
     r"ghcr\.io/openclaw/openclaw@sha256:[a-f0-9]{64}\Z")
@@ -58,7 +63,7 @@ def guest_command(image_id: str, uid: int, gid: int,
 
 
 def inspected_image() -> dict[str, str] | None:
-    result = fixed(["podman", "image", "inspect", IMAGE])
+    result = fixed(["podman", "image", "inspect", APPROVED_REPO_DIGEST])
     if result.returncode != 0:
         return None
     items = json.loads(result.stdout)
@@ -72,11 +77,11 @@ def inspected_image() -> dict[str, str] | None:
     digests = info.get("RepoDigests")
     if type(digests) is not list:
         raise ValueError("Official image provenance missing RepoDigests")
-    matches = [item for item in digests
-               if type(item) is str and REPO_DIGEST.fullmatch(item)]
-    if not matches:
-        raise ValueError("Image lacks official GHCR RepoDigest")
-    return {"image_id": sha, "repo_digest": sorted(matches)[0]}
+    if any(type(item) is not str for item in digests):
+        raise ValueError("Malformed image RepoDigests")
+    if APPROVED_REPO_DIGEST not in digests:
+        raise ValueError("Image lacks the exact approved GHCR RepoDigest")
+    return {"image_id": sha, "repo_digest": APPROVED_REPO_DIGEST}
 
 
 def version_text(output: str) -> str | None:
@@ -90,6 +95,7 @@ def probe(prepare: bool = False) -> dict[str, Any]:
         "schema_version": 1, "stage": "M1.1-official-isolated-gateway-image",
         "recorded_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "BLOCKED", "official_image": IMAGE,
+        "approved_repo_digest": APPROVED_REPO_DIGEST,
         "pull_requested": prepare, "image_id": None, "repo_digest": None,
         "node_version": None, "openclaw_version": None,
         "gateway_started": False, "acp_session_started": False,
@@ -106,9 +112,9 @@ def probe(prepare: bool = False) -> dict[str, Any]:
         if rootless.returncode != 0 or rootless.stdout.strip() != "true":
             raise ValueError("Rootless Podman not confirmed")
         if prepare:
-            pulled = fixed(["podman", "pull", IMAGE], timeout=900)
+            pulled = fixed(["podman", "pull", APPROVED_REPO_DIGEST], timeout=900)
             if pulled.returncode != 0:
-                raise ValueError("Official GHCR image pull failed")
+                raise ValueError("Approved GHCR digest pull failed")
         known = inspected_image()
         if known is None:
             report["reason"] = "IMAGE_NOT_PRESENT: rerun with explicit --prepare"
@@ -141,7 +147,7 @@ def probe(prepare: bool = False) -> dict[str, Any]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--prepare", action="store_true",
-                    help="Explicitly download pinned official image into rootless Podman store")
+                    help="Explicitly download the approved immutable GHCR digest into rootless Podman store")
     args = ap.parse_args()
     data = probe(prepare=args.prepare)
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
