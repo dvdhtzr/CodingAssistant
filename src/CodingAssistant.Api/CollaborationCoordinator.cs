@@ -23,9 +23,11 @@ public sealed record CollaborationInput(string Objective,CollaborationRun Job,
     IReadOnlyList<EngineeringIssue>? RecheckCandidates=null);
 public sealed record CollaborationAdmission(string JobId,int Sequence);
 public sealed record RoutineRepairCandidate(string RunId,string SourceSha256,IReadOnlyList<string> Paths);
+public sealed record CollaborationLinkedRepair(string CycleId,string State,string? ErrorCode);
 public sealed record CollaborationPreview(string? PlanSha256,DelegationPolicy? Policy,
     CollaborationSnapshot? Snapshot,StartCollaborationRequest? Candidate,bool CanStart,bool CanResume,
-    string Reason,InferenceCapacity Capacity,RoutineRepairCandidate? RoutineRepairCandidate=null);
+    string Reason,InferenceCapacity Capacity,RoutineRepairCandidate? RoutineRepairCandidate=null,
+    CollaborationLinkedRepair? LinkedRepair=null);
 
 public interface ICollaborationLead
 {
@@ -186,6 +188,18 @@ public sealed class CollaborationStore(TaskStore tasks)
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
         var id=TaskStore.Scalar(db,tx,"SELECT id FROM engineering_collaborations WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1",("@task",taskId));
         var snapshot=id is null?null:new CollaborationSnapshot(Find(db,tx,taskId,id),Steps(db,tx,id));
+        CollaborationLinkedRepair? linkedRepair=null;
+        if(snapshot is not null)
+        {
+            using var command=TaskStore.Command(db,tx,"""
+                SELECT c.id,c.state,c.error_code FROM engineering_collaboration_repairs l
+                JOIN repair_cycles c ON c.id=l.cycle_id AND c.task_id=l.task_id
+                WHERE l.task_id=@task AND l.parent_id=@id AND l.child_id IS NULL
+                """,("@task",taskId),("@id",snapshot.Job.Id));
+            using var reader=command.ExecuteReader();
+            if(reader.Read())linkedRepair=new(reader.GetString(0),reader.GetString(1),
+                reader.IsDBNull(2)?null:reader.GetString(2));
+        }
         string? planSha=null;
         StartCollaborationRequest? candidate=null;
         RoutineRepairCandidate? routineCandidate=null;
@@ -218,7 +232,12 @@ public sealed class CollaborationStore(TaskStore tasks)
             start=!same || snapshot!.Job.State is ("Failed" or "Escalated");
             reason=resume?"RESUME_AVAILABLE":start?"READY":snapshot!.Job.Reason??snapshot.Job.State;
         }catch(StoreFailure e){reason=e.Code;}
-        tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,LocalInferenceScheduler.Shared.Snapshot(),routineCandidate);
+        if(linkedRepair?.State is "Running" or "QaRunning" or "Generated")
+        {
+            start=false;resume=false;reason="LINKED_REPAIR_PENDING";
+        }
+        tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,
+            LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair);
     }
 
     public CollaborationSnapshot? Latest(string taskId)
