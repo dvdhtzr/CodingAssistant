@@ -55,3 +55,30 @@ without implicit download. Run the full Ubuntu/Windows regression CI
 before merging. No real container or model qualification is implied
 by these tests. Keep #70 open until portable admission and both
 independent host qualifications meet its acceptance criteria.
+
+## Slice 2 — separate candidate evaluator provisioning
+
+The historical M0.16 qualification runner is frozen by the independent
+M0.18 audit. Keep its bytes, original recipe and original image tag
+unchanged; do not update the audit's pinned hashes to silence a failure.
+The new opt-in command is:
+
+```sh
+python3 tools/m0/evaluator_candidate_provision.py --prepare
+```
+
+Without the flag no build or inspection runs. On a normal Linux user
+with rootless Podman, explicit provisioning selects the inspected full
+local runtime ID, stages only the three fixed recipe inputs in a
+temporary context, hashes their exact bytes, and requires a build ID
+receipt and matching exact-ID/tag inspection. The candidate recipe has
+no mutable base default. Its distinct candidate tag is never consumed
+by existing execution paths. No model or generated code is run.
+
+The returned `CANDIDATE_PROVISIONED_NOT_QUALIFIED` evidence is not
+authorization, a reproducible dependency build, or host qualification.
+The owner must independently review the dependency manifest/lock hashes,
+approve the exact content IDs and complete the existing host-specific
+positive/negative qualification gates before any new image is admitted.
+Do not substitute this candidate into an existing approved execution
+plan or reuse historical Dell evidence for it.
