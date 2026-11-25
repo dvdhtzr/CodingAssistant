@@ -51,6 +51,7 @@ interface QaReviewSnapshot {
   sourceState: 'Generated' | 'Failed' | 'Interrupted' | 'Unavailable';
   reports: QaFileReport[];
   acceptance?: QaAcceptanceSummary | null;
+  unchangedFailedRepair?: boolean;
   staticPreflight?: { runId: string; sourceSha256: string; status: string;
     verificationStatus: string; findings: { code: string; severity: string; path: string;
       detail: string; sourceExcerpt?: string | null; referencedPath?: string | null }[] } | null;
@@ -237,7 +238,8 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const selectedFindings = availableFindings.filter(f => selected.includes(f.key));
   const selectedFiles = new Set(selectedFindings.map(f => f.path.toLowerCase()));
   const canRequestRepair = currentReport && result?.job.state === 'Reviewed' &&
-    result.sourceState === 'Generated' && potentialIssues > 0 &&
+    (result.sourceState === 'Generated' || result.unchangedFailedRepair === true) &&
+    potentialIssues > 0 &&
     !repairRunning;
   async function requestRepairs() {
     if (!canRequestRepair || busy || !confirmed ||
@@ -306,9 +308,15 @@ export function QaReviewPanel({ token, taskId, engineering }: {
     {partialSource && hasSavedSource && <p className="activity-warning">
       The Software Engineer run ended <strong>{source?.state}</strong> with
       { ' '}{engineering.snapshot?.files.length} saved file(s).
-      QA can inspect this <strong>incomplete, partial source</strong> to
-      identify possible issues, but cannot certify the application complete.
-      The engineering failure still needs attention.
+      {currentReport && result?.unchangedFailedRepair ? <>
+        {' '}The host confirmed this failed repair preserved the exact previously
+        generated source. A fresh review and owner confirmation can authorize
+        another repair; the application remains untested.
+      </> : <>
+        {' '}QA can inspect this <strong>saved source</strong> but cannot certify
+        application completeness. Request a fresh review to assess recovery
+        eligibility. The engineering failure still needs attention.
+      </>}
       {source?.errorCode ? ' Failure: ' + source.errorCode : ''}
     </p>}
     {!eligible && <p className="hint">
@@ -398,7 +406,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
     </div>}
     {repair && <div className="qa-repair-progress" role="status">
       <p><strong>Repair cycle {repair.cycle.attempt}</strong>
-        {' · '}{repair.cycle.state}</p>
+        {' · '}{repair.cycle.state} · {repair.cycle.engineeringRunId.slice(0, 12)}</p>
       <p className="hint">Software Engineer source: {repair.engineering.job.state}
         {' · '}Static inspection: {repair.staticPreflight.status}
         {' · '}Independent QA: {repair.review?.job.state ?? 'Not started'}
@@ -411,7 +419,7 @@ export function QaReviewPanel({ token, taskId, engineering }: {
         event.kind === 'EngineerOutputRejected').slice(-1).map(event =>
         <p key={event.sequence} className="activity-warning">
           <strong>Last repair output diagnostic:</strong>{' '}
-          {event.detail}
+          {event.detail} · {new Date(event.createdUtc).toLocaleString()}
         </p>)}
       {repair.cycle.state === 'QaReviewed' &&
         <p className="hint" role="status">
