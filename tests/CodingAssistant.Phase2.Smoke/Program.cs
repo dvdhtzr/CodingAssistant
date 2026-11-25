@@ -3824,23 +3824,23 @@ try
     var negativeRepairStore=new RepairCycleStore(tasks,engineeringStore,reviewStore,repairProposal);
     foreach(var scenario in new[]{"budget","regression","revoke","cancel"})
     {
-        var root=engineeringStore.Start(taskBound.Id,approvedEngineerPlan);
-        engineeringStore.StartTask(taskBound.Id,root.Id,"timer-interface");
-        engineeringStore.CompleteTask(taskBound.Id,root.Id,"timer-interface",
+        var negativeRoot=engineeringStore.Start(taskBound.Id,approvedEngineerPlan);
+        engineeringStore.StartTask(taskBound.Id,negativeRoot.Id,"timer-interface");
+        engineeringStore.CompleteTask(taskBound.Id,negativeRoot.Id,"timer-interface",
             new EngineeringChangeSet("Saved exact local fixture entry.",
                 [new EngineeringFileChange("index.html","Entry","<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
                 ["Independently verify browser interaction."]));
-        engineeringStore.StartTask(taskBound.Id,root.Id,"timer-state");
-        engineeringStore.CompleteTask(taskBound.Id,root.Id,"timer-state",
+        engineeringStore.StartTask(taskBound.Id,negativeRoot.Id,"timer-state");
+        engineeringStore.CompleteTask(taskBound.Id,negativeRoot.Id,"timer-state",
             new EngineeringChangeSet("Saved exact two-defect fixture.",
                 [new EngineeringFileChange("app.js","Timer behavior","document.getElementById('start').addEventListener('click',()=>{console.log('routine-one');console.log('routine-two');});")],
                 ["Independently verify timer behavior."]));
-        engineeringStore.Finish(taskBound.Id,root.Id,true,null);
-        var rootFiles=engineeringStore.Get(taskBound.Id,root.Id).Files;
+        engineeringStore.Finish(taskBound.Id,negativeRoot.Id,true,null);
+        var rootFiles=engineeringStore.Get(taskBound.Id,negativeRoot.Id).Files;
         var rootHash=QaReviewStore.Fingerprint(rootFiles);
         var negativePolicy=delegationStore.Propose(taskBound.Id,
             new ProposeDelegationRequest(routineRevision,secondPlanHash,routineOps,
-                new RoutineRepairScope(root.Id,rootHash,["app.js"],scenario=="budget"?1:4)));
+                new RoutineRepairScope(negativeRoot.Id,rootHash,["app.js"],scenario=="budget"?1:4)));
         negativePolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
             negativePolicy.Revision,negativePolicy.PolicySha256,"APPROVE "+negativePolicy.PolicySha256));
         routineRevision=negativePolicy.Revision;
@@ -3848,14 +3848,14 @@ try
         softwareModel.RoutineGate=scenario is "revoke" or "cancel"?
             new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously):null;
         softwareModel.RoutineEntered=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var request=new StartCollaborationRequest(root.Id,rootHash,secondPlanHash,negativePolicy.Revision,negativePolicy.PolicySha256);
+        var request=new StartCollaborationRequest(negativeRoot.Id,rootHash,secondPlanHash,negativePolicy.Revision,negativePolicy.PolicySha256);
         using(var started=await Post(client,aetCollabPath,request))
             Check(started.StatusCode==HttpStatusCode.Accepted,"negative fixture collaboration admitted once: "+scenario);
         if(scenario is "revoke" or "cancel")
         {
             await softwareModel.RoutineEntered.Task.WaitAsync(TimeSpan.FromSeconds(15));
             var pending=negativeRepairStore.Latest(taskBound.Id)!;
-            Check(pending.Cycle.State=="Running" && pending.Cycle.BaseRunId==root.Id &&
+            Check(pending.Cycle.State=="Running" && pending.Cycle.BaseRunId==negativeRoot.Id &&
                 QaReviewStore.Fingerprint(pending.Engineering.Files)==rootHash,
                 "paused candidate is an unchanged clone before "+scenario);
             if(scenario=="revoke")
@@ -3921,7 +3921,7 @@ try
             var candidate=engineeringStore.Latest(taskBound.Id)!;
             var progress=new RepairProgressStore(tasks).Read(taskBound.Id,candidate.Job.Id);
             Check(progress.Attempts.Count==1 &&
-                progress.Attempts[0].OriginalRunId==root.Id &&
+                progress.Attempts[0].OriginalRunId==negativeRoot.Id &&
                 (scenario!="regression" || progress.PotentialRegressionIssueIds is {Count:>0}),
                 "no second candidate is admitted after "+scenario);
             if(scenario=="regression")
@@ -3929,14 +3929,14 @@ try
                 var evidence=new DeliveryEvidenceStore(tasks).Read(taskBound.Id);
                 Check(evidence.RoutineCandidate is {Disposition:"REJECTED_POTENTIAL_REGRESSION"} &&
                     evidence.RoutineCandidate.RunId==candidate.Job.Id &&
-                    evidence.RoutineCandidate.BaseRunId==root.Id &&
+                    evidence.RoutineCandidate.BaseRunId==negativeRoot.Id &&
                     evidence.RoutineCandidate.BaseSourceSha256==rootHash &&
                     evidence.Blockers.Contains("POTENTIAL_CANDIDATE_REGRESSION") &&
                     !evidence.DeliveryAllowed && !evidence.EngineeringComplete,
                     "rejected candidate is explicitly distinct from preserved predecessor and cannot claim delivery");
             }
         }
-        Check(QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,root.Id).Files)==rootHash,
+        Check(QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,negativeRoot.Id).Files)==rootHash,
             "original snapshot remains immutable after "+scenario);
         if(scenario!="revoke")
             delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(negativePolicy.Revision,
