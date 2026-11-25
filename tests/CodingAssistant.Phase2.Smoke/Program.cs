@@ -2262,6 +2262,74 @@ try
         Check(wrong.StatusCode == HttpStatusCode.Conflict &&
               qaModel.ReviewedFiles.Count == 0,
             "QA refuses obsolete Technical Lead plan identity");
+    // The same real coordinator and store used by HTTP, with only the local
+    // MAF IChatClient replaced. No generated code or Ollama is executed.
+    {
+        var qaSkillLedger = new SkillReviewStore(tasks);
+        var qaSkillCandidate = qaSkillLedger.Read(taskBound.Id)
+            .Single(item => item.Skill.Name == SkillReviewStore.QaSkill);
+        var qaSkillSelection = new QaSkillRequest(qaSkillCandidate.Skill.Name, 1,
+            qaSkillCandidate.ReviewSha256, Guid.NewGuid().ToString("N"));
+        var qaSkillRequest = new StartQaReviewRequest(engineeringRunId, secondPlanHash,
+            qaSkillSelection);
+        var qaSkillFactory = new Phase5FakeMafFactory();
+        var qaSkillCoordinator = new QaReviewCoordinator(tasks, interviews,
+            new ImplementationPlanStore(tasks, interviews), engineeringStore, reviewStore,
+            new MafQaEngineer(qaSkillFactory),
+            app!.Services.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>());
+        void RejectQaSkill(StartQaReviewRequest input, string expected)
+        {
+            try
+            {
+                _ = qaSkillCoordinator.Start(taskBound.Id, input, "qwen3.5:4b");
+                Check(false, "unexpected static QA skill admission");
+            }
+            catch (StoreFailure error)
+            {
+                Check(error.Code == expected, "QA skill rejects " + expected);
+            }
+        }
+        RejectQaSkill(qaSkillRequest, "STALE_SKILL_REVIEW");
+        var qaSkillApproval = new SkillReviewRequest(1, 0, qaSkillCandidate.ReviewSha256,
+            "ApproveLocalUse", "APPROVE LOCAL USE " + qaSkillCandidate.ReviewSha256, true);
+        qaSkillLedger.Review(taskBound.Id, qaSkillCandidate.Skill.Name, qaSkillApproval);
+        RejectQaSkill(qaSkillRequest with { Skill =
+            qaSkillSelection with { Name = "architecture-tradeoffs" } }, "INVALID_INPUT");
+        using (var qaSkillOverride = await Post(client, qaPath, qaSkillRequest))
+        using (var qaSkillOverrideBody = await Body(qaSkillOverride))
+            Check(qaSkillOverride.StatusCode == HttpStatusCode.BadRequest &&
+                qaSkillOverrideBody.RootElement.GetProperty("error").GetString() ==
+                    "SKILL_ADAPTER_UNAVAILABLE" && qaSkillLedger.ReadQaUses(taskBound.Id).Count == 0,
+                "explicit QA skill cannot fall back to another reviewer");
+        var skillQaJob = qaSkillCoordinator.Start(taskBound.Id, qaSkillRequest, "qwen3.5:4b");
+        for (var skillQaPoll = 0; skillQaPoll < 160 &&
+            reviewStore.Get(taskBound.Id, skillQaJob.Id).Job.State == "Running"; skillQaPoll++)
+            await Task.Delay(25);
+        var skillQaResult = reviewStore.Get(taskBound.Id, skillQaJob.Id);
+        var skillQaAudit = new SkillReviewStore(new TaskStore(root)).ReadQaUses(taskBound.Id).Single();
+        Check(skillQaResult.Job.State == "Reviewed" && skillQaResult.Reports.Count == 2 &&
+            qaSkillFactory.SkillContextsSeen == 2 && qaSkillFactory.NoTools &&
+            skillQaAudit.QaReviewId == skillQaJob.Id && skillQaAudit.ReportsSaved == 2 &&
+            skillQaAudit.SourceSha256 == QaReviewStore.Fingerprint(engineeringResult!.Files) &&
+            skillQaAudit.PlanSha256 == secondPlanHash && skillQaAudit.Status == "Reviewed",
+            "QA skill attaches to exact saved files via MAF with no callable tools and durable audit");
+        RejectQaSkill(qaSkillRequest, "IDEMPOTENCY_CONFLICT");
+        using (var qaSkillAuditResponse = await client.GetAsync("/api/tasks/" +
+            taskBound.Id + "/skill-uses"))
+        using (var qaSkillAuditBody = await Body(qaSkillAuditResponse))
+            Check(qaSkillAuditResponse.StatusCode == HttpStatusCode.OK &&
+                qaSkillAuditBody.RootElement.GetProperty("qaEvents").GetArrayLength() == 1,
+                "owner-private skill usage exposes exact QA job evidence");
+        qaSkillLedger.Review(taskBound.Id, qaSkillCandidate.Skill.Name,
+            qaSkillApproval with { ExpectedRevision = 1, Decision = "Revoke",
+                Confirmation = "REVOKE " + qaSkillCandidate.ReviewSha256,
+                LocalUsePermissionConfirmed = false });
+        RejectQaSkill(qaSkillRequest with { Skill =
+            qaSkillSelection with { RequestId = Guid.NewGuid().ToString("N") } },
+            "STALE_SKILL_REVIEW");
+        Check(qaSkillLedger.ReadQaUses(taskBound.Id).Count == 1,
+            "rejected and replayed QA admissions roll back their jobs and usage events");
+    }
     string qaReviewId;
     using (var admitted = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
@@ -3720,6 +3788,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool InspectionContextSeen { get; private set; }
     public bool RepairFocusSeen { get; private set; }
     public bool NoTools { get; private set; }
+    public int SkillContextsSeen { get; private set; }
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
 
@@ -3756,6 +3825,11 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                 m.Text.Contains("NOT proof of a fix", StringComparison.Ordinal) &&
                 m.Text.Contains("Save button is not connected", StringComparison.Ordinal));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
+            if (options?.Instructions?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
+                    StringComparison.Ordinal) == true || history.Any(m =>
+                    m.Role.Value == "system" && m.Text?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
+                        StringComparison.Ordinal) == true))
+                parent.SkillContextsSeen++;
             parent.HostObservationSeen |= history.Any(m =>
                 m.Role.Value == "user" &&
                 m.Text?.Contains("HOST QA CODE ATLAS OBSERVATION",

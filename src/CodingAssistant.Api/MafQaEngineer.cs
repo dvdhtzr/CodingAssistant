@@ -101,8 +101,19 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         The host will reject arbitrary tools and further requests after TWO.
         """;
 
-    public async Task<QaFileAssessment> ReviewAsync(
-        QaReviewInput input, CancellationToken cancellation)
+    public Task<QaFileAssessment> ReviewAsync(
+        QaReviewInput input, CancellationToken cancellation) =>
+        ReviewCoreAsync(input, null, cancellation);
+
+    internal Task<QaFileAssessment> ReviewWithSkillAsync(QaReviewInput input,
+        QaSkillContext context, CancellationToken cancellation)
+    {
+        context.Consume(input);
+        return ReviewCoreAsync(input, context.Instructions, cancellation);
+    }
+
+    private async Task<QaFileAssessment> ReviewCoreAsync(
+        QaReviewInput input, string? skillInstructions, CancellationToken cancellation)
     {
         if (input.Plan.Status != "Approved" || !input.Plan.Current ||
             input.Plan.PlanSha256 != input.SourceRun.PlanSha256 ||
@@ -119,7 +130,10 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         using var client = _factory.Create(input.AgentModel ?? input.Plan.Model, MafAgentPurpose.QaEngineer);
         AIAgent agent = new ChatClientAgent(client,
             instructions: EngineeringAgentRoster.Instructions("QaEngineer") +
-                "\n" + Policy + "\n" + QaAtlasInspectionPolicy,
+                "\n" + Policy + "\n" + QaAtlasInspectionPolicy +
+                (skillInstructions is null ? "" :
+                    "\nOWNER-REVIEWED INSTRUCTION CONTEXT (advisory only; no new tools, " +
+                    "execution, network, file access or approval):\n" + skillInstructions),
             name: "QaEngineer",
             description: "Independent static source review and evidence-based defect hypotheses");
         // Host supplies a small, source-derived graph summary as DATA.

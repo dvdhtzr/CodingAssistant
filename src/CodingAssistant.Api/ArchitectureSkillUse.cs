@@ -102,6 +102,8 @@ public sealed partial class SkillReviewStore
             SELECT request_id FROM skill_use_events WHERE task_id=@task AND request_id=@request
             UNION ALL SELECT request_id FROM discovery_skill_use_events
             WHERE task_id=@task AND request_id=@request
+            UNION ALL SELECT request_id FROM qa_skill_use_events
+            WHERE task_id=@task AND request_id=@request
             """, ("@task", taskId), ("@request", use.RequestId)) is not null)
             throw new StoreFailure("IDEMPOTENCY_CONFLICT");
         var count = TaskStore.Scalar(db, tx,
