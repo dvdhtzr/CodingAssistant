@@ -196,6 +196,8 @@ test('fixed case reset clears origin then navigates once or reloads, and observe
   await assert.rejects(resetTrustedFixture(transport,active,origin,true),/FIXTURE_FRESH_STATE_NOT_RESET/);
   history=0;display='5';
   await assert.rejects(resetTrustedFixture(transport,active,origin,true),/FIXTURE_FRESH_STATE_NOT_RESET/);
+  const missing={...active,page:{...active.page,locator:()=>({innerText:async()=>{throw Error('MISSING_RESULT');}})}};
+  await assert.rejects(resetTrustedFixture(transport,missing,origin,true),/FIXTURE_FRESH_STATE_NOT_RESET/);
   const before=calls.length;
   await assert.rejects(resetTrustedFixture(transport,active,'https://example.com',true),/FIXED_FIXTURE_REQUIRED/);
   assert.equal(calls.length,before);
