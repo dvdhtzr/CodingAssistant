@@ -214,6 +214,10 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
       .isVisible(), true);
     await disclos.locator(':scope > summary').click();
     assert.match(await disclos.textContent(), /Generated source/);
+    assert.equal(await canvas.getByText('No generated files yet. Start with Source Generation.',
+      { exact: true }).count(), 0, 'the separate draft workflow must not hide saved engineer source');
+    assert.match(await canvas.textContent(), /Host text preflight:/);
+    assert.match(await canvas.textContent(), /No independent findings available/);
     const boxes = [await team.boundingBox(), await canvas.boundingBox(),
       await attention.boundingBox()];
     assert.ok(boxes.every(Boolean));

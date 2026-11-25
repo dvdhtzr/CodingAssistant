@@ -1040,6 +1040,35 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           fakeFactory.QaRoleSeen && fakeFactory.NoTools &&
           fakeFactory.SourceSeen,
         "fifth real MAF agent independently inspects exact source without tools");
+    var compactFactory = new Phase5FakeMafFactory();
+    compactFactory.ScriptedReplies.Enqueue("""{"summary":"Not valid","findings":[],"manualChecks":[]}""");
+    compactFactory.ScriptedReplies.Enqueue("""{"status":"PASS","summary":"Invented verification"}""");
+    compactFactory.ScriptedReplies.Enqueue("""{"summary":"Static source still needs a functional storage check.","findings":[],"manualChecks":["Check storage persistence after browser reload"]}""");
+    var compactAssessment = await new MafQaEngineer(compactFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(compactAssessment.ManualChecks.Count == 1 &&
+          compactFactory.ScriptedReplies.Count == 0 && compactFactory.NoTools,
+        "QA can recover from two malformed reports using a final bounded compact report without granting tools");
+    var transportQa = new Phase5FakeMafFactory();
+    transportQa.ScriptedFailures.Enqueue("MODEL_THINKING_ONLY");
+    transportQa.ScriptedFailures.Enqueue("MODEL_OUTPUT_TRUNCATED");
+    transportQa.ScriptedReplies.Enqueue("""{"summary":"Review completed without claiming any runtime checks.","findings":[],"manualChecks":["Inspect browser behavior for the save control"]}""");
+    var transportReview = await new MafQaEngineer(transportQa).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(transportReview.ManualChecks.Count == 1 &&
+          transportQa.ScriptedFailures.Count == 0 &&
+          transportQa.ScriptedReplies.Count == 0 && transportQa.NoTools,
+        "QA retries safe transport rejection categories with the same bounded budget");
+    try
+    {
+        _ = LocalMafChatClient.ReadAssistantContent(
+            """{"done_reason":"length","message":{"content":"{}"}}""", MafAgentPurpose.QaEngineer);
+        Check(false, "truncated QA output must be rejected");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_TRUNCATED")
+    { Check(true, "QA transport reports truncated output without exposing response"); }
     var investigation = new EngineeringRunEvent(6,
         "EngineerAtlasInspected",
         "SoftwareEngineer used atlas.find_symbols on accepted source " +
@@ -1367,15 +1396,20 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var denied = new Phase5FakeMafFactory();
     denied.ScriptedReplies.Enqueue(
         """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""");
+    denied.ScriptedReplies.Enqueue(
+        """{"summary":"A valid report must not mask a rejected tool request.","findings":[],"manualChecks":["Verify the page through an authorized test later"]}""");
+    var deniedObservations = 0;
     try
     {
-        _ = await new MafQaEngineer(denied).ReviewAsync(input,
+        _ = await new MafQaEngineer(denied).ReviewAsync(
+            input with { OnAtlasInspection = _ => deniedObservations++ },
             CancellationToken.None);
         Check(false, "QA must never gain arbitrary host capabilities");
     }
     catch (StoreFailure e) when (e.Code == "MODEL_OUTPUT_REJECTED")
     {
-        Check(true, "QA MAF rejects forbidden tool names before dispatch");
+        Check(denied.ScriptedReplies.Count == 1 && deniedObservations == 0,
+            "QA MAF rejects forbidden tool names before dispatch without consuming the report retry budget");
     }
 }
 
@@ -4295,6 +4329,7 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool StaticPreflightSeen { get; private set; }
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
+    public Queue<string> ScriptedFailures { get; } = new();
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
     {
@@ -4349,6 +4384,8 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                 m.Role.Value == "user" &&
                 m.Text?.Contains("HOST QA CODE ATLAS OBSERVATION",
                     StringComparison.Ordinal) == true);
+            if (parent.ScriptedFailures.Count > 0)
+                throw new StoreFailure(parent.ScriptedFailures.Dequeue());
             var answer = parent.ScriptedReplies.Count > 0
                 ? parent.ScriptedReplies.Dequeue()
                 : """{"summary":"The static source exposes an interactive control but its behavior is unknown.","findings":[{"severity":"Minor","requirement":"The Save button must work","evidence":"A button is declared but no listener is present in this source","recommendation":"Inspect linked scripts and test saving notes in a browser"}],"manualChecks":["Click Save and reload the page in a real browser"]}""";

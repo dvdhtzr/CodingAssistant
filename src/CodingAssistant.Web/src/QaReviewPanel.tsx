@@ -408,13 +408,21 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       <p><strong>Repair cycle {repair.cycle.attempt}</strong>
         {' · '}{repair.cycle.state} · {repair.cycle.engineeringRunId.slice(0, 12)}</p>
       <p className="hint">Software Engineer source: {repair.engineering.job.state}
-        {' · '}Static inspection: {repair.staticPreflight.status}
+        {' · '}Saved source: {repair.engineering.files.length} file(s)
+        {' · '}Host text preflight: {repair.staticPreflight.status}
         {' · '}Independent QA: {repair.review?.job.state ?? 'Not started'}
         {' · '}Functional verification: NOT VERIFIED
       </p>
       {repair.cycle.errorCode && <p className="activity-warning">
         Repair stopped: {repair.cycle.errorCode}.
-        {' '}Previously saved source is preserved.</p>}
+        {' '}{repair.engineering.files.length > 0 ? 'Previously saved source is preserved.' :
+          'No saved source is attached to this repair record.'}</p>}
+      {repair.cycle.state === 'Failed' && repair.cycle.engineeringRunId === source?.id &&
+        <p className="hint">{running ? 'Independent QA is reviewing the saved revision.' :
+          eligible ? (currentReport && result?.job.state === 'Reviewed' ?
+            'Use the current findings and fresh owner approval to authorize the next repair.' :
+            'Next action: request a fresh static QA review above. A new repair needs successful independent QA and fresh owner approval.') :
+            'Recovery is blocked until the current source and approved plan are available.'}</p>}
       {repair.engineering.events?.filter(event =>
         event.kind === 'EngineerOutputRejected').slice(-1).map(event =>
         <p key={event.sequence} className="activity-warning">
@@ -455,7 +463,8 @@ export function QaReviewPanel({ token, taskId, engineering }: {
             : 'Partial-source static review saved'
           : result.job.state}</strong>
         {' · '} {result.reports.length} file(s) inspected
-        {' · '} {potentialIssues} potential issue(s)
+        {' · '} {result.reports.length === 0 && result.job.state !== 'Reviewed'
+          ? 'No independent findings available' : potentialIssues + ' potential issue(s)'}
         {result.job.errorCode ? ' · ' + result.job.errorCode : ''}
       </p>
       {result.staticPreflight && result.staticPreflight.runId === result.job.engineeringRunId &&
@@ -491,7 +500,9 @@ export function QaReviewPanel({ token, taskId, engineering }: {
             <p className="hint">{row.criterion.workItemTitle} · {row.criterion.id}</p>
             <p>{row.concernCount > 0
               ? row.concernCount + ' linked static concern(s)'
-              : 'No linked static concern (not proof of implementation)'}
+              : result.job.state !== 'Reviewed' && result.reports.length === 0
+                ? 'Not assessed — no independent file review completed'
+                : 'No linked static concern (not proof of implementation)'}
               {' · '}<strong>Requires testing</strong></p>
             {(row.implementationIndicators?.length ?? 0) > 0 && <details>
               <summary>Implementation evidence ({row.implementationIndicators?.length})</summary>
@@ -542,9 +553,12 @@ export function QaReviewPanel({ token, taskId, engineering }: {
       {result.job.state === 'Running' && <p className="hint">
         The selected local model is reviewing each primary file with any available bounded project context.
         Only persisted findings count as progress.</p>}
-      {result.job.state === 'Failed' && <p className="activity-warning">
-        The static review stopped. Completed per-file reports remain available;
-        no successful review or test result is claimed.</p>}
+      {result.job.state === 'Failed' && <p className="activity-warning" role="alert">
+        Independent QA stopped: {result.job.errorCode ?? 'UNKNOWN_ERROR'}.
+        {' '}{result.reports.length === 0 ? 'No files were independently reviewed.' :
+          'Completed per-file reports remain available.'}
+        {' '}No successful review or test result is claimed.
+        {eligible && ' Retry the static review above; you may first select another installed QA model in Assign team models.'}</p>}
 
       {result.reports.map(report => <details className="qa-file-report"
         key={report.path}>
