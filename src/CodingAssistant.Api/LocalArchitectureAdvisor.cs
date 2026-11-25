@@ -6,7 +6,7 @@ namespace CodingAssistant.Api;
 
 public sealed record RecommendArchitectureRequest(
     int SchemaVersion, int SpecificationVersion, string? SpecificationSha256,
-    string? Topic, int ExpectedRevision);
+    string? Topic, int ExpectedRevision, ArchitectureSkillRequest? Skill = null);
 
 public sealed record ArchitectureRecommendation(
     string RecommendedOptionId, string Rationale,

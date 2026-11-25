@@ -1,4 +1,7 @@
 using System.Net;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using Microsoft.Extensions.Logging;
 using System.IO.Compression;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -41,6 +44,10 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
 {
     var app = ApiHost.Build([], settings, runner, htmlGenerator, interviewModel,
                             projectModel, catalog ?? new SmokeOllamaModelCatalog());
+    Check(!app.Services.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("Microsoft.AspNetCore.Hosting.Diagnostics")
+        .IsEnabled(LogLevel.Information),
+        "raw hosting request URL logging is disabled");
     await app.StartAsync();
     saveApp(app);
     var addresses = app.Services.GetRequiredService<IServer>()
@@ -56,6 +63,160 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     {
         BaseAddress = new Uri(address)
     };
+}
+
+// Private directory and existing database checks must fail BEFORE SQLite opens.
+{
+    var folder = Path.Combine(Path.GetTempPath(), "ca-privacy-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(folder);
+    try
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var directory = new DirectoryInfo(folder);
+            var acl = directory.GetAccessControl();
+            acl.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+            directory.SetAccessControl(acl);
+        }
+        else
+            File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                UnixFileMode.UserExecute | UnixFileMode.OtherRead);
+        var rejected = false;
+        try { _ = new TaskStore(folder); }
+        catch (InvalidOperationException) { rejected = true; }
+        Check(rejected && !File.Exists(Path.Combine(folder, "codingassistant.db")),
+            "unsafe data directory rejected before database creation");
+    }
+    finally { Directory.Delete(folder, recursive: true); }
+}
+
+// Sidecar churn: real short-lived SQLite WAL connections open and close
+// while independent TaskStore readers validate the same private directory.
+// Existing unsafe sidecars are still rejected before SQLite opens.
+{
+    var folder = Path.Combine(Path.GetTempPath(), "ca-sidecar-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        var owner = new TaskStore(folder);
+        var dbPath = Path.Combine(folder, "codingassistant.db");
+        var task = owner.CreateTask(new CreateTaskRequest("Private fixture", "No private data", Guid.NewGuid().ToString("N")));
+        var writer = Task.Run(() =>
+        {
+            for (var i = 0; i < 100; i++)
+            {
+                using var db = new SqliteConnection(new SqliteConnectionStringBuilder
+                {
+                    DataSource = dbPath, Pooling = false
+                }.ToString());
+                db.Open();
+                using var command = db.CreateCommand();
+                command.CommandText = "PRAGMA busy_timeout=5000; UPDATE tasks SET objective='No private data' WHERE id=@id;";
+                command.Parameters.AddWithValue("@id", task.Id);
+                command.ExecuteNonQuery();
+            }
+        });
+        var reader = Task.Run(() =>
+        {
+            for (var i = 0; i < 150; i++)
+                if (owner.GetTask(task.Id).Task.Id != task.Id)
+                    throw new Exception("Private sidecar fixture read failed");
+        });
+        var additionalReader = Task.Run(() =>
+        {
+            for (var i = 0; i < 150; i++)
+                if (owner.GetTask(task.Id).Task.Id != task.Id)
+                    throw new Exception("Concurrent private sidecar fixture read failed");
+        });
+        await Task.WhenAll(writer, reader, additionalReader).WaitAsync(TimeSpan.FromSeconds(60));
+        Check(true, "concurrent private WAL reader/writer churn preserves access checks");
+        var sidecar = dbPath + "-journal";
+        File.WriteAllText(sidecar, "not a real journal");
+        if (OperatingSystem.IsWindows())
+        {
+            var file = new FileInfo(sidecar);
+            var acl = file.GetAccessControl();
+            acl.AddAccessRule(new FileSystemAccessRule(
+                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                FileSystemRights.Read, AccessControlType.Allow));
+            file.SetAccessControl(acl);
+        }
+        else
+            File.SetUnixFileMode(sidecar, UnixFileMode.UserRead | UnixFileMode.UserWrite |
+                UnixFileMode.OtherRead);
+        var refused = false;
+        try { _ = new TaskStore(folder); }
+        catch (InvalidOperationException) { refused = true; }
+        Check(refused && File.ReadAllText(sidecar) == "not a real journal",
+            "unsafe existing sidecar refused before SQLite recovery reads it");
+        var runtimeRefused = false;
+        try { _ = owner.GetTask(task.Id); }
+        catch (StoreFailure failure) { runtimeRefused = failure.Code == "PRIVATE_DATA_UNAVAILABLE"; }
+        Check(runtimeRefused && File.ReadAllText(sidecar) == "not a real journal",
+            "runtime sidecar validation fails closed with sanitized storage error");
+        File.Delete(sidecar);
+        if (OperatingSystem.IsWindows())
+        {
+            // Deterministic error sequences complement actual SQLite churn.
+            foreach (var finalStatus in new[] { 0, 2 })
+            {
+                var sequence = new Queue<int>(new[] { 5, 303, 32, finalStatus });
+                var delays = new List<int>();
+                WindowsSidecarSecurity.ValidateObserved(sequence.Dequeue, delays.Add);
+                Check(sequence.Count == 0 && delays.SequenceEqual(new[] { 5, 10, 20 }),
+                    "transient access/delete/sharing errors require reobservation");
+            }
+            var observations = 0;
+            var deniedDelays = new List<int>();
+            var denied = false;
+            try
+            {
+                WindowsSidecarSecurity.ValidateObserved(() => { observations++; return 5; },
+                    deniedDelays.Add);
+            }
+            catch (InvalidOperationException) { denied = true; }
+            Check(denied && observations == 5 &&
+                deniedDelays.SequenceEqual(new[] { 5, 10, 20, 40 }),
+                "persistent sidecar access denial never becomes absence");
+            var unexpectedDenied = false;
+            try
+            {
+                WindowsSidecarSecurity.ValidateObserved(() => 3,
+                    _ => throw new Exception("Unexpected error must not be retried"));
+            }
+            catch (InvalidOperationException) { unexpectedDenied = true; }
+            Check(unexpectedDenied, "missing parent path is not an absent sidecar");
+        }
+        Check(owner.GetTask(task.Id).Task.Id == task.Id,
+            "private database reads recover after unsafe sidecar removal");
+    }
+    finally { Directory.Delete(folder, recursive: true); }
+}
+
+// The activity display is ephemeral metadata, not a logging or approval system.
+{
+    var activity = new LocalHttpActivityLedger();
+    for (var index = 0; index < LocalHttpActivityLedger.MaxEntries + 12; index++)
+        activity.Record("GET", "/api/tasks/{id}/engineering-runs/latest",
+            200, 12.8);
+    var recent = activity.Read(after: 1, limit: 200);
+    Check(recent.Capacity == 120 && recent.Events.Count == 40 &&
+          recent.Truncated && recent.LastSequence == 132 &&
+          recent.Events[0].Sequence == 93,
+        "activity buffer has a bounded window, bounded page and explicit cursor gap");
+    Check(recent.Events.All(item => item.Route ==
+            "/api/tasks/{id}/engineering-runs/latest" &&
+          item.DurationMs == 13 && item.StatusCode == 200),
+        "activity summaries contain route templates, statuses and bounded durations");
+    activity.Record("POST",
+        "/api/tasks/real-id?sessionToken=do-not-expose",
+        403, double.PositiveInfinity);
+    var unsafeRoute = activity.Read(after: 132).Events.Single();
+    Check(unsafeRoute.Route == "API request" &&
+          unsafeRoute.DurationMs == 0 &&
+          unsafeRoute.Method == "POST" && unsafeRoute.StatusCode == 403,
+        "unsafe paths, query strings and nonfinite durations fail closed");
 }
 
 // Reproduce the Windows Visual Studio stale-wwwroot failure using a safe,
@@ -561,6 +722,9 @@ try
         using var noToken = await unauthenticated.GetAsync("/api/tasks");
         Check(noToken.StatusCode == HttpStatusCode.Unauthorized,
             "unauthenticated owner history blocked");
+        using (var activity = await unauthenticated.GetAsync("/api/studio/http-activity"))
+            Check(activity.StatusCode == HttpStatusCode.Unauthorized,
+                "anonymous users cannot read live request activity");
         using var noAuthPost = await Post(unauthenticated, "/api/tasks", new
         {
             title = "unauthorized",
@@ -681,6 +845,29 @@ try
             "control plane cannot start the agent");
         Check(status.RootElement.GetProperty("model").GetString() == "qwen3.5:4b",
             "fixed local model reported");
+    }
+
+    using (var response = await client.GetAsync("/api/studio/http-activity"))
+    using (var body = await ReadJson(response))
+    {
+        var cursor = body.RootElement.GetProperty("lastSequence").GetInt64();
+        var items = body.RootElement.GetProperty("events").EnumerateArray().ToArray();
+        Check(response.StatusCode == HttpStatusCode.OK && cursor > 0 &&
+              items.Any(item =>
+                item.GetProperty("method").GetString() == "GET" &&
+                item.GetProperty("route").GetString() == "/api/status" &&
+                item.GetProperty("statusCode").GetInt32() == 200),
+            "authenticated activity endpoint reports real, templated HTTP completions");
+        var serialized = body.RootElement.GetRawText();
+        Check(!serialized.Contains(OwnerToken, StringComparison.Ordinal) &&
+              !serialized.Contains("sessionToken", StringComparison.Ordinal),
+            "request activity never exposes a bearer or session token");
+        using var self = await client.GetAsync(
+            "/api/studio/http-activity?after=" + cursor);
+        using var selfBody = await ReadJson(self);
+        Check(selfBody.RootElement.GetProperty("lastSequence").GetInt64() == cursor &&
+              selfBody.RootElement.GetProperty("events").GetArrayLength() == 0,
+            "watching activity never generates self-referential request traffic");
     }
 
     var requestId = Guid.NewGuid().ToString("N");
@@ -1341,6 +1528,9 @@ try
             $"/api/runs/{queuedRunId}/start", new { }))
             Check(stillBusy.StatusCode == HttpStatusCode.Conflict,
                   "unverified orphan blocks new execution admission");
+        using (var deletion = await executionClient.DeleteAsync($"/api/tasks/{executionTaskId}"))
+            Check(deletion.StatusCode == HttpStatusCode.Conflict,
+                "project deletion cannot erase unresolved recovery safety gate");
         fake.CleanupIsVerified = true;
         using (var recovered = await Post(executionClient,
             $"/api/runs/{blockedRunId}/execution-recover", new { }))
@@ -2475,6 +2665,18 @@ try
         integrity.CommandText = "PRAGMA foreign_key_check;";
         using var rows = integrity.ExecuteReader();
         Check(!rows.Read(), "planning-project removal preserves database integrity");
+    }
+
+    using (var privacyDb = new SqliteConnection(
+        new SqliteConnectionStringBuilder { DataSource = Path.Combine(data, "codingassistant.db") }.ToString()))
+    {
+        // secure_delete is connection-local; test through the public store's
+        // authenticated deletion integration tests above, rather than assuming
+        // a fresh arbitrary SQLite connection inherits application settings.
+        privacyDb.Open();
+        using var integrity = privacyDb.CreateCommand();
+        integrity.CommandText = "PRAGMA integrity_check";
+        Check((string?)integrity.ExecuteScalar() == "ok", "private database integrity after owner deletion");
     }
 
     if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())

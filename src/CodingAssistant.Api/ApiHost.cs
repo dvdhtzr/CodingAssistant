@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
+using Microsoft.AspNetCore.Routing;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -172,15 +174,21 @@ public static class ApiHost
             ? WebApplication.CreateBuilder(args)
             : WebApplication.CreateBuilder(new WebApplicationOptions
                 { Args = args, WebRootPath = webRoot });
+        // Default hosting request logs can include raw URLs and query strings.
+        // The Studio already exposes bounded, redacted route-template metadata.
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.None);
         builder.WebHost.UseUrls(settings.BindUrl);
         builder.WebHost.ConfigureKestrel(options =>
         {
             options.Limits.MaxRequestBodySize = 16 * 1024;
             options.AddServerHeader = false;
         });
+        var liveHttpActivity = new LocalHttpActivityLedger();
+        builder.Services.AddSingleton(liveHttpActivity);
         builder.Services.AddSingleton(browserSessions);
         builder.Services.AddSingleton(store);
         builder.Services.AddSingleton(roleModels);
+        builder.Services.AddSingleton<SkillReviewStore>();
         builder.Services.AddSingleton(interviews);
         builder.Services.AddSingleton(architectureDecisions);
         builder.Services.AddSingleton(handoffs);
@@ -290,6 +298,34 @@ public static class ApiHost
             await next(context);
         });
 
+        // Capture only post-authenticated API metadata. No request content,
+        // path values, query strings, credentials, or model output enter this
+        // small ephemeral buffer. The read endpoint is excluded so merely
+        // watching the feed cannot create an artificial stream of activity.
+        app.Use(async (context, next) =>
+        {
+            if (!context.Request.Path.StartsWithSegments("/api") ||
+                context.Request.Path.StartsWithSegments("/api/studio/http-activity") ||
+                context.Request.Path.StartsWithSegments("/api/progress") ||
+                context.Request.Path.StartsWithSegments("/api/local-session"))
+            {
+                await next(context);
+                return;
+            }
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                await next(context);
+            }
+            finally
+            {
+                stopwatch.Stop();
+                var route = (context.GetEndpoint() as RouteEndpoint)?.RoutePattern.RawText;
+                liveHttpActivity.Record(context.Request.Method, route,
+                    context.Response.StatusCode, stopwatch.Elapsed.TotalMilliseconds);
+            }
+        });
+
         // UI assets are static and unauthenticated. All data/operations require
         // the owner bearer or an ephemeral authenticated local browser session.
         app.UseDefaultFiles();
@@ -310,6 +346,11 @@ public static class ApiHost
                 lifetimeSeconds = 12 * 60 * 60
             });
         });
+
+        // Authenticated, read-only, bounded presentation data; not an audit log.
+        app.MapGet("/api/studio/http-activity",
+            (long? after, int? limit, LocalHttpActivityLedger ledger) =>
+                Results.Ok(ledger.Read(after ?? 0, limit ?? 20)));
 
         app.MapGet("/healthz", () => Results.Ok(
             new { status = "ok", executionEnabled = enabled,
@@ -443,7 +484,8 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/interview/turn", (
                 string id, InterviewTurnRequest input,
                 TaskStore tasks, InterviewStore db, IInterviewModel model,
-                IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+                IOllamaModelCatalog catalog, SkillReviewStore skillReviews,
+                CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 var task = tasks.GetTask(id).Task;
@@ -467,6 +509,8 @@ public static class ApiHost
                 if (snapshot.Messages.Count(x => x.Role == "owner") ==
                     InterviewStore.ModelDrivenAnswerLimit)
                 {
+                    if (input.Skill is not null)
+                        throw new StoreFailure("SKILL_SCOPE_DENIED");
                     _ = InterviewStore.ValidOwnerMessage(input.Message);
                     return Results.Ok(db.CommitTurn(
                         id, input with { Model = selected },
@@ -483,15 +527,27 @@ public static class ApiHost
                         DateTimeOffset.UtcNow.ToString("O")));
                 using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
                     "ProductOwner",id);
-                var reply = await model.AskAsync(
-                    task.Objective, context, selected, cancellation);
+                InterviewReply reply;
+                if (input.Skill is null)
+                    reply = await model.AskAsync(task.Objective, context, selected, cancellation);
+                else
+                {
+                    if (model is not MafAgentTeam team)
+                        throw new StoreFailure("SKILL_ADAPTER_UNAVAILABLE");
+                    var admitted = skillReviews.AdmitDiscovery(id, input.Skill,
+                        "interview-turn", input.ExpectedSequence, input.Message, selected);
+                    try { reply = await team.AskWithSkillAsync(admitted, cancellation); }
+                    catch { skillReviews.FinishDiscovery(admitted, false); throw; }
+                    skillReviews.FinishDiscovery(admitted, true);
+                }
                 return Results.Ok(db.CommitTurn(
                     id, input with { Model = selected }, reply));
             }));
         app.MapPost("/api/tasks/{id}/interview/specification", (
                 string id, SpecificationRequest input,
                 TaskStore tasks, InterviewStore db, IInterviewModel model,
-                IOllamaModelCatalog catalog, CancellationToken cancellation) =>
+                IOllamaModelCatalog catalog, SkillReviewStore skillReviews,
+                CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 var task = tasks.GetTask(id).Task;
@@ -510,9 +566,20 @@ public static class ApiHost
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
                 using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
                     "ProductOwner",id);
-                var content = await model.DraftAsync(
-                    task.Objective, snapshot.Messages, selectedModel,
-                    cancellation);
+                string content;
+                if (input.Skill is null)
+                    content = await model.DraftAsync(task.Objective, snapshot.Messages,
+                        selectedModel, cancellation);
+                else
+                {
+                    if (model is not MafAgentTeam team)
+                        throw new StoreFailure("SKILL_ADAPTER_UNAVAILABLE");
+                    var admitted = skillReviews.AdmitDiscovery(id, input.Skill,
+                        "specification-draft", input.ExpectedSequence, null, selectedModel);
+                    try { content = await team.DraftWithSkillAsync(admitted, cancellation); }
+                    catch { skillReviews.FinishDiscovery(admitted, false); throw; }
+                    skillReviews.FinishDiscovery(admitted, true);
+                }
                 return Results.Ok(db.CommitSpecification(
                     id, input.ExpectedSequence, content, selectedModel));
             }));
@@ -558,7 +625,8 @@ public static class ApiHost
                  TaskStore tasks, InterviewStore interviews,
                  ArchitectureDecisionStore decisions, IArchitectureAdvisor advisor,
                  MafHandoffStore handoffs, IOllamaModelCatalog catalog,
-                 AgentRoleModelSettings roleModels, CancellationToken cancellation) =>
+                 AgentRoleModelSettings roleModels, SkillReviewStore skillReviews,
+                 CancellationToken cancellation) =>
             SafeAsync(async () =>
             {
                 if (input.SchemaVersion != ArchitectureDecisionStore.SchemaVersion ||
@@ -578,9 +646,28 @@ public static class ApiHost
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
                 using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
                     "SolutionArchitect",id);
-                var recommendation = await advisor.RecommendAsync(
-                    task.Objective, spec.Content, chosen,
-                    input.Topic!, cancellation);
+                ArchitectureRecommendation recommendation;
+                if (input.Skill is null)
+                    recommendation = await advisor.RecommendAsync(
+                        task.Objective, spec.Content, chosen, input.Topic!, cancellation);
+                else
+                {
+                    // No implicit fallback if an explicitly selected skill is unavailable.
+                    if (advisor is not MafAgentTeam team)
+                        throw new StoreFailure("SKILL_ADAPTER_UNAVAILABLE");
+                    var context = skillReviews.AdmitArchitecture(id, input, chosen);
+                    try
+                    {
+                        recommendation = await team.RecommendWithSkillAsync(
+                            task.Objective, spec.Content, chosen, input.Topic!, context, cancellation);
+                    }
+                    catch
+                    {
+                        skillReviews.FinishArchitecture(context, false);
+                        throw;
+                    }
+                    skillReviews.FinishArchitecture(context, true);
+                }
                 var created = decisions.Propose(id, new(
                     ArchitectureDecisionStore.SchemaVersion,
                     input.SpecificationVersion, input.SpecificationSha256,
@@ -657,6 +744,17 @@ public static class ApiHost
         app.MapGet("/api/agents/roster", () =>
             Results.Ok(new { engine = "Microsoft Agent Framework",
                 agents = EngineeringAgentRoster.All }));
+        app.MapGet("/api/agents/skills", () =>
+            Safe(() => Results.Ok(new { skills = SkillCatalog.Discover() })));
+        app.MapGet("/api/tasks/{id}/skill-uses", (string id, SkillReviewStore reviews) =>
+            Safe(() => Results.Ok(new { events = reviews.ReadUses(id),
+                discoveryEvents = reviews.ReadDiscoveryUses(id),
+                qaEvents = reviews.ReadQaUses(id) })));
+        app.MapGet("/api/tasks/{id}/skill-reviews", (string id, SkillReviewStore reviews) =>
+            Safe(() => Results.Ok(new { skills = reviews.Read(id) })));
+        app.MapPost("/api/tasks/{id}/skill-reviews/{name}",
+            (string id, string name, SkillReviewRequest request, SkillReviewStore reviews) =>
+                Safe(() => Results.Ok(reviews.Review(id, name, request))));
 
         // Fourth real MAF agent: one task at a time from the exact current
         // owner-approved Technical Lead plan, source-only and never executed.
@@ -1205,7 +1303,7 @@ public static class ApiHost
         var status = error.Code switch
         {
             "NOT_FOUND" => StatusCodes.Status404NotFound,
-            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" or
+            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" or "PRIVATE_DATA_UNAVAILABLE" or
                 "INFERENCE_QUEUE_FULL" or "INFERENCE_QUEUE_TIMEOUT" or "INFERENCE_LEASE_INTERRUPTED" =>
                 StatusCodes.Status503ServiceUnavailable,
             "REPAIR_NOT_AUTHORIZED" or "REPAIR_LIMIT_REACHED" or
@@ -1223,7 +1321,7 @@ public static class ApiHost
                 "STALE_DELEGATION_POLICY" or "DELEGATION_NOT_AUTHORIZED" or
                 "STALE_WORK_PLAN" or "WORK_SCOPE_EXPANSION" or "WORK_DEPENDENCY_CYCLE" or
                 "WORK_NOT_READY" or "WORK_SCOPE_VIOLATION" or "WORK_ALREADY_COMPLETED" or
-            "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
+            "STALE_SKILL_REVIEW" or "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
                 "EXECUTION_PLAN_CONFLICT" => StatusCodes.Status409Conflict,

@@ -20,14 +20,10 @@ import sys
 import tempfile
 import time
 
-from gateway_image_probe import IMAGE, inspected_image, fixed
+from gateway_image_probe import APPROVED_REPO_DIGEST, IMAGE, inspected_image, fixed
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUTPUT = ROOT / "artifacts/m1/gateway-loopback-smoke.json"
-APPROVED_REPO_DIGEST = (
-    "ghcr.io/openclaw/openclaw@sha256:"
-    "97781490d6cd01cec8d1f0ad300ff8bedfaae18ec5b8c30666aaebc470a6309f"
-)
 APPROVED_IMAGE_ID = (
     "405dcc682726f127d316d435e29d3c5d0cdecb502aef6d74384ce6dd4ffe2700"
 )

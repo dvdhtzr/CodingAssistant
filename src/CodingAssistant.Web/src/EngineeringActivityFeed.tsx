@@ -140,7 +140,7 @@ export function EngineeringActivityFeed({ token,taskId,compact }: {
   const rows = displayed.filter(e => filter === 'All' || e.category === filter)
     .slice(compact ? -3 : -tailLimit).reverse();
   const pending = frozen ? Math.max(0,cursor-frozen.cursor) : 0;
-  return <section className={'ca-live-activity' + (compact ? ' is-compact' : '')}
+  return <section className={'ca-engineering-live-activity' + (compact ? ' is-compact' : '')}
     aria-label="Live engineering activity">
     <div className="ca-live-heading">
       <strong>Live activity</strong>

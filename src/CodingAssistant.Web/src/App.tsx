@@ -521,13 +521,13 @@ export default function App() {
           token={token} task={taskView.task} onNavigate={setView} />}
         {taskView && <div hidden={view !== 'work'}>
           <EngineeringStudio key={taskView.task.id} token={token} task={taskView.task}
-            onTeam={() => setView('team')}/>
+            active={view === 'work'} onTeam={() => setView('team')}/>
         </div>}
         {taskView && view === 'team' && <TeamDestination token={token} taskId={taskId}
           onWork={() => setView('work')} />}
         {taskView && view === 'quality' && <QualityDestination token={token}
           taskId={taskId} onWork={() => setView('work')} />}
-        {taskView && view === 'skills' && <SkillsDestination token={token} />}
+        {taskView && view === 'skills' && <SkillsDestination token={token} taskId={taskView.task.id} />}
         {taskView && view === 'history' && <HistoryDestination token={token} taskId={taskId} />}
         {view === 'diagnostics' && taskView && <div className="wb-diagnostic-heading">
           <h2>Developer tools</h2>

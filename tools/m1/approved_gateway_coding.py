@@ -47,7 +47,8 @@ from real_qualification import pin_model, scan_workspace
 from qualification_isolation_probe import check_manifest, sealed_snapshot, FIXTURES
 from qualification_acceptance_probe import run_evaluator, IMAGE as EVAL_TAG
 from sandbox_probe import image_status, inspect_podman
-from run_ledger import RunLedger, DuplicateRequest, managed_container, LABEL as LEDGER_LABEL
+from run_ledger import (RunLedger, DuplicateRequest, managed_container,
+                        LABEL as LEDGER_LABEL, read_evidence, verify_success)
 
 ARTIFACTS = ROOT / "artifacts/m1"
 LEDGER_DIR = ARTIFACTS / "private-ledger"
@@ -906,23 +907,19 @@ def read_result_by_request(ledger: RunLedger, request_id: str) -> dict:
     if type(filename) is not str or not re.fullmatch(
             r"m112-approved-coding-[0-9a-f]{12}\.json", filename):
         raise ValueError("Untrusted evidence name")
-    evidence = ARTIFACTS / filename
-    fd = os.open(evidence, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        identity = os.fstat(fd)
-        if (not stat.S_ISREG(identity.st_mode) or
-                identity.st_uid != os.geteuid() or
-                identity.st_mode & 0o077 or identity.st_size > 64_000):
-            raise ValueError("Unsafe evidence permissions or size")
-        with os.fdopen(fd, "r", encoding="utf-8") as stream:
-            fd = -1
-            body = stream.read(64_001)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-    if len(body) > 64_000:
-        raise ValueError("Oversized saved evidence")
-    return bounded_result(json.loads(body), request_id, row["plan_hash"])
+    report, digest = read_evidence(ARTIFACTS, filename)
+    bound_digest = row.get("evidence_sha256")
+    if bound_digest is not None:
+        if (digest != bound_digest or report.get("run_id") != row.get("run_id") or
+                report.get("plan_hash") != row["plan_hash"]):
+            raise ValueError("Saved evidence integrity mismatch")
+        if row["state"] == "SUCCEEDED" and not verify_success(report, filename):
+            raise ValueError("Bound success evidence is incomplete")
+    # Historical pre-digest reports remain readable as before; never
+    # manufacture a new digest or call them cryptographically bound.
+    if (row["state"] == "SUCCEEDED") != (report.get("status") == "GATEWAY_APPROVED_CODING_PASS"):
+        raise ValueError("Saved evidence conflicts with durable result state")
+    return bounded_result(report, request_id, row["plan_hash"])
 
 
 def main() -> int:
@@ -986,7 +983,7 @@ def main() -> int:
         parser.error("Recovery requires request ID only, not a control binding")
     # This directory is private (0700) regardless of artifacts/m1's
     # historical permissions. No public paths or logs enter SQLite.
-    with RunLedger(LEDGER_DIR) as ledger:
+    with RunLedger(LEDGER_DIR, evidence_directory=ARTIFACTS) as ledger:
         if args.result_by_request_id:
             try:
                 print(json.dumps(read_result_by_request(
@@ -1035,6 +1032,7 @@ def main() -> int:
             report = execute(prepare=args.prepare, journal=journal,
                              control=control,
                              approval_from_stdin=approval_text)
+            report["run_id"] = journal.run_id
             ARTIFACTS.mkdir(parents=True, exist_ok=True)
             name = "m112-approved-coding-" + uuid.uuid4().hex[:12] + ".json"
             path = ARTIFACTS / name

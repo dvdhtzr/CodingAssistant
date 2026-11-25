@@ -24,10 +24,11 @@ public sealed record InterviewSnapshot(
     string TaskId, string? Model, int LastSequence, bool ReadyForSpecification,
     IReadOnlyList<InterviewMessage> Messages, InterviewSpecification? Specification);
 public sealed record InterviewTurnRequest(
-    int ExpectedSequence, string? Message, string? Model);
+    int ExpectedSequence, string? Message, string? Model, ProductOwnerSkillRequest? Skill = null);
 // The human can explicitly select another installed local model for drafting.
 // This never changes the model or decisions of the saved interview.
-public sealed record SpecificationRequest(int ExpectedSequence, string? Model = null);
+public sealed record SpecificationRequest(int ExpectedSequence, string? Model = null,
+    ProductOwnerSkillRequest? Skill = null);
 public sealed record ApproveSpecificationRequest(int Version, string? Sha256);
 
 public interface IInterviewModel
@@ -155,7 +156,7 @@ public sealed class InterviewStore(TaskStore tasks)
         return content.Trim();
     }
 
-    private static IReadOnlyList<InterviewMessage> Messages(
+    internal static IReadOnlyList<InterviewMessage> Messages(
         SqliteConnection db, SqliteTransaction? tx, string taskId)
     {
         using var cmd = TaskStore.Command(db, tx, """
@@ -196,7 +197,7 @@ public sealed class InterviewStore(TaskStore tasks)
             : null;
     }
 
-    private static (string Model, bool Ready)? Session(
+    internal static (string Model, bool Ready)? Session(
         SqliteConnection db, SqliteTransaction? tx, string taskId)
     {
         using var cmd = TaskStore.Command(db, tx, """

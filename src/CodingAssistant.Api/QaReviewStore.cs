@@ -6,7 +6,8 @@ using Microsoft.Data.Sqlite;
 
 namespace CodingAssistant.Api;
 
-public sealed record StartQaReviewRequest(string? EngineeringRunId, string? PlanSha256);
+public sealed record StartQaReviewRequest(string? EngineeringRunId, string? PlanSha256,
+    QaSkillRequest? Skill = null);
 public sealed record QaReviewRun(
     string Id, string TaskId, string EngineeringRunId,
     string SourceSha256, int PlanRevision, string PlanSha256,
@@ -18,7 +19,10 @@ public sealed record QaReviewEvent(
     int Sequence, string Kind, string Detail, string CreatedUtc);
 public sealed record QaReviewSnapshot(
     QaReviewRun Job, IReadOnlyList<QaFileReport> Reports,
-    IReadOnlyList<QaReviewEvent> Events, string SourceState);
+    IReadOnlyList<QaReviewEvent> Events, string SourceState,
+    QaAcceptanceSummary? Acceptance = null,
+    StaticWebPreflightReport? StaticPreflight = null,
+    bool UnchangedFailedRepair = false);
 
 /// <summary>
 /// Evidence ledger for *static* QA source inspection. Review admission,
@@ -72,6 +76,10 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 assessment_json TEXT NOT NULL,
                 reviewed_utc TEXT NOT NULL,
                 PRIMARY KEY(qa_id,path)
+            );
+            CREATE TABLE IF NOT EXISTS qa_static_preflight (
+                qa_id TEXT PRIMARY KEY NOT NULL REFERENCES qa_reviews(id),
+                report_json TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS qa_review_events (
                 qa_id TEXT NOT NULL REFERENCES qa_reviews(id),
@@ -207,7 +215,12 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
 
     public QaReviewRun Start(string taskId,
         EngineeringRunSnapshot source, ImplementationPlan plan,
-        string? agentModel = null,CollaborationAdmission? admission=null)
+        string? agentModel = null,CollaborationAdmission? admission=null) =>
+        StartBound(taskId, source, plan, agentModel, null, out _, admission);
+
+    internal QaReviewRun StartBound(string taskId, EngineeringRunSnapshot source,
+        ImplementationPlan plan, string? agentModel, QaSkillRequest? skill,
+        out QaSkillContext? skillContext,CollaborationAdmission? admission=null)
     {
         ValidateId(taskId);
         if (source.Job.TaskId != taskId ||
@@ -251,6 +264,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         {
             throw new StoreFailure("BUILD_BUSY");
         }
+        skillContext = skill is null ? null : SkillReviewStore.AdmitQa(db, tx, review, skill);
         Event(db, tx, review.Id, "QaReviewAdmitted",
             source.Job.State == "Generated"
                 ? "Independent static QA of generated source; no tests executed"
@@ -292,11 +306,12 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         ValidateId(taskId);
         ValidateId(reviewId);
         using var db = tasks.Open();
-        var review = Find(db, null, reviewId);
+        using var tx = db.BeginTransaction(deferred: true);
+        var review = Find(db, tx, reviewId);
         if (review is null || review.TaskId != taskId)
             throw new StoreFailure("NOT_FOUND");
         var reports = new List<QaFileReport>();
-        using (var cmd = TaskStore.Command(db, null, """
+        using (var cmd = TaskStore.Command(db, tx, """
             SELECT path,source_sha256,assessment_json,reviewed_utc
             FROM qa_review_files WHERE qa_id=@id ORDER BY path
             """, ("@id", reviewId)))
@@ -309,7 +324,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                         throw new InvalidOperationException("Invalid stored QA report"),
                     reader.GetString(3)));
         var events = new List<QaReviewEvent>();
-        using (var cmd = TaskStore.Command(db, null, """
+        using (var cmd = TaskStore.Command(db, tx, """
             SELECT sequence,kind,detail,created_utc
             FROM qa_review_events WHERE qa_id=@id ORDER BY sequence
             """, ("@id", reviewId)))
@@ -317,11 +332,108 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             while (reader.Read())
                 events.Add(new QaReviewEvent(reader.GetInt32(0),
                     reader.GetString(1), reader.GetString(2), reader.GetString(3)));
-        var sourceState = TaskStore.Scalar(db, null, """
+        var sourceState = TaskStore.Scalar(db, tx, """
             SELECT state FROM engineering_runs WHERE id=@id AND task_id=@task
             """, ("@id", review.EngineeringRunId), ("@task", taskId));
+        // Compare immutable file identities in the same read transaction.
+        // No source body is needed for this projection.
+        var identities = new List<EngineeringSourceFile>();
+        using (var cmd = TaskStore.Command(db, tx, """
+            SELECT path,sha256 FROM engineering_run_files WHERE run_id=@id
+            ORDER BY path
+            """, ("@id", review.EngineeringRunId)))
+        using (var reader = cmd.ExecuteReader())
+            while (reader.Read())
+                identities.Add(new EngineeringSourceFile(reader.GetString(0),
+                    "", "", reader.GetString(1), "", ""));
+        if (!IsReviewableSource(sourceState ?? "Unavailable", identities.Count) ||
+            Fingerprint(identities) != review.SourceSha256 ||
+            reports.Any(report => !identities.Any(file => file.Path == report.Path &&
+                file.Sha256 == report.SourceSha256)))
+            throw new StoreFailure("SOURCE_CHANGED");
+        var boundPlan = ImplementationPlanStore.ReadForQa(db, tx, review);
+        var acceptance = QaAcceptanceProjection.Build(review, boundPlan, reports);
+        var preflight = ReadStaticPreflight(db, tx, review);
+        var unchangedFailedRepair = sourceState is "Failed" or "Interrupted" &&
+            RepairCycleStore.IsUnchangedFailedRepair(db, tx, taskId,
+                review.EngineeringRunId, review.SourceSha256);
+        tx.Commit();
         return new QaReviewSnapshot(review, reports.AsReadOnly(),
-            events.AsReadOnly(), sourceState ?? "Unavailable");
+            events.AsReadOnly(), sourceState ?? "Unavailable", acceptance, preflight,
+            unchangedFailedRepair);
+    }
+
+    private static StaticWebPreflightReport? ReadStaticPreflight(
+        SqliteConnection db, SqliteTransaction tx, QaReviewRun review)
+    {
+        var json = TaskStore.Scalar(db, tx, """
+            SELECT report_json FROM qa_static_preflight WHERE qa_id=@id
+            """, ("@id", review.Id));
+        if (json is null) return null;
+        var report = JsonSerializer.Deserialize<StaticWebPreflightReport>(json)
+            ?? throw new StoreFailure("INVALID_STATE");
+        if (report.RunId != review.EngineeringRunId ||
+            report.SourceSha256 != review.SourceSha256 ||
+            report.VerificationStatus != "GENERATED_NOT_TESTED")
+            throw new StoreFailure("SOURCE_CHANGED");
+        return report;
+    }
+
+    // Compute once per review, from owner-private persisted source, not
+    // a model assertion or a supplied filesystem path. No runtime authority.
+    internal StaticWebPreflightReport? CaptureStaticPreflight(string taskId, string reviewId)
+    {
+        ValidateId(taskId); ValidateId(reviewId);
+        using var db = tasks.Open();
+        using var tx = db.BeginTransaction();
+        var review = Find(db, tx, reviewId);
+        if (review is null || review.TaskId != taskId)
+            throw new StoreFailure("NOT_FOUND");
+        if (review.State != "Running") throw new StoreFailure("INVALID_STATE");
+        var source = RequireSource(db, tx, review);
+        var architecture = DraftArchitecturePolicy.Capture(db, tx, taskId,
+            review.SpecificationVersion, review.SpecificationSha256);
+        if (architecture is null || architecture.Sha256 != review.ArchitectureSha256 ||
+            !architecture.Choices.Any(choice => choice.RuntimeProfileId == "static-web"))
+            return null;
+        var saved = ReadStaticPreflight(db, tx, review);
+        if (saved is not null) return saved;
+        var files = new List<EngineeringSourceFile>();
+        using (var command = TaskStore.Command(db, tx, """
+            SELECT path,purpose,content,sha256,work_item_id,updated_utc
+            FROM engineering_run_files WHERE run_id=@run ORDER BY path
+            """, ("@run", review.EngineeringRunId)))
+        using (var reader = command.ExecuteReader())
+            while (reader.Read())
+                files.Add(new EngineeringSourceFile(reader.GetString(0), reader.GetString(1),
+                    reader.GetString(2), reader.GetString(3), reader.GetString(4), reader.GetString(5)));
+        if (!IsReviewableSource(source.State, files.Count) ||
+            Fingerprint(files) != review.SourceSha256)
+            throw new StoreFailure("SOURCE_CHANGED");
+        StaticWebPreflightReport report;
+        try
+        {
+            report = StaticWebSourcePreflight.Inspect(new EngineeringRunSnapshot(source, [], [], files));
+        }
+        catch (RegexMatchTimeoutException)
+        {
+            report = new(source.Id, source.State, review.SourceSha256,
+                "STATIC_INSPECTION_LIMIT", "GENERATED_NOT_TESTED", 0, 0, []);
+        }
+        if (report.SourceSha256 is null && report.Status == "BOUNDS_EXCEEDED")
+            report = report with { SourceSha256 = review.SourceSha256 };
+        if (report.RunId != review.EngineeringRunId ||
+            report.SourceSha256 != review.SourceSha256 ||
+            report.VerificationStatus != "GENERATED_NOT_TESTED")
+            throw new StoreFailure("SOURCE_CHANGED");
+        TaskStore.Execute(db, tx, """
+            INSERT INTO qa_static_preflight(qa_id,report_json) VALUES(@id,@json)
+            """, ("@id", review.Id), ("@json", JsonSerializer.Serialize(report)));
+        Event(db, tx, review.Id, "QaStaticPreflightCaptured",
+            "Host static source preflight: " + report.Status + "; " +
+            report.Findings.Count + " observation(s); no tests executed");
+        tx.Commit();
+        return report;
     }
 
     public void SaveFileReport(string taskId, string reviewId,
@@ -345,6 +457,37 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             """, ("@run", job.EngineeringRunId), ("@path", source.Path));
         if (sha != source.Sha256)
             throw new StoreFailure("SOURCE_CHANGED");
+        // Validate literal excerpts against the persisted exact file before
+        // storing them. The caller's in-memory source cannot supply evidence.
+        var content = TaskStore.Scalar(db, tx, """
+            SELECT content FROM engineering_run_files
+            WHERE run_id=@run AND path=@path
+            """, ("@run", job.EngineeringRunId), ("@path", source.Path));
+        if (content is null || content != source.Content)
+            throw new StoreFailure("SOURCE_CHANGED");
+        var boundPlan = ImplementationPlanStore.ReadForQa(db, tx, job);
+        valid = QaAcceptanceProjection.Ground(boundPlan, content, valid);
+        if (valid.CrossFileObservations is { Count: > 0 })
+        {
+            var architecture = DraftArchitecturePolicy.Capture(db, tx, taskId,
+                job.SpecificationVersion, job.SpecificationSha256);
+            var companions = new List<EngineeringSourceFile>();
+            if (architecture is not null && architecture.Sha256 == job.ArchitectureSha256 &&
+                architecture.Choices.Any(choice => choice.RuntimeProfileId == "static-web"))
+            {
+                using var cmd = TaskStore.Command(db, tx, """
+                    SELECT path,content,sha256 FROM engineering_run_files
+                    WHERE run_id=@run AND path<>@path ORDER BY path
+                    """, ("@run", job.EngineeringRunId), ("@path", source.Path));
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                    if (QaProjectContext.IsWebSource(reader.GetString(0)))
+                        companions.Add(new EngineeringSourceFile(reader.GetString(0),
+                            "", reader.GetString(1), reader.GetString(2), "", ""));
+            }
+            valid = QaAcceptanceProjection.GroundCrossFile(boundPlan, source.Path,
+                companions, valid);
+        }
         var now = DateTimeOffset.UtcNow.ToString("O");
         try
         {

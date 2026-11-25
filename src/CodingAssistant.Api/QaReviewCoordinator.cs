@@ -44,20 +44,26 @@ public sealed class QaReviewCoordinator(
         if (!architecture.ReadyForSourceGeneration ||
             architecture.ArchitectureSha256 != plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
-        var job = reviews.Start(taskId, source, plan, agentModel,admission);
+        if (request.Skill is not null && reviewer is not MafQaEngineer)
+            throw new StoreFailure("SKILL_ADAPTER_UNAVAILABLE");
+        if (request.Skill is not null && !architecture.ApprovedChoices.Any(choice =>
+                choice.RuntimeProfileId == "static-web"))
+            throw new StoreFailure("SKILL_SCOPE_DENIED");
+        var job = reviews.StartBound(taskId, source, plan, agentModel, request.Skill,
+            out var skillContext, admission);
         var token = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = token;
         var objective = tasks.GetTask(taskId).Task.Objective;
         _ = Task.Run(() => RunAsync(objective, specification.Content,
-            plan, architecture, source, job, token));
+            plan, architecture, source, job, token, skillContext));
         return job;
     }
 
     private async Task RunAsync(string objective, string specification,
         ImplementationPlan plan, DraftArchitectureReadiness architecture,
         EngineeringRunSnapshot source, QaReviewRun review,
-        CancellationTokenSource cancellation)
+        CancellationTokenSource cancellation, QaSkillContext? skillContext)
     {
         try
         {
@@ -84,6 +90,8 @@ public sealed class QaReviewCoordinator(
                         throw new StoreFailure("INVALID_STATE");
                 }
             }
+            token.ThrowIfCancellationRequested();
+            var staticPreflight = reviews.CaptureStaticPreflight(review.TaskId, review.Id);
             foreach (var file in source.Files)
             {
                 token.ThrowIfCancellationRequested();
@@ -95,10 +103,12 @@ public sealed class QaReviewCoordinator(
                         review.TaskId, review.Id, file, observation),
                     previousFindings.Where(f => f.Path.Equals(file.Path,
                         StringComparison.OrdinalIgnoreCase)).ToArray(),
-                    AgentModel: review.Model);
+                    AgentModel: review.Model, StaticPreflight: staticPreflight);
                 using var providerScope = EngineeringProviderActivity.Enter(tasks,review.TaskId,
                     "QaEngineer",review.Id,review.SourceSha256);
-                var report = await reviewer.ReviewAsync(input, token);
+                var report = skillContext is null
+                    ? await reviewer.ReviewAsync(input, token)
+                    : await ((MafQaEngineer)reviewer).ReviewWithSkillAsync(input, skillContext, token);
                 token.ThrowIfCancellationRequested();
                 reviews.SaveFileReport(review.TaskId, review.Id, file, report);
             }

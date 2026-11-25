@@ -106,6 +106,16 @@ function mockApi(page, { architectureOutdated = false,
       return done(route, { taskId:id,lastSequence:activityEvents.at(-1)?.sequence ?? 0,
         events:activityEvents.filter(event => event.sequence > cursor).slice(0,200) });
     }
+    if (path === '/api/studio/http-activity') return done(route, {
+      events: [
+        { sequence: 1, recordedUtc: time, method: 'GET',
+          route: '/api/tasks/{id}/architecture-decisions',
+          statusCode: 200, durationMs: 114 },
+        { sequence: 2, recordedUtc: time, method: 'GET',
+          route: '/api/tasks/{id}/engineering-runs/latest',
+          statusCode: 200, durationMs: 46 },
+      ], lastSequence: 2, truncated: false, capacity: 120,
+    });
     if (path.endsWith('/agent-models')) return done(route, { agents: selections });
     if (path === '/api/agents/roster') return done(route, { agents });
     if (path.endsWith('/agent-handoffs')) return done(route, { events: [{
@@ -210,6 +220,10 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
       .isVisible(), true);
     await disclos.locator(':scope > summary').click();
     assert.match(await disclos.textContent(), /Generated source/);
+    assert.equal(await canvas.getByText('No generated files yet. Start with Source Generation.',
+      { exact: true }).count(), 0, 'the separate draft workflow must not hide saved engineer source');
+    assert.match(await canvas.textContent(), /Host text preflight:/);
+    assert.match(await canvas.textContent(), /No independent findings available/);
     const boxes = [await team.boundingBox(), await canvas.boundingBox(),
       await attention.boundingBox()];
     assert.ok(boxes.every(Boolean));
@@ -419,6 +433,48 @@ test('unapproved specification offers enabled recovery navigation, not disabled 
     assert.equal(await canvas.evaluate(el => el.scrollTop), 0,
       'returning to specification presents its current action from the top');
     assert.deepEqual(writes, [], 'navigation never approves old requirements');
+  } finally { await page.close(); }
+});
+
+test('live activity separates real HTTP summaries from persisted agent work and pauses polling', async () => {
+  const page = await browser.newPage({ viewport: { width: 1500, height: 900 } });
+  let polls = 0;
+  const writes = [];
+  try {
+    await mockApi(page);
+    page.on('request', request => {
+      const path = new URL(request.url()).pathname;
+      if (path === '/api/studio/http-activity') polls++;
+      if (request.method() === 'POST' && path.startsWith('/api/tasks/'))
+        writes.push(path);
+    });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    const strip = page.getByRole('region', { name: 'Live Activity' });
+    await strip.getByText('Local API', { exact: true }).waitFor();
+    assert.match(await strip.textContent(),
+      /GET \/api\/tasks\/\{id\}\/engineering-runs\/latest · 200 · 46 ms/);
+    const show = strip.getByRole('button', { name: /Live Activity/ });
+    await show.click();
+    const traffic = strip.getByRole('region', {
+      name: 'Authenticated API request summaries',
+    });
+    await traffic.getByText('/api/tasks/{id}/architecture-decisions').waitFor();
+    assert.equal(await traffic.locator('ol > li').count(), 2);
+    assert.match(await traffic.textContent(), /not that an agent finished work/);
+    await strip.getByRole('button', { name: 'Agent work' }).click();
+    const agent = strip.getByRole('region', { name: 'Persisted agent event summaries' });
+    await agent.getByText('QA source review started').waitFor();
+    assert.match(await agent.textContent(), /Engineer saved a source revision/);
+    assert.match(await agent.textContent(), /Technical Lead → Software Engineer/);
+    await strip.getByRole('button', { name: 'System traffic' }).click();
+    await strip.getByRole('button', { name: 'Pause feed' }).click();
+    const beforePause = polls;
+    await page.waitForTimeout(2800);
+    assert.equal(polls, beforePause, 'paused activity must stop HTTP requests');
+    await strip.getByRole('button', { name: 'Resume feed' }).click();
+    await page.waitForTimeout(500);
+    assert.ok(polls > beforePause, 'resuming activity reconnects with saved cursor');
+    assert.deepEqual(writes, [], 'observing traffic or agent work never mutates a project');
   } finally { await page.close(); }
 });
 

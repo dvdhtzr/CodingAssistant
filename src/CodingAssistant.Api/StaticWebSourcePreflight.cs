@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 namespace CodingAssistant.Api;
 
 public sealed record StaticWebPreflightFinding(
-    string Code, string Severity, string Path, string Detail);
+    string Code, string Severity, string Path, string Detail,
+    string? SourceExcerpt = null, string? ReferencedPath = null);
 public sealed record StaticWebPreflightReport(
     string RunId, string SourceState, string? SourceSha256,
     string Status, string VerificationStatus,
@@ -110,10 +111,14 @@ public static class StaticWebSourcePreflight
         var classes = new HashSet<string>(StringComparer.Ordinal);
         var linkedScripts = 0;
         var references = 0;
-        void Finding(string code, string severity, string path, string detail)
+        void Finding(string code, string severity, string path, string detail,
+            string? excerpt = null, string? referencedPath = null)
         {
             if (findings.Count < 60)
-                findings.Add(new(code, severity, path, detail));
+                findings.Add(new(code, severity, path,
+                    detail[..Math.Min(500, detail.Length)],
+                    excerpt is { Length: <= 240 } ? excerpt : null,
+                    referencedPath is { Length: <= 240 } ? referencedPath : null));
         }
 
         foreach (var file in html)
@@ -143,13 +148,13 @@ public static class StaticWebSourcePreflight
                 {
                     Finding("UNRESOLVED_ASSET_REFERENCE", "Error", file.Path,
                         "Asset reference is external, invalid, or outside the project: " +
-                        requested[..Math.Min(requested.Length, 140)]);
+                        requested[..Math.Min(requested.Length, 140)], tag.Value);
                     continue;
                 }
                 if (!paths.ContainsKey(localPath))
                 {
                     Finding("MISSING_LINKED_ASSET", "Error", file.Path,
-                        "Referenced asset is not saved: " + localPath);
+                        "Referenced asset is not saved: " + localPath, tag.Value, localPath);
                     continue;
                 }
                 if (isScript && localPath.EndsWith(".js",
@@ -162,7 +167,7 @@ public static class StaticWebSourcePreflight
                 if (body.Trim().Length > 0 &&
                     ScriptComment.Replace(body, "").Trim().Length == 0)
                     Finding("COMMENT_ONLY_INLINE_SCRIPT", "Warning", file.Path,
-                        "Inline script contains only comments; no executable behavior is evident.");
+                        "Inline script contains only comments; no executable behavior is evident.", script.Value);
             }
         }
         if (linkedScripts == 0 && files.Any(f =>
@@ -186,7 +191,7 @@ public static class StaticWebSourcePreflight
                 if (!exists)
                     Finding("SELECTOR_NOT_DECLARED", "Warning", js.Path,
                         "Literal selector was not declared in saved HTML: " +
-                        (kind == "#" ? "#" : ".") + name);
+                        (kind == "#" ? "#" : ".") + name, reference.Value);
             }
         }
         return new(job.Id, job.State, fingerprint,

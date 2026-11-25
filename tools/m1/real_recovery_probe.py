@@ -13,13 +13,17 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import shutil
+import stat
+import sqlite3
+import secrets
+from contextlib import contextmanager
 import os
 import pathlib
 import re
 import select
 import subprocess
 import sys
-import tempfile
 import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -27,7 +31,8 @@ sys.path.insert(0, str(ROOT / "tools/m0"))
 
 from acpx_initialize_probe import OWNER_IMAGE_ID
 from run_ledger import (
-    DuplicateRequest, LABEL, RunLedger, managed_container,
+    DuplicateRequest, LABEL, RunLedger, managed_container, TERMINAL,
+    _open_lock, _flock, _unlock,
 )
 from sandbox_probe import inspect_podman
 
@@ -140,6 +145,145 @@ def read_ready(process: subprocess.Popen, timeout: int = 100) -> str:
     return result.group(1)
 
 
+def private_directory(path: pathlib.Path) -> bool:
+    try:
+        info = path.lstat()
+        return (stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                and not info.st_mode & 0o077)
+    except OSError:
+        return False
+
+
+def probe_record(row: dict) -> bool:
+    """Only the fixed recovery probe is eligible, never an actual coding run."""
+    try:
+        return (row["request_id"] == REQUEST_ID and
+                row["plan_hash"] in (None, TEST_PLAN) and
+                (row["container_name"] is None or
+                 (row["plan_hash"] == TEST_PLAN and
+                  row["container_name"] == managed_container(row["run_id"]))))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def ledger_clean(directory: pathlib.Path) -> bool:
+    """A missing ledger is safe only before the child has made one."""
+    if not directory.exists() and not directory.is_symlink():
+        return True
+    if not private_directory(directory) or not (directory / "runs.sqlite3").is_file():
+        return False
+    with RunLedger(directory) as ledger:
+        rows = ledger.history(limit=2)
+        if len(rows) > 1:
+            return False
+        for row in rows:
+            if not probe_record(row) or row["state"] not in TERMINAL:
+                return False
+            if row["container_name"] is not None:
+                result = fixed(["podman", "container", "exists", row["container_name"]],
+                               timeout=20)
+                if result.returncode != 1:
+                    return False
+        return True
+
+
+@contextmanager
+def retained_ledger(report: dict):
+    """Never discard the fixed probe journal while cleanup is unconfirmed."""
+    token = secrets.token_hex(6)
+    folder = ARTIFACTS / ("ca-m114-recovery-" + token)
+    folder.mkdir(mode=0o700)
+    lock = None
+    locked = False
+    completed = False
+    try:
+        lock = _open_lock(folder / "probe.lock", create=True)
+        locked = _flock(lock, blocking=False)
+        if not locked:
+            raise RecoveryProbeBlocked("RECOVERY_CLEANUP_BLOCKED")
+        yield folder
+        completed = True
+    finally:
+        clean = False
+        try:
+            # If parent cleanup itself raised, preserve even an apparently
+            # empty journal: the child lifecycle may still be uncertain.
+            clean = completed and locked and ledger_clean(folder / "private-ledger")
+            if clean:
+                shutil.rmtree(folder)
+        except (OSError, ValueError, RuntimeError, sqlite3.Error,
+                subprocess.TimeoutExpired):
+            clean = False
+        finally:
+            if lock is not None:
+                if locked:
+                    _unlock(lock)
+                os.close(lock)
+        if not clean:
+            report["status"] = "BLOCKED"
+            report["reason"] = "RECOVERY_CLEANUP_BLOCKED"
+            report["recovery_token"] = token
+
+
+def retry_recovery(token: str) -> dict:
+    """Fixed-token cleanup only. Never create a run or invoke a model."""
+    report = {
+        "status": "BLOCKED", "reason": None, "recovery_token": None,
+        "container_removed": False, "recovery_result": None,
+        "model_inference": False, "coding_session": False,
+    }
+    if sys.platform != "linux" or os.geteuid() == 0:
+        report["reason"] = "PLATFORM"
+        return report
+    if re.fullmatch(r"[0-9a-f]{12}\Z", token) is None:
+        report["reason"] = "INVALID_RECOVERY_TOKEN"
+        return report
+    report["recovery_token"] = token
+    folder = ARTIFACTS / ("ca-m114-recovery-" + token)
+    directory = folder / "private-ledger"
+    if (ARTIFACTS.is_symlink() or not private_directory(folder) or
+            not private_directory(directory) or
+            not (directory / "runs.sqlite3").is_file()):
+        report["reason"] = "RECOVERY_RECORD_MISSING"
+        return report
+    lock = None
+    locked = False
+    try:
+        if inspect_podman(20).get("rootless") is not True:
+            raise RecoveryProbeBlocked("ROOTLESS")
+        lock = _open_lock(folder / "probe.lock", create=False)
+        locked = _flock(lock, blocking=False)
+        if not locked:
+            report["recovery_result"] = "ACTIVE"
+            raise RecoveryProbeBlocked("RECOVERY_CLEANUP_BLOCKED")
+        with RunLedger(directory) as ledger:
+            rows = ledger.history(limit=2)
+            if len(rows) != 1 or not probe_record(rows[0]):
+                raise RecoveryProbeBlocked("RUN_RECORD_MISMATCH")
+            row = rows[0]
+            outcome = ledger.reconcile(row["run_id"])
+            report["recovery_result"] = outcome["result"]
+            if (outcome["result"] not in ("INTERRUPTED_CLEAN", "ALREADY_TERMINAL")
+                    or outcome["run"]["state"] != "INTERRUPTED_CLEAN"):
+                raise RecoveryProbeBlocked("RECOVERY_CLEANUP_BLOCKED")
+        if not ledger_clean(directory):
+            raise RecoveryProbeBlocked("CONTAINER_REMAINS")
+        shutil.rmtree(folder)
+        report["container_removed"] = True
+        report["status"] = "REAL_RECOVERY_RETRY_PASS"
+    except RecoveryProbeBlocked as error:
+        report["reason"] = error.code
+    except (OSError, ValueError, RuntimeError, sqlite3.Error,
+            subprocess.TimeoutExpired) as error:
+        report["reason"] = type(error).__name__
+    finally:
+        if lock is not None:
+            if locked:
+                _unlock(lock)
+            os.close(lock)
+    return report
+
+
 def run_probe() -> dict:
     report = {
         "schema": 1, "stage": "M1.14-real-orphan-recovery",
@@ -148,7 +292,8 @@ def run_probe() -> dict:
         "run_id": None, "container_name": None, "image_id": OWNER_IMAGE_ID,
         "live_owner_protected": False, "label_verified": False,
         "crash_exit_verified": False, "durable_orphan_seen": False,
-        "recovery_result": None, "container_removed": False,
+        "recovery_result": None, "recovery_token": None,
+        "container_removed": False,
         "duplicate_request_denied": False, "repeated_recovery_safe": False,
         "actual_owner_approval": False, "model_inference": False,
         "coding_session": False, "host_bind_mounts": False,
@@ -165,8 +310,7 @@ def run_probe() -> dict:
         if fixed(["podman", "image", "exists", OWNER_IMAGE_ID], 25).returncode != 0:
             raise RecoveryProbeBlocked("IMAGE_MISSING")
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(
-                dir=ARTIFACTS, prefix="ca-m114-recovery-") as temporary:
+        with retained_ledger(report) as temporary:
             directory = pathlib.Path(temporary) / "private-ledger"
             process = subprocess.Popen([
                 sys.executable, str(pathlib.Path(__file__).resolve()),
@@ -244,7 +388,10 @@ def run_probe() -> dict:
                 # API. Never blindly remove by name or kill other guests.
                 if directory.is_dir():
                     with RunLedger(directory) as cleanup:
-                        for record in cleanup.history(limit=5):
+                        records = cleanup.history(limit=2)
+                        if len(records) > 1 or any(not probe_record(row) for row in records):
+                            raise RecoveryProbeBlocked("RUN_RECORD_MISMATCH")
+                        for record in records:
                             if record["state"] not in (
                                 "SUCCEEDED", "FAILED", "DECLINED",
                                 "INTERRUPTED_CLEAN"):
@@ -253,15 +400,26 @@ def run_probe() -> dict:
                                     report["status"] = "BLOCKED"
                                     report["reason"] = "RECOVERY_CLEANUP_BLOCKED"
     except RecoveryProbeBlocked as error:
-        report["reason"] = error.code
-    except (OSError, ValueError, RuntimeError,
+        if not report["recovery_token"]:
+            report["reason"] = error.code
+    except (OSError, ValueError, RuntimeError, sqlite3.Error,
             subprocess.TimeoutExpired) as error:
         # Only the exception type is permitted into sanitized evidence.
-        report["reason"] = type(error).__name__
+        if not report["recovery_token"]:
+            report["reason"] = type(error).__name__
     return report
 
 
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--recover":
+        report = retry_recovery(sys.argv[2])
+        print("M1.14", report["status"])
+        print("  orphan recovery result:", report["recovery_result"])
+        print("  test container removed:", report["container_removed"])
+        print("  ACP/coding/model/network: NOT_REQUESTED")
+        if report["reason"]:
+            print("  blocked:", report["reason"])
+        return 0 if report["status"] == "REAL_RECOVERY_RETRY_PASS" else 2
     if len(sys.argv) == 4 and sys.argv[1] == "--child":
         # Parent alone selects this internal mode and fixed image.
         image_id = sys.argv[3]
@@ -270,7 +428,7 @@ def main() -> int:
         _child(pathlib.Path(sys.argv[2]), image_id)
         return 2
     if len(sys.argv) != 1:
-        print("Usage: python3 tools/m1/real_recovery_probe.py")
+        print("Usage: python3 tools/m1/real_recovery_probe.py [--recover <12_hex_token>]")
         return 2
     report = run_probe()
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -293,6 +451,8 @@ def main() -> int:
     print("  ACP/coding/model/network: NOT_REQUESTED")
     if report["reason"]:
         print("  blocked:", report["reason"])
+    if report["recovery_token"]:
+        print("  safe cleanup retry: python3 tools/m1/real_recovery_probe.py --recover", report["recovery_token"])
     print("Evidence:", evidence)
     return 0 if report["status"] == "REAL_RECOVERY_PASS" else 2
 

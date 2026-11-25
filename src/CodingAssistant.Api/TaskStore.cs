@@ -41,11 +41,20 @@ public sealed class TaskStore
         if (string.IsNullOrWhiteSpace(directory))
             throw new InvalidOperationException("Private data directory is required");
         var full = Path.GetFullPath(directory);
-        EnsurePrivateDirectory(full);
+        PrivateDataDirectory.Ensure(full);
         _databasePath = Path.Combine(full, "codingassistant.db");
-        if (File.Exists(_databasePath) &&
-            (File.GetAttributes(_databasePath) & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidOperationException("Refusing symlinked SQLite database");
+        PrivateDataDirectory.ValidateFile(_databasePath);
+        // Create the Unix database privately before SQLite can open it.
+        if (!OperatingSystem.IsWindows() && !File.Exists(_databasePath))
+        {
+            using var created = new FileStream(_databasePath, new FileStreamOptions
+            {
+                Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite,
+                Share = FileShare.ReadWrite, UnixCreateMode = UnixFileMode.UserRead |
+                    UnixFileMode.UserWrite
+            });
+        }
+        ValidateDatabasePaths();
 
         _connectionString = new SqliteConnectionStringBuilder
         {
@@ -65,6 +74,67 @@ public sealed class TaskStore
               status TEXT NOT NULL CHECK(status IN ('Draft','AwaitingApproval','Approved')),
               current_version INTEGER NOT NULL DEFAULT 0 CHECK(current_version >= 0),
               created_utc TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS qa_skill_use_events (
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              request_id TEXT NOT NULL,
+              qa_id TEXT NOT NULL UNIQUE REFERENCES qa_reviews(id),
+              skill_name TEXT NOT NULL,
+              role TEXT NOT NULL,
+              review_revision INTEGER NOT NULL CHECK(review_revision > 0),
+              review_sha256 TEXT NOT NULL,
+              content_sha256 TEXT NOT NULL,
+              created_utc TEXT NOT NULL,
+              PRIMARY KEY(task_id,request_id)
+            );
+            CREATE TABLE IF NOT EXISTS discovery_skill_use_events (
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              request_id TEXT NOT NULL,
+              skill_name TEXT NOT NULL,
+              role TEXT NOT NULL,
+              review_revision INTEGER NOT NULL CHECK(review_revision > 0),
+              review_sha256 TEXT NOT NULL,
+              content_sha256 TEXT NOT NULL,
+              topic TEXT NOT NULL CHECK(topic IN ('interview-turn','specification-draft')),
+              expected_sequence INTEGER NOT NULL CHECK(expected_sequence >= 0),
+              context_sha256 TEXT NOT NULL,
+              model TEXT NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('Admitted','ResponseReturned','CallFailed')),
+              created_utc TEXT NOT NULL,
+              finished_utc TEXT,
+              PRIMARY KEY(task_id,request_id)
+            );
+            CREATE TABLE IF NOT EXISTS skill_use_events (
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              request_id TEXT NOT NULL,
+              skill_name TEXT NOT NULL,
+              role TEXT NOT NULL,
+              review_revision INTEGER NOT NULL CHECK(review_revision > 0),
+              review_sha256 TEXT NOT NULL,
+              content_sha256 TEXT NOT NULL,
+              spec_version INTEGER NOT NULL CHECK(spec_version > 0),
+              spec_sha256 TEXT NOT NULL,
+              topic TEXT NOT NULL,
+              expected_decision_revision INTEGER NOT NULL CHECK(expected_decision_revision >= 0),
+              model TEXT NOT NULL,
+              status TEXT NOT NULL CHECK(status IN ('Admitted','ProposalReturned','CallFailed')),
+              created_utc TEXT NOT NULL,
+              finished_utc TEXT,
+              PRIMARY KEY(task_id,request_id)
+            );
+            CREATE TABLE IF NOT EXISTS skill_review_events (
+              task_id TEXT NOT NULL REFERENCES tasks(id),
+              skill_name TEXT NOT NULL,
+              revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 100),
+              role TEXT NOT NULL,
+              version TEXT NOT NULL,
+              content_sha256 TEXT NOT NULL,
+              license TEXT NOT NULL,
+              review_sha256 TEXT NOT NULL,
+              decision TEXT NOT NULL CHECK(decision IN ('ApproveLocalUse','Revoke')),
+              local_use_confirmed INTEGER NOT NULL CHECK(local_use_confirmed IN (0,1)),
+              created_utc TEXT NOT NULL,
+              PRIMARY KEY(task_id,skill_name,revision)
             );
             CREATE TABLE IF NOT EXISTS plans (
               task_id TEXT NOT NULL REFERENCES tasks(id),
@@ -89,41 +159,36 @@ public sealed class TaskStore
         CollaborationStore.Initialize(connection);
         InferenceLeaseStore.Initialize(connection);
         SourceSmokeEvidenceStore.Initialize(connection);
-        RestrictDatabasePermissions();
+        ValidateDatabasePaths();
     }
 
-    private static void EnsurePrivateDirectory(string path)
+    private void ValidateDatabasePaths()
     {
-        if (Directory.Exists(path))
-        {
-            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidOperationException("Refusing symlinked data directory");
-        }
-        else if (!OperatingSystem.IsWindows())
-        {
-            Directory.CreateDirectory(path,
-                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
-        else
-        {
-            Directory.CreateDirectory(path);
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            var allowed = UnixFileMode.UserRead | UnixFileMode.UserWrite |
-                          UnixFileMode.UserExecute;
-            if ((File.GetUnixFileMode(path) & ~allowed) != 0)
-                throw new InvalidOperationException("Data directory must be owner-private");
-        }
+        foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" })
+            PrivateDataDirectory.ValidateFile(_databasePath + suffix, sqliteSidecar: suffix.Length != 0);
     }
 
-    private void RestrictDatabasePermissions()
+    internal SqliteConnection Open()
     {
-        if (OperatingSystem.IsWindows())
-            return;
-        var privateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
-        File.SetUnixFileMode(_databasePath, privateFile);
+        try { ValidateDatabasePaths(); }
+        catch (Exception error) when (error is UnauthorizedAccessException or IOException or InvalidOperationException)
+        {
+            // Fail closed on unreadable or unsafe data paths. Startup checks
+            // remain strict; requests get a sanitized, retryable HTTP error.
+            throw new StoreFailure("PRIVATE_DATA_UNAVAILABLE");
+        }
+        var db = new SqliteConnection(_connectionString);
+        try
+        {
+            db.Open();
+            Execute(db, null, "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA secure_delete=ON;");
+            return db;
+        }
+        catch
+        {
+            db.Dispose();
+            throw;
+        }
     }
 
     internal event Action<string>? EngineeringActivityChanged;
@@ -131,14 +196,6 @@ public sealed class TaskStore
     {
         try { EngineeringActivityChanged?.Invoke(taskId); }
         catch (Exception) { /* Best-effort hint; durable history already committed. */ }
-    }
-
-    internal SqliteConnection Open()
-    {
-        var db = new SqliteConnection(_connectionString);
-        db.Open();
-        Execute(db, null, "PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
-        return db;
     }
 
     internal static SqliteCommand Command(
@@ -289,7 +346,7 @@ public sealed class TaskStore
         var runningExecution = Scalar(db, tx, """
             SELECT 1 FROM run_executions AS e
             JOIN run_intents AS r ON r.id=e.run_id
-            WHERE r.task_id=@id AND e.state IN ('Starting','Running','Cancelling')
+            WHERE r.task_id=@id AND e.state IN ('Starting','Running','Cancelling','RecoveryBlocked')
             LIMIT 1
             """, ("@id", id));
         if (runningExecution is not null)
@@ -310,6 +367,10 @@ public sealed class TaskStore
             "DELETE FROM run_intents WHERE task_id=@id",
             "DELETE FROM plans WHERE task_id=@id",
             "DELETE FROM agent_role_models WHERE task_id=@id",
+            "DELETE FROM qa_skill_use_events WHERE task_id=@id",
+            "DELETE FROM discovery_skill_use_events WHERE task_id=@id",
+            "DELETE FROM skill_use_events WHERE task_id=@id",
+            "DELETE FROM skill_review_events WHERE task_id=@id",
             "DELETE FROM html_artifacts WHERE task_id=@id",
             "DELETE FROM repair_triage_decisions WHERE proposal_id IN (SELECT id FROM repair_proposals WHERE task_id=@id)",
             "DELETE FROM engineering_collaboration_repairs WHERE task_id=@id",
@@ -317,6 +378,7 @@ public sealed class TaskStore
             "DELETE FROM repair_proposals WHERE task_id=@id",
             "DELETE FROM lead_review_files WHERE review_id IN (SELECT id FROM lead_reviews WHERE task_id=@id)",
             "DELETE FROM lead_reviews WHERE task_id=@id",
+            "DELETE FROM qa_static_preflight WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_review_files WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_review_events WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_reviews WHERE task_id=@id",

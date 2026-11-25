@@ -447,7 +447,12 @@ export function ProjectDraftPanel({ token, taskId, spec, expanded,
               </button>
             </details>}
         </div>
-        {!job && <p className="hint">No generated files yet. Start with Source Generation.</p>}
+        {!job && !engineer.snapshot?.files.length && !engineer.error &&
+          <p className="hint">No generated files yet. Start with Source Generation.</p>}
+        {engineer.error && <p className="activity-warning" role="alert">
+          Software Engineer source refresh failed: {engineer.error}. Saved source may still exist.
+          <button type="button" onClick={engineer.refresh}>Refresh engineering source</button>
+        </p>}
         {!!result?.files.length && job && <details className="mc-work-secondary">
           <summary>Inspect additional saved source files ({result.files.length})</summary>
           <SourceArtifactExplorer key={job.id}

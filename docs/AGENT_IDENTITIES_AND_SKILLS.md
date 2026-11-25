@@ -1,7 +1,8 @@
 # Phase 4–5 — Independent MAF agents and future portable skills
 
 **Status:** The five named MAF agents are distinct, host-owned identities. A
-fully pluggable skill loader is **not yet implemented**.
+fully pluggable skill loader is **not yet implemented**. A read-only fixed
+candidate catalog is available; see the discovery increment below.
 
 ## Independent identities (first-class, immutable)
 
@@ -68,7 +69,7 @@ Anthropic and other runtimes. The host should support:
   with Ollama; no mandatory Anthropic API subscription.
 
 The current `allowedSkillScopes` field is **metadata only** and grants
-no privilege. There is currently **no** skill import, network download,
+no privilege. There is currently **no** external skill import, network download,
 script execution, filesystem access or arbitrary tool/command handler
 in any of these five agents. That is intentional until security
 qualification is completed.
@@ -103,3 +104,253 @@ The legacy source generator remains fully available. Source is NOT
 automatically executed or independently verified; actual sandboxed build,
 browser checks and repair loops remain future qualified milestones.
 See [INDEPENDENT_QA_PHASE5.md](INDEPENDENT_QA_PHASE5.md).
+
+## Discovery increment (#110)
+
+Authenticated `GET /api/agents/skills` exposes three repository-owned
+embedded `SKILL.md` candidates (requirements discovery, architecture
+tradeoffs, static web verification), with role/scope, pinned source
+commit and canonical UTF-8 LF SHA-256, version, content limit and
+empty required tool categories. The Skills destination can inspect
+the actual instructions and pins. All entries are
+`DISCOVERED_NOT_APPROVED`, inactive, and carry an unspecified
+repository-owned license marker (no third-party license is assumed).
+Approval requires an explicit license review.
+
+Only the three fixed manifest resources are read; no filesystem path
+or package ID from a request is opened. The deliberately narrow
+frontmatter subset is two plain scalar fields, with bounded content
+and exact pinned hashes. General YAML, references, third-party
+installation, activation, and activation audit are not implemented yet.
+Project-specific owner review and revocation are described below. The catalog itself does not supply any text to MAF or Ollama and
+cannot grant a tool or execution permission. Existing agent instructions and approvals are unchanged.
+
+The existing API project references Microsoft.Agents.AI 1.28.0 on
+.NET 10 and uses the local Ollama chat client. Native skills API
+compatibility and live local skill activation still require separate
+validation. #110 remains open until its complete acceptance criteria
+are satisfied.
+
+## Owner review increment (#110)
+
+The Skills destination now offers project-specific review of the three
+fixed embedded candidates. Authenticated GET
+`/api/tasks/{id}/skill-reviews` returns review state and history. POST
+`/api/tasks/{id}/skill-reviews/{name}` records an explicit review or
+revocation. The SHA-256 review fingerprint binds schema, project,
+source commit and URL, version, content digest, license declaration,
+compatibility, role, scope, byte limit, and required tool categories.
+The expected revision prevents stale/replayed writes. SQLite records
+ordered, bounded events; project deletion removes its review records.
+
+An owner must confirm permission for **local instruction use** and
+enter the exact displayed `APPROVE LOCAL USE <reviewSha256>` phrase.
+The repository license marker is unspecified; this attestation does
+not create or infer a redistribution license. Revocation similarly
+requires `REVOKE <reviewSha256>`. A changed descriptor or hash makes
+the prior review stale; it does not silently transfer to another role,
+project, version, or package. A current approval is
+`APPROVED_LOCAL_REVIEW_NOT_ACTIVE`, never an execution grant. The
+global catalog remains unapproved/inactive because reviews are local
+to projects. The Solution Architect can now use a current review via the separate
+per-recommendation opt-in described below. There is no standing activation.
+
+Still outstanding: phase-specific exact task activation and usage
+evidence, native MAF skills compatibility, reference loader and
+independent live local Ollama acceptance. No external installation,
+script execution, network or filesystem access is enabled.
+
+## First role-specific activation increment (#110)
+
+The Solution Architect can optionally use the reviewed
+`architecture-tradeoffs` skill for **one** architecture recommendation.
+After reviewing the skill in Skills, open Solution Architecture and select
+the per-topic checkbox before requesting a recommendation. The checkbox
+resets on submission. Unselected recommendations use the original model
+path with no skill context.
+
+The existing recommendation POST accepts optional `skill` with
+`name`, `reviewRevision`, `reviewSha256`, and a fresh 32-character
+lowercase hexadecimal `requestId`. The host checks current project
+review, exact skill identity/role/scope, approved spec version and
+hash, current decision revision and selected local model before
+admitting an immutable single-use context in SQLite. Unknown skill
+names, replay, stale review/revision, unapproved specification and
+unsupported adapters fail closed. Only the fixed embedded instructions
+are appended to the MAF Solution Architect's policy as subordinate
+advisory context. No native tools, scripts or filesystem/network
+permissions are added. The normal strict proposal validation and
+separate owner decision approval still apply.
+
+Authenticated GET `/api/tasks/{id}/skill-uses` exposes bounded usage
+records; the Skills destination displays them. `Admitted` is not proof
+a call ran (a stopped process may leave its outcome unknown).
+`ProposalReturned` means the model response parsed successfully,
+not that a proposal was persisted or approved; `CallFailed` does not
+claim the model returned a result. Each record binds the exact review,
+content hash, spec, decision topic/revision and selected model. An
+in-flight request retains its already-admitted context; revocation
+blocks future admissions. Project deletion removes these records.
+No standing activation is granted.
+
+This uses the existing MAF ChatClientAgent instruction context path
+rather than a native portable-skills API. Model-free tests exercise the
+actual adapter with a fake IChatClient; a real local Ollama owner test
+is still required. Native skills API compatibility and full live acceptance remain outstanding.
+
+## Product Owner activation increment (#110)
+
+After reviewing `requirements-discovery` for a project, the Product
+Discovery and Specification stages offer a separate checkbox for one
+model-driven interview turn or specification draft. It resets on
+submission. Ordinary calls never receive ambient skill context.
+
+Both existing POST contracts accept optional `skill` containing the
+name, review revision, review SHA-256 and a fresh request ID. The host
+rechecks the current review and exact saved transcript sequence in a
+transaction, reconstructs the context from the persisted objective,
+transcript and pending owner answer (if any), validates the local
+model and phase, and binds the context digest to an admitted event.
+No model-supplied skill paths, text, tools or execution rights are
+accepted. A single-use context cannot cross interview and specification
+phases. Existing bounded retries and output validators remain intact.
+The deterministic final interview acknowledgement rejects skill
+activation, since it does not call a model.
+
+The authenticated skill-uses endpoint includes separate
+`discoveryEvents` records with expected sequence and context SHA-256,
+rather than pretending an approved specification already exists.
+`ResponseReturned` means the Product Owner adapter returned a
+validated result (including the existing bounded repetition fallback),
+not that the artifact was saved or approved, or that instructions were
+obeyed. `Admitted` without a terminal receipt is an unknown outcome.
+Review revocation prevents future admissions; admitted calls retain
+their immutable context. Project deletion removes the audit records.
+Model-free MAF adapter tests do not qualify live Ollama.
+
+## QA Engineer activation increment (#110)
+
+After reviewing the `static-web-verification` skill, select the
+one-job opt-in before requesting independent static QA of saved
+source. The optional `skill` field on the existing QA start request
+contains the exact name, review revision/hash and new request ID.
+Only the approved static-web architecture profile is eligible.
+An explicitly selected skill cannot fall back to a non-MAF reviewer.
+
+QA admission and the skill-use record commit in the same SQLite
+transaction, after existing current source, specification,
+architecture and approved plan checks. The skill context is bound
+to the new review ID, exact source run and file fingerprint, plan,
+architecture and selected model. Each file consumes that context
+once; existing bounded QA corrections and read-only Code Atlas
+observations remain unchanged. The reviewed instructions provide
+advisory context only and cannot add callable tools, filesystem
+access, execution, package installation or test claims.
+
+The usage endpoint adds `qaEvents`, joining each admitted skill
+selection to its actual QA review state and count of saved file
+reports. Running, failed and interrupted states are not completed
+reviews. Static reports are not evidence of a successful build,
+runtime verification or repaired behavior. Revocation blocks
+future job admissions, not an already admitted immutable job.
+Project deletion removes skill usage records before their parent
+QA review. Explicit selection applies only to that requested job;
+automated repair-cycle QA never inherits it.
+
+Model-free tests exercise the real coordinator and MAF adapter with
+an injected deterministic IChatClient, including rejected review,
+scope mismatch, adapter fallback, replay and revocation. This does
+not qualify real Ollama or generated-code execution. Native MAF skills API compatibility and live acceptance remain outstanding.
+
+## Fixed reviewed reference package (#110)
+
+Static-web-verification v2 includes the repository-owned advisory
+`references/review-checklist.md`, pinned at commit
+`981d9c09e5f74c361181349cb47be2625941c861`. Both files are explicitly
+embedded assembly resources, not filesystem or network lookups.
+`skillFileSha256` identifies the canonical-LF SKILL.md; each reference
+has its own canonical-LF hash and immutable source URL.
+For v2, `contentSha256` identifies the complete package: SHA-256 of
+UTF-8 `codingassistant-skill-package-v1\n<skillHash>\n<relativePath>\n<referenceHash>\n`.
+The other v1 skill descriptors and review fingerprints are unchanged.
+Existing v1 QA reviews become stale and require a new owner review;
+historical records retain their original hashes. The QA usage event
+records the admitted package hash. The owner can inspect the exact
+reference text in both discovery and review before approving.
+
+Only the exact relative reference path is allowed; arbitrary files,
+traversal, absolute/encoded/alternate-separator paths and scripts
+are rejected. Bounded strict UTF-8 text and pinned SHA-256 are checked
+before admission; the combined instruction text remains bounded.
+No arbitrary directory enumeration, YAML inclusion, user/model-supplied
+reference lookup, tool invocation, filesystem access or symlink resolution
+is supported at runtime. Model-free source checks also reject nonregular
+Git blobs, checkout symlinks and Windows reparse points for the two
+pinned source files. This is a fixed embedded reference implementation,
+not a general-purpose portable skill importer. Reference text is
+subordinate advisory context only; the existing QA authority and
+independent verification gates are unchanged.
+
+Native MAF skill-loading compatibility and real local Ollama acceptance
+remain separate tasks. No general external skills import or generated
+execution is authorized.
+
+## Native MAF skills compatibility decision (#110)
+
+The application pins Microsoft.Agents.AI 1.28.0 (.NET 10). The
+[NuGet package](https://www.nuget.org/packages/Microsoft.Agents.AI/1.28.0)
+and [Microsoft Agent Skills documentation](https://learn.microsoft.com/en-us/agent-framework/agents/skills)
+describe native inline skills and the provider's model-callable
+loading/resource tools, with script capability when configured.
+The [native inline content API](https://learn.microsoft.com/en-us/dotnet/api/microsoft.agents.ai.agentinlineskill.getcontentasync)
+can be used without a provider.
+
+Our model-free compatibility probe compiles against the actual pinned
+package, reads an in-memory AgentInlineSkill, runs a ChatClientAgent with
+AgentSkillsProvider and an injected deterministic IChatClient, observes
+its tool-bearing ChatOptions, and verifies that the actual
+LocalMafChatClient rejects those options before issuing any HTTP request.
+It does not install the provider in the application or run a skill
+script, model, network request, or generated code.
+
+**Decision:** retain the host-reviewed, hash-pinned instruction context
+path through actual MAF agents for now. Do not register a native
+AgentSkillsProvider, enable function invocation, relax the local
+adapter's tool rejection, or auto-approve skill loading. That would
+change the existing authority boundary. A future native provider
+integration requires its own approved capability design and tests.
+
+The compatibility probe must pass the exact-head Windows and Ubuntu
+regression gates. Even a green result demonstrates SDK compatibility
+and the fail-closed boundary, not live Ollama model behavior.
+
+## Owner-local skill acceptance (pending)
+
+After the compatibility increment is merged, use a disposable project,
+with a downloaded chat-capable Ollama model, and record the exact main
+commit and selected model names. Do not enable runtime execution.
+
+1. In Skills, inspect and explicitly approve the three pinned packages
+   for local instruction review, including the QA v2 reference.
+2. Start a requirements-discovery interview with the per-turn skill
+   checkbox. Confirm a relevant question and a corresponding
+   ResponseReturned discovery event; answer normally and repeat
+   without selecting a skill. Draft a specification with the skill
+   checkbox and review it before approving.
+3. Select the architecture-tradeoffs skill for an architecture
+   recommendation. Verify the recommendation is reviewable, the
+   decision remains unapproved, and the exact review/content hash,
+   model and specification identity are in the usage event.
+4. Approve a static-web architecture and implementation plan, generate
+   source only, and explicitly select the QA skill for independent
+   static review. Verify saved per-file reports and the QA package
+   digest, source fingerprint and plan hash in the usage event.
+   Do not interpret the static reports as executed tests.
+5. Revoke a review; refresh the stage and confirm the skill cannot be
+   selected for future calls. Ordinary calls must continue without
+   skill selection. Inspect usage after restarting the app.
+
+Record observed results and failures, not merely expected outcomes.
+Do not publish owner tokens, private specifications, transcripts or
+raw source. Live acceptance and issue closure remain pending until
+the owner supplies actual evidence.

@@ -122,7 +122,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             }
             catch (StoreFailure error) when (
                 (purpose is MafAgentPurpose.Specification or
-                    MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer) &&
+                    MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer or MafAgentPurpose.QaEngineer) &&
                 (error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
                     "MODEL_OUTPUT_TRUNCATED"))
             {
@@ -201,7 +201,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         if (response.ValueKind != JsonValueKind.Object)
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
 
-        if ((purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer) &&
+        if ((purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer or MafAgentPurpose.QaEngineer) &&
             response.TryGetProperty("done_reason", out var reason) &&
             reason.ValueKind == JsonValueKind.String &&
             reason.GetString() == "length")
@@ -231,11 +231,11 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         // Engineering answers are JSON. A real source string can itself
         // contain literal "<think>" markup; do not mistake a tag inside a
         // syntactically JSON-prefixed answer for hidden model reasoning.
-        if ((purpose is MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer) &&
+        if ((purpose is MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer or MafAgentPurpose.QaEngineer) &&
             finalText.TrimStart().StartsWith("{", StringComparison.Ordinal))
             return finalText.Trim();
         return purpose is MafAgentPurpose.Specification or
-            MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer
+            MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer or MafAgentPurpose.QaEngineer
             ? StripClosedThinkingPrefix(finalText) : finalText;
     }
 

@@ -78,6 +78,44 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
         Check(parallel.Snapshot() is {Capacity:2,Active:2,Waiting:0},"explicit capacity two is honored");
 }
 
+// Native MAF skill API compatibility probe. No provider is installed in
+// production; the probe uses only in-memory text and a deterministic client.
+{
+    var nativeSkill = new Microsoft.Agents.AI.AgentInlineSkill(
+        name: "compatibility-probe",
+        description: "Model-free native skill API boundary probe",
+        instructions: "Read the pinned instructions as advisory text only.");
+    var nativeSkillContent = await nativeSkill.GetContentAsync(CancellationToken.None);
+    Check(nativeSkillContent.Contains("Read the pinned instructions as advisory text only.",
+        StringComparison.Ordinal), "native MAF inline skill API preserves the instruction text");
+    var nativeProbeFactory = new Phase3FakeMafFactory();
+    using var nativeProbeClient = nativeProbeFactory.Create("qwen3.5:4b", MafAgentPurpose.Interview);
+    var nativeProbeAgent = new Microsoft.Agents.AI.ChatClientAgent(nativeProbeClient,
+        new Microsoft.Agents.AI.ChatClientAgentOptions {
+            Name = "NativeSkillCompatibilityProbe",
+            ChatOptions = new ChatOptions { Instructions = "You are a model-free compatibility probe." },
+            AIContextProviders = [new Microsoft.Agents.AI.AgentSkillsProvider(nativeSkill)]
+        });
+    _ = await nativeProbeAgent.RunAsync(
+        new[] { new ChatMessage(ChatRole.User, "Inspect the native skill declaration.") },
+        cancellationToken: CancellationToken.None);
+    Check(nativeProbeFactory.AllowedToolsSeen > 0 &&
+        nativeProbeFactory.LastNativeToolOptions?.Tools is { Count: > 0 },
+        "native MAF provider introduces callable tools even for instruction-only skills");
+    using var nativeRejectedClient = new LocalMafChatClient("qwen3.5:4b", MafAgentPurpose.Interview);
+    // Only enter the real adapter after proving tool options are present;
+    // its first validation rejects before creating an HTTP request.
+    var nativeRejected = false;
+    try
+    {
+        _ = await nativeRejectedClient.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "Compatibility check; never send this request.")],
+            nativeProbeFactory.LastNativeToolOptions!, CancellationToken.None);
+    }
+    catch (StoreFailure error) { nativeRejected = error.Code == "INVALID_INPUT"; }
+    Check(nativeRejected, "actual local Ollama adapter rejects native skill tools before transport");
+}
+
 // Strict structured output is only a proposal, never owner approval.
 {
     var parsed = LocalArchitectureAdvisor.Parse(
@@ -836,6 +874,85 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               reason.Contains("REPAIR_EDIT_NOT_UNIQUE", StringComparison.Ordinal)),
         "engineer retries stale exact-match target with bounded diagnostic and no source leak");
 
+    // Repair responses must refer to the immutable original, not earlier
+    // replacement text. Reject overlapping edits and malformed objects safely.
+    var twoEdits = JsonSerializer.Serialize(new {
+        summary = "Correct independent portions of the authorized file.",
+        edits = new[] {
+            new { path = "app.js", oldText = "const footer = 'preserve-footer';",
+                newText = "const footer = 'updated-footer';" },
+            new { path = "app.js", oldText = brokenHandler, newText = correctedHandler }
+        },
+        verificationNotes = Array.Empty<string>()
+    });
+    Check(MafSoftwareEngineer.TryParseRepair(twoEdits, authorizedRepair,
+        savedRepairFiles, out var twoEditResult, out _) &&
+        twoEditResult!.Files.Single().Content.Contains(correctedHandler, StringComparison.Ordinal) &&
+        twoEditResult.Files.Single().Content.Contains("updated-footer", StringComparison.Ordinal),
+        "disjoint original-source edits apply atomically in descending offset order");
+    var overlapping = JsonSerializer.Serialize(new {
+        summary = "Attempt overlapping changes to the same original source.",
+        edits = new[] {
+            new { path = "app.js", oldText = brokenHandler, newText = correctedHandler },
+            new { path = "app.js", oldText = "addEventListener('click', () => save(false));",
+                newText = "addEventListener('click', () => save(true));" }
+        },
+        verificationNotes = Array.Empty<string>()
+    });
+    Check(!MafSoftwareEngineer.TryParseRepair(overlapping, authorizedRepair,
+        savedRepairFiles, out _, out var overlapReason) &&
+        overlapReason.StartsWith("REPAIR_EDIT_OVERLAP:", StringComparison.Ordinal),
+        "overlapping original-source edits are rejected without changing saved source");
+    Check(!MafSoftwareEngineer.TryParseRepair(
+        """{"summary":"Attempt malformed edit input.","edits":[null],"verificationNotes":[]}""",
+        authorizedRepair, savedRepairFiles, out _, out var shapeReason) &&
+        shapeReason.StartsWith("REPAIR_EDIT_SHAPE:", StringComparison.Ordinal),
+        "null edit yields bounded shape diagnosis rather than an unhandled exception");
+    Check(!MafSoftwareEngineer.TryParseRepair(EditJson("app.js", "short", "new"),
+        authorizedRepair, savedRepairFiles, out _, out var lengthReason) &&
+        lengthReason.StartsWith("REPAIR_EDIT_LENGTH:", StringComparison.Ordinal),
+        "short source anchor gets actionable length diagnosis");
+    Check(MafSoftwareEngineer.TryParseRepair(patchJson.Replace("\"edits\"", "\"Edits\"",
+        StringComparison.Ordinal), authorizedRepair, savedRepairFiles, out _, out _),
+        "repair dispatch agrees with case-insensitive JSON deserialization");
+    Check(!MafSoftwareEngineer.TryParseRepair(
+        """{"summary":"Repair malformed field names.","edits":[{"path":"app.js","oldText":"old text enough to match","newText":"new text","unexpected":true}],"verificationNotes":[]}""",
+        authorizedRepair, savedRepairFiles, out _, out var fieldsReason) &&
+        fieldsReason.StartsWith("REPAIR_EDIT_FIELDS:", StringComparison.Ordinal),
+        "unknown repair fields receive distinct safe diagnostic");
+    Check(!MafSoftwareEngineer.TryParseRepair(EditJson("app.js", brokenHandler,
+        new string('z', 28100)), authorizedRepair, savedRepairFiles, out _, out var sizeReason) &&
+        sizeReason.StartsWith("REPAIR_EDIT_SIZE:", StringComparison.Ordinal),
+        "oversized repair object receives distinct safe diagnostic");
+    var repairInventory = patchFactory.UserPrompts.Single(message =>
+        message.StartsWith("PREVIOUS SOURCE FILES", StringComparison.Ordinal));
+    Check(!repairInventory.Contains("preserve-all-existing-state", StringComparison.Ordinal) &&
+        patchFactory.UserPrompts.Any(message => message.Contains(
+            "FULL REPAIR TARGET SOURCE app.js", StringComparison.Ordinal)) &&
+        patchFactory.UserPrompts.All(message => !message.Contains(
+            "Return COMPLETE replacements only", StringComparison.Ordinal)),
+        "repair receives full target only once with consistent exact-edit guidance");
+    var smallRepairFiles = new[] { savedRepairFiles[0],
+        savedRepairFiles[1] with { Content = brokenHandler + "\n" } };
+    var fallbackFactory = new Phase4FakeMafFactory();
+    fallbackFactory.Responses.Enqueue(EditJson("app.js", "short", "new"));
+    fallbackFactory.Responses.Enqueue(overlapping);
+    fallbackFactory.Responses.Enqueue(JsonSerializer.Serialize(new {
+        summary = "Correct authorized small source file without changing scope.",
+        files = new[] { new { path = "app.js", purpose = "Original interactive behavior",
+            content = correctedHandler + "\n" } },
+        verificationNotes = Array.Empty<string>()
+    }));
+    var fallbackResult = await new MafSoftwareEngineer(fallbackFactory)
+        .ImplementAsync(assignment with {
+            ExistingFiles = smallRepairFiles, Repair = authorizedRepair
+        }, CancellationToken.None);
+    Check(fallbackFactory.Attempts == 3 &&
+        fallbackResult.Files.Single().Content == correctedHandler + "\n" &&
+        fallbackFactory.CorrectionReasons.Any(reason => reason.Contains(
+            "For this final attempt", StringComparison.Ordinal)),
+        "small authorized file can recover using complete replacement on final bounded attempt");
+
     var firstTaskFactory = new Phase4FakeMafFactory();
     firstTaskFactory.Responses.Enqueue(goodSource.Replace(
         "index.html", "app.js", StringComparison.Ordinal));
@@ -998,6 +1115,35 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           fakeFactory.QaRoleSeen && fakeFactory.NoTools &&
           fakeFactory.SourceSeen,
         "fifth real MAF agent independently inspects exact source without tools");
+    var compactFactory = new Phase5FakeMafFactory();
+    compactFactory.ScriptedReplies.Enqueue("""{"summary":"Not valid","findings":[],"manualChecks":[]}""");
+    compactFactory.ScriptedReplies.Enqueue("""{"status":"PASS","summary":"Invented verification"}""");
+    compactFactory.ScriptedReplies.Enqueue("""{"summary":"Static source still needs a functional storage check.","findings":[],"manualChecks":["Check storage persistence after browser reload"]}""");
+    var compactAssessment = await new MafQaEngineer(compactFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(compactAssessment.ManualChecks.Count == 1 &&
+          compactFactory.ScriptedReplies.Count == 0 && compactFactory.NoTools,
+        "QA can recover from two malformed reports using a final bounded compact report without granting tools");
+    var transportQa = new Phase5FakeMafFactory();
+    transportQa.ScriptedFailures.Enqueue("MODEL_THINKING_ONLY");
+    transportQa.ScriptedFailures.Enqueue("MODEL_OUTPUT_TRUNCATED");
+    transportQa.ScriptedReplies.Enqueue("""{"summary":"Review completed without claiming any runtime checks.","findings":[],"manualChecks":["Inspect browser behavior for the save control"]}""");
+    var transportReview = await new MafQaEngineer(transportQa).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(transportReview.ManualChecks.Count == 1 &&
+          transportQa.ScriptedFailures.Count == 0 &&
+          transportQa.ScriptedReplies.Count == 0 && transportQa.NoTools,
+        "QA retries safe transport rejection categories with the same bounded budget");
+    try
+    {
+        _ = LocalMafChatClient.ReadAssistantContent(
+            """{"done_reason":"length","message":{"content":"{}"}}""", MafAgentPurpose.QaEngineer);
+        Check(false, "truncated QA output must be rejected");
+    }
+    catch (StoreFailure error) when (error.Code == "MODEL_OUTPUT_TRUNCATED")
+    { Check(true, "QA transport reports truncated output without exposing response"); }
     var investigation = new EngineeringRunEvent(6,
         "EngineerAtlasInspected",
         "SoftwareEngineer used atlas.find_symbols on accepted source " +
@@ -1023,6 +1169,150 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           fakeFactory.RepairFocusSeen &&
           fakeFactory.NoTools,
         "post-repair independent QA receives owner-confirmed target as a recheck, not proof of repair");
+}
+
+// Acceptance identities and consolidation are deterministic and do not turn
+// static silence or model assertions into runtime evidence.
+{
+    var evidencePlan = new ImplementationPlan(new string('a', 32), 2, 1,
+        new string('b', 64), new string('c', 64), "qwen3.5:4b",
+        new ImplementationOutline("Bounded acceptance evidence fixture.",
+            [new ImplementationWorkItem("save", "Save notes", "Implement saving.", [],
+                ["Save notes across browser restarts", "Handle invalid input"]),
+             new ImplementationWorkItem("edit", "Edit notes", "Implement editing.", ["save"],
+                ["Handle invalid input", "Edit an existing note"])], [], []),
+        new string('d', 64), "Superseded", "2026-11-21T00:00:00Z",
+        "2026-11-21T00:01:00Z", false, "STALE_APPROVALS");
+    var evidenceReview = new QaReviewRun(new string('e', 32), evidencePlan.TaskId,
+        new string('f', 32), new string('1', 64), evidencePlan.Revision,
+        evidencePlan.PlanSha256, evidencePlan.SpecificationVersion,
+        evidencePlan.SpecificationSha256, evidencePlan.ArchitectureSha256,
+        evidencePlan.Model, "Reviewed", "StaticReviewComplete", null,
+        "2026-11-21T00:02:00Z", "2026-11-21T00:03:00Z");
+    var saveConcern = new QaFinding("Minor", "Save notes across browser restarts",
+        "The source does not restore saved notes on startup.",
+        "Inspect the initialization path and independently test restart.", "save:1");
+    var ambiguousConcern = new QaFinding("Major", "Handle invalid input",
+        "The submitted form handler does not reject an empty string.",
+        "Check the handler against empty input.");
+    var invalidLink = ambiguousConcern with { CriterionId = "unknown:1" };
+    var explicitLink = ambiguousConcern with { CriterionId = "edit:1" };
+    var evidenceReports = new[] {
+        new QaFileReport("app.js", new string('2', 64),
+            new QaFileAssessment("Static observations only.",
+                [saveConcern, saveConcern with { Severity = "Major" },
+                    ambiguousConcern, explicitLink, invalidLink], ["Test saving notes in a browser."]),
+            "2026-11-21T00:03:00Z"),
+        new QaFileReport("index.html", new string('3', 64),
+            new QaFileAssessment("Static observations only.", [saveConcern],
+                ["Test saving notes in a browser."]), "2026-11-21T00:03:00Z")
+    };
+    // Ground evidence on the primary source alone, not a companion, model
+    // explanation or source inventory. Invalid quotes remain hypotheses.
+    const string primaryEvidenceSource = "const save = () => localStorage.setItem('notes', 'saved');";
+    var grounded = QaAcceptanceProjection.Ground(evidencePlan, primaryEvidenceSource,
+        new QaFileAssessment("Static observations only.",
+            [saveConcern with { SourceExcerpt = "localStorage.setItem" },
+             ambiguousConcern with { SourceExcerpt = "fabricated event handler" }],
+            ["Test saving notes in a browser."],
+            [new QaImplementationEvidence("save:1", "localStorage.setItem",
+                "The source contains a persistence call."),
+             new QaImplementationEvidence("save:1", "localStorage.setItem",
+                "Duplicate observation of persistence."),
+             new QaImplementationEvidence("unknown:1", "localStorage.setItem",
+                "This criterion does not exist in the plan."),
+             new QaImplementationEvidence("edit:2", "fabricated event handler",
+                "This quotation is not part of the primary source.")]));
+    Check(grounded.Findings[0].SourceExcerpt == "localStorage.setItem" &&
+          grounded.Findings[1].SourceExcerpt is null &&
+          grounded.ImplementationEvidence?.Count == 1,
+        "literal source grounding discards fabricated evidence and unknown criterion links");
+    var groundedProjection = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("app.js", new string('2', 64), grounded,
+            "2026-11-21T00:03:00Z")]);
+    var groundedCriterion = groundedProjection.Criteria.Single(c => c.Criterion.Id == "save:1");
+    Check(groundedCriterion.StaticStatus == "EvidenceAndConcern" &&
+          groundedCriterion.ImplementationIndicators.Single().SourceExcerpt == "localStorage.setItem" &&
+          groundedCriterion.ImplementationIndicators.Single().Path == "app.js" &&
+          groundedCriterion.VerificationStatus == "RequiresTesting",
+        "positive static evidence can coexist with an unresolved concern without passing a test");
+    var positiveOnly = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("app.js", new string('2', 64), grounded with { Findings = [] },
+            "2026-11-21T00:03:00Z")]);
+    Check(positiveOnly.Criteria.Single(c => c.Criterion.Id == "save:1").StaticStatus ==
+          "ImplementationEvidence" &&
+          positiveOnly.Criteria.All(c => c.VerificationStatus == "RequiresTesting"),
+        "positive-only evidence never implies verified behavior");
+
+    var crossCause = saveConcern with { SourceExcerpt = "localStorage.setItem" };
+    var causeFile = new EngineeringSourceFile("app.js", "Persistence", primaryEvidenceSource,
+        new string('2', 64), "save", "2026-11-21T00:03:00Z");
+    var observation = new QaCrossFileObservation("save:1", "app.js",
+        "localStorage.setItem", "The form depends on the companion storage handler.");
+    var related = QaAcceptanceProjection.GroundCrossFile(evidencePlan, "index.html",
+        [causeFile], new QaFileAssessment("Static cross-file observations.",
+            [], ["Check the saved data in an independent browser."],
+            CrossFileObservations: [observation,
+                observation with { Explanation = "Repeated observation of the same cause." },
+                observation with { CausePath = "../app.js" },
+                observation with { CauseExcerpt = "fabricated handler" },
+                observation with { CriterionId = "unknown:1" },
+                observation with { CausePath = "index.html" }]));
+    Check(related.CrossFileObservations?.Count == 1,
+        "cross-file evidence requires exact admitted companion path, excerpt and criterion");
+    var reconciled = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("app.js", causeFile.Sha256,
+            new QaFileAssessment("Static cause review only.", [crossCause],
+                ["Independently test restoration."]), "2026-11-21T00:03:00Z"),
+         new QaFileReport("index.html", new string('3', 64), related,
+            "2026-11-21T00:03:00Z")]);
+    Check(reconciled.Findings.Count == 1 &&
+          reconciled.Findings.Single().Path == "app.js" &&
+          reconciled.CrossFileEvidence.Single().RelatedFindingIndex == 0 &&
+          reconciled.CrossFileEvidence.Single().ObservedFromPath == "index.html" &&
+          reconciled.Criteria.All(c => c.VerificationStatus == "RequiresTesting"),
+        "cross-file observation links to the independently reviewed cause without adding a repair target");
+    var unmatched = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("index.html", new string('3', 64), related,
+            "2026-11-21T00:03:00Z")]);
+    Check(unmatched.Findings.Count == 0 &&
+          unmatched.CrossFileEvidence.Single().RelatedFindingIndex is null,
+        "unresolved companion observation cannot create a repair finding");
+    var ambiguousCause = QaAcceptanceProjection.Build(evidenceReview, evidencePlan,
+        [new QaFileReport("app.js", causeFile.Sha256,
+            new QaFileAssessment("Two distinct static concerns.",
+                [crossCause, crossCause with { Recommendation = "Check a different restoration problem." }],
+                ["Independently test restoration."]), "2026-11-21T00:03:00Z"),
+         new QaFileReport("index.html", new string('3', 64), related,
+            "2026-11-21T00:03:00Z")]);
+    Check(ambiguousCause.Findings.Count == 2 &&
+          ambiguousCause.CrossFileEvidence.Single().RelatedFindingIndex is null,
+        "ambiguous cause matches remain unresolved and distinct findings are preserved");
+
+    var evidence = QaAcceptanceProjection.Build(evidenceReview, evidencePlan, evidenceReports);
+    Check(evidence.PlanSha256 == evidencePlan.PlanSha256 &&
+          evidence.SourceSha256 == evidenceReview.SourceSha256 &&
+          evidence.Criteria.Count == 4 && evidence.RawFindingCount == 6 &&
+          evidence.Findings.Count == 4 && evidence.UnmappedFindingCount == 1,
+        "acceptance projection binds historical plan and groups exact same-file observations");
+    var savedGroup = evidence.Findings.Single(g => g.Path == "app.js" && g.CriterionId == "save:1");
+    Check(savedGroup.Index == 1 && savedGroup.OriginalIndices.SequenceEqual([0, 1]) &&
+          evidence.Findings.Any(g => g.Path == "index.html" && g.CriterionId == "save:1") &&
+          evidence.Criteria.Single(c => c.Criterion.Id == "save:1").ConcernCount == 2 &&
+          evidence.Criteria.Single(c => c.Criterion.Id == "edit:1").ConcernCount == 1 &&
+          evidence.Criteria.All(c => c.VerificationStatus == "RequiresTesting") &&
+          evidence.Criteria.Single(c => c.Criterion.Id == "edit:2").StaticStatus == "NoLinkedConcern",
+        "duplicate group keeps exact repair index and differing file scope; no criterion passes");
+    try
+    {
+        _ = QaAcceptanceProjection.Build(evidenceReview,
+            evidencePlan with { PlanSha256 = new string('9', 64) }, evidenceReports);
+        Check(false, "acceptance must reject another plan");
+    }
+    catch (StoreFailure error) when (error.Code == "SOURCE_CHANGED")
+    {
+        Check(true, "acceptance rejects mismatched plan identity");
+    }
 }
 
 // M8.18: independent MAF QA selects bounded source inspections, receives
@@ -1094,6 +1384,74 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           factory.HostObservationSeen && factory.NoTools,
         "real QA MAF agent requests host observation then returns independent report");
 
+    // Static Web companion evidence is a new host-issued DATA message.
+    // The existing assigned-file Code Atlas broker still denies cross-file
+    // symbol IDs and arbitrary tools. Non-web sources remain out of scope.
+    var webArch = arch with { ApprovedChoices = [
+        new DraftArchitectureChoice("technology-stack", 1, new string('e', 64),
+            "static-web", "Static Web", "Offline", "Manual DOM", "static-web")
+    ] };
+    var htmlFile = sourceFile with { Content =
+        "<html><body><button id='save'>Save</button><script src='app.js'></script></body></html>" };
+    var scriptFile = sourceFile with { Path = "app.js",
+        Content = "document.getElementById('save').addEventListener('click', () => localStorage.setItem('notes', 'saved'));",
+        Sha256 = new string('6', 64) };
+    var styleFile = sourceFile with { Path = "styles.css",
+        Content = "button { display: block; }", Sha256 = new string('5', 64) };
+    var oversizedFile = sourceFile with { Path = "large.js",
+        Content = "/*" + new string('z', 5000) + "*/", Sha256 = new string('4', 64) };
+    var webInput = input with { Architecture = webArch, File = htmlFile,
+        AllFiles = [htmlFile, scriptFile, styleFile, oversizedFile, privateFile] };
+    var companionFactory = new Phase5FakeMafFactory();
+    companionFactory.ScriptedReplies.Enqueue(
+        """{"summary":"The linked script contains a Save handler; browser behavior remains unverified.","findings":[],"implementationEvidence":[{"criterionId":"qa:1","sourceExcerpt":"id='save'","explanation":"The primary file declares a named control."}],"crossFileObservations":[{"criterionId":"qa:1","causePath":"app.js","causeExcerpt":"localStorage.setItem","explanation":"The control depends on the companion persistence handler."},{"criterionId":"qa:1","causePath":"large.js","causeExcerpt":"zzzzzzzzzzzz","explanation":"This companion was omitted from the review context."},{"criterionId":"qa:1","causePath":"secrets.cs","causeExcerpt":"RestrictedDetails","explanation":"This non-web file was not admitted as context."}],"manualChecks":["Click Save and reload in an independent browser"]}""");
+    var hostPreflight = new StaticWebPreflightReport(run.Id, run.State,
+        QaReviewStore.Fingerprint(webInput.AllFiles), "POTENTIAL_ISSUES",
+        "GENERATED_NOT_TESTED", 1, 1,
+        [new StaticWebPreflightFinding("MISSING_LINKED_ASSET", "Error", htmlFile.Path,
+            "Fixture source-text observation only.", "<script src='app.js'>", "app.js")]);
+    var companionReport = await new MafQaEngineer(companionFactory).ReviewAsync(
+        webInput with { StaticPreflight = hostPreflight }, CancellationToken.None);
+    var companionEvidence = companionFactory.LastCompanionContext ?? "";
+    Check(companionFactory.NoTools && companionFactory.StaticPreflightSeen &&
+          companionReport.Findings.Count == 0 &&
+          companionReport.ImplementationEvidence?.Single().SourceExcerpt == "id='save'" &&
+          companionReport.CrossFileObservations?.Count == 1 &&
+          companionReport.CrossFileObservations?.Single().CausePath == "app.js" &&
+          companionEvidence.Contains("localStorage.setItem", StringComparison.Ordinal) &&
+          companionEvidence.Contains("button { display: block; }", StringComparison.Ordinal) &&
+          companionEvidence.Contains(scriptFile.Sha256, StringComparison.Ordinal) &&
+          companionEvidence.Contains("large.js", StringComparison.Ordinal) &&
+          !companionEvidence.Contains(new string('z', 100), StringComparison.Ordinal) &&
+          companionEvidence.Contains("secrets.cs", StringComparison.Ordinal) &&
+          !companionEvidence.Contains("RestrictedDetails", StringComparison.Ordinal) &&
+          companionEvidence.Contains("2 full companion file(s)", StringComparison.Ordinal),
+        "static-web QA receives bounded linked-file evidence and explicit omissions, not unrelated source");
+    Check(factory.LastCompanionContext is null && !factory.StaticPreflightSeen,
+        "non-static-web QA does not receive expanded companion context");
+    try
+    {
+        _ = await new MafQaEngineer(companionFactory).ReviewAsync(
+            webInput with { StaticPreflight = hostPreflight with { SourceSha256 = new string('0', 64) } },
+            CancellationToken.None);
+        Check(false, "QA must reject a preflight from another snapshot");
+    }
+    catch (StoreFailure error) when (error.Code == "SOURCE_CHANGED")
+    {
+        Check(true, "QA rejects preflight evidence with mismatched fingerprint");
+    }
+    try
+    {
+        _ = await new MafQaEngineer(companionFactory).ReviewAsync(
+            webInput with { File = htmlFile with { Content = "different source" } },
+            CancellationToken.None);
+        Check(false, "primary file content must match saved review snapshot");
+    }
+    catch (StoreFailure error) when (error.Code == "INVALID_INPUT")
+    {
+        Check(true, "QA rejects changed primary source before review");
+    }
+
     var limited = new Phase5FakeMafFactory();
     for (var i = 0; i < 3; i++)
         limited.ScriptedReplies.Enqueue(
@@ -1113,15 +1471,20 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var denied = new Phase5FakeMafFactory();
     denied.ScriptedReplies.Enqueue(
         """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""");
+    denied.ScriptedReplies.Enqueue(
+        """{"summary":"A valid report must not mask a rejected tool request.","findings":[],"manualChecks":["Verify the page through an authorized test later"]}""");
+    var deniedObservations = 0;
     try
     {
-        _ = await new MafQaEngineer(denied).ReviewAsync(input,
+        _ = await new MafQaEngineer(denied).ReviewAsync(
+            input with { OnAtlasInspection = _ => deniedObservations++ },
             CancellationToken.None);
         Check(false, "QA must never gain arbitrary host capabilities");
     }
     catch (StoreFailure e) when (e.Code == "MODEL_OUTPUT_REJECTED")
     {
-        Check(true, "QA MAF rejects forbidden tool names before dispatch");
+        Check(denied.ScriptedReplies.Count == 1 && deniedObservations == 0,
+            "QA MAF rejects forbidden tool names before dispatch without consuming the report retry budget");
     }
 }
 
@@ -1167,6 +1530,12 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
           escapes.Findings.Any(f => f.Code == "MISSING_LINKED_ASSET") &&
           escapes.VerificationStatus == "GENERATED_NOT_TESTED",
         "source preflight rejects escapes/external references without running scripts");
+    var missingAsset = escapes.Findings.Single(f => f.Code == "MISSING_LINKED_ASSET");
+    Check(missingAsset.Path == "pages/index.html" &&
+          missingAsset.SourceExcerpt == "<link rel='stylesheet' href='../missing.css'>" &&
+          missingAsset.ReferencedPath == "missing.css" &&
+          escapes.VerificationStatus == "GENERATED_NOT_TESTED",
+        "deterministic preflight exposes exact source candidate and resolved missing asset without runtime claims");
     var notWeb = CheckFiles("Generated", Source("Program.cs", "class Program {}"));
     Check(notWeb.Status == "NOT_STATIC_WEB" &&
           notWeb.Findings.Count == 0 &&
@@ -1296,6 +1665,7 @@ try
 
     var settings = new ApiSettings(root, Token, "http://127.0.0.1:0");
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
+        interviewModelOverride: new Phase2RejectUnexpectedInterview(),
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
@@ -1490,6 +1860,7 @@ try
     app = null;
 
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
+        interviewModelOverride: new Phase2RejectUnexpectedInterview(),
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
@@ -1802,6 +2173,428 @@ try
                   !a.GetProperty("canExecuteCode").GetBoolean() &&
                   a.GetProperty("backstory").GetString()!.Length > 25),
             "authenticated roster exposes distinct fourth MAF role and no tool rights");
+    }
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync("/api/agents/skills"))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "skill candidate catalog requires owner authentication");
+    using (var catalogResponse = await client.GetAsync("/api/agents/skills"))
+    using (var catalogBody = await Body(catalogResponse))
+    {
+        var skills = catalogBody.RootElement.GetProperty("skills");
+        Check(catalogResponse.StatusCode == HttpStatusCode.OK &&
+              skills.GetArrayLength() == 3 &&
+              skills.EnumerateArray().All(skill =>
+                  !skill.GetProperty("approved").GetBoolean() &&
+                  !skill.GetProperty("active").GetBoolean() &&
+                  skill.GetProperty("status").GetString() == "DISCOVERED_NOT_APPROVED" &&
+                  skill.GetProperty("requiredToolCategories").GetArrayLength() == 0 &&
+                  skill.GetProperty("contentSha256").GetString()!.Length == 64 &&
+                  skill.GetProperty("instructions").GetString()!.Length > 30),
+            "exact embedded skill candidates are inspectable, not approved or active");
+    }
+    var candidateSkills = SkillCatalog.Discover();
+    Check(candidateSkills.All(skill =>
+        EngineeringAgentRoster.Get(skill.Role).AllowedSkillScopes.Contains(skill.Scope)),
+        "every skill candidate is mapped to an existing role scope");
+    foreach (var malformed in new[] {
+        "---\nname: bad\ndescription: !include file\n---\n\ntext\n",
+        "---\nname: bad\ndescription: text\ntools: shell\n---\n\ntext\n",
+        "---\nname: ../bad\ndescription: text\n---\n\ntext\n",
+        "---\nname: bad\ndescription: text\n---\n\n---\n"
+    })
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(malformed);
+        var digest = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes));
+        var skillInputRejected = false;
+        try { SkillCatalog.Validate(bytes, "bad", digest); }
+        catch (StoreFailure) { skillInputRejected = true; }
+        Check(skillInputRejected, "malformed or authority-bearing frontmatter rejected");
+    }
+    {
+        var candidate = candidateSkills[0];
+        var changed = System.Text.Encoding.UTF8.GetBytes(
+            "---\nname: " + candidate.Name + "\ndescription: " +
+            candidate.Description + "\n---\n\nChanged instructions\n");
+        var skillInputRejected = false;
+        try { SkillCatalog.Validate(changed, candidate.Name, candidate.ContentSha256); }
+        catch (StoreFailure) { skillInputRejected = true; }
+        Check(skillInputRejected, "changed skill text fails the reviewed content hash");
+    }
+    // Fixed embedded reference loading: no path resolution or arbitrary files.
+    {
+        var referenceCandidate = candidateSkills.Single(s => s.Name == SkillReviewStore.QaSkill);
+        var fixedReference = referenceCandidate.References!.Single();
+        Check(referenceCandidate.Version == "2" &&
+            referenceCandidate.SkillFileSha256 ==
+                "a44462505576db34ccf61b57aa9952281828ced76402111389007c50f5f391e6" &&
+            referenceCandidate.ContentSha256 ==
+                "057bbd8f17179ac760ea38eec4255700419e5fc673d785e0809ab5ccc00e86d4" &&
+            SkillCatalog.PackageHash(referenceCandidate.SkillFileSha256!,
+                fixedReference.RelativePath, fixedReference.ContentSha256) == referenceCandidate.ContentSha256 &&
+            candidateSkills.Where(s => s.Name != SkillReviewStore.QaSkill)
+                .All(s => s.Version == "1" && s.References is null),
+            "reference package has exact file hashes and does not alter unrelated approvals");
+        var referenceBytes = System.Text.Encoding.UTF8.GetBytes(fixedReference.Text + "\n");
+        Check(SkillCatalog.ValidateReference(referenceBytes, fixedReference.RelativePath,
+            fixedReference.ContentSha256) == fixedReference.Text,
+            "approved embedded reference is bounded canonical text");
+        foreach (var disallowedReference in new[] { "../review-checklist.md",
+            "/references/review-checklist.md", "references/../references/review-checklist.md",
+            "references\\review-checklist.md", "C:/review-checklist.md",
+            "references/%2e%2e/review-checklist.md", "scripts/run.ps1", "references/other.md" })
+        {
+            var referenceRejected = false;
+            try { SkillCatalog.ValidateReference(referenceBytes, disallowedReference,
+                fixedReference.ContentSha256); }
+            catch (StoreFailure failure) { referenceRejected = failure.Code == "SKILL_SCOPE_DENIED"; }
+            Check(referenceRejected, "reference path outside exact allowlist rejected");
+        }
+        foreach (var alteredReference in new[] {
+            System.Text.Encoding.UTF8.GetBytes(fixedReference.Text + "\nchanged"),
+            new byte[] { 0xff }, new byte[4097] })
+        {
+            var referenceRejected = false;
+            try { SkillCatalog.ValidateReference(alteredReference, fixedReference.RelativePath,
+                fixedReference.ContentSha256); }
+            catch (StoreFailure) { referenceRejected = true; }
+            Check(referenceRejected, "changed, invalid or oversized reference rejected");
+        }
+        var oldReferenceDescriptor = referenceCandidate with {
+            Version = "1", SourceCommit = "e12ea7c3b86b03abef633ddc7003d0e284722b89",
+            SourceUrl = "https://github.com/dvdhtzr/CodingAssistant/blob/e12ea7c3b86b03abef633ddc7003d0e284722b89/src/CodingAssistant.Api/Skills/static-web-verification/SKILL.md",
+            ContentSha256 = referenceCandidate.SkillFileSha256!, SkillFileSha256 = null,
+            Compatibility = "MAF local Ollama instruction-only candidate; live activation not qualified",
+            References = null };
+        var oldReferenceReviewHash = SkillReviewStore.ReviewSha256(taskBound.Id, oldReferenceDescriptor);
+        var newReferenceReviewHash = SkillReviewStore.ReviewSha256(taskBound.Id, referenceCandidate);
+        Check(oldReferenceReviewHash != newReferenceReviewHash,
+            "new reference package invalidates old QA approval identity");
+        using (var oldReferenceApproval = await Post(client,
+            "/api/tasks/" + taskBound.Id + "/skill-reviews/" + referenceCandidate.Name,
+            new SkillReviewRequest(1, 0, oldReferenceReviewHash, "ApproveLocalUse",
+                "APPROVE LOCAL USE " + oldReferenceReviewHash, true)))
+            Check(oldReferenceApproval.StatusCode == HttpStatusCode.Conflict,
+                "prior instruction-only review cannot approve expanded QA package");
+    }
+    // Skill review is project-scoped, explicitly owner-confirmed and never activation.
+    {
+        var skillReviewRoute = "/api/tasks/" + taskBound.Id + "/skill-reviews";
+        var projectSkillReviewStore = new SkillReviewStore(tasks);
+        var initialSkill = projectSkillReviewStore.Read(taskBound.Id)[0];
+        var skillPath = skillReviewRoute + "/" + initialSkill.Skill.Name;
+        var approval = new SkillReviewRequest(1, 0, initialSkill.ReviewSha256,
+            "ApproveLocalUse", "APPROVE LOCAL USE " + initialSkill.ReviewSha256, true);
+        Check(initialSkill.Revision == 0 && !initialSkill.Active &&
+            !initialSkill.ApprovedForLocalInstructionReview,
+            "skill review starts unapproved and inactive");
+        using (var anonymousSkillReviewClient = new HttpClient { BaseAddress = client.BaseAddress })
+        {
+            using var hiddenSkillReview = await anonymousSkillReviewClient.GetAsync(skillReviewRoute);
+            using var deniedSkillReview = await Post(anonymousSkillReviewClient, skillPath, approval);
+            Check(hiddenSkillReview.StatusCode == HttpStatusCode.Unauthorized &&
+                deniedSkillReview.StatusCode == HttpStatusCode.Unauthorized,
+                "skill reviews require authentication for reads and writes");
+        }
+        foreach (var invalidReview in new[] {
+            approval with { LocalUsePermissionConfirmed = false },
+            approval with { Confirmation = "APPROVE" },
+            approval with { Decision = "Activate" },
+            approval with { SchemaVersion = 2 },
+        })
+        {
+            using var deniedSkillReview = await Post(client, skillPath, invalidReview);
+            Check(!deniedSkillReview.IsSuccessStatusCode,
+                "skill review rejects missing permission, confirmation or unknown action");
+        }
+        using (var wrongBinding = await Post(client, skillPath,
+            approval with { ReviewSha256 = new string('0', 64) }))
+            Check(wrongBinding.StatusCode == HttpStatusCode.Conflict,
+                "wrong skill review fingerprint blocks approval");
+        using (var unknownSkill = await Post(client, skillReviewRoute + "/unknown", approval))
+            Check(unknownSkill.StatusCode == HttpStatusCode.NotFound,
+                "unregistered skill cannot be reviewed");
+        Check(projectSkillReviewStore.Read(taskBound.Id)[0].Revision == 0,
+            "rejected reviews do not create events");
+        using (var acceptedReview = await Post(client, skillPath, approval))
+        using (var acceptedBody = await Body(acceptedReview))
+        {
+            Check(acceptedReview.StatusCode == HttpStatusCode.OK &&
+                acceptedBody.RootElement.GetProperty("approvedForLocalInstructionReview").GetBoolean() &&
+                !acceptedBody.RootElement.GetProperty("active").GetBoolean() &&
+                acceptedBody.RootElement.GetProperty("revision").GetInt32() == 1,
+                "owner approves only exact local instruction review, not activation");
+        }
+        var otherReviewTask = tasks.CreateTask(new CreateTaskRequest(
+            "Skill review isolation", "Check independent project review state",
+            Guid.NewGuid().ToString("N")));
+        var otherSkill = projectSkillReviewStore.Read(otherReviewTask.Id)[0];
+        Check(otherSkill.ReviewSha256 != initialSkill.ReviewSha256 &&
+            !otherSkill.ApprovedForLocalInstructionReview,
+            "approval never transfers to another project");
+        using (var crossProject = await Post(client,
+            "/api/tasks/" + otherReviewTask.Id + "/skill-reviews/" + initialSkill.Skill.Name,
+            approval))
+            Check(crossProject.StatusCode == HttpStatusCode.Conflict,
+                "another project's exact review hash cannot authorize approval");
+        Check(SkillReviewStore.ReviewSha256(taskBound.Id,
+            initialSkill.Skill with { License = "different-license" }) != initialSkill.ReviewSha256 &&
+            SkillReviewStore.ReviewSha256(taskBound.Id,
+            initialSkill.Skill with { Version = "2" }) != initialSkill.ReviewSha256 &&
+            SkillReviewStore.ReviewSha256(taskBound.Id,
+            initialSkill.Skill with { Role = "QaEngineer" }) != initialSkill.ReviewSha256 &&
+            SkillReviewStore.ReviewSha256(taskBound.Id,
+            initialSkill.Skill with { ContentSha256 = new string('0', 64) }) != initialSkill.ReviewSha256,
+            "license, version, role and content changes invalidate the review fingerprint");
+        using (var replayedSkillApproval = await Post(client, skillPath, approval))
+            Check(replayedSkillApproval.StatusCode == HttpStatusCode.Conflict,
+                "replayed approval is rejected by exact review revision");
+        var restartedReview = new SkillReviewStore(new TaskStore(root)).Read(taskBound.Id)[0];
+        Check(restartedReview.ApprovedForLocalInstructionReview && restartedReview.Revision == 1 &&
+            !restartedReview.Active && restartedReview.History.Count == 1,
+            "owner review persists across SQLite store recreation");
+        var revocation = approval with { ExpectedRevision = 1, Decision = "Revoke",
+            Confirmation = "REVOKE " + initialSkill.ReviewSha256,
+            LocalUsePermissionConfirmed = false };
+        using (var revokedReview = await Post(client, skillPath, revocation))
+            Check(revokedReview.StatusCode == HttpStatusCode.OK,
+                "owner can explicitly revoke exact current review");
+        var revokedSkill = projectSkillReviewStore.Read(taskBound.Id)[0];
+        Check(revokedSkill.ReviewStatus == "REVOKED" &&
+            !revokedSkill.ApprovedForLocalInstructionReview && !revokedSkill.Active &&
+            revokedSkill.History.Count == 2 && revokedSkill.History[0].Decision == "ApproveLocalUse" &&
+            revokedSkill.History[1].Decision == "Revoke",
+            "approval and revocation retain ordered audit events");
+        using (var globalCatalogResponse = await client.GetAsync("/api/agents/skills"))
+        using (var globalCatalogBody = await Body(globalCatalogResponse))
+            Check(globalCatalogBody.RootElement.GetProperty("skills").EnumerateArray()
+                .All(skill => !skill.GetProperty("active").GetBoolean()),
+                "project review never activates the global catalog");
+        // Exercise deletion with persisted review history on a separate disposable project.
+        projectSkillReviewStore.Review(otherReviewTask.Id, otherSkill.Skill.Name,
+            approval with { ReviewSha256 = otherSkill.ReviewSha256,
+                Confirmation = "APPROVE LOCAL USE " + otherSkill.ReviewSha256 });
+        using (var deletedReviewTask = await client.DeleteAsync("/api/tasks/" + otherReviewTask.Id))
+            Check(deletedReviewTask.IsSuccessStatusCode,
+                "project deletion removes skill review events before parent task");
+        using (var missingReviewTask = await client.GetAsync(
+            "/api/tasks/" + otherReviewTask.Id + "/skill-reviews"))
+            Check(missingReviewTask.StatusCode == HttpStatusCode.NotFound,
+                "deleted project cannot expose review history");
+    }
+    {
+        var skillActivationStore = new SkillReviewStore(tasks);
+        var architectSkillReview = skillActivationStore.Read(taskBound.Id)
+            .Single(x => x.Skill.Name == SkillReviewStore.ArchitectureSkill);
+        var currentSkillSpec = interviews.Read(taskBound.Id).Specification!;
+        var currentSkillRevision = decisionStore.List(taskBound.Id)
+            .Single(x => x.Topic == "technology-stack").Revision;
+        var architectSkillRequest = new RecommendArchitectureRequest(1,
+            currentSkillSpec.Version, currentSkillSpec.Sha256, "technology-stack",
+            currentSkillRevision, new ArchitectureSkillRequest(
+                architectSkillReview.Skill.Name, 1, architectSkillReview.ReviewSha256,
+                Guid.NewGuid().ToString("N")));
+        const string skillModel = "qwen3.5:4b";
+        void DenySkillAdmission(RecommendArchitectureRequest req, string code)
+        {
+            try
+            {
+                _ = skillActivationStore.AdmitArchitecture(taskBound.Id, req, skillModel);
+                Check(false, "unexpected skill admission");
+            }
+            catch (StoreFailure failure)
+            {
+                Check(failure.Code == code, "skill admission rejects " + code);
+            }
+        }
+        DenySkillAdmission(architectSkillRequest, "STALE_SKILL_REVIEW");
+        var architectSkillApproval = new SkillReviewRequest(1, 0,
+            architectSkillReview.ReviewSha256, "ApproveLocalUse",
+            "APPROVE LOCAL USE " + architectSkillReview.ReviewSha256, true);
+        skillActivationStore.Review(taskBound.Id, architectSkillReview.Skill.Name,
+            architectSkillApproval);
+        DenySkillAdmission(architectSkillRequest with { Skill =
+            architectSkillRequest.Skill! with { Name = "requirements-discovery" } }, "INVALID_INPUT");
+        DenySkillAdmission(architectSkillRequest with { SpecificationSha256 =
+            new string('0', 64) }, "SPECIFICATION_CONFLICT");
+        DenySkillAdmission(architectSkillRequest with { ExpectedRevision =
+            currentSkillRevision + 1 }, "STALE_DECISION");
+        Check(skillActivationStore.ReadUses(taskBound.Id).Count == 0,
+            "rejected skill admissions leave no invented model receipts");
+        // The API test uses a non-MAF advisor override. Explicit skill use
+        // must never silently fall back to that adapter.
+        using (var adapterDenied = await Post(client, "/api/tasks/" + taskBound.Id +
+            "/architecture-decisions/recommend", architectSkillRequest))
+            Check(adapterDenied.StatusCode == HttpStatusCode.BadRequest &&
+                skillActivationStore.ReadUses(taskBound.Id).Count == 0,
+                "unsupported adapter cannot silently ignore a requested skill");
+        var architectSkillContext = skillActivationStore.AdmitArchitecture(
+            taskBound.Id, architectSkillRequest, skillModel);
+        DenySkillAdmission(architectSkillRequest, "IDEMPOTENCY_CONFLICT");
+        var skillMafFactory = new Phase3FakeMafFactory();
+        var skillMafTeam = new MafAgentTeam(skillMafFactory);
+        var skillAdvice = await skillMafTeam.RecommendWithSkillAsync(taskBound.Objective,
+            currentSkillSpec.Content, skillModel, "technology-stack",
+            architectSkillContext, CancellationToken.None);
+        skillActivationStore.FinishArchitecture(architectSkillContext, true);
+        Check(skillAdvice.Options.Count == 2 && skillMafFactory.AllowedToolsSeen == 0 &&
+            skillMafFactory.SkillContextsSeen == 1,
+            "real MAF adapter receives reviewed instructions once and no tools");
+        await skillMafTeam.RecommendAsync(taskBound.Objective, currentSkillSpec.Content,
+            skillModel, "technology-stack", CancellationToken.None);
+        Check(skillMafFactory.SkillContextsSeen == 1,
+            "ordinary recommendation has no ambient skill context");
+        try
+        {
+            await skillMafTeam.RecommendWithSkillAsync(taskBound.Objective,
+                currentSkillSpec.Content, skillModel, "technology-stack",
+                architectSkillContext, CancellationToken.None);
+            Check(false, "skill context must be one-shot");
+        }
+        catch (StoreFailure failure)
+        {
+            Check(failure.Code == "IDEMPOTENCY_CONFLICT", "one-shot context rejects replay");
+        }
+        var incompleteSkillUse = skillActivationStore.AdmitArchitecture(taskBound.Id,
+            architectSkillRequest with { Skill = architectSkillRequest.Skill! with {
+                RequestId = Guid.NewGuid().ToString("N") } }, skillModel);
+        skillActivationStore.FinishArchitecture(incompleteSkillUse, false);
+        var skillUseRoute = "/api/tasks/" + taskBound.Id + "/skill-uses";
+        using (var privateSkillClient = new HttpClient { BaseAddress = client.BaseAddress })
+        using (var deniedUseRead = await privateSkillClient.GetAsync(skillUseRoute))
+            Check(deniedUseRead.StatusCode == HttpStatusCode.Unauthorized, "usage is owner-private");
+        using (var skillUseResponse = await client.GetAsync(skillUseRoute))
+        using (var skillUseBody = await Body(skillUseResponse))
+        {
+            var usageEvents = skillUseBody.RootElement.GetProperty("events");
+            Check(skillUseResponse.StatusCode == HttpStatusCode.OK &&
+                usageEvents.GetArrayLength() == 2 &&
+                usageEvents.EnumerateArray().Any(e =>
+                    e.GetProperty("status").GetString() == "ProposalReturned") &&
+                usageEvents.EnumerateArray().Any(e =>
+                    e.GetProperty("status").GetString() == "CallFailed"),
+                "audit distinguishes a parsed proposal and an unsuccessful call");
+        }
+        skillActivationStore.Review(taskBound.Id, architectSkillReview.Skill.Name,
+            architectSkillApproval with { ExpectedRevision = 1, Decision = "Revoke",
+                Confirmation = "REVOKE " + architectSkillReview.ReviewSha256,
+                LocalUsePermissionConfirmed = false });
+        DenySkillAdmission(architectSkillRequest with { Skill =
+            architectSkillRequest.Skill! with { RequestId = Guid.NewGuid().ToString("N") } },
+            "STALE_SKILL_REVIEW");
+    }
+    // Product Owner skill context is reconstructed by the host, not caller text.
+    {
+        var discoverySkillTask = tasks.CreateTask(new CreateTaskRequest(
+            "Discovery skill test", "Build an offline notes tracker", Guid.NewGuid().ToString("N")));
+        var discoverySkillStore = new SkillReviewStore(tasks);
+        var discoverySkillReview = discoverySkillStore.Read(discoverySkillTask.Id)
+            .Single(x => x.Skill.Name == SkillReviewStore.DiscoverySkill);
+        var discoverySkillSelection = new ProductOwnerSkillRequest(
+            discoverySkillReview.Skill.Name, 1, discoverySkillReview.ReviewSha256,
+            Guid.NewGuid().ToString("N"));
+        const string discoverySkillModel = "qwen3.5:4b";
+        void DenyDiscoverySkill(ProductOwnerSkillRequest selection, string operation,
+            int sequence, string? answer, string expected)
+        {
+            try
+            {
+                _ = discoverySkillStore.AdmitDiscovery(discoverySkillTask.Id,
+                    selection, operation, sequence, answer, discoverySkillModel);
+                Check(false, "unexpected discovery skill admission");
+            }
+            catch (StoreFailure failure)
+            {
+                Check(failure.Code == expected, "discovery skill rejects " + expected);
+            }
+        }
+        DenyDiscoverySkill(discoverySkillSelection, "interview-turn", 0, null,
+            "STALE_SKILL_REVIEW");
+        var discoverySkillApproval = new SkillReviewRequest(1, 0,
+            discoverySkillReview.ReviewSha256, "ApproveLocalUse",
+            "APPROVE LOCAL USE " + discoverySkillReview.ReviewSha256, true);
+        discoverySkillStore.Review(discoverySkillTask.Id, discoverySkillReview.Skill.Name,
+            discoverySkillApproval);
+        DenyDiscoverySkill(discoverySkillSelection with { Name = "architecture-tradeoffs" },
+            "interview-turn", 0, null, "INVALID_INPUT");
+        DenyDiscoverySkill(discoverySkillSelection, "specification-draft", 0, null, "STALE_INTERVIEW");
+        DenyDiscoverySkill(discoverySkillSelection, "interview-turn", 2, null, "STALE_INTERVIEW");
+        using (var rejectedDiscoveryAdapter = await Post(client,
+            "/api/tasks/" + discoverySkillTask.Id + "/interview/turn",
+            new InterviewTurnRequest(0, null, discoverySkillModel, discoverySkillSelection)))
+        using (var rejectedDiscoveryBody = await Body(rejectedDiscoveryAdapter))
+            Check(rejectedDiscoveryAdapter.StatusCode == HttpStatusCode.BadRequest &&
+                rejectedDiscoveryBody.RootElement.GetProperty("error").GetString() ==
+                    "SKILL_ADAPTER_UNAVAILABLE" &&
+                discoverySkillStore.ReadDiscoveryUses(discoverySkillTask.Id).Count == 0,
+                "non-MAF override cannot silently ignore selected Product Owner skill");
+        var discoverySkillContext = discoverySkillStore.AdmitDiscovery(discoverySkillTask.Id,
+            discoverySkillSelection, "interview-turn", 0, null, discoverySkillModel);
+        DenyDiscoverySkill(discoverySkillSelection, "interview-turn", 0, null,
+            "IDEMPOTENCY_CONFLICT");
+        var discoverySkillFactory = new Phase3FakeMafFactory();
+        var discoverySkillTeam = new MafAgentTeam(discoverySkillFactory);
+        try
+        {
+            _ = await discoverySkillTeam.DraftWithSkillAsync(discoverySkillContext, CancellationToken.None);
+            Check(false, "wrong phase should not consume a discovery context");
+        }
+        catch (StoreFailure failure)
+        {
+            Check(failure.Code == "SKILL_SCOPE_DENIED", "interview context cannot draft specifications");
+        }
+        var discoverySkillReply = await discoverySkillTeam.AskWithSkillAsync(
+            discoverySkillContext, CancellationToken.None);
+        discoverySkillStore.FinishDiscovery(discoverySkillContext, true);
+        var discoverySkillFirstTurn = interviews.CommitTurn(discoverySkillTask.Id,
+            new InterviewTurnRequest(0, null, discoverySkillModel), discoverySkillReply);
+        var discoverySkillAnswer = interviews.CommitTurn(discoverySkillTask.Id,
+            new InterviewTurnRequest(discoverySkillFirstTurn.LastSequence,
+                "Just me, working offline", discoverySkillModel),
+            new InterviewReply("Ready to draft.", true));
+        var discoveryDraftSelection = discoverySkillSelection with { RequestId = Guid.NewGuid().ToString("N") };
+        var discoveryDraftContext = discoverySkillStore.AdmitDiscovery(discoverySkillTask.Id,
+            discoveryDraftSelection, "specification-draft", discoverySkillAnswer.LastSequence,
+            null, discoverySkillModel);
+        var discoverySkillDraft = await discoverySkillTeam.DraftWithSkillAsync(
+            discoveryDraftContext, CancellationToken.None);
+        discoverySkillStore.FinishDiscovery(discoveryDraftContext, true);
+        Check(discoverySkillDraft.Length >= 180 && discoverySkillFactory.SkillContextsSeen == 2 &&
+            discoverySkillFactory.AllowedToolsSeen == 0,
+            "real MAF Product Owner receives reviewed text for both phases without tools");
+        await discoverySkillTeam.DraftAsync(discoverySkillTask.Objective,
+            discoverySkillAnswer.Messages, discoverySkillModel, CancellationToken.None);
+        Check(discoverySkillFactory.SkillContextsSeen == 2, "unselected draft has no ambient skill");
+        try
+        {
+            _ = await discoverySkillTeam.DraftWithSkillAsync(discoveryDraftContext, CancellationToken.None);
+            Check(false, "discovery context must be single use");
+        }
+        catch (StoreFailure failure)
+        {
+            Check(failure.Code == "IDEMPOTENCY_CONFLICT", "discovery context rejects reuse");
+        }
+        var discoveryUsage = new SkillReviewStore(new TaskStore(root))
+            .ReadDiscoveryUses(discoverySkillTask.Id);
+        Check(discoveryUsage.Count == 2 && discoveryUsage.All(e => e.Status == "ResponseReturned" &&
+            e.Role == "ProductOwner" && e.ContextSha256.Length == 64) &&
+            discoveryUsage.Select(e => e.ContextSha256).Distinct().Count() == 2,
+            "audit persists exact distinct host contexts without storing transcript text");
+        using (var discoveryUsageResponse = await client.GetAsync(
+            "/api/tasks/" + discoverySkillTask.Id + "/skill-uses"))
+        using (var discoveryUsageBody = await Body(discoveryUsageResponse))
+            Check(discoveryUsageResponse.StatusCode == HttpStatusCode.OK &&
+                discoveryUsageBody.RootElement.GetProperty("discoveryEvents").GetArrayLength() == 2,
+                "discovery usage is exposed through the authenticated project audit");
+        discoverySkillStore.Review(discoverySkillTask.Id, discoverySkillReview.Skill.Name,
+            discoverySkillApproval with { ExpectedRevision = 1, Decision = "Revoke",
+                Confirmation = "REVOKE " + discoverySkillReview.ReviewSha256,
+                LocalUsePermissionConfirmed = false });
+        DenyDiscoverySkill(discoveryDraftSelection with { RequestId = Guid.NewGuid().ToString("N") },
+            "specification-draft", discoverySkillAnswer.LastSequence, null, "STALE_SKILL_REVIEW");
+        using (var deletedDiscoverySkill = await client.DeleteAsync("/api/tasks/" + discoverySkillTask.Id))
+            Check(deletedDiscoverySkill.IsSuccessStatusCode,
+                "project deletion clears Product Owner skill audit records");
     }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
     var messagesPath = "/api/tasks/" + taskBound.Id + "/engineering-messages";
@@ -2315,6 +3108,75 @@ try
         Check(wrong.StatusCode == HttpStatusCode.Conflict &&
               qaModel.ReviewedFiles.Count == 0,
             "QA refuses obsolete Technical Lead plan identity");
+    // The same real coordinator and store used by HTTP, with only the local
+    // MAF IChatClient replaced. No generated code or Ollama is executed.
+    {
+        var qaSkillLedger = new SkillReviewStore(tasks);
+        var qaSkillCandidate = qaSkillLedger.Read(taskBound.Id)
+            .Single(item => item.Skill.Name == SkillReviewStore.QaSkill);
+        var qaSkillSelection = new QaSkillRequest(qaSkillCandidate.Skill.Name, 1,
+            qaSkillCandidate.ReviewSha256, Guid.NewGuid().ToString("N"));
+        var qaSkillRequest = new StartQaReviewRequest(engineeringRunId, secondPlanHash,
+            qaSkillSelection);
+        var qaSkillFactory = new Phase5FakeMafFactory();
+        var qaSkillCoordinator = new QaReviewCoordinator(tasks, interviews,
+            new ImplementationPlanStore(tasks, interviews), engineeringStore, reviewStore,
+            new MafQaEngineer(qaSkillFactory),
+            app!.Services.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>());
+        void RejectQaSkill(StartQaReviewRequest input, string expected)
+        {
+            try
+            {
+                _ = qaSkillCoordinator.Start(taskBound.Id, input, "qwen3.5:4b");
+                Check(false, "unexpected static QA skill admission");
+            }
+            catch (StoreFailure error)
+            {
+                Check(error.Code == expected, "QA skill rejects " + expected);
+            }
+        }
+        RejectQaSkill(qaSkillRequest, "STALE_SKILL_REVIEW");
+        var qaSkillApproval = new SkillReviewRequest(1, 0, qaSkillCandidate.ReviewSha256,
+            "ApproveLocalUse", "APPROVE LOCAL USE " + qaSkillCandidate.ReviewSha256, true);
+        qaSkillLedger.Review(taskBound.Id, qaSkillCandidate.Skill.Name, qaSkillApproval);
+        RejectQaSkill(qaSkillRequest with { Skill =
+            qaSkillSelection with { Name = "architecture-tradeoffs" } }, "INVALID_INPUT");
+        using (var qaSkillOverride = await Post(client, qaPath, qaSkillRequest))
+        using (var qaSkillOverrideBody = await Body(qaSkillOverride))
+            Check(qaSkillOverride.StatusCode == HttpStatusCode.BadRequest &&
+                qaSkillOverrideBody.RootElement.GetProperty("error").GetString() ==
+                    "SKILL_ADAPTER_UNAVAILABLE" && qaSkillLedger.ReadQaUses(taskBound.Id).Count == 0,
+                "explicit QA skill cannot fall back to another reviewer");
+        var skillQaJob = qaSkillCoordinator.Start(taskBound.Id, qaSkillRequest, "qwen3.5:4b");
+        for (var skillQaPoll = 0; skillQaPoll < 160 &&
+            reviewStore.Get(taskBound.Id, skillQaJob.Id).Job.State == "Running"; skillQaPoll++)
+            await Task.Delay(25);
+        var skillQaResult = reviewStore.Get(taskBound.Id, skillQaJob.Id);
+        var skillQaAudit = new SkillReviewStore(new TaskStore(root)).ReadQaUses(taskBound.Id).Single();
+        Check(skillQaResult.Job.State == "Reviewed" && skillQaResult.Reports.Count == 2 &&
+            qaSkillFactory.SkillContextsSeen == 2 && qaSkillFactory.ReferenceContextsSeen == 2 &&
+            qaSkillFactory.NoTools && skillQaAudit.ContentSha256 == qaSkillCandidate.Skill.ContentSha256 &&
+            skillQaAudit.QaReviewId == skillQaJob.Id && skillQaAudit.ReportsSaved == 2 &&
+            skillQaAudit.SourceSha256 == QaReviewStore.Fingerprint(engineeringResult!.Files) &&
+            skillQaAudit.PlanSha256 == secondPlanHash && skillQaAudit.Status == "Reviewed",
+            "QA skill attaches to exact saved files via MAF with no callable tools and durable audit");
+        RejectQaSkill(qaSkillRequest, "IDEMPOTENCY_CONFLICT");
+        using (var qaSkillAuditResponse = await client.GetAsync("/api/tasks/" +
+            taskBound.Id + "/skill-uses"))
+        using (var qaSkillAuditBody = await Body(qaSkillAuditResponse))
+            Check(qaSkillAuditResponse.StatusCode == HttpStatusCode.OK &&
+                qaSkillAuditBody.RootElement.GetProperty("qaEvents").GetArrayLength() == 1,
+                "owner-private skill usage exposes exact QA job evidence");
+        qaSkillLedger.Review(taskBound.Id, qaSkillCandidate.Skill.Name,
+            qaSkillApproval with { ExpectedRevision = 1, Decision = "Revoke",
+                Confirmation = "REVOKE " + qaSkillCandidate.ReviewSha256,
+                LocalUsePermissionConfirmed = false });
+        RejectQaSkill(qaSkillRequest with { Skill =
+            qaSkillSelection with { RequestId = Guid.NewGuid().ToString("N") } },
+            "STALE_SKILL_REVIEW");
+        Check(qaSkillLedger.ReadQaUses(taskBound.Id).Count == 1,
+            "rejected and replayed QA admissions roll back their jobs and usage events");
+    }
     string qaReviewId;
     using (var admitted = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
@@ -2371,6 +3233,36 @@ try
         "/api/tasks/" + task.Id + "/qa-reviews/" + qaReviewId))
         Check(cross.StatusCode == HttpStatusCode.NotFound,
             "QA report cannot be read through another project's URL");
+
+    using (var acceptanceResponse = await client.GetAsync(qaPath + "/" + qaReviewId))
+    using (var acceptanceBody = await Body(acceptanceResponse))
+    {
+        var savedAcceptance = acceptanceBody.RootElement.GetProperty("acceptance");
+        var savedPreflight = acceptanceBody.RootElement.GetProperty("staticPreflight");
+        Check(savedPreflight.GetProperty("runId").GetString() == engineeringRunId &&
+            savedPreflight.GetProperty("sourceSha256").GetString() == qaResult!.Job.SourceSha256 &&
+            savedPreflight.GetProperty("verificationStatus").GetString() == "GENERATED_NOT_TESTED" &&
+            qaResult.Events.Count(e => e.Kind == "QaStaticPreflightCaptured") == 1,
+            "QA persists one host-owned preflight bound to exact saved source; no runtime claims");
+        Check(acceptanceResponse.StatusCode == HttpStatusCode.OK &&
+            savedAcceptance.GetProperty("reviewId").GetString() == qaReviewId &&
+            savedAcceptance.GetProperty("planSha256").GetString() == secondPlanHash &&
+            savedAcceptance.GetProperty("sourceSha256").GetString() == qaResult!.Job.SourceSha256 &&
+            savedAcceptance.GetProperty("criteria").GetArrayLength() > 0 &&
+            savedAcceptance.GetProperty("criteria").EnumerateArray().All(c =>
+                c.GetProperty("verificationStatus").GetString() == "RequiresTesting") &&
+            savedAcceptance.GetProperty("findings").GetArrayLength() == 1 &&
+            savedAcceptance.GetProperty("criteria").EnumerateArray().Sum(c =>
+                c.GetProperty("implementationIndicators").GetArrayLength()) == 1 &&
+            qaResult!.Reports.Single(report => report.Path == "app.js")
+                .Assessment.ImplementationEvidence?.Count == 1 &&
+            qaResult.Reports.Single(report => report.Path == "index.html")
+                .Assessment.CrossFileObservations?.Count == 1 &&
+            savedAcceptance.GetProperty("crossFileEvidence").GetArrayLength() == 1 &&
+            savedAcceptance.GetProperty("crossFileEvidence")[0]
+                .GetProperty("causePath").GetString() == "app.js",
+            "HTTP QA acceptance view is derived from persisted exact plan and reports, never a test pass");
+    }
 
     // R1 proposals are host-admitted evidence, never executable repair grants.
     var proposalPath = "/api/tasks/" + taskBound.Id + "/repair-proposals";
@@ -2548,6 +3440,16 @@ try
         repairOutcome = cycleStore.Get(taskBound.Id, cycleId);
         break;
     }
+    // Emit fixed fixture status, not source, prompts, IDs, paths or raw
+    // exceptions. Distinguish terminal failures from exhausted polling.
+    Console.WriteLine("Repair fixture outcome: cycle=" +
+        (repairOutcome?.Cycle.State ?? "POLL_EXHAUSTED") +
+        "; cycleCode=" + (repairOutcome?.Cycle.ErrorCode ?? "NONE") +
+        "; engineering=" + (repairOutcome?.Engineering.Job.State ?? "NONE") +
+        "; engineeringCode=" + (repairOutcome?.Engineering.Job.ErrorCode ?? "NONE") +
+        "; qa=" + (repairOutcome?.Review?.Job.State ?? "NONE") +
+        "; qaCode=" + (repairOutcome?.Review?.Job.ErrorCode ?? "NONE") +
+        "; focused=" + qaModel.RepairFocusPaths.SequenceEqual(["app.js"]));
     Check(repairOutcome?.Cycle.State == "QaReviewed" &&
           repairOutcome.Review?.Job.State == "Reviewed" &&
           repairOutcome.Engineering.Job.State == "Generated" &&
@@ -2762,6 +3664,61 @@ try
 
     var approvedEngineerPlan =
         new ImplementationPlanStore(tasks, interviews).Read(taskBound.Id).Plan!;
+    // Failed repair clones can be reviewed and authorized again without
+    // pretending an incomplete original build is complete. Exercise two
+    // consecutive failures with no changes and require fresh triage each time.
+    var recoveryBase = repairOutcome!.Engineering;
+    var recoveryReview = repairOutcome.Review!;
+    var triageStore = new RepairTriageStore(tasks);
+    for (var retry = 0; retry < 2; retry++)
+    {
+        var recoveryProposal = repairProposal.Propose(taskBound.Id,
+            new CreateRepairProposalRequest(recoveryReview.Job.Id));
+        triageStore.Classify(taskBound.Id, recoveryProposal.Id,
+            new ClassifyRepairFindingRequest("app.js", 0, "ImplementationDefect",
+                "Owner confirms the remaining defect for the new exact source review."));
+        var recovery = upgradedRepairs.Start(taskBound.Id,
+            new StartRepairCycleRequest(recoveryProposal.Id,
+                "REPAIR " + recoveryProposal.SourceSha256,
+                [new RepairSelection("app.js", 0)]), approvedEngineerPlan);
+        var repairWork = upgradedRepairs.WorkItemId(taskBound.Id, recovery.Id);
+        engineeringStore.StartTask(taskBound.Id, recovery.EngineeringRunId, repairWork);
+        engineeringStore.RecordOutputRejection(taskBound.Id, recovery.EngineeringRunId,
+            repairWork, new EngineeringOutputRejection(1, "REPAIR_EDIT_FIELDS"));
+        engineeringStore.Finish(taskBound.Id, recovery.EngineeringRunId, false, "MODEL_OUTPUT_REJECTED");
+        upgradedRepairs.SetState(taskBound.Id, recovery.Id, "Failed", "MODEL_OUTPUT_REJECTED");
+        var failedClone = engineeringStore.Get(taskBound.Id, recovery.EngineeringRunId);
+        Check(failedClone.Job.State == "Failed" &&
+            QaReviewStore.Fingerprint(failedClone.Files) ==
+                QaReviewStore.Fingerprint(recoveryBase.Files),
+            "failed repair preserves the exact previously generated source");
+        var freshRecovery = reviewStore.Start(taskBound.Id, failedClone, approvedEngineerPlan);
+        foreach (var file in failedClone.Files)
+            reviewStore.SaveFileReport(taskBound.Id, freshRecovery.Id, file,
+                recoveryReview.Reports.Single(report => report.Path == file.Path).Assessment);
+        reviewStore.Finish(taskBound.Id, freshRecovery.Id, true, null);
+        recoveryReview = reviewStore.Get(taskBound.Id, freshRecovery.Id);
+        Check(recoveryReview.UnchangedFailedRepair &&
+            recoveryReview.SourceState == "Failed" &&
+            recoveryReview.Acceptance!.Criteria.All(c => c.VerificationStatus == "RequiresTesting"),
+            "fresh review exposes retry eligibility only for unchanged failed repair lineage");
+        recoveryBase = failedClone;
+    }
+    var retryProposal = repairProposal.Propose(taskBound.Id,
+        new CreateRepairProposalRequest(recoveryReview.Job.Id));
+    try
+    {
+        _ = upgradedRepairs.Start(taskBound.Id,
+            new StartRepairCycleRequest(retryProposal.Id,
+                "REPAIR " + retryProposal.SourceSha256,
+                [new RepairSelection("app.js", 0)]), approvedEngineerPlan);
+        Check(false, "failed repair recovery bypassed fresh owner triage");
+    }
+    catch (StoreFailure error) when (error.Code == "REPAIR_NOT_AUTHORIZED")
+    {
+        Check(true, "failed repair recovery still requires a new owner triage");
+    }
+
     var failedEngineerRun = engineeringStore.Start(taskBound.Id, approvedEngineerPlan);
     engineeringStore.StartTask(taskBound.Id, failedEngineerRun.Id, "timer-interface");
     engineeringStore.CompleteTask(taskBound.Id, failedEngineerRun.Id, "timer-interface",
@@ -2867,6 +3824,8 @@ try
     reviewStore.RecordAtlasInspection(taskBound.Id, probeReview.Id,
         probeSource, probeObservation);
     var probeLedger = reviewStore.Get(taskBound.Id, probeReview.Id);
+    Check(!probeLedger.UnchangedFailedRepair,
+        "ordinary incomplete engineering runs never qualify for failed-repair retry");
     Check(probeLedger.Events.Any(e => e.Kind == "QaAtlasInspected" &&
           e.Detail.Contains("atlas.find_symbols", StringComparison.Ordinal) &&
           e.Detail.Contains(probeRevision[..12], StringComparison.Ordinal) &&
@@ -4185,6 +5144,20 @@ finally
 }
 
 
+// The HTTP negative skill test must exercise a genuinely non-MAF adapter.
+// No live Ollama calls are permitted in this model-free suite.
+sealed class Phase2RejectUnexpectedInterview : IInterviewModel
+{
+    public Task<InterviewReply> AskAsync(string objective,
+        IReadOnlyList<InterviewMessage> messages, string model,
+        CancellationToken cancellation) =>
+        throw new InvalidOperationException("Unexpected interview model invocation");
+    public Task<string> DraftAsync(string objective,
+        IReadOnlyList<InterviewMessage> messages, string model,
+        CancellationToken cancellation) =>
+        throw new InvalidOperationException("Unexpected specification model invocation");
+}
+
 sealed class Phase2Catalog : IOllamaModelCatalog
 {
     public Task<IReadOnlyList<string>> ListAsync(CancellationToken cancellation) =>
@@ -4283,6 +5256,8 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
     public List<string> Models { get; } = [];
     public int SystemPoliciesSeen { get; private set; }
     public int AllowedToolsSeen { get; private set; }
+    public ChatOptions? LastNativeToolOptions { get; private set; }
+    public int SkillContextsSeen { get; private set; }
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
     {
@@ -4305,6 +5280,12 @@ sealed class Phase3FakeMafFactory : IMafChatClientFactory
                     StringComparison.Ordinal) == true)
                 parent.SystemPoliciesSeen++;
             parent.AllowedToolsSeen += options?.Tools?.Count ?? 0;
+            if (options?.Tools is { Count: > 0 }) parent.LastNativeToolOptions = options;
+            if (history.Any(m => m.Role.Value == "system" &&
+                m.Text?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT", StringComparison.Ordinal) == true) ||
+                options?.Instructions?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
+                    StringComparison.Ordinal) == true)
+                parent.SkillContextsSeen++;
             if (purpose == MafAgentPurpose.Interview)
                 parent.InterviewCorrectionPrompts.AddRange(history
                     .Where(m => m.Role == ChatRole.User &&
@@ -4592,11 +5573,31 @@ sealed class Phase5QaModel : IQaSourceReviewer
                 [new QaFinding("Major", "Start advances timer state",
                     "The handler logs start but does not update a visible timer.",
                     "Implement timer state and check it with a real browser")],
-                ["Click Start and observe the timer after several seconds"])
+                ["Click Start and observe the timer after several seconds"],
+                [new QaImplementationEvidence(
+                    QaAcceptanceProjection.Identify(input.Plan).First().Id,
+                    input.File.Content[..Math.Min(80, input.File.Content.Length)],
+                    "A saved primary source construct provides an implementation indicator."),
+                 new QaImplementationEvidence("unknown:1",
+                    input.File.Content[..Math.Min(80, input.File.Content.Length)],
+                    "Unknown criterion cannot become acceptance evidence."),
+                 new QaImplementationEvidence(
+                    QaAcceptanceProjection.Identify(input.Plan).First().Id,
+                    "FABRICATED_SOURCE_EXCERPT_ABSENT_FROM_FIXTURE",
+                    "Invented evidence must be discarded by the store.")])
             : new QaFileAssessment(
                 "The HTML source references a script and a clickable button.",
                 [],
-                ["Load index.html offline and verify the script is linked"]));
+                ["Load index.html offline and verify the script is linked"],
+                CrossFileObservations: input.AllFiles.FirstOrDefault(f => f.Path == "app.js")
+                    is { } companion ? [
+                    new QaCrossFileObservation(QaAcceptanceProjection.Identify(input.Plan).First().Id,
+                        companion.Path, companion.Content[..Math.Min(80, companion.Content.Length)],
+                        "The document refers to the companion script."),
+                    new QaCrossFileObservation(QaAcceptanceProjection.Identify(input.Plan).First().Id,
+                        "../app.js", companion.Content[..Math.Min(80, companion.Content.Length)],
+                        "Invalid path must never become admitted evidence.")]
+                    : []));
     }
 }
 
@@ -4609,8 +5610,13 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool InspectionContextSeen { get; private set; }
     public bool RepairFocusSeen { get; private set; }
     public bool NoTools { get; private set; }
+    public string? LastCompanionContext { get; private set; }
+    public int SkillContextsSeen { get; private set; }
+    public int ReferenceContextsSeen { get; private set; }
+    public bool StaticPreflightSeen { get; private set; }
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
+    public Queue<string> ScriptedFailures { get; } = new();
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
     {
@@ -4645,10 +5651,28 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
                 m.Text.Contains("NOT proof of a fix", StringComparison.Ordinal) &&
                 m.Text.Contains("Save button is not connected", StringComparison.Ordinal));
             parent.NoTools = options?.Tools is null || options.Tools.Count == 0;
+            parent.LastCompanionContext = history.Select(m => m.Text).FirstOrDefault(value =>
+                value?.StartsWith("PROJECT-WIDE STATIC WEB COMPANION EVIDENCE", StringComparison.Ordinal) == true);
+            if (options?.Instructions?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
+                    StringComparison.Ordinal) == true || history.Any(m =>
+                    m.Role.Value == "system" && m.Text?.Contains("OWNER-REVIEWED INSTRUCTION CONTEXT",
+                        StringComparison.Ordinal) == true))
+                parent.SkillContextsSeen++;
+            if (options?.Instructions?.Contains("OWNER-REVIEWED ADVISORY REFERENCE (references/review-checklist.md)", StringComparison.Ordinal) == true &&
+                options?.Instructions?.Contains("Identify state persistence and restoration paths", StringComparison.Ordinal) == true ||
+                history.Any(m => m.Role.Value == "system" &&
+                    m.Text?.Contains("OWNER-REVIEWED ADVISORY REFERENCE (references/review-checklist.md)", StringComparison.Ordinal) == true &&
+                    m.Text.Contains("Identify state persistence and restoration paths", StringComparison.Ordinal)))
+                parent.ReferenceContextsSeen++;
+            parent.StaticPreflightSeen |= history.Any(m =>
+                m.Role.Value == "user" && m.Text?.StartsWith("HOST STATIC PREFLIGHT", StringComparison.Ordinal) == true &&
+                m.Text.Contains("MISSING_LINKED_ASSET", StringComparison.Ordinal));
             parent.HostObservationSeen |= history.Any(m =>
                 m.Role.Value == "user" &&
                 m.Text?.Contains("HOST QA CODE ATLAS OBSERVATION",
                     StringComparison.Ordinal) == true);
+            if (parent.ScriptedFailures.Count > 0)
+                throw new StoreFailure(parent.ScriptedFailures.Dequeue());
             var answer = parent.ScriptedReplies.Count > 0
                 ? parent.ScriptedReplies.Dequeue()
                 : """{"summary":"The static source exposes an interactive control but its behavior is unknown.","findings":[{"severity":"Minor","requirement":"The Save button must work","evidence":"A button is declared but no listener is present in this source","recommendation":"Inspect linked scripts and test saving notes in a browser"}],"manualChecks":["Click Save and reload the page in a real browser"]}""";
