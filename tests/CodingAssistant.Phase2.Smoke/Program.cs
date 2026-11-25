@@ -1217,6 +1217,7 @@ try
 
     var settings = new ApiSettings(root, Token, "http://127.0.0.1:0");
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
+        interviewModelOverride: new Phase2RejectUnexpectedInterview(),
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
@@ -1410,6 +1411,7 @@ try
     app = null;
 
     app = ApiHost.Build([], settings, projectModelOverride: boundModel,
+        interviewModelOverride: new Phase2RejectUnexpectedInterview(),
         catalogOverride: new Phase2Catalog(),
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
@@ -2014,7 +2016,10 @@ try
         using (var rejectedDiscoveryAdapter = await Post(client,
             "/api/tasks/" + discoverySkillTask.Id + "/interview/turn",
             new InterviewTurnRequest(0, null, discoverySkillModel, discoverySkillSelection)))
+        using (var rejectedDiscoveryBody = await Body(rejectedDiscoveryAdapter))
             Check(rejectedDiscoveryAdapter.StatusCode == HttpStatusCode.BadRequest &&
+                rejectedDiscoveryBody.RootElement.GetProperty("error").GetString() ==
+                    "SKILL_ADAPTER_UNAVAILABLE" &&
                 discoverySkillStore.ReadDiscoveryUses(discoverySkillTask.Id).Count == 0,
                 "non-MAF override cannot silently ignore selected Product Owner skill");
         var discoverySkillContext = discoverySkillStore.AdmitDiscovery(discoverySkillTask.Id,
@@ -3294,6 +3299,20 @@ finally
     catch (IOException) { /* Windows may release SQLite locks after process exit. */ }
 }
 
+
+// The HTTP negative skill test must exercise a genuinely non-MAF adapter.
+// No live Ollama calls are permitted in this model-free suite.
+sealed class Phase2RejectUnexpectedInterview : IInterviewModel
+{
+    public Task<InterviewReply> AskAsync(string objective,
+        IReadOnlyList<InterviewMessage> messages, string model,
+        CancellationToken cancellation) =>
+        throw new InvalidOperationException("Unexpected interview model invocation");
+    public Task<string> DraftAsync(string objective,
+        IReadOnlyList<InterviewMessage> messages, string model,
+        CancellationToken cancellation) =>
+        throw new InvalidOperationException("Unexpected specification model invocation");
+}
 
 sealed class Phase2Catalog : IOllamaModelCatalog
 {
