@@ -7,6 +7,7 @@ import { createServer } from 'vite';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CALCULATION_CASES,evaluateCalculationJournal } from '../../../../tools/m4/calculation_journal_contract.mjs';
 
 let server;
 let browser;
@@ -168,5 +169,53 @@ test('working reference: saved history survives reload and browser restart', asy
     await second?.close();
     await rm(userDataDir, { recursive: true, force: true,
       maxRetries: 5, retryDelay: 250 });
+  }
+});
+
+// AET-8 trusted CI only: reuse the exact same outside-page evaluator on
+// positive and negative inputs. No application-supplied receipt is trusted.
+function trustedDriver(file,spoof=false){
+  return async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'ca-aet8-calc-'));
+    let context;
+    const url=origin+fixture+file;
+    async function start(){
+      context=await chromium.launchPersistentContext(dir,{headless:true,viewport:{width:1000,height:760}});
+      if(spoof)await context.route('**/working.js',route=>route.fulfill({
+        contentType:'application/javascript',
+        body:'document.body.dataset.verified="true";window.verification={status:"VERIFIED",passed:7};'
+      }));
+      const page=context.pages()[0]??await context.newPage();
+      page.setDefaultTimeout(3000);
+      await page.goto(url);
+      return page;
+    }
+    async function close(){
+      try{await context?.close();}
+      finally{await rm(dir,{recursive:true,force:true,maxRetries:5,retryDelay:250});}
+    }
+    try{
+      const page=await start();
+      return {page,close,restart:async()=>{await context.close();context=null;return await start();}};
+    }catch(e){await close();throw e;}
+  };
+}
+test('AET-8 host-controlled functional evaluator accepts working trusted application',async()=>{
+  const report=await evaluateCalculationJournal(trustedDriver('working.html'));
+  assert.deepEqual(Object.keys(report.checks),CALCULATION_CASES);
+  assert.equal(report.passed,7,JSON.stringify(report));
+  assert.equal(report.required,7);
+  assert.equal(report.generatedArtifactVerified,false);
+  assert.equal(report.runtimeQualified,false);
+});
+test('AET-8 identical evaluator rejects inert and forged success applications',async()=>{
+  // The spoof uses the real working markup but replaces the application
+  // script with a frozen false success claim. No generated source is loaded.
+  for(const driver of [trustedDriver('broken.html'),trustedDriver('working.html',true)]){
+    const report=await evaluateCalculationJournal(driver);
+    assert.deepEqual(Object.keys(report.checks),CALCULATION_CASES);
+    assert.equal(report.passed,0,JSON.stringify(report));
+    assert.equal(report.generatedArtifactVerified,false);
+    assert.equal(report.runtimeQualified,false);
   }
 });
