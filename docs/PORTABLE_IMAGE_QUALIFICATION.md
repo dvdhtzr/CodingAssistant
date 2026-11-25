@@ -82,3 +82,57 @@ approve the exact content IDs and complete the existing host-specific
 positive/negative qualification gates before any new image is admitted.
 Do not substitute this candidate into an existing approved execution
 plan or reuse historical Dell evidence for it.
+
+## Slice 3 — host-scoped read-only provenance comparison
+
+`tools/m1/host_provenance_review.py` compares a single privately
+reviewed host manifest with exact local image IDs and repository input
+bytes. It only runs rootless Podman info and image inspect by full ID.
+It never pulls, builds, starts a guest, reads model data or changes any
+existing admission gate.
+
+The private JSON manifest has exactly these fields:
+
+- `schema_version`: integer 1.
+- `profile`: `dell-linux` or `windows-wsl2`. Prepare and review a
+  separate manifest on each host; do not copy a Dell pass to Windows.
+- `host_binding_sha256`: the local binding computed by
+  `host_binding(profile)`. This is a local correlation check, not
+  attestation of hardware or a cryptographic host identity. The reviewer
+  must independently identify the intended host. Keep the binding private.
+- `versions`: the exact keys and values in the verifier's `VERSIONS`
+  constant (OpenClaw commit and package versions).
+- `official_repo_digest`: the exact previously reviewed official
+  GHCR manifest digest above.
+- `image_ids`: an object with exactly `official`, `runtime`, `acpx`,
+  `composed`, `evaluator`, each a distinct 64-character lowercase
+  local content ID without a prefix. Obtain these independently from
+  reviewed provisioning evidence, not by trusting whatever tag resolves.
+- `recipe_inputs_sha256`: an object with exactly the five repository
+  paths in the verifier's `INPUTS` constant and independently reviewed
+  SHA-256 hashes of their exact bytes. No arbitrary paths are accepted.
+
+The owner/reviewer supplies the exact manifest byte digest separately
+from the manifest, following independent review. Do not generate the
+expected digest from an unreviewed candidate immediately before checking
+it. Keep the manifest outside version control. Run from the repository:
+
+```sh
+python3 tools/m1/host_provenance_review.py --profile dell-linux --manifest /private/review.json --manifest-sha256 REVIEWED_SHA256
+```
+
+Use `windows-wsl2` and its own reviewed digest and file on the Windows
+WSL2 host. A local binding can be computed in the private host terminal
+using `python3 -c "import sys; sys.path.insert(0, 'tools/m1'); from host_provenance_review import host_binding; print(host_binding('dell-linux'))"`
+with the corresponding profile substituted on WSL2. Do not publish it.
+
+A match is explicitly `REVIEWED_INPUTS_MATCH_NOT_QUALIFIED` with both
+execution authorization and runtime qualification false. A different
+manifest digest, profile, binding, recipe hash, missing image, substituted
+ID, mutable tag, or official registry digest mismatch blocks the check.
+The version fields record reviewed claims; this verifier does not inspect
+package contents, upstream lockfiles, signatures, image layer manifests or
+the parent-child build graph. The M0 recipe still uses mutable upstream
+bases and trusted network provisioning. Those remaining source/package
+provenance and independent runtime checks are required before portable
+admission is implemented. No existing Dell execution pin is relaxed.
