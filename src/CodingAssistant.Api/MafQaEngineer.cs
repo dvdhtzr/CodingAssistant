@@ -307,9 +307,15 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                     input.File.Path, suppliedCompanions, report);
             }
             catch (StoreFailure error) when (
-                error.Code == "MODEL_OUTPUT_REJECTED" && invalidReports++ == 0)
+                error.Code == "MODEL_OUTPUT_REJECTED" && invalidReports++ < 2)
             {
-                messages.Add(new ChatMessage(ChatRole.User,
+                messages.Add(new ChatMessage(ChatRole.User, invalidReports == 2 ?
+                    "Final compact report attempt: return one JSON object with exactly summary, findings, manualChecks. " +
+                    "Omit optional implementationEvidence and crossFileObservations. Summary 16-1600 characters; " +
+                    "0-6 actual findings, severity exactly Critical, Major or Minor; requirement 8-260 characters, " +
+                    "evidence and recommendation each 12-500 characters. Omit uncertain criterionId and sourceExcerpt. " +
+                    "Provide 1-6 manualChecks strings of 12-350 characters. Never invent evidence or claim tests passed. " +
+                    "Do not request another tool; report the actual concerns from the supplied primary source only." :
                     "Your previous response did not match the bounded static QA " +
                     "report contract. Return ONLY JSON with summary, findings " +
                     "(severity Critical/Major/Minor, requirement, evidence, " +
