@@ -527,7 +527,7 @@ export default function App() {
           onWork={() => setView('work')} />}
         {taskView && view === 'quality' && <QualityDestination token={token}
           taskId={taskId} onWork={() => setView('work')} />}
-        {taskView && view === 'skills' && <SkillsDestination token={token} />}
+        {taskView && view === 'skills' && <SkillsDestination token={token} taskId={taskView.task.id} />}
         {taskView && view === 'history' && <HistoryDestination token={token} taskId={taskId} />}
         {view === 'diagnostics' && taskView && <div className="wb-diagnostic-heading">
           <h2>Developer tools</h2>
