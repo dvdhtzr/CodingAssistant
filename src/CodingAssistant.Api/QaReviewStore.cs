@@ -364,6 +364,16 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             """, ("@run", job.EngineeringRunId), ("@path", source.Path));
         if (sha != source.Sha256)
             throw new StoreFailure("SOURCE_CHANGED");
+        // Validate literal excerpts against the persisted exact file before
+        // storing them. The caller's in-memory source cannot supply evidence.
+        var content = TaskStore.Scalar(db, tx, """
+            SELECT content FROM engineering_run_files
+            WHERE run_id=@run AND path=@path
+            """, ("@run", job.EngineeringRunId), ("@path", source.Path));
+        if (content is null || content != source.Content)
+            throw new StoreFailure("SOURCE_CHANGED");
+        valid = QaAcceptanceProjection.Ground(
+            ImplementationPlanStore.ReadForQa(db, tx, job), content, valid);
         var now = DateTimeOffset.UtcNow.ToString("O");
         try
         {
