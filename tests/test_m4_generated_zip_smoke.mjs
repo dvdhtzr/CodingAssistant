@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
+import {createHash} from 'node:crypto';
+import {prepareEvaluationCandidate} from '../tools/m4/static_web_evaluation_candidate.mjs';
 import {
   parseTrustedStaticZip,dockerArgs,parseResult,smokeZip,
 } from '../tools/m4/smoke_generated_zip.mjs';
@@ -287,4 +289,53 @@ test('internal API consumes JSON directly without user-facing ZIP artifact hando
   assert.equal(parsed.required,9);
   assert.ok(!result.stdout.includes('Evidence:'));
   assert.equal(result.stderr,'');
+});
+
+function evaluationScope(archive){
+  const hash=x=>createHash('sha256').update(x).digest('hex');
+  const parsed=parseTrustedStaticZip(archive);
+  const files=parsed.map(f=>({path:f.path,sha256:f.sha256,utf8Bytes:Buffer.byteLength(f.content)}))
+    .sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+  const sourceFingerprint=hash([...files].sort((a,b)=>a.path.toUpperCase()<b.path.toUpperCase()?-1:a.path.toUpperCase()>b.path.toUpperCase()?1:0)
+    .map(f=>f.path+'\t'+f.sha256).join('\n'));
+  return {schemaVersion:1,status:'SCOPE_CANDIDATE',executionEnabled:false,
+    verificationStatus:'GENERATED_NOT_TESTED',blockers:[],taskId:'a'.repeat(32),
+    engineeringRunId:'b'.repeat(32),planRevision:1,planSha256:'c'.repeat(64),
+    specificationVersion:1,specificationSha256:'d'.repeat(64),architectureSha256:'e'.repeat(64),
+    model:'qwen2.5-coder:14b',scopeSha256:'f'.repeat(64),sourceFingerprint,files};
+}
+test('exact approved-scope candidate binds archive, evaluator and mandatory cases without execution authority',()=>{
+  const archive=buildZip(working),currentScope=evaluationScope(archive);
+  const selection={...currentScope};
+  const candidate=prepareEvaluationCandidate({currentScope,selection,archive});
+  assert.equal(candidate.status,'CANDIDATE_ONLY');
+  assert.equal(candidate.executionEnabled,false);
+  assert.equal(candidate.runtimeQualified,false);
+  assert.equal(candidate.generatedArtifactVerified,false);
+  assert.equal(candidate.checks.length,7);
+  assert.equal(candidate.files.length,2);
+  assert.ok(Object.isFrozen(candidate.files[0]));
+  assert.match(candidate.evaluatorSha256,/^[a-f0-9]{64}$/);
+  assert.match(candidate.descriptorSha256,/^[a-f0-9]{64}$/);
+  assert.equal(candidate.descriptorSha256,prepareEvaluationCandidate({currentScope,selection,archive}).descriptorSha256);
+  assert.ok(!JSON.stringify(candidate).includes('document.querySelector'));
+});
+test('stale task/run/specification/plan/model/source selections and changed archives fail before staging',()=>{
+  const archive=buildZip(working),currentScope=evaluationScope(archive);
+  for(const [key,value] of Object.entries({taskId:'9'.repeat(32),engineeringRunId:'9'.repeat(32),planRevision:2,
+    planSha256:'9'.repeat(64),specificationVersion:2,specificationSha256:'9'.repeat(64),architectureSha256:'9'.repeat(64),
+    model:'other-model',scopeSha256:'9'.repeat(64),sourceFingerprint:'9'.repeat(64)})){
+    assert.throws(()=>prepareEvaluationCandidate({currentScope,selection:{...currentScope,[key]:value},archive}),/SCOPE_NOT_CURRENT/,key);
+  }
+  for(const mutated of [{status:'BLOCKED'},{executionEnabled:true},{blockers:['STALE']},{verificationStatus:'VERIFIED'}]){
+    const changed={...currentScope,...mutated};
+    assert.throws(()=>prepareEvaluationCandidate({currentScope:changed,selection:changed,archive}),/SCOPE_NOT_CURRENT/);
+  }
+  const changed=buildZip([working[0],['app.js','document.body.textContent="different";']]);
+  assert.throws(()=>prepareEvaluationCandidate({currentScope,selection:currentScope,archive:changed}),/MANIFEST_MISMATCH/);
+  for(const unsafe of [buildZip([working[0],['../escape.js','unsafe']]),buildZip(working,{symlink:true}),buildZip([...working,['extra.js','extra']])]){
+    assert.throws(()=>prepareEvaluationCandidate({currentScope,selection:currentScope,archive:unsafe}));
+  }
+  const wrongFingerprint={...currentScope,sourceFingerprint:'9'.repeat(64)};
+  assert.throws(()=>prepareEvaluationCandidate({currentScope:wrongFingerprint,selection:wrongFingerprint,archive}),/FINGERPRINT_MISMATCH/);
 });
