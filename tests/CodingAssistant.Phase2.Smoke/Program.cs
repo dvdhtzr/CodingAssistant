@@ -3911,6 +3911,17 @@ try
                 progress.Attempts[0].OriginalRunId==root.Id &&
                 (scenario!="regression" || progress.PotentialRegressionIssueIds is {Count:>0}),
                 "no second candidate is admitted after "+scenario);
+            if(scenario=="regression")
+            {
+                var evidence=new DeliveryEvidenceStore(tasks).Read(taskBound.Id);
+                Check(evidence.RoutineCandidate is {Disposition:"REJECTED_POTENTIAL_REGRESSION"} &&
+                    evidence.RoutineCandidate.RunId==candidate.Job.Id &&
+                    evidence.RoutineCandidate.BaseRunId==root.Id &&
+                    evidence.RoutineCandidate.BaseSourceSha256==rootHash &&
+                    evidence.Blockers.Contains("POTENTIAL_CANDIDATE_REGRESSION") &&
+                    !evidence.DeliveryAllowed && !evidence.EngineeringComplete,
+                    "rejected candidate is explicitly distinct from preserved predecessor and cannot claim delivery");
+            }
         }
         Check(QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,root.Id).Files)==rootHash,
             "original snapshot remains immutable after "+scenario);
