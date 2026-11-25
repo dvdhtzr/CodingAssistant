@@ -1396,15 +1396,20 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var denied = new Phase5FakeMafFactory();
     denied.ScriptedReplies.Enqueue(
         """{"toolRequest":{"name":"shell.run","argument":"whoami"}}""");
+    denied.ScriptedReplies.Enqueue(
+        """{"summary":"A valid report must not mask a rejected tool request.","findings":[],"manualChecks":["Verify the page through an authorized test later"]}""");
+    var deniedObservations = 0;
     try
     {
-        _ = await new MafQaEngineer(denied).ReviewAsync(input,
+        _ = await new MafQaEngineer(denied).ReviewAsync(
+            input with { OnAtlasInspection = _ => deniedObservations++ },
             CancellationToken.None);
         Check(false, "QA must never gain arbitrary host capabilities");
     }
     catch (StoreFailure e) when (e.Code == "MODEL_OUTPUT_REJECTED")
     {
-        Check(true, "QA MAF rejects forbidden tool names before dispatch");
+        Check(denied.ScriptedReplies.Count == 1 && deniedObservations == 0,
+            "QA MAF rejects forbidden tool names before dispatch without consuming the report retry budget");
     }
 }
 
