@@ -141,3 +141,19 @@ This is the first deterministic-evidence increment, not qualification of
 the isolated evaluator. Stronger syntax/asset checks and actual behavioral
 verification remain necessary before a generated application can be
 called verified.
+
+
+## Recovery from rejected repair output
+
+A failed repair is not necessarily an incomplete initial build. The host
+can permit fresh owner-triaged repair of an unchanged failed repair clone
+only when the exact source fingerprint and approved plan/specification/
+architecture match across its entire failed-repair lineage back to a
+Generated engineering run. Each failed clone must have no completed repair
+assignment. An original incomplete build or changed failed repair cannot
+qualify. Current QA and plan bindings and all existing repair approvals
+remain required; no earlier authorization is replayed. The UI distinguishes
+this recoverable state, retains the historical failure, and timestamps its
+last output diagnostic. The new categories REPAIR_EDIT_FIELDS and
+REPAIR_EDIT_SIZE separate malformed edit fields and excessive response
+size without exposing rejected model content. No execution is added.
