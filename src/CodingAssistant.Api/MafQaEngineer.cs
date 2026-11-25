@@ -277,10 +277,14 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
         while (true)
         {
             cancellation.ThrowIfCancellationRequested();
+            // Transport/report formatting failures are recoverable. Tool
+            // admission and host evidence processing remain fail-closed.
+            var retryableOutput = true;
             try
             {
                 var answer = await agent.RunAsync(messages,
                     cancellationToken: cancellation);
+                retryableOutput = false;
                 if (AgentAtlasInspectionGateway.TryParseRequest(
                     answer.Text, out var request))
                 {
@@ -302,11 +306,14 @@ public sealed class MafQaEngineer(IMafChatClientFactory? factory = null)
                         "bounded QA report JSON, or one remaining inspection."));
                     continue;
                 }
+                retryableOutput = true;
                 var report = Parse(answer.Text);
+                retryableOutput = false;
                 return QaAcceptanceProjection.GroundCrossFile(input.Plan,
                     input.File.Path, suppliedCompanions, report);
             }
             catch (StoreFailure error) when (
+                retryableOutput &&
                 (error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or
                     "MODEL_THINKING_ONLY") && invalidReports++ < 2)
             {
