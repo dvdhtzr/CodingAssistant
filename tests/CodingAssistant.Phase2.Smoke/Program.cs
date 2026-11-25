@@ -820,6 +820,76 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               reason.Contains("REPAIR_EDIT_NOT_UNIQUE", StringComparison.Ordinal)),
         "engineer retries stale exact-match target with bounded diagnostic and no source leak");
 
+    // Repair responses must refer to the immutable original, not earlier
+    // replacement text. Reject overlapping edits and malformed objects safely.
+    var twoEdits = JsonSerializer.Serialize(new {
+        summary = "Correct independent portions of the authorized file.",
+        edits = new[] {
+            new { path = "app.js", oldText = "const footer = 'preserve-footer';",
+                newText = "const footer = 'updated-footer';" },
+            new { path = "app.js", oldText = brokenHandler, newText = correctedHandler }
+        },
+        verificationNotes = Array.Empty<string>()
+    });
+    Check(MafSoftwareEngineer.TryParseRepair(twoEdits, authorizedRepair,
+        savedRepairFiles, out var twoEditResult, out _) &&
+        twoEditResult!.Files.Single().Content.Contains(correctedHandler, StringComparison.Ordinal) &&
+        twoEditResult.Files.Single().Content.Contains("updated-footer", StringComparison.Ordinal),
+        "disjoint original-source edits apply atomically in descending offset order");
+    var overlapping = JsonSerializer.Serialize(new {
+        summary = "Attempt overlapping changes to the same original source.",
+        edits = new[] {
+            new { path = "app.js", oldText = brokenHandler, newText = correctedHandler },
+            new { path = "app.js", oldText = "addEventListener('click', () => save(false));",
+                newText = "addEventListener('click', () => save(true));" }
+        },
+        verificationNotes = Array.Empty<string>()
+    });
+    Check(!MafSoftwareEngineer.TryParseRepair(overlapping, authorizedRepair,
+        savedRepairFiles, out _, out var overlapReason) &&
+        overlapReason.StartsWith("REPAIR_EDIT_OVERLAP:", StringComparison.Ordinal),
+        "overlapping original-source edits are rejected without changing saved source");
+    Check(!MafSoftwareEngineer.TryParseRepair(
+        """{"summary":"Attempt malformed edit input.","edits":[null],"verificationNotes":[]}""",
+        authorizedRepair, savedRepairFiles, out _, out var shapeReason) &&
+        shapeReason.StartsWith("REPAIR_EDIT_SHAPE:", StringComparison.Ordinal),
+        "null edit yields bounded shape diagnosis rather than an unhandled exception");
+    Check(!MafSoftwareEngineer.TryParseRepair(EditJson("app.js", "short", "new"),
+        authorizedRepair, savedRepairFiles, out _, out var lengthReason) &&
+        lengthReason.StartsWith("REPAIR_EDIT_LENGTH:", StringComparison.Ordinal),
+        "short source anchor gets actionable length diagnosis");
+    Check(MafSoftwareEngineer.TryParseRepair(patchJson.Replace("\"edits\"", "\"Edits\"",
+        StringComparison.Ordinal), authorizedRepair, savedRepairFiles, out _, out _),
+        "repair dispatch agrees with case-insensitive JSON deserialization");
+    var repairInventory = patchFactory.UserPrompts.Single(message =>
+        message.StartsWith("PREVIOUS SOURCE FILES", StringComparison.Ordinal));
+    Check(!repairInventory.Contains("preserve-all-existing-state", StringComparison.Ordinal) &&
+        patchFactory.UserPrompts.Any(message => message.Contains(
+            "FULL REPAIR TARGET SOURCE app.js", StringComparison.Ordinal)) &&
+        patchFactory.UserPrompts.All(message => !message.Contains(
+            "Return COMPLETE replacements only", StringComparison.Ordinal)),
+        "repair receives full target only once with consistent exact-edit guidance");
+    var smallRepairFiles = new[] { savedRepairFiles[0],
+        savedRepairFiles[1] with { Content = brokenHandler + "\n" } };
+    var fallbackFactory = new Phase4FakeMafFactory();
+    fallbackFactory.Responses.Enqueue(EditJson("app.js", "short", "new"));
+    fallbackFactory.Responses.Enqueue(overlapping);
+    fallbackFactory.Responses.Enqueue(JsonSerializer.Serialize(new {
+        summary = "Correct authorized small source file without changing scope.",
+        files = new[] { new { path = "app.js", purpose = "Original interactive behavior",
+            content = correctedHandler + "\n" } },
+        verificationNotes = Array.Empty<string>()
+    }));
+    var fallbackResult = await new MafSoftwareEngineer(fallbackFactory)
+        .ImplementAsync(assignment with {
+            ExistingFiles = smallRepairFiles, Repair = authorizedRepair
+        }, CancellationToken.None);
+    Check(fallbackFactory.Attempts == 3 &&
+        fallbackResult.Files.Single().Content == correctedHandler + "\n" &&
+        fallbackFactory.CorrectionReasons.Any(reason => reason.Contains(
+            "For this final attempt", StringComparison.Ordinal)),
+        "small authorized file can recover using complete replacement on final bounded attempt");
+
     var firstTaskFactory = new Phase4FakeMafFactory();
     firstTaskFactory.Responses.Enqueue(goodSource.Replace(
         "index.html", "app.js", StringComparison.Ordinal));
