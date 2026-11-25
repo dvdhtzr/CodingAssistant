@@ -114,3 +114,7 @@ unqualified. The next executable work must satisfy the separately approved
 scope and integrated adversarial gates (#76, #92, #111); no runtime promotion
 or delivery claim follows from fixed compatibility.
 
+
+## Trusted integrated evaluator — next owner-host command
+
+After the exact branch revision passes CI, run `node tools/m4/windows_aet8_trusted_qualification.mjs --run`. The expected positive report is ten security checks, five integrated fixture checks, working 7/7, broken 0/7, spoof 0/7, container removed true. This is not another standalone compatibility probe: it tests independent functional observations and negative controls under the same approved trusted guest policy. Retain the private JSON. Generated execution is not authorized by this run.
