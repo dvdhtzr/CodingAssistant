@@ -3348,11 +3348,19 @@ try
               body.RootElement.GetProperty("decisions").GetArrayLength() == 1,
             "triage decision is durably readable without source mutation");
     var aetCombined=new EngineeringIssueStore(tasks).Read(taskBound.Id);
-    Check(aetCombined.Issues.Count==2 &&
-        aetCombined.Issues.Single(x=>x.Origin=="QaEngineer").Classification=="NeedsVerification" &&
-        aetCombined.Issues.Single(x=>x.Origin=="QaEngineer").TriageHistory.Single().ReviewId==qaReviewId &&
-        aetCombined.Issues.Single(x=>x.Origin=="LeadSoftwareEngineer").State=="ConfirmedDefect",
-        "unified issue view combines independent origins and actual owner triage");
+    var aetCurrentQaIssue=aetCombined.Issues.Single(x=>x.Origin=="QaEngineer" &&
+        x.References.Any(reference=>reference.ReviewId==qaReviewId));
+    var aetHistoricalSkillIssues=aetCombined.Issues.Where(x=>x.Origin=="QaEngineer" &&
+        x.Id!=aetCurrentQaIssue.Id).ToArray();
+    Check(aetCombined.Issues.Count==4 &&
+        aetCurrentQaIssue.Classification=="NeedsVerification" &&
+        aetCurrentQaIssue.TriageHistory.Single().ReviewId==qaReviewId &&
+        aetCurrentQaIssue.LatestReview &&
+        aetCombined.Issues.Single(x=>x.Origin=="LeadSoftwareEngineer").State=="ConfirmedDefect" &&
+        aetHistoricalSkillIssues.Length==2 &&
+        aetHistoricalSkillIssues.All(x=>!x.LatestReview && x.TriageHistory.Count==0 &&
+            x.State=="NeedsTriage"),
+        "unified issue view preserves both reviewer origins, exact owner triage and historical skill findings");
 
     // R2-R5 end-to-end fixture: explicit triage, authorized source-only
     // repair, preservation of original files, and independent QA reassessment.
@@ -3403,7 +3411,7 @@ try
             "Owner explicitly confirms Start handler defect against specification")))
         Check(ownerConfirmed.StatusCode == HttpStatusCode.OK,
             "owner can confirm and classify one source-bound defect");
-    var aetRepeatIssue=new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Single(x=>x.Origin=="QaEngineer");
+    var aetRepeatIssue=new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Single(x=>x.Id==aetCurrentQaIssue.Id);
     Check(aetRepeatIssue.References.Count==2 && aetRepeatIssue.State=="TriageConflict" &&
         aetRepeatIssue.TriageHistory.Count==2,
         "identical repeated findings deduplicate but conflicting decisions remain visible");
@@ -3470,7 +3478,7 @@ try
           engineeringResult!.Files.Single(f => f.Path == "app.js").Sha256,
         "prior engineering run is unchanged after source-only repair");
     var aetHistoricalIssues=new EngineeringIssueStore(tasks).Read(taskBound.Id,engineeringRunId);
-    var aetRepairedIssue=aetHistoricalIssues.Issues.Single(x=>x.Origin=="QaEngineer");
+    var aetRepairedIssue=aetHistoricalIssues.Issues.Single(x=>x.Id==aetRepeatIssue.Id);
     Check(!aetHistoricalIssues.CurrentSource && aetRepairedIssue.Id==aetRepeatIssue.Id &&
         aetRepairedIssue.RepairCycleId==cycleId && aetRepairedIssue.RepairAttempt==1 &&
         aetRepairedIssue.AssignedOwner=="SoftwareEngineer" &&
