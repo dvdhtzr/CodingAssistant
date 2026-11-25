@@ -32,8 +32,13 @@ internal static class PrivateDataDirectory
             throw new InvalidOperationException("Data directory must be owner-private (0700)");
     }
 
-    internal static void ValidateFile(string path)
+    internal static void ValidateFile(string path, bool sqliteSidecar = false)
     {
+        if (sqliteSidecar && OperatingSystem.IsWindows())
+        {
+            WindowsSidecarSecurity.Validate(path, ValidateWindows);
+            return;
+        }
         // SQLite WAL/SHM files can disappear after attributes are read but
         // before the security descriptor is fetched on another connection.
         // Retry that narrow race; never swallow ACL denial or an unsafe file.

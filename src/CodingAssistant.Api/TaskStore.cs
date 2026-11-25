@@ -154,12 +154,18 @@ public sealed class TaskStore
     private void ValidateDatabasePaths()
     {
         foreach (var suffix in new[] { "", "-wal", "-shm", "-journal" })
-            PrivateDataDirectory.ValidateFile(_databasePath + suffix);
+            PrivateDataDirectory.ValidateFile(_databasePath + suffix, sqliteSidecar: suffix.Length != 0);
     }
 
     internal SqliteConnection Open()
     {
-        ValidateDatabasePaths();
+        try { ValidateDatabasePaths(); }
+        catch (Exception error) when (error is UnauthorizedAccessException or IOException or InvalidOperationException)
+        {
+            // Fail closed on unreadable or unsafe data paths. Startup checks
+            // remain strict; requests get a sanitized, retryable HTTP error.
+            throw new StoreFailure("PRIVATE_DATA_UNAVAILABLE");
+        }
         var db = new SqliteConnection(_connectionString);
         try
         {
