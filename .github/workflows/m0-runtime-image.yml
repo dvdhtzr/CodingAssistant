@@ -58,7 +58,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Build image using only the runtime recipe directory
         run: docker build --pull --progress=plain -t codingassistant-m0-runtime:ci -f infra/runtime/Containerfile infra/runtime
       - name: Verify toolchain with no network or project mounts
