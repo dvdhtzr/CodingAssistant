@@ -28,19 +28,17 @@ const task = {
 };
 const noop = () => {};
 
-test('Engineering Studio makes team, focused work and attention distinct accessible regions', () => {
+test('Engineering Studio opens with accessible supervision and no mounted specialist workstations', () => {
   const html = renderToStaticMarkup(React.createElement(EngineeringStudio, {
     task, token: 'f'.repeat(64), onTeam: noop,
   }));
   assert.match(html, /aria-label="AI Engineering Studio"/);
-  assert.match(html, /aria-label="Engineering team"/);
-  assert.match(html, /aria-label="Focused engineering work"/);
-  assert.match(html, /aria-label="Owner attention and handoffs"/);
-  assert.match(html, /Your team at work/);
-  assert.match(html, /No active agent run recorded/);
-  assert.match(html, /RECORDED WORK ONLY/);
-  assert.match(html, /PROJECT WORK|WORK \/ CURRENT STEP/);
-  assert.doesNotMatch(html, /Agent collaboration board/);
+  assert.match(html, /aria-label="Project supervision"/);
+  assert.match(html, /aria-label="Recorded team status"/);
+  assert.match(html, /aria-label="Next project action"/);
+  assert.match(html, /Inspect workspaces/);
+  assert.match(html, /Reading saved project state/);
+  assert.doesNotMatch(html, /aria-label="Focused engineering work"|aria-label="Owner attention and handoffs"|Live engineering activity/);
 });
 
 test('owner attention is source- and plan-bound; failed repair is not mistaken for current QA', () => {

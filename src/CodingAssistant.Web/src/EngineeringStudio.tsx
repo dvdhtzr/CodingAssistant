@@ -91,6 +91,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   token: string; task: TaskItem; onTeam: () => void; active?: boolean;
 }) {
   const [detailed, setDetailed] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [saved, setSaved] = useState<StudioEvidence | null>(null);
   const [decisions, setDecisions] = useState<DecisionInboxSnapshot | null>(null);
   const [teamError, setTeamError] = useState(false);
@@ -125,6 +126,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
 
   useEffect(() => {
     setDetailed(false);
+    setActivityOpen(false);
     setInspectedAgentId(null);
     setSideView('attention');
     setModels(null);
@@ -270,7 +272,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
         </section>
         {activity.length>0&&<section className="ca-guided-last" aria-label="Latest saved activity">
           <span className="ca-studio-eyebrow">LATEST SAVED ACTIVITY</span><strong>{activity[0].title}</strong><p>{activity[0].detail}</p>
-          <details><summary>Inspect recorded activity</summary><EngineeringActivityFeed key={task.id} token={token} taskId={task.id} compact={false}/></details>
+          <details onToggle={event=>setActivityOpen(event.currentTarget.open)}><summary>Inspect recorded activity</summary>{activityOpen&&<EngineeringActivityFeed key={task.id} token={token} taskId={task.id} compact={false}/>}</details>
         </section>}
         <p className="ca-studio-verification">Source-only work. No independent functional verification or delivery is implied.</p>
       </div>

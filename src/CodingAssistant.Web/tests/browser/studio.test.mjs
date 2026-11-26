@@ -736,6 +736,9 @@ test('guided supervision is the default and exact approval starts coordination w
         routineRepairCandidate:{runId,sourceSha256:sha,paths:['index.html']},
         capacity:{capacity:1,active:0,waiting:0}
       });
+      // SignalR negotiation is read-only transport, not project authorization.
+      // Keep all other POSTs visible to the no-mutation assertion.
+      if(path.startsWith('/api/progress'))return route.fallback();
       if(method==='POST'){
         const body=route.request().postDataJSON();writes.push({path,body});
         if(path.endsWith('/engineering-delegation/propose')){
