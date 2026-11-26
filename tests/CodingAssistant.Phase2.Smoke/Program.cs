@@ -5294,9 +5294,10 @@ try
             var policy=new EngineeringDelegationStore(tasks).Read(upfrontTask);
             var progress=new RepairProgressStore(tasks).Read(upfrontTask,current.Job.Id);
             Check(intent is {State:"Bound"}&&team?.Job.State=="AwaitingVerification"&&
-                policy?.RoutineRepair?.BaselineRunId==intent.RunId &&
-                policy.RoutineRepair.Paths.SequenceEqual(new[]{"app.js"}) &&
-                policy.RoutineRepair.MaximumRepairs==4 &&
+                policy?.RoutineRepair is { } routineRepair &&
+                routineRepair.BaselineRunId==intent.RunId &&
+                routineRepair.Paths.SequenceEqual(new[]{"app.js"}) &&
+                routineRepair.MaximumRepairs==4 &&
                 progress.Attempts.Count==2&&progress.Attempts.All(a=>a.IndependentStaticResolution),
                 "single approval completes generation plus two independently reassessed delegated repairs: "+team?.Job.Reason);
             var delivery=new DeliveryEvidenceStore(tasks).Read(upfrontTask);
