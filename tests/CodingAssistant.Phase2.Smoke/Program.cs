@@ -5235,6 +5235,19 @@ try
     {
         var fixtureTask=tasks.CreateTask(new CreateTaskRequest(title,
             "Create an offline static web timer with mouse and keyboard controls",Guid.NewGuid().ToString("N")));
+        // Fresh projects do not inherit the role selections of taskBound.
+        // Exercise the real owner selection API using only catalogued fixture
+        // models; keep the production missing-model admission gate intact.
+        foreach(var (role,model) in new[]{
+            ("SoftwareEngineer",AgentRoleModelSettings.PreferredCoder),
+            ("LeadSoftwareEngineer","qwen3.5:4b"),
+            ("QaEngineer","qwen3.5:4b")})
+        {
+            using var selection=await Post(client,"/api/tasks/"+fixtureTask.Id+"/agent-models/"+role,
+                new SetAgentRoleModelRequest(model));
+            Check(selection.StatusCode==HttpStatusCode.OK,
+                "upfront fixture owner selects an installed model: "+role);
+        }
         var fixtureFirst=interviews.CommitTurn(fixtureTask.Id,new InterviewTurnRequest(0,null,"qwen3.5:4b"),
             new InterviewReply("What are the timer controls?",false));
         var fixtureAnswer=interviews.CommitTurn(fixtureTask.Id,new InterviewTurnRequest(fixtureFirst.LastSequence,
