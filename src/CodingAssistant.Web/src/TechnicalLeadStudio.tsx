@@ -68,7 +68,10 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
   const [pathInput,setPathInput]=useState('');
   const [budget,setBudget]=useState(4);
   const paths=pathInput.split(/[\n,]/).map(p=>p.trim()).filter(Boolean);
-  const scopeValid=paths.length>=1&&paths.length<=12&&new Set(paths.map(p=>p.toLowerCase())).size===paths.length;
+  const scopeError=paths.length===0?'Enter at least one exact file path from your plan to enable approval.':
+    paths.length>12?'Enter no more than 12 file paths.':
+    new Set(paths.map(p=>p.toLowerCase())).size!==paths.length?'Remove duplicate file paths.':'';
+  const scopeValid=!scopeError;
 
   useEffect(() => {
     let closed = false;
@@ -261,11 +264,14 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
           </label>
           {guidedOwner&&<fieldset disabled={!!busy}>
             <legend>Continuous source-only team workflow</legend>
-            <label><input type="checkbox" checked={teamMode} onChange={e=>setTeamMode(e.target.checked)}/>
+            <label className="spec-consent"><input type="checkbox" checked={teamMode} onChange={e=>setTeamMode(e.target.checked)}/>
               Generate, independently review and repair within one approved scope</label>
             {teamMode&&<>
-              <label>Exact future repair file paths (one per line)<textarea value={pathInput}
-                onChange={e=>setPathInput(e.target.value)} placeholder={'index.html\napp.js\nstyles.css'}/></label>
+              <label>Exact future repair file paths (one per line, required)<textarea value={pathInput}
+                onChange={e=>setPathInput(e.target.value)} aria-required="true"
+                aria-invalid={!scopeValid} aria-describedby="team-scope-instructions team-scope-status"/></label>
+              <p className="hint" id="team-scope-instructions">Enter the filenames specified by your plan, not guessed filenames. For example, index.html, app.js and styles.css are valid only if your plan calls for those exact files.</p>
+              <p role="status" id="team-scope-status">{scopeError||paths.length+' explicit repair path(s) selected.'}</p>
               <label>Maximum routine repairs <select value={budget} onChange={e=>setBudget(Number(e.target.value))}>
                 {[1,2,3,4,5,6,7,8].map(n=><option key={n} value={n}>{n}</option>)}</select></label>
               <p>Only these exact existing files in the resulting source revision may be repaired. Missing paths, changed approvals, insufficient evidence or exhausted budget stop the team. No code execution, new repair files or delivery approval.</p>

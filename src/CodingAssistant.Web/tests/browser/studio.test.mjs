@@ -50,7 +50,7 @@ const done = (route, body, status = 200) => route.fulfill({
 });
 
 function mockApi(page, { architectureOutdated = false,
-  specificationStatus = 'Approved', activityEvents = [] } = {}) {
+  specificationStatus = 'Approved', planStatus = 'Approved', activityEvents = [] } = {}) {
   const selections = [
     { role: 'ProductOwner', model: 'qwen3-coder:30b',
       overridden: false, source: 'Interview selection' },
@@ -160,7 +160,7 @@ function mockApi(page, { architectureOutdated = false,
       schemaVersion: 1,
       plan: { taskId: id, revision: 1,
         specificationVersion: 1, specificationSha256: spec, architectureSha256: arch,
-        model: 'qwen3-coder:30b', planSha256: sha, status: 'Approved', current: true,
+        model: 'qwen3-coder:30b', planSha256: sha, status: planStatus, current: true,
         effectiveStatus: 'Approved', createdUtc: time, approvedUtc: time,
         outline: { summary: 'Create the historic site',
           tasks: [{ id: 'item1', title: 'Create initial application',
@@ -907,5 +907,40 @@ test('guided source-only terminal outcome directs the owner to verification evid
     await guided.getByRole('button',{name:'Inspect verification evidence'}).click();
     await page.getByRole('region',{name:'Focused engineering work'}).waitFor();
     assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+test('guided team approval explains empty and duplicate repair scope without silently choosing filenames',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  try{
+    await mockApi(page,{planStatus:'Proposed'});
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/engineering-runs/latest')||path.endsWith('/qa-reviews/latest')||
+         path.endsWith('/repair-cycles/latest')||path.endsWith('/lead-reviews/latest')||
+         path.endsWith('/collaboration/latest'))return done(route,{snapshot:null});
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Review implementation plan v1'}).waitFor();
+    await guided.getByRole('button',{name:'Continue',exact:true}).click();
+    const consent=guided.getByLabel(/I have reviewed these tasks and acceptance criteria/);
+    await consent.check();
+    await guided.getByLabel('Generate, independently review and repair within one approved scope').check();
+    const input=guided.getByRole('textbox',{name:/Exact future repair file paths/});
+    const approve=guided.getByRole('button',{name:'Approve plan and start team'});
+    assert.equal(await input.inputValue(),'');
+    assert.equal(await approve.isDisabled(),true);
+    await guided.getByText('Enter at least one exact file path from your plan to enable approval.').waitFor();
+    await input.fill('index.html\\nINDEX.HTML'.replace('\\n','\n'));
+    await guided.getByText('Remove duplicate file paths.').waitFor();
+    assert.equal(await approve.isDisabled(),true);
+    await input.fill('index.html');
+    await guided.getByText('1 explicit repair path(s) selected.').waitFor();
+    assert.equal(await approve.isEnabled(),true);
+    assert.deepEqual(writes,[],'valid scope is not itself authorization');
   }finally{await page.close();}
 });
