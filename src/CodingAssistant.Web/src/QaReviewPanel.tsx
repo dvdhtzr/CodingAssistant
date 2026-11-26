@@ -169,12 +169,12 @@ export function QaReviewPanel({ token, taskId, engineering }: {
     source?.planSha256 === plan.planSha256;
   const partialSource = source?.state === 'Failed' ||
     source?.state === 'Interrupted';
-  const running = result?.job.state === 'Running';
   const currentRepair = !!source && repair?.cycle.engineeringRunId === source.id;
   const currentReport = !!source &&
     result?.job.engineeringRunId === source.id &&
     result.job.planSha256 === plan?.planSha256 &&
     plan?.current === true;
+  const running = currentReport && result?.job.state === 'Running';
   // A new review or source revision invalidates previous owner selection.
   useEffect(() => {
     setRepairOpen(false); setSelected([]); setConfirmed(false);
@@ -229,8 +229,8 @@ export function QaReviewPanel({ token, taskId, engineering }: {
   const qaAtlasInvestigations = result?.events.filter(
     event => event.kind === 'QaAtlasInspected').length ?? 0;
 
-  const repairRunning = repair?.cycle.state === 'Running' ||
-    repair?.cycle.state === 'QaRunning';
+  const repairRunning = currentRepair && (repair?.cycle.state === 'Running' ||
+    repair?.cycle.state === 'QaRunning');
   const availableFindings = (acceptance?.findings ??
     result?.reports.flatMap(report =>
       report.assessment.findings.map((finding, index) => ({
