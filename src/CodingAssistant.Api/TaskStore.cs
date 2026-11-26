@@ -150,6 +150,7 @@ public sealed class TaskStore
             """);
         EngineeringMessageStore.Initialize(connection);
         EngineeringDelegationStore.Initialize(connection);
+        UpfrontTeamAuthorizationStore.Initialize(connection);
         AgentCommunicationStore.Initialize(connection);
         EngineeringActivityStore.Initialize(connection);
         LeadReviewStore.Initialize(connection);

@@ -2132,6 +2132,19 @@ try
         Check(wrongConsent.StatusCode == HttpStatusCode.BadRequest,
             "approval requires exact owner-confirmed plan hash");
 
+    // An invalid future-file rule must roll back the plan approval itself.
+    foreach(var invalidUpfront in new[]{
+        new UpfrontRepairAuthorization(["app.js"],0),
+        new UpfrontRepairAuthorization(["app.js","APP.JS"],4),
+        new UpfrontRepairAuthorization([],4)})
+    {
+        using var rejectedUpfront=await Post(client,leadPath+"/approve",approveLead with {TeamRepair=invalidUpfront});
+        Check(rejectedUpfront.StatusCode==HttpStatusCode.BadRequest &&
+            new ImplementationPlanStore(tasks,interviews).Read(taskBound.Id).Plan?.Status=="Proposed" &&
+            new UpfrontTeamAuthorizationStore(tasks).Read(taskBound.Id) is null,
+            "invalid upfront scope cannot approve plan or persist future authority");
+    }
+
     using (var approvedPlan = await Post(client, leadPath + "/approve", approveLead))
     using (var body = await Body(approvedPlan))
         Check(approvedPlan.StatusCode == HttpStatusCode.OK &&

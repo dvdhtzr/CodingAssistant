@@ -248,6 +248,8 @@ public sealed class ImplementationPlanStore(TaskStore tasks, InterviewStore inte
             WHERE task_id=@id AND revision=@revision AND status='Proposed'
             """, ("@id", taskId), ("@revision", plan.Revision),
             ("@approved", approved));
+        if(request.TeamRepair is not null)
+            UpfrontTeamAuthorizationStore.Record(db,tx,plan,request.TeamRepair);
         EngineeringActivityStore.Record(db,tx,taskId,"PlanApproved","HumanOwner",
             "ImplementationPlan",plan.PlanSha256,plan.Revision,toAgent:"TechnicalLead");
         tx.Commit();

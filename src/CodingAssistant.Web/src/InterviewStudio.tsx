@@ -564,7 +564,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
     <ArchitectureStudio token={token} taskId={task.id} spec={spec ?? null}
       expanded={expanded === 'architecture'} onExpand={openStage}
       onReady={architectureReady} onStageChange={reportArchitecture} />
-    <TechnicalLeadStudio token={token} taskId={task.id} spec={spec ?? null}
+    <TechnicalLeadStudio token={token} taskId={task.id} spec={spec ?? null} guidedOwner={guidedOwner}
       architectureSignal={architectureStep.status}
       expanded={expanded === 'plan'} onExpand={openStage}
       onReady={planReady} onStageChange={reportPlan} />

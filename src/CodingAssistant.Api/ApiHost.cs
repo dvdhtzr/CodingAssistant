@@ -735,10 +735,23 @@ public static class ApiHost
                 return Results.Created($"/api/tasks/{id}/implementation-plan",
                     created);
             }));
+        app.MapGet("/api/tasks/{id}/upfront-team-authorization",
+            (string id,TaskStore tasks)=>Safe(()=>Results.Ok(new {authorization=new UpfrontTeamAuthorizationStore(tasks).Read(id)})));
         app.MapPost("/api/tasks/{id}/implementation-plan/approve",
             (string id, ApproveImplementationPlanRequest input,
-             ImplementationPlanStore db) =>
-                Safe(() => Results.Ok(db.Approve(id, input))));
+             ImplementationPlanStore db,EngineeringRunCoordinator coordinator,
+             AgentRoleModelSettings roleModels,IOllamaModelCatalog catalog,CancellationToken cancellation) =>
+                SafeAsync(async ()=>{
+                    if(input.TeamRepair is null)return Results.Ok(db.Approve(id,input));
+                    var inherited=db.Read(id).Plan?.Model??LocalInterviewModel.DefaultModel;
+                    var model=roleModels.Resolve(id,"SoftwareEngineer",inherited);
+                    if(!(await catalog.ListAsync(cancellation)).Contains(model,StringComparer.Ordinal))
+                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    var plan=db.Approve(id,input);
+                    coordinator.Start(id,new StartEngineeringRunRequest(plan.Revision,plan.PlanSha256,
+                        UseApprovedTeamAuthorization:true),model);
+                    return Results.Ok(plan);
+                }));
         // Exact identity, goals, fictional work histories and future skill scopes
         // are host-owned; none of these fields grant executable permissions.
         app.MapGet("/api/agents/roster", () =>

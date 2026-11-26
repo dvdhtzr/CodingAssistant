@@ -9,7 +9,7 @@ namespace CodingAssistant.Api;
 
 public sealed record StartEngineeringRunRequest(
     int PlanRevision, string? PlanSha256, string? ResumeRunId = null,
-    AdaptivePlanSelection? WorkPlan = null);
+    AdaptivePlanSelection? WorkPlan = null,bool UseApprovedTeamAuthorization=false);
 public sealed record EngineeringRun(
     string Id, string TaskId, int PlanRevision, string PlanSha256,
     int SpecificationVersion, string SpecificationSha256,
@@ -216,7 +216,7 @@ public sealed class EngineeringRunStore(
     }
 
     public EngineeringRun Start(string taskId, ImplementationPlan approved,
-        string? agentModel = null,AdaptivePlanSelection? selection=null)
+        string? agentModel = null,AdaptivePlanSelection? selection=null,bool useApprovedTeamAuthorization=false)
     {
         ValidId(taskId);
         if (approved.TaskId != taskId || approved.Status != "Approved" ||
@@ -263,6 +263,8 @@ public sealed class EngineeringRunStore(
                 """, ("@run", id), ("@item", task.Id),
                 ("@ordinal", ordinal++), ("@title", task.Title));
         }
+        if(useApprovedTeamAuthorization)
+            UpfrontTeamAuthorizationStore.Claim(db,tx,candidate);
         if(adaptive is not null)AdaptiveWorkPlanStore.Bind(db,tx,candidate,adaptive);
         Event(db, tx, id, "EngineeringRunAdmitted",
             "Owner-approved plan v" + approved.Revision +
@@ -878,6 +880,7 @@ public sealed class EngineeringRunStore(
         ValidId(taskId); ValidId(runId);
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
+        UpfrontTeamAuthorizationStore.Stop(db,tx,taskId,runId);
         InterruptInTransaction(db,tx,taskId,runId);
         tx.Commit();
         tasks.SignalEngineeringActivity(taskId);

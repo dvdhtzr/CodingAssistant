@@ -793,7 +793,8 @@ test('guided owner decisions show only the focused form and do not launch work',
     const guided=page.getByRole('main',{name:'Project supervision'});
     await guided.getByRole('heading',{name:'Review specification v1'}).waitFor();
     await guided.getByRole('button',{name:'Continue',exact:true}).click();
-    await guided.getByRole('heading',{name:'2. Review and approve the specification'}).waitFor();
+    await guided.getByRole('heading',{name:'Specification',exact:true}).waitFor();
+    await guided.getByRole('button',{name:'Approve this specification'}).waitFor();
     assert.equal(await guided.getByRole('button',{name:'Approve this specification'}).isDisabled(),true);
     assert.equal(await page.getByRole('region',{name:'Focused engineering work'}).count(),0);
     assert.equal(await page.getByRole('navigation',{name:'Project work stages'}).count(),0);

@@ -246,6 +246,52 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
         return result;
     }
 
+    // Materialize the exact scope previously approved with this plan.
+    // No agent or public API may call this path to grant additional authority.
+    internal StartCollaborationRequest? BindUpfront(string taskId,string runId)
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var intent=UpfrontTeamAuthorizationStore.Read(db,tx,taskId);
+        if(intent?.RunId!=runId||intent.State!="Claimed")return null;
+        var plan=ImplementationPlanStore.RequireCurrentApproved(db,tx,taskId);
+        var run=EngineeringRunStore.Find(db,tx,runId);
+        var previous=Latest(db,tx,taskId);
+        if(plan.Revision!=intent.PlanRevision||plan.PlanSha256!=intent.PlanSha256||
+            run is null||run.TaskId!=taskId||run.State!="Generated"||
+            (previous?.Revision??0)!=intent.ExpectedDelegationRevision||
+            previous?.Status is ("Approved" or "Proposed"))
+            throw new StoreFailure("DELEGATION_NOT_AUTHORIZED");
+        string[] operations=AllowedOperations.OrderBy(op=>op,StringComparer.Ordinal).ToArray();
+        var source=EngineeringMessageStore.SourceFingerprint(db,tx,runId);
+        var routine=ValidateRoutineScope(db,tx,taskId,plan,operations,
+            new RoutineRepairScope(runId,source,intent.Paths,intent.MaximumRepairs))!;
+        var revision=intent.ExpectedDelegationRevision+1;
+        var sha=Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(
+            new {schemaVersion=2,taskId,revision,planRevision=plan.Revision,plan.PlanSha256,
+                plan.SpecificationVersion,plan.SpecificationSha256,plan.ArchitectureSha256,operations,routine}))).ToLowerInvariant();
+        var now=DateTimeOffset.UtcNow.ToString("O");
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO engineering_delegation(task_id,revision,plan_revision,plan_sha256,
+                spec_version,spec_sha256,architecture_sha256,operations_json,policy_sha256,
+                status,created_utc,approved_utc)
+            VALUES(@task,@rev,@pr,@plan,@sv,@spec,@arch,@ops,@sha,'Approved',@now,@now)
+            """,("@task",taskId),("@rev",revision),("@pr",plan.Revision),("@plan",plan.PlanSha256),
+            ("@sv",plan.SpecificationVersion),("@spec",plan.SpecificationSha256),
+            ("@arch",plan.ArchitectureSha256),("@ops",JsonSerializer.Serialize(operations)),("@sha",sha),("@now",now));
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO engineering_routine_repair_scope(task_id,revision,scope_json)
+            VALUES(@task,@rev,@scope)
+            """,("@task",taskId),("@rev",revision),("@scope",JsonSerializer.Serialize(routine)));
+        TaskStore.Execute(db,tx,"""
+            UPDATE upfront_team_authorizations SET state='Bound',bound_policy_revision=@rev,bound_policy_sha256=@sha
+            WHERE task_id=@task AND run_id=@run AND state='Claimed'
+            """,("@task",taskId),("@run",runId),("@rev",revision),("@sha",sha));
+        EngineeringActivityStore.Record(db,tx,taskId,"DelegationApproved","Host",
+            "DelegationPolicy",sha,revision,sourceSha256:source);
+        tx.Commit();tasks.SignalEngineeringActivity(taskId);
+        return new(runId,source,plan.PlanSha256,revision,sha);
+    }
+
     public DelegationPolicy Approve(string taskId, ApproveDelegationRequest input)
     {
         using var db = tasks.Open();

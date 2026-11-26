@@ -251,8 +251,11 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
       const plan=latest.plan;
       if (!plan?.current || plan.status!=='Approved' || plan.revision!==decisions.plan.revision)
         throw Error('The approved plan has changed. Review the current plan.');
+      const {authorization}=await api<{authorization:{state:string;planRevision:number;planSha256:string}|null}>(token,root+'/upfront-team-authorization');
+      const useApprovedTeamAuthorization=authorization?.state==='Pending'&&
+        authorization.planRevision===plan.revision&&authorization.planSha256===plan.planSha256;
       const job=await api<EngineerSnapshot['job']>(token,root+'/engineering-runs',
-        {planRevision:plan.revision,planSha256:plan.planSha256});
+        {planRevision:plan.revision,planSha256:plan.planSha256,useApprovedTeamAuthorization});
       setSaved(previous=>previous?{...previous,engineering:{job,tasks:[],events:[],files:[]}}:previous);
     } catch (cause) {setStartError(cause instanceof Error?cause.message:'Could not start approved work.');}
     finally {setStarting(false);}

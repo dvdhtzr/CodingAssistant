@@ -11,7 +11,8 @@ namespace CodingAssistant.Api;
 public sealed class EngineeringRunCoordinator(
     TaskStore tasks, InterviewStore interviews, ImplementationPlanStore plans,
     EngineeringRunStore store, IEngineeringTaskModel engineer,
-    EngineeringAtlasNotifier atlasNotifier, IHostApplicationLifetime lifetime)
+    EngineeringAtlasNotifier atlasNotifier, IHostApplicationLifetime lifetime,
+    IServiceProvider services)
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
@@ -38,11 +39,12 @@ public sealed class EngineeringRunCoordinator(
         // Resuming is an explicit owner request. Store.Resume rechecks the
         // exact latest terminal run, plan/architecture/spec binding and
         // source hashes in one transaction before copying prior completions.
-        if(request.ResumeRunId is not null && request.WorkPlan is not null)
+        if(request.ResumeRunId is not null && (request.WorkPlan is not null||request.UseApprovedTeamAuthorization) ||
+            request.UseApprovedTeamAuthorization && request.WorkPlan is not null)
             throw new StoreFailure("INVALID_INPUT");
         var job = request.ResumeRunId is { } previousRunId
             ? store.Resume(taskId, plan, previousRunId, agentModel)
-            : store.Start(taskId, plan, agentModel,request.WorkPlan);
+            : store.Start(taskId, plan, agentModel,request.WorkPlan,request.UseApprovedTeamAuthorization);
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = cancellation;
@@ -117,6 +119,25 @@ public sealed class EngineeringRunCoordinator(
                 }
             token.ThrowIfCancellationRequested();
             store.Finish(job.TaskId, job.Id, true, null);
+            // Only the one admitted run can materialize the future-file rule.
+            // A changed plan, missing path or revoked scope stops here.
+            if(new UpfrontTeamAuthorizationStore(tasks).Read(job.TaskId) is {State:"Claimed",RunId:var claimed}
+                && claimed==job.Id)
+            {
+                try
+                {
+                    token.ThrowIfCancellationRequested();
+                    var next=new EngineeringDelegationStore(tasks).BindUpfront(job.TaskId,job.Id);
+                    if(next is not null)
+                        await services.GetRequiredService<CollaborationCoordinator>().StartAsync(job.TaskId,next,token);
+                }
+                catch(StoreFailure e)
+                {new UpfrontTeamAuthorizationStore(tasks).MarkStopped(job.TaskId,job.Id,e.Code);}
+                catch(OperationCanceledException)
+                {store.Interrupt(job.TaskId,job.Id);}
+                catch(Exception)
+                {new UpfrontTeamAuthorizationStore(tasks).MarkStopped(job.TaskId,job.Id,"COLLABORATION_FAILED");}
+            }
         }
         catch (OperationCanceledException)
         {
@@ -125,12 +146,14 @@ public sealed class EngineeringRunCoordinator(
         catch (StoreFailure error)
         {
             store.Finish(job.TaskId, job.Id, false, error.Code);
+            new UpfrontTeamAuthorizationStore(tasks).MarkStopped(job.TaskId,job.Id,error.Code);
         }
         catch (Exception)
         {
             // User-visible failure categories never leak model contents,
             // private paths, credentials or environment details.
             store.Finish(job.TaskId, job.Id, false, "ENGINEERING_FAILED");
+            new UpfrontTeamAuthorizationStore(tasks).MarkStopped(job.TaskId,job.Id,"ENGINEERING_FAILED");
         }
         finally
         {
@@ -142,12 +165,14 @@ public sealed class EngineeringRunCoordinator(
     public EngineeringRunSnapshot Cancel(string taskId, string runId)
     {
         var snapshot = store.Get(taskId, runId);
-        if (snapshot.Job.State == "Running")
+        // Persist stop before signalling a model; a completed generation
+        // may still be in its automatic coordination handoff.
+        if(snapshot.Job.State=="Running" ||
+            new UpfrontTeamAuthorizationStore(tasks).Read(taskId)?.RunId==runId)
         {
-            if (_active.TryGetValue(runId, out var cancellation))
-                cancellation.Cancel();
-            else
-                store.Interrupt(taskId, runId);
+            store.Interrupt(taskId,runId);
+            if(_active.TryGetValue(runId,out var cancellation))
+                try{cancellation.Cancel();}catch(ObjectDisposedException){}
         }
         return store.Get(taskId, runId);
     }
