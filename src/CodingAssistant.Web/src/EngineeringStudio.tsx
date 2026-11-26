@@ -172,8 +172,8 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
             api<{ snapshot: StudioQaSnapshot | null }>(token, root + '/qa-reviews/latest'),
             api<{ snapshot: LeadReviewSnapshot | null }>(token, root + '/lead-reviews/latest').catch(() => ({ snapshot: null })),
             api<{ snapshot: StudioRepair | null }>(token, root + '/repair-cycles/latest'),
-            api<{ snapshot: CollaborationSnapshot | null }>(token, root + '/collaboration/latest').catch(() => ({ snapshot: null })),
-            api<{authorization:typeof upfront}>(token,root+'/upfront-team-authorization').catch(()=>({authorization:null})),
+            api<{ snapshot: CollaborationSnapshot | null }>(token, root + '/collaboration/latest'),
+            api<{authorization:typeof upfront}>(token,root+'/upfront-team-authorization'),
           ]),
           Promise.all([
             api<{ specification: DecisionInboxSnapshot['specification'];
@@ -229,7 +229,10 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   const upfrontHandoff=!!source&&upfront?.runId===source.id&&
     (upfront.state==='Claimed'||(upfront.state==='Bound'&&
       saved?.collaboration?.job.policySha256!==upfront.boundPolicySha256));
-  const canCoordinate = !upfrontHandoff && !teamError && !decisionError && !!decisions && !nextDecision &&
+  const currentCoordination=saved?.collaboration?.job;
+  const awaitingVerification=!!source && currentCoordination?.runId===source.id &&
+    currentCoordination.planSha256===source.planSha256 && currentCoordination.state==='AwaitingVerification';
+  const canCoordinate = !awaitingVerification && !upfrontHandoff && !teamError && !decisionError && !!decisions && !nextDecision &&
     (source?.state === 'Generated' || !!saved?.collaboration ||
       ((source?.state === 'Failed' || source?.state === 'Interrupted') &&
         latest?.engineeringRunId === source.id && !!saved?.engineering?.files.length));
@@ -314,7 +317,8 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
             stopped ? <><h2>Work stopped — saved source preserved</h2><p>{source?.errorCode??latest?.errorCode??'Inspect the reason before authorizing another attempt.'}</p>
               {!canCoordinate&&<button type="button" className="primary" onClick={()=>navigate(latest?'delivery':'generation')}>Inspect stopped work</button>}</> :
             !source ? <><h2>Ready to implement</h2><p>Your approved plan is ready. Start source-only engineering; independent review follows separate authorization.</p><button type="button" className="primary" disabled={starting} onClick={()=>void startApprovedWork()}>{starting?'Starting…':'Start approved work'}</button></> :
-            <><h2>{saved.collaboration?.job.state==='AwaitingVerification'?'Independent verification needed':'Source saved — coordinate independent review'}</h2><p>Use the team workflow below to authorize review and bounded repairs once. Source remains unverified.</p></>}
+            awaitingVerification ? <><h2>Independent verification needed</h2><p>The team has reached the end of its source-only workflow. Saved review and repair evidence is available; functional verification and delivery are not authorized.</p><button type="button" className="primary" onClick={()=>navigate('delivery')}>Inspect verification evidence</button></> :
+            <><h2>Source saved — coordinate independent review</h2><p>Use the team workflow below to authorize review and bounded repairs once. Source remains unverified.</p></>}
           {upfront?.state==='Stopped'&&upfront.runId===source?.id&&<p role="status">Automatic handoff stopped: {upfront.reason??'Owner decision required'}. Saved source is preserved.</p>}
           {startError&&<p role="alert">{startError}</p>}
           {canCoordinate&&<CollaborationPanel key={task.id} token={token} taskId={task.id} guided />}

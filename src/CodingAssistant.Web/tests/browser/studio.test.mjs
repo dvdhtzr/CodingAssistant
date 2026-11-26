@@ -116,6 +116,8 @@ function mockApi(page, { architectureOutdated = false,
           statusCode: 200, durationMs: 46 },
       ], lastSequence: 2, truncated: false, capacity: 120,
     });
+    if (path.endsWith('/upfront-team-authorization')) return done(route, { authorization: null });
+    if (path.endsWith('/collaboration/latest')) return done(route, { snapshot: null });
     if (path.endsWith('/agent-models')) return done(route, { agents: selections });
     if (path === '/api/agents/roster') return done(route, { agents });
     if (path.endsWith('/agent-handoffs')) return done(route, { events: [{
@@ -838,5 +840,72 @@ test('guided source generation displays actual assignment progress and stops the
     await guided.getByRole('button',{name:'Stop engineering',exact:true}).click();
     await guided.getByRole('heading',{name:'Work stopped — saved source preserved'}).waitFor();
     assert.deepEqual(writes,['/api/tasks/'+id+'/engineering-runs/'+runId+'/cancel']);
+  }finally{await page.close();}
+});
+
+test('guided supervision fails closed while handoff evidence is unavailable',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  let unavailable='authorization';
+  let previewReads=0;
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/upfront-team-authorization')){
+        if(unavailable==='authorization')return done(route,{error:'UNAVAILABLE'},503);
+        return done(route,{authorization:{state:'Claimed',runId,planRevision:1,
+          planSha256:sha,reason:null,boundPolicySha256:null}});
+      }
+      if(path.endsWith('/collaboration/latest'))return unavailable==='collaboration'?
+        done(route,{error:'UNAVAILABLE'},503):done(route,{snapshot:null});
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/preview'))previewReads++;
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    const unknown=guided.getByRole('heading',{name:'Unable to refresh project status'});
+    await unknown.waitFor();
+    assert.equal(await guided.getByRole('region',{name:'Team coordination'}).count(),0);
+    unavailable=null;
+    const handoff=guided.getByRole('heading',{name:'Starting independent review'});
+    await handoff.waitFor({timeout:15000});
+    await guided.getByRole('button',{name:'Stop team',exact:true}).waitFor();
+    unavailable='collaboration';
+    await unknown.waitFor({timeout:15000});
+    assert.equal(await guided.getByRole('region',{name:'Team coordination'}).count(),0);
+    assert.equal(previewReads,0,'unknown or host-owned handoff must never mount manual coordination');
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+test('guided source-only terminal outcome directs the owner to verification evidence without new approval',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot:{job:{
+        id:'2'.repeat(32),taskId:id,runId,sourceSha256:sha,planSha256:sha,
+        policyRevision:1,policySha256:'9'.repeat(64),model:'qwen3-coder:30b',
+        state:'AwaitingVerification',reason:'QUALIFIED_VERIFICATION_REQUIRED'},steps:[]}});
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Independent verification needed'}).waitFor();
+    await guided.getByText(/functional verification and delivery are not authorized/).waitFor();
+    assert.equal(await guided.getByRole('region',{name:'Team coordination'}).count(),0);
+    assert.equal(await guided.getByText(/authorize review and bounded repairs once/).count(),0);
+    await guided.getByRole('button',{name:'Inspect verification evidence'}).click();
+    await page.getByRole('region',{name:'Focused engineering work'}).waitFor();
+    assert.deepEqual(writes,[]);
   }finally{await page.close();}
 });
