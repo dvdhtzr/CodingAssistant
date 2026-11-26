@@ -874,6 +874,38 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               reason.Contains("REPAIR_EDIT_NOT_UNIQUE", StringComparison.Ordinal)),
         "engineer retries stale exact-match target with bounded diagnostic and no source leak");
 
+    // Exercise the alternate editing strategy against the same large
+    // immutable target. The host enables it only after exact-match rejection.
+    string LineRepairJson(string path,string hash,int first,int last,string replacement) =>
+        JsonSerializer.Serialize(new {
+            summary="Correct the selected saved handler by exact original line identity.",
+            baseFileSha256=hash,lineEdits=new[]{new {path,startLine=first,endLine=last,newText=replacement}},
+            verificationNotes=Array.Empty<string>()
+        });
+    var lineRepair=LineRepairJson("app.js",savedRepairFiles[1].Sha256,3,3,correctedHandler);
+    Check(!MafSoftwareEngineer.TryParseRepair(lineRepair,authorizedRepair,savedRepairFiles,out _,out var notAdmittedLine) &&
+        notAdmittedLine.StartsWith("REPAIR_LINE_NOT_ADMITTED:",StringComparison.Ordinal),
+        "line-based recovery cannot be selected before host admission");
+    Check(MafSoftwareEngineer.TryParseRepair(lineRepair,authorizedRepair,savedRepairFiles,out var lineResult,out _,true) &&
+        lineResult!.Files.Single().Content==appliedPatch.Files.Single().Content,
+        "hash-bound original line recovery preserves every unrelated character");
+    foreach(var (raw,expected) in new[]{
+        (LineRepairJson("index.html",savedRepairFiles[1].Sha256,3,3,correctedHandler),"REPAIR_SCOPE"),
+        (LineRepairJson("app.js",new string('0',64),3,3,correctedHandler),"REPAIR_LINE_BINDING"),
+        (LineRepairJson("app.js",savedRepairFiles[1].Sha256,2,2,correctedHandler),"REPAIR_LINE_RANGE"),
+        (LineRepairJson("app.js",savedRepairFiles[1].Sha256,999,999,correctedHandler),"REPAIR_LINE_RANGE")})
+        Check(!MafSoftwareEngineer.TryParseRepair(raw,authorizedRepair,savedRepairFiles,out _,out var lineFailure,true)&&
+            lineFailure.StartsWith(expected+":",StringComparison.Ordinal),"unsafe line edit rejects "+expected);
+    var rangeRecoveryFactory=new Phase4FakeMafFactory();
+    rangeRecoveryFactory.Responses.Enqueue(invalidPatches[0].Raw);
+    rangeRecoveryFactory.Responses.Enqueue(lineRepair);
+    var rangeRecovered=await new MafSoftwareEngineer(rangeRecoveryFactory).ImplementAsync(
+        assignment with {ExistingFiles=savedRepairFiles,Repair=authorizedRepair},CancellationToken.None);
+    Check(rangeRecoveryFactory.Attempts==2&&rangeRecovered.Files.Single().Content==appliedPatch.Files.Single().Content&&
+        rangeRecoveryFactory.UserPrompts.Any(p=>p.Contains("HOST NUMBERED REPAIR TARGET",StringComparison.Ordinal))&&
+        rangeRecoveryFactory.UserPrompts.Any(p=>p.Contains("HOST-ADMITTED RECOVERY FORMAT",StringComparison.Ordinal)),
+        "actual model adapter changes strategy after ambiguous edit rather than requiring owner retry");
+
     // Repair responses must refer to the immutable original, not earlier
     // replacement text. Reject overlapping edits and malformed objects safely.
     var twoEdits = JsonSerializer.Serialize(new {

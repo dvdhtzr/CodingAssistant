@@ -717,3 +717,26 @@
   .ca-live-activity-route { flex-basis:55%; }
   .ca-live-activity-metric { margin-left:auto; }
 }
+
+/* Owner supervision is the default; the detailed workstations are opt-in. */
+.ca-guided-studio {display:flex;flex-direction:column;min-height:0;}
+.ca-guided-main {overflow:auto;min-height:0;flex:1;padding:clamp(1rem,3vw,2.5rem);}
+.ca-guided-content {max-width:860px;margin:0 auto;display:grid;gap:1.4rem;}
+.ca-guided-roster {display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:.65rem;}
+.ca-guided-role {display:flex;flex-direction:column;align-items:center;gap:.4rem;text-align:center;padding:.8rem .25rem;min-width:0;}
+.ca-guided-role strong {font-size:.78rem;overflow-wrap:anywhere;}
+.ca-guided-role small {font-size:.7rem;color:var(--studio-muted);}
+.ca-guided-role[data-active=true] .ca-studio-avatar {background:#245d52;border:2px solid #78d6ba;}
+.ca-guided-next {padding:clamp(1rem,3vw,1.8rem);border:1px solid var(--studio-line);border-radius:12px;background:#14232e;display:grid;gap:.75rem;}
+.ca-guided-next h2 {font-size:clamp(1.1rem,2vw,1.45rem);margin:0;line-height:1.3;}
+.ca-guided-next p,.ca-guided-last p {color:var(--studio-muted);margin:0;font-size:.9rem;line-height:1.5;}
+.ca-guided-next>.primary,.ca-guided-next>.outline {justify-self:start;}
+.ca-guided-next .ca-coordination {padding:1rem 0 0;gap:.75rem;}
+.ca-guided-next .ca-coordination h3 {font-size:1rem;}
+.ca-guided-next .ca-coordination p,.ca-guided-next .ca-coordination li,.ca-guided-next .ca-coordination summary {font-size:.83rem;}
+.ca-guided-next .ca-coordination button {width:auto;justify-self:start;font-size:.85rem;}
+.ca-guided-next .ca-coordination fieldset {min-width:0;display:grid;gap:.65rem;}
+.ca-guided-last {display:grid;gap:.4rem;padding:0 .4rem;}
+.ca-guided-last details {font-size:.8rem;color:var(--studio-muted);}
+.ca-guided-last summary {cursor:pointer;}
+@media(max-width:640px){.ca-guided-studio .ca-studio-header{align-items:flex-start;flex-direction:column;}.ca-guided-roster{grid-template-columns:repeat(3,minmax(0,1fr));}.ca-guided-main{padding:.9rem;}}

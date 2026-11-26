@@ -198,6 +198,7 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
   try {
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
     const team = studio.locator('aside.ca-studio-people');
     const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
@@ -260,6 +261,7 @@ test('owner can assign independent local models without initiating or modifying 
         writes.push(new URL(request.url()).pathname);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const show = page.getByRole('button', { name: 'Assign team models' });
     await show.click();
     const controls = page.getByRole('region', {
@@ -300,6 +302,7 @@ test('roster exposes model and saved status; agent selection opens actual specia
   try {
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const roster = page.locator('aside.ca-studio-people');
     const engineer = roster.getByRole('button', { name: /Software Engineer/ });
     const qa = roster.getByRole('button', { name: /QA Engineer/ });
@@ -339,6 +342,7 @@ test('activity view shows only actual saved handoffs, source and QA receipts', a
         writes.push(new URL(request.url()).pathname);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     await page.locator('aside.ca-studio-people')
       .getByRole('button', { name: /QA Engineer/ }).waitFor();
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
@@ -371,6 +375,7 @@ test('stale architecture shows a clear recovery action and never enables old cho
           data: request.postDataJSON() });
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const canvas = page.getByRole('region', { name: 'Focused engineering work' });
     await canvas.getByRole('button', { name: /Solution Architecture/ }).first().click();
     await canvas.locator('#journey-panel-architecture').waitFor({ state: 'visible' });
@@ -420,6 +425,7 @@ test('unapproved specification offers enabled recovery navigation, not disabled 
         writes.push(new URL(request.url()).pathname);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const canvas = page.getByRole('region', { name: 'Focused engineering work' });
     await canvas.getByRole('button', { name: /Solution Architecture/ }).first().click();
     const recovery = canvas.locator('.architect-recovery');
@@ -449,6 +455,7 @@ test('live activity separates real HTTP summaries from persisted agent work and 
         writes.push(path);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const strip = page.getByRole('region', { name: 'Live Activity' });
     await strip.getByText('Local API', { exact: true }).waitFor();
     assert.match(await strip.textContent(),
@@ -488,6 +495,7 @@ test('narrow Studio has no page-level horizontal scrolling and keeps QA availabl
   try {
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     await page.getByRole('heading', { name: 'Independent QA & repair' }).waitFor();
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth) <= 400,
       'narrow Studio must not force horizontal page scrolling');
@@ -520,6 +528,7 @@ test('live activity replays committed evidence and pauses presentation without p
         writes.push(new URL(request.url()).pathname);
     });
     await page.goto(baseUrl+'/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const feed = page.getByRole('region',{name:'Live engineering activity'});
     await feed.getByText('Approved assignment dispatched').waitFor();
     await page.getByRole('button',{name:'Activity',exact:true}).click();
@@ -598,6 +607,7 @@ test('Technical Lead workstation requires explicit exact-source repair approval 
         return route.fallback();
       });
       await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
       await page.locator('aside.ca-studio-people')
         .getByRole('button', { name: /Technical Lead/ }).click();
       const panel = page.getByRole('region', { name: 'Exact repair authorization' });
@@ -660,6 +670,7 @@ test('linked automatic repair replaces stale approval prompt with actual activit
       return route.fallback();
     });
     await page.goto(baseUrl+'/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     await page.locator('aside.ca-studio-people').getByRole('button',{name:/Technical Lead/}).click();
     const panel=page.getByRole('region',{name:'Team coordination'});
     await panel.getByText('Repairing saved source',{exact:true}).waitFor();
@@ -690,6 +701,7 @@ test('delivery readiness separates saved source from verified and accepted produ
     }));
     page.on('request',r=>{if(r.method()==='POST' && new URL(r.url()).pathname.startsWith('/api/tasks/'))writes.push(r.url());});
     await page.goto(baseUrl+'/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     await page.getByRole('button',{name:'Inspect delivery readiness'}).click();
     const evidence=page.getByRole('region',{name:'Delivery evidence'});
     await evidence.getByText('Delivery blocked',{exact:true}).waitFor();
@@ -700,5 +712,63 @@ test('delivery readiness separates saved source from verified and accepted produ
     assert.match(await evidence.textContent(),/Smoke checks are not qualified functional tests/);
     await evidence.getByRole('button',{name:'Back to attention'}).click();
     assert.deepEqual(writes,[]);
+  } finally {await page.close();}
+});
+
+test('guided supervision is the default and exact approval starts coordination without manual handoffs', async () => {
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha='9'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256:policySha};
+  let policy=null, running=false;
+  try {
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname, method=route.request().method();
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+        path.endsWith('/lead-reviews/latest')||path.endsWith('/collaboration/latest'))
+        return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/preview')) return done(route,{
+        planSha256:sha,policy, snapshot:running?{job:{id:'2'.repeat(32),taskId:id,...candidate,
+          model:'qwen3-coder:30b',state:'Running',reason:null},steps:[]}:null,
+        candidate:policy?.status==='Approved'?candidate:null,
+        canStart:policy?.status==='Approved'&&!running,canResume:false,reason:'READY',
+        routineRepairCandidate:{runId,sourceSha256:sha,paths:['index.html']},
+        capacity:{capacity:1,active:0,waiting:0}
+      });
+      if(method==='POST'){
+        const body=route.request().postDataJSON();writes.push({path,body});
+        if(path.endsWith('/engineering-delegation/propose')){
+          policy={revision:1,policySha256:policySha,status:'Proposed',current:true,
+            operations:body.operations,routineRepair:body.routineRepair};
+          return done(route,policy);
+        }
+        if(path.endsWith('/engineering-delegation/approve')){
+          policy={...policy,status:'Approved'};return done(route,policy);
+        }
+        if(path.endsWith('/collaboration')){running=true;return done(route,{id:'2'.repeat(32)});}
+      }
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Source saved — coordinate independent review'}).waitFor();
+    assert.equal(await page.getByRole('region',{name:'Focused engineering work'}).count(),0);
+    assert.equal(await page.locator('aside.ca-studio-context').count(),0);
+    assert.equal(writes.length,0);
+    await guided.getByLabel('Let the team repair grounded defects without asking me each time').check();
+    await guided.getByRole('button',{name:'Prepare delegation policy'}).click();
+    await guided.getByRole('button',{name:'Approve exact delegation and start team'}).click();
+    await guided.getByRole('button',{name:'Stop coordination'}).waitFor();
+    assert.equal(writes.length,3);
+    assert.deepEqual(writes[0].body.routineRepair,{baselineRunId:runId,
+      baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:4});
+    assert.equal(writes[1].body.confirmation,'APPROVE '+policySha);
+    assert.deepEqual(writes[2].body,candidate);
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
+    await page.getByRole('region',{name:'Focused engineering work'}).waitFor();
+    await page.getByRole('button',{name:'Back to project overview'}).click();
+    await guided.waitFor();
+    assert.equal(writes.length,3,'inspection never triggers a new run or approval');
   } finally {await page.close();}
 });

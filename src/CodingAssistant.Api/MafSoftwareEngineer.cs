@@ -21,6 +21,9 @@ public sealed record EngineeringRepairEdit(string Path, string OldText, string N
 public sealed record EngineeringRepairEdits(
     string Summary, IReadOnlyList<EngineeringRepairEdit> Edits,
     IReadOnlyList<string> VerificationNotes);
+public sealed record EngineeringLineEdit(string Path, int StartLine, int EndLine, string NewText);
+public sealed record EngineeringLineEdits(string Summary, string BaseFileSha256,
+    IReadOnlyList<EngineeringLineEdit> LineEdits, IReadOnlyList<string> VerificationNotes);
 public sealed record EngineeringTaskInput(
     string Objective, string Specification, ImplementationPlan Plan,
     DraftArchitectureReadiness Architecture, ImplementationWorkItem WorkItem,
@@ -313,6 +316,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
         // loopback adapter; no response can initiate arbitrary tool execution.
         // Inspection requests do not consume malformed-source retry budget.
         var inspections = 0;
+        var lineRecoveryOffered = false;
         for (var attempt = 0; attempt < 3;)
         {
             string reason;
@@ -351,7 +355,7 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 }
                 var parsed = input.Repair is { } repairScope
                     ? TryParseRepair(answer.Text, repairScope, input.ExistingFiles,
-                        out var result, out reason)
+                        out var result, out reason, lineRecoveryOffered)
                     : TryParse(answer.Text, out result, out reason);
                 if (parsed)
                 {
@@ -404,6 +408,41 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                 $"(attempt {attempt + 1}/3): {category}");
             if (++attempt == 3)
                 break;
+            if (category=="REPAIR_EDIT_NOT_UNIQUE" && input.Repair is { } boundedRepair && !lineRecoveryOffered)
+            {
+                var target=input.ExistingFiles.Single(file=>boundedRepair.AllowedPaths.Contains(file.Path,StringComparer.OrdinalIgnoreCase));
+                lineRecoveryOffered=true;
+                // Exact line coordinates are a different editing strategy:
+                // no guessed substring, fuzzy match, or additional write scope.
+                var numbered=target.Content.Split('\n').Select((line,index)=>
+                    (index+1).ToString(System.Globalization.CultureInfo.InvariantCulture)+": "+line).ToArray();
+                var block=new System.Text.StringBuilder();
+                foreach(var line in numbered)
+                {
+                    if(block.Length>0&&block.Length+line.Length+1>12000)
+                    {
+                        messages.Add(new(ChatRole.User,"HOST NUMBERED REPAIR TARGET (data):\n"+block));
+                        block.Clear();
+                    }
+                    if(line.Length>12000)
+                    {
+                        // Long lines cannot be replaced through the bounded
+                        // range form; label their identity without duplicating them.
+                        block.AppendLine(line[..Math.Min(line.IndexOf(':')+1,line.Length)]+" [long line; use an exact excerpt instead]");
+                    }
+                    else block.AppendLine(line);
+                }
+                if(block.Length>0)messages.Add(new(ChatRole.User,"HOST NUMBERED REPAIR TARGET (data):\n"+block));
+                messages.Add(new(ChatRole.User,
+                    "HOST-ADMITTED RECOVERY FORMAT for the same exact file "+target.Path+
+                    ", baseFileSha256="+target.Sha256+
+                    ". After an ambiguous exact excerpt, you may use numbered ORIGINAL lines instead. "+
+                    "Return ONLY JSON {\"summary\":\"meaningful change\",\"baseFileSha256\":\"exact hash above\", "+
+                    "\"lineEdits\":[{\"path\":\""+target.Path+"\",\"startLine\":1,\"endLine\":1,\"newText\":\"replacement without final newline\"}],\"verificationNotes\":[]}. "+
+                    "Choose the actual 1-based inclusive range, not the example numbers. Replace only the contents of those original lines; the host preserves the following newline. "+
+                    "Use 1-6 disjoint ranges, each at most 80 lines and 5000 original characters; newText at most 6000 characters. "+
+                    "Do not include the displayed line numbers in replacement text. Exact unique excerpt edits remain valid. No new paths or execution."));
+            }
             messages.Add(new ChatMessage(ChatRole.User,
                 "The previous response FAILED validation. Reason: " + reason +
                 (input.Repair is null
@@ -412,8 +451,10 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
                       "verificationNotes. Prefer the smallest complete working " +
                       "change for THIS assigned task; avoid needless rewriting " +
                       "and return fewer files if output was truncated."
-                    : "\nReturn ONLY summary, edits (path, exact unique oldText, " +
-                      "newText), verificationNotes. Limit edits to the owner's " +
+                    : (lineRecoveryOffered
+                      ? "\nPrefer the host-admitted numbered lineEdits recovery JSON described above, or a valid exact excerpt edit. "
+                      : "\nReturn ONLY summary, edits (path, exact unique oldText, newText), verificationNotes. ") +
+                      "Limit edits to the owner's " +
                       "approved existing file. If text was missing or ambiguous, " +
                       "choose a more precise unchanged source excerpt from " +
                       "the provided full target. " +
@@ -504,13 +545,75 @@ public sealed class MafSoftwareEngineer(IMafChatClientFactory? factory = null)
             patch.VerificationNotes.ToArray());
     }
 
+    // The host enables this alternative only after a failed exact excerpt.
+    // Positions are deterministic on the pinned original file, never fuzzy.
+    public static EngineeringChangeSet ApplyRepairLineEdits(string? raw,
+        RepairTaskContext authorized,IReadOnlyList<EngineeringSourceFile> originals)
+    {
+        if(string.IsNullOrWhiteSpace(raw)||raw.Length>28000)throw new StoreFailure("REPAIR_EDIT_SIZE");
+        EngineeringLineEdits? patch;
+        try {patch=JsonSerializer.Deserialize<EngineeringLineEdits>(ExtractJson(raw),new JsonSerializerOptions {
+            PropertyNameCaseInsensitive=true,UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow});}
+        catch(JsonException){throw new StoreFailure("REPAIR_EDIT_FIELDS");}
+        if(patch is null||patch.Summary is null||patch.Summary.Trim().Length is <10 or >1600||
+           patch.LineEdits is null||patch.LineEdits.Count is <1 or >6||
+           patch.VerificationNotes is null||patch.VerificationNotes.Count>6||
+           patch.VerificationNotes.Any(n=>string.IsNullOrWhiteSpace(n)||n.Length>350))
+            throw new StoreFailure("REPAIR_EDIT_SHAPE");
+        if(authorized.AllowedPaths.Count!=1)throw new StoreFailure("REPAIR_SCOPE");
+        var original=originals.SingleOrDefault(f=>string.Equals(f.Path,authorized.AllowedPaths[0],StringComparison.OrdinalIgnoreCase))
+            ??throw new StoreFailure("REPAIR_SCOPE");
+        if(patch.BaseFileSha256!=original.Sha256)throw new StoreFailure("REPAIR_LINE_BINDING");
+        var starts=new List<int>{0};
+        for(var i=0;i<original.Content.Length;i++)
+            if(original.Content[i]=='\n'&&i+1<original.Content.Length)starts.Add(i+1);
+        var replacements=new List<(int Position,int Length,string Text)>();
+        foreach(var edit in patch.LineEdits)
+        {
+            if(edit is null||edit.Path!=original.Path)throw new StoreFailure("REPAIR_SCOPE");
+            if(edit.StartLine<1||edit.EndLine<edit.StartLine||edit.EndLine>starts.Count||
+                edit.EndLine-edit.StartLine>=80||edit.NewText is null||edit.NewText.Length>6000)
+                throw new StoreFailure("REPAIR_LINE_RANGE");
+            var start=starts[edit.StartLine-1];
+            var end=edit.EndLine<starts.Count?starts[edit.EndLine]:original.Content.Length;
+            if(end>start&&original.Content[end-1]=='\n')end--;
+            if(end>start&&original.Content[end-1]=='\r')end--;
+            if(end-start is <1 or >5000)throw new StoreFailure("REPAIR_LINE_RANGE");
+            if(replacements.Any(r=>start<r.Position+r.Length&&r.Position<end))
+                throw new StoreFailure("REPAIR_EDIT_OVERLAP");
+            if(original.Content[start..end]==edit.NewText)throw new StoreFailure("REPAIR_EDIT_NO_CHANGE");
+            replacements.Add((start,end-start,edit.NewText));
+        }
+        var updated=original.Content;
+        foreach(var edit in replacements.OrderByDescending(r=>r.Position))
+            updated=updated[..edit.Position]+edit.Text+updated[(edit.Position+edit.Length)..];
+        if(updated==original.Content)throw new StoreFailure("REPAIR_EDIT_NO_CHANGE");
+        try {updated=ProjectDraftStore.ValidateSource(original.Path,updated);}
+        catch(StoreFailure){throw new StoreFailure("REPAIR_EDIT_SOURCE");}
+        if(updated==original.Content)throw new StoreFailure("REPAIR_EDIT_NO_CHANGE");
+        return new(patch.Summary.Trim(),[new(original.Path,original.Purpose,updated)],patch.VerificationNotes.ToArray());
+    }
+
     public static bool TryParseRepair(string? raw, RepairTaskContext authorized,
         IReadOnlyList<EngineeringSourceFile> originals,
-        out EngineeringChangeSet? result, out string reason)
+        out EngineeringChangeSet? result, out string reason,bool allowLineEdits=false)
     {
         try
         {
             using var document = JsonDocument.Parse(ExtractJson(raw ?? ""));
+            if(document.RootElement.ValueKind==JsonValueKind.Object&&document.RootElement.EnumerateObject()
+                .Any(p=>p.Name.Equals("lineEdits",StringComparison.OrdinalIgnoreCase)))
+            {
+                try
+                {
+                    if(!allowLineEdits)throw new StoreFailure("REPAIR_LINE_NOT_ADMITTED");
+                    result=ApplyRepairLineEdits(raw,authorized,originals);reason="";return true;
+                }
+                catch(StoreFailure e)
+                {
+                    result=null;reason=e.Code+": Use the host-admitted exact file hash and valid disjoint original line ranges, or a unique exact edit.";return false;
+                }
+            }
             if (document.RootElement.ValueKind == JsonValueKind.Object &&
                 document.RootElement.EnumerateObject().Any(property =>
                     property.Name.Equals("edits", StringComparison.OrdinalIgnoreCase)))

@@ -90,6 +90,7 @@ const stages: Record<string, JourneyId> = {
 export function EngineeringStudio({ token, task, onTeam, active = true }: {
   token: string; task: TaskItem; onTeam: () => void; active?: boolean;
 }) {
+  const [detailed, setDetailed] = useState(false);
   const [saved, setSaved] = useState<StudioEvidence | null>(null);
   const [decisions, setDecisions] = useState<DecisionInboxSnapshot | null>(null);
   const [teamError, setTeamError] = useState(false);
@@ -104,6 +105,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   const [request, setRequest] = useState<{ stage: JourneyId; revision: number } | null>(null);
   const canvasRef = useRef<HTMLElement | null>(null);
   const navigate = useCallback((stage: JourneyId) => {
+    setDetailed(true);
     setSelectedStage(stage);
     setRequest(previous => ({ stage, revision: (previous?.revision ?? 0) + 1 }));
     // This is a locally scrollable canvas: never leave the next stage halfway
@@ -111,6 +113,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
     if (canvasRef.current) canvasRef.current.scrollTop = 0;
   }, []);
   const openRoleModels = useCallback(() => {
+    setDetailed(true);
     setRoleModelsOpen(true);
     if (canvasRef.current) canvasRef.current.scrollTop = 0;
   }, []);
@@ -121,6 +124,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   }, [selectedStage]);
 
   useEffect(() => {
+    setDetailed(false);
     setInspectedAgentId(null);
     setSideView('attention');
     setModels(null);
@@ -211,6 +215,67 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   const working = activeLead ? 'Lead Software Engineer reviewing' : activeQa ? 'QA Engineer reviewing' :
     activeEngineer ? 'Software Engineer working' : coordinating ? 'Technical Lead coordinating' : 'No active agent run recorded';
   const currentActivity = saved?.engineering?.tasks.find(item => item.state === 'Running');
+  const nextDecision = decisions ? buildDecisionInbox(decisions)[0] : undefined;
+  const source = saved?.engineering?.job;
+  const activeWork = activeLead || activeQa || activeEngineer || coordinating;
+  const canCoordinate = !teamError && !decisionError && !!decisions && !nextDecision &&
+    (source?.state === 'Generated' || !!saved?.collaboration);
+  const stopped = source?.state === 'Failed' || source?.state === 'Interrupted';
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState('');
+  async function startApprovedWork() {
+    if (starting || !decisions?.plan || nextDecision || source || teamError || decisionError) return;
+    setStarting(true);setStartError('');
+    try {
+      const root='/api/tasks/'+task.id;
+      const latest=await api<{plan:{revision:number;planSha256:string;status:string;current:boolean}|null}>(token,root+'/implementation-plan');
+      const plan=latest.plan;
+      if (!plan?.current || plan.status!=='Approved' || plan.revision!==decisions.plan.revision)
+        throw Error('The approved plan has changed. Review the current plan.');
+      const job=await api<EngineerSnapshot['job']>(token,root+'/engineering-runs',
+        {planRevision:plan.revision,planSha256:plan.planSha256});
+      setSaved(previous=>previous?{...previous,engineering:{job,tasks:[],events:[],files:[]}}:previous);
+    } catch (cause) {setStartError(cause instanceof Error?cause.message:'Could not start approved work.');}
+    finally {setStarting(false);}
+  }
+  if (!detailed) return <section className="ca-studio ca-guided-studio" aria-label="AI Engineering Studio">
+    <header className="ca-studio-header">
+      <div className="ca-studio-heading">
+        <span className="ca-studio-eyebrow">YOUR PROJECT</span>
+        <h1>{task.title}</h1>
+        <p>{activeWork?working:'Supervise your team, not each individual handoff.'}</p>
+      </div>
+      <button type="button" className="outline" onClick={()=>setDetailed(true)}>Inspect workspaces</button>
+    </header>
+    <main className="ca-guided-main" aria-label="Project supervision">
+      <div className="ca-guided-content">
+        <div className="ca-guided-roster" aria-label="Recorded team status">
+          {status.map(item=><div key={item.agent.id} data-active={item.active} className="ca-guided-role">
+            <span className="ca-studio-avatar" aria-hidden="true">{item.agent.role.split(' ').map(w=>w[0]).join('').slice(0,2)}</span>
+            <strong>{item.agent.role}</strong><small>{item.status}</small>
+          </div>)}
+        </div>
+        <section className="ca-guided-next" aria-label="Next project action">
+          {teamError||decisionError ? <><h2>Unable to refresh project status</h2><p>Wait for current saved evidence before starting new work.</p></> :
+            !saved||!decisions ? <p role="status">Reading saved project state…</p> :
+            activeWork ? <><h2>{working}</h2><p>{currentActivity?.title??'The team is working from saved project evidence.'}</p>
+              {!canCoordinate&&<button type="button" className="outline" onClick={()=>navigate(activeEngineer?'generation':'delivery')}>Inspect or stop active work</button>}</> :
+            nextDecision ? <><h2>{nextDecision.title}</h2><p>{nextDecision.detail}</p><button type="button" className="primary" onClick={()=>navigate(nextDecision.stage)}>Continue</button></> :
+            stopped ? <><h2>Work stopped — saved source preserved</h2><p>{source?.errorCode??latest?.errorCode??'Inspect the reason before authorizing another attempt.'}</p>
+              {!canCoordinate&&<button type="button" className="primary" onClick={()=>navigate(latest?'delivery':'generation')}>Inspect stopped work</button>}</> :
+            !source ? <><h2>Ready to implement</h2><p>Your approved plan is ready. Start source-only engineering; independent review follows separate authorization.</p><button type="button" className="primary" disabled={starting} onClick={()=>void startApprovedWork()}>{starting?'Starting…':'Start approved work'}</button></> :
+            <><h2>{saved.collaboration?.job.state==='AwaitingVerification'?'Independent verification needed':'Source saved — coordinate independent review'}</h2><p>Use the team workflow below to authorize review and bounded repairs once. Source remains unverified.</p></>}
+          {startError&&<p role="alert">{startError}</p>}
+          {canCoordinate&&<CollaborationPanel key={task.id} token={token} taskId={task.id} guided />}
+        </section>
+        {activity.length>0&&<section className="ca-guided-last" aria-label="Latest saved activity">
+          <span className="ca-studio-eyebrow">LATEST SAVED ACTIVITY</span><strong>{activity[0].title}</strong><p>{activity[0].detail}</p>
+          <details><summary>Inspect recorded activity</summary><EngineeringActivityFeed key={task.id} token={token} taskId={task.id} compact={false}/></details>
+        </section>}
+        <p className="ca-studio-verification">Source-only work. No independent functional verification or delivery is implied.</p>
+      </div>
+    </main>
+  </section>;
   return <section className="ca-studio" aria-label="AI Engineering Studio">
     <header className="ca-studio-header">
       <div className="ca-studio-heading">
@@ -221,6 +286,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
             'Choose a specialist or work stage. All progress comes from saved records.'}</p>
       </div>
       <div className="ca-studio-header-actions">
+        <button type="button" className="outline" onClick={()=>{setDetailed(false);setRoleModelsOpen(false);}}>Back to project overview</button>
         <button type="button" className="outline ca-studio-model-button"
           aria-expanded={roleModelsOpen} aria-controls="ca-studio-model-panel"
           onClick={() => roleModelsOpen ? setRoleModelsOpen(false) : openRoleModels()}>
