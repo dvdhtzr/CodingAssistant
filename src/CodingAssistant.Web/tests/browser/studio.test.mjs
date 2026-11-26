@@ -775,3 +775,67 @@ test('guided supervision is the default and exact approval starts coordination w
     assert.equal(writes.length,3,'inspection never triggers a new run or approval');
   } finally {await page.close();}
 });
+
+test('guided owner decisions show only the focused form and do not launch work',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  try{
+    await mockApi(page,{specificationStatus:'Draft'});
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/engineering-runs/latest')||path.endsWith('/qa-reviews/latest')||
+         path.endsWith('/repair-cycles/latest')||path.endsWith('/lead-reviews/latest')||
+         path.endsWith('/collaboration/latest'))return done(route,{snapshot:null});
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Review specification v1'}).waitFor();
+    await guided.getByRole('button',{name:'Continue',exact:true}).click();
+    await guided.getByRole('heading',{name:'2. Review and approve the specification'}).waitFor();
+    assert.equal(await guided.getByRole('button',{name:'Approve this specification'}).isDisabled(),true);
+    assert.equal(await page.getByRole('region',{name:'Focused engineering work'}).count(),0);
+    assert.equal(await page.getByRole('navigation',{name:'Project work stages'}).count(),0);
+    assert.equal(await page.getByRole('region',{name:'MAF Software Engineer tasks'}).count(),0);
+    assert.deepEqual(writes,[]);
+    await page.getByRole('button',{name:'Back to project overview'}).click();
+    await guided.getByRole('heading',{name:'Review specification v1'}).waitFor();
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+test('guided source generation displays actual assignment progress and stops the exact run',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  let running=true;
+  const runSnapshot=()=>({...engineering,job:{...engineering.job,state:running?'Running':'Interrupted',
+    phase:running?'Implementing':'Interrupted',errorCode:running?null:'OWNER_CANCELLED'},
+    tasks:[...engineering.tasks,{id:'item2',ordinal:1,title:'Implement remaining behavior',
+      state:running?'Running':'Interrupted',summary:null,startedUtc:time,completedUtc:null}]});
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/engineering-runs/latest'))return done(route,{snapshot:runSnapshot()});
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest')||path.endsWith('/collaboration/latest'))
+        return done(route,{snapshot:null});
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress')){
+        writes.push(path);
+        if(path.endsWith('/engineering-runs/'+runId+'/cancel')){
+          running=false;return done(route,runSnapshot());
+        }
+      }
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByText('1 of 2 assignments saved').waitFor();
+    assert.equal(await guided.getByRole('progressbar').getAttribute('value'),'1');
+    assert.deepEqual(writes,[]);
+    await guided.getByRole('button',{name:'Stop engineering',exact:true}).click();
+    await guided.getByRole('heading',{name:'Work stopped — saved source preserved'}).waitFor();
+    assert.deepEqual(writes,['/api/tasks/'+id+'/engineering-runs/'+runId+'/cancel']);
+  }finally{await page.close();}
+});

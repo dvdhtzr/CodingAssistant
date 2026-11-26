@@ -75,10 +75,11 @@ export function SpecificationDraftFeedback({ error, drafting }: {
 }
 
 export function InterviewStudio({ token, task, studioCanvas = false,
-  focusRequest, onStageSelected }: {
+  focusRequest, onStageSelected, guidedOwner = false }: {
   token: string;
   task: TaskItem;
   studioCanvas?: boolean;
+  guidedOwner?: boolean;
   focusRequest?: { stage: JourneyId; revision: number } | null;
   onStageSelected?: (stage: JourneyId) => void;
 }) {
@@ -94,7 +95,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
   const [error, setError] = useState('');
   const [approveChecked, setApproveChecked] = useState(false);
   const [elapsed, setElapsed] = useState(0);
-  const [expanded, setExpanded] = useState<JourneyId | null>('discovery');
+  const [expanded, setExpanded] = useState<JourneyId | null>(focusRequest?.stage??'discovery');
   const [showAllStages, setShowAllStages] = useState(false);
   const [discoveryReview, setDiscoveryReview] = useState<DiscoverySkillReview | null>(null);
   const [skillOperation, setSkillOperation] = useState<'turn' | 'draft' | ''>('');
@@ -115,7 +116,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
       reviewSha256: discoveryReview.reviewSha256, requestId: newRequestId(),
     } } : {};
   }
-  const manuallySelected = useRef(false);
+  const manuallySelected = useRef(!!focusRequest);
   const [architectureStep, setArchitectureStep] = useState<JourneyStep>(journeySteps[2]);
   const [planStep, setPlanStep] = useState<JourneyStep>(journeySteps[3]);
   const [generationStep, setGenerationStep] = useState<JourneyStep>(journeySteps[4]);
@@ -323,7 +324,7 @@ export function InterviewStudio({ token, task, studioCanvas = false,
         <span className={'journey-strip-current journey-' + currentStep.tone}>
           {currentStep.status}</span>
       </div>
-      {studioCanvas ? <nav className="ca-studio-stage-tabs" aria-label="Project work stages">
+      {guidedOwner ? null : studioCanvas ? <nav className="ca-studio-stage-tabs" aria-label="Project work stages">
         {steps.map((step, index) => <button type="button" key={step.id}
           className={'ca-studio-stage-tab' + (expanded === step.id ? ' is-selected' : '')}
           data-tone={step.tone}
@@ -567,10 +568,10 @@ export function InterviewStudio({ token, task, studioCanvas = false,
       architectureSignal={architectureStep.status}
       expanded={expanded === 'plan'} onExpand={openStage}
       onReady={planReady} onStageChange={reportPlan} />
-    <ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null}
+    {!guidedOwner&&<ProjectDraftPanel token={token} taskId={task.id} spec={spec ?? null}
       expanded={expanded} onExpand={openStage} studioCanvas={studioCanvas}
-      onStageChange={reportDraft} />
-    <details className="mc-work-secondary">
+      onStageChange={reportDraft} />}
+    {!guidedOwner&&<details className="mc-work-secondary">
       <summary>Project progress & technical history</summary>
       <div className="mc-work-secondary-content">
         <JourneyStatusStrip title={task.title} steps={steps} activeId={expanded}
@@ -580,6 +581,6 @@ export function InterviewStudio({ token, task, studioCanvas = false,
         <TeamWorkroom token={token} taskId={task.id} onNavigate={navigateToStage} />
         <VerificationTimeline token={token} taskId={task.id} />
       </div>
-    </details>
+    </details>}
   </div>;
 }

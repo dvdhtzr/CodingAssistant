@@ -740,3 +740,7 @@
 .ca-guided-last details {font-size:.8rem;color:var(--studio-muted);}
 .ca-guided-last summary {cursor:pointer;}
 @media(max-width:640px){.ca-guided-studio .ca-studio-header{align-items:flex-start;flex-direction:column;}.ca-guided-roster{grid-template-columns:repeat(3,minmax(0,1fr));}.ca-guided-main{padding:.9rem;}}
+
+.ca-guided-progress {display:flex;flex-direction:column;gap:.45rem;color:var(--studio-muted);font-size:.8rem;}
+.ca-guided-progress progress {width:100%;height:8px;accent-color:#78d6ba;}
+.ca-guided-decision .ca-studio-journey {min-width:0;max-width:100%;}
