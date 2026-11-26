@@ -220,6 +220,13 @@ public sealed class RepairCycleStore(
         return false;
     }
 
+    // Source-only coordination may inspect a fully preserved failed repair,
+    // never an incomplete initial build. Do not change the recorded state.
+    internal static bool IsCoordinationSource(SqliteConnection db,SqliteTransaction tx,
+        EngineeringRun run,string fingerprint)
+        => run.State=="Generated" ||
+            IsUnchangedFailedRepair(db,tx,run.TaskId,run.Id,fingerprint);
+
     public RepairCycle Start(string taskId, StartRepairCycleRequest request,
         ImplementationPlan plan, string? agentModel = null)
         => StartCore(taskId,request,plan,agentModel,false);

@@ -208,7 +208,8 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         linkedRepair?'Repair '+linkedRepair.state:job?stateLabel[job.state]??job.state:'Not started'}</strong></div>
     {!guided&&<p>Inference: {preview.capacity.active}/{preview.capacity.capacity} active · {preview.capacity.waiting} queued</p>}
     {loadError&&<p role="alert">Refresh unavailable. Actions are disabled until evidence is current.</p>}
-    {!approved&&!proposed&&<><p>Authorize routine reviews, scheduling and messaging. You can also delegate bounded source-only repairs. Execution always requires separate authorization.</p>
+    {guided&&preview.reason==='BUILD_NOT_COMPLETE'&&!scopeCandidate&&<p role="status">The saved source is not eligible for coordinated repair. Inspect the stopped work; an incomplete initial build cannot be treated as a completed application.</p>}
+    {!approved&&!proposed&&(!guided||!!scopeCandidate)&&<><p>Authorize routine reviews, scheduling and messaging. You can also delegate bounded source-only repairs. Execution always requires separate authorization.</p>
       {scopeCandidate&&<fieldset disabled={busy||loadError||running}>
         <legend>Routine source repairs</legend>
         <label><input type="checkbox" checked={routineEnabled}
@@ -246,6 +247,7 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         <code>{policy!.policySha256}</code>
         <button type="button" disabled={busy||loadError} onClick={()=>void act('revoke')}>Revoke delegation</button>
       </details></>}
+    {approved&&preview.reason==='RECOVERY_DELEGATION_REQUIRED'&&<p role="status">The stopped revision needs a fresh exact delegation. Inspect or revoke the previous policy, then prepare a new bounded repair policy for the preserved source.</p>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('start')}>Start team coordination</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}

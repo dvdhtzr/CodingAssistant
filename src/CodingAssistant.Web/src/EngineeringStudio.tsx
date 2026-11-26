@@ -21,7 +21,7 @@ interface StudioQaSnapshot extends TeamQaSnapshot {
   events?: Array<{ sequence: number; kind: string; detail: string; createdUtc: string }>;
 }
 interface StudioRepair {
-  cycle: { state: string; attempt: number; errorCode: string | null };
+  cycle: { state: string; attempt: number; errorCode: string | null; engineeringRunId?: string };
 }
 export interface StudioEvidence {
   agents: AgentIdentity[];
@@ -221,7 +221,9 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   const source = saved?.engineering?.job;
   const activeWork = activeLead || activeQa || activeEngineer || coordinating;
   const canCoordinate = !teamError && !decisionError && !!decisions && !nextDecision &&
-    (source?.state === 'Generated' || !!saved?.collaboration);
+    (source?.state === 'Generated' || !!saved?.collaboration ||
+      ((source?.state === 'Failed' || source?.state === 'Interrupted') &&
+        latest?.engineeringRunId === source.id && !!saved?.engineering?.files.length));
   const stopped = source?.state === 'Failed' || source?.state === 'Interrupted';
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState('');

@@ -57,7 +57,8 @@ public sealed class LeadReviewStore(TaskStore tasks)
     {
         var run=EngineeringRunStore.Find(db,tx,review.EngineeringRunId);
         if(run is null || run.TaskId!=review.TaskId) throw new StoreFailure("NOT_FOUND");
-        if(run.State!="Generated") throw new StoreFailure("BUILD_NOT_COMPLETE");
+        if(!RepairCycleStore.IsCoordinationSource(db,tx,run,review.SourceSha256))
+            throw new StoreFailure("BUILD_NOT_COMPLETE");
         if(run.PlanSha256!=review.PlanSha256) throw new StoreFailure("STALE_IMPLEMENTATION_PLAN");
         if(TaskStore.Scalar(db,tx,"SELECT id FROM engineering_runs WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1",
             ("@task",review.TaskId))!=run.Id ||
@@ -72,7 +73,7 @@ public sealed class LeadReviewStore(TaskStore tasks)
     {
         CheckId(taskId);
         EngineeringRoleCapabilities.Require("LeadSoftwareEngineer",EngineeringCapability.ReviewCode);
-        if(source.Job.TaskId!=taskId || source.Job.State!="Generated" || source.Files.Count==0)
+        if(source.Job.TaskId!=taskId || source.Job.State is not ("Generated" or "Failed" or "Interrupted") || source.Files.Count==0)
             throw new StoreFailure("BUILD_NOT_COMPLETE");
         if(!plan.Current || plan.Status!="Approved" || plan.TaskId!=taskId ||
             plan.PlanSha256!=source.Job.PlanSha256 || !LocalInterviewModel.AllowedModel(model))

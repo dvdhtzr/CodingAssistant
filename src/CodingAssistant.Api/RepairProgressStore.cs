@@ -47,7 +47,8 @@ public sealed class RepairProgressStore(TaskStore tasks)
         var result=Read(db,tx,taskId,runId);tx.Commit();return result;
     }
 
-    internal static RepairProgressReport Read(SqliteConnection db,SqliteTransaction tx,string taskId,string runId)
+    internal static RepairProgressReport Read(SqliteConnection db,SqliteTransaction tx,string taskId,string runId,
+        RoutineRepairScope? approvedScope=null)
     {
         var run=EngineeringRunStore.Find(db,tx,runId);
         if(run is null || run.TaskId!=taskId)throw new StoreFailure("NOT_FOUND");
@@ -90,7 +91,23 @@ public sealed class RepairProgressStore(TaskStore tasks)
         var last=attempts.TakeLast(2).ToArray();
         var stalled=last.Length!=2?[]:current.Where(i=>last.All(a=>a.Findings.Any(f=>Matches(i,f,a.Origin))))
             .Select(i=>i.Id).ToArray();
-        var progress=Evaluate(runId,attempts,stalled);
+        var guardAttempts=attempts.ToArray();
+        // A newly approved exact recovery baseline is an explicit owner
+        // decision to try a different strategy. Ignore only failed, unchanged
+        // clones of that same baseline before its approval for stall detection.
+        // Keep every attempt in the report and keep changed-source stalls.
+        if(approvedScope is not null &&
+            RepairCycleStore.IsUnchangedFailedRepair(db,tx,taskId,
+                approvedScope.BaselineRunId,approvedScope.BaselineSourceSha256))
+        {
+            var boundary=attempts.FindIndex(a=>a.CandidateRunId==approvedScope.BaselineRunId);
+            if(boundary>=0)
+                guardAttempts=attempts.Where((a,index)=>index>boundary ||
+                    a.State is not ("Failed" or "Interrupted") ||
+                    a.OriginalSourceSha256!=approvedScope.BaselineSourceSha256 ||
+                    a.CandidateSourceSha256!=approvedScope.BaselineSourceSha256).ToArray();
+        }
+        var progress=Evaluate(runId,guardAttempts,stalled) with {Attempts=attempts.AsReadOnly()};
         // A newly grounded blocking concern in text introduced by a delegated
         // candidate is a possible regression, NOT a proven runtime failure.
         // Stop autonomous promotion/repair instead of chasing moving findings.

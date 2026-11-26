@@ -3867,6 +3867,9 @@ try
     var probeLedger = reviewStore.Get(taskBound.Id, probeReview.Id);
     Check(!probeLedger.UnchangedFailedRepair,
         "ordinary incomplete engineering runs never qualify for failed-repair retry");
+    var partialCoordinationPreview=new CollaborationStore(tasks).Preview(taskBound.Id);
+    Check(partialCoordinationPreview.RoutineRepairCandidate is null && !partialCoordinationPreview.CanStart,
+        "ordinary partial build is ineligible for coordinated recovery even when saved files exist");
     Check(probeLedger.Events.Any(e => e.Kind == "QaAtlasInspected" &&
           e.Detail.Contains("atlas.find_symbols", StringComparison.Ordinal) &&
           e.Detail.Contains(probeRevision[..12], StringComparison.Ordinal) &&
@@ -4944,6 +4947,49 @@ try
         softwareModel.RoutineGate=null;
         softwareModel.IntroduceRoutineRegression=false;
     }
+
+    // Recover the exact stopped clone from the cancellation scenario.
+    // The old policy is revoked; a new bounded owner approval is mandatory.
+    var recoveryClone=engineeringStore.Latest(taskBound.Id)!;
+    var recoveryHash=QaReviewStore.Fingerprint(recoveryClone.Files);
+    var recoveryPreview=aetCollabStore.Preview(taskBound.Id);
+    Check(recoveryClone.Job.State=="Interrupted" &&
+        recoveryPreview.RoutineRepairCandidate?.RunId==recoveryClone.Job.Id &&
+        recoveryPreview.RoutineRepairCandidate.SourceSha256==recoveryHash &&
+        !recoveryPreview.CanStart,
+        "preserved stopped clone offers recovery scope but no implicit authorization");
+    Check(new RepairProgressStore(tasks).Read(taskBound.Id,recoveryClone.Job.Id).StrategyChangeRequired,
+        "historical unchanged attempt remains a recorded stall before explicit recovery");
+    var recoveryDelegation=delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(routineRevision,secondPlanHash,routineOps,
+            new RoutineRepairScope(recoveryClone.Job.Id,recoveryHash,["app.js"],4)));
+    recoveryDelegation=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+        recoveryDelegation.Revision,recoveryDelegation.PolicySha256,"APPROVE "+recoveryDelegation.PolicySha256));
+    routineRevision=recoveryDelegation.Revision;
+    var recoveryAdmission=aetCollabStore.Preview(taskBound.Id);
+    Check(recoveryAdmission.CanStart && recoveryAdmission.Candidate?.RunId==recoveryClone.Job.Id,
+        "fresh exact delegation admits coordination of preserved source, not regeneration");
+    using(var recoveryStart=await Post(client,aetCollabPath,recoveryAdmission.Candidate!))
+        Check(recoveryStart.StatusCode==HttpStatusCode.Accepted,"start recovery with one explicit owner approval");
+    CollaborationSnapshot? recoveryTeamResult=null;
+    for(var recoveryPoll=0;recoveryPoll<800;recoveryPoll++)
+    {
+        recoveryTeamResult=aetCollabStore.Latest(taskBound.Id);
+        if(recoveryTeamResult?.Job.State is "AwaitingVerification" or "Failed" or "Escalated")break;
+        await Task.Delay(25);
+    }
+    var recoveryFinal=engineeringStore.Latest(taskBound.Id)!;
+    var recoveryHistory=new RepairProgressStore(tasks).Read(taskBound.Id,recoveryFinal.Job.Id);
+    Check(recoveryTeamResult?.Job.State=="AwaitingVerification" &&
+        recoveryFinal.Job.State=="Generated" &&
+        recoveryHistory.Attempts.Count==3 &&
+        recoveryHistory.Attempts[0].CandidateRunId==recoveryClone.Job.Id &&
+        recoveryHistory.Attempts.Skip(1).All(a=>a.IndependentStaticResolution) &&
+        engineeringStore.Get(taskBound.Id,recoveryClone.Job.Id).Job.State=="Interrupted" &&
+        QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,recoveryClone.Job.Id).Files)==recoveryHash,
+        "recovered coordination completes two repairs while preserving failed history and original source: "+recoveryTeamResult?.Job.Reason);
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(recoveryDelegation.Revision,
+        recoveryDelegation.PolicySha256,"REVOKE "+recoveryDelegation.PolicySha256));
 
     // Smoke evidence must stay distinct from qualified runtime verification.
     var aetSmokeRun=engineeringStore.Start(taskBound.Id,approvedEngineerPlan);

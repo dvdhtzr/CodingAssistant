@@ -299,7 +299,7 @@ public sealed class RepairProposalStore(TaskStore tasks)
         }
         RequireCurrentReview(db,tx,taskId,reviewId,true);
         var run=EngineeringRunStore.Find(db,tx,runId);
-        if(run is null || run.TaskId!=taskId || run.State!="Generated" || state!="Reviewed" ||
+        if(run is null || run.TaskId!=taskId || !RepairCycleStore.IsCoordinationSource(db,tx,run,sourceSha) || state!="Reviewed" ||
             run.PlanSha256!=planSha || TaskStore.Scalar(db,tx,"""
                 SELECT id FROM engineering_runs WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1
                 """,("@task",taskId))!=runId ||

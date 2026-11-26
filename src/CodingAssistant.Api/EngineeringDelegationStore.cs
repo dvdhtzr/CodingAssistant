@@ -62,7 +62,7 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
             );
             """);
 
-    private static DelegationPolicy? Latest(SqliteConnection db,
+    internal static DelegationPolicy? Latest(SqliteConnection db,
         SqliteTransaction? tx, string taskId)
     {
         using var cmd = TaskStore.Command(db, tx, """
@@ -176,7 +176,8 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
                 .Any(op => !operations.Contains(op, StringComparer.Ordinal)))
             throw new StoreFailure("INVALID_INPUT");
         var source = EngineeringRunStore.Find(db, tx, scope.BaselineRunId);
-        if (source is null || source.TaskId != taskId || source.State != "Generated" ||
+        if (source is null || source.TaskId != taskId ||
+            !RepairCycleStore.IsCoordinationSource(db,tx,source,scope.BaselineSourceSha256) ||
             source.PlanSha256 != plan.PlanSha256 ||
             TaskStore.Scalar(db, tx, """
                 SELECT id FROM engineering_runs WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1
@@ -336,7 +337,7 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
         }
         if (parent.RunId != scope.BaselineRunId)
         {
-            var progress = RepairProgressStore.Read(db,tx,taskId,parent.RunId);
+            var progress = RepairProgressStore.Read(db,tx,taskId,parent.RunId,scope);
             if (progress.StrategyChangeRequired ||
                 progress.Attempts.LastOrDefault() is not { IndependentStaticResolution:true })
                 throw new StoreFailure("ROUTINE_REPAIR_RECHECK_REQUIRED");
