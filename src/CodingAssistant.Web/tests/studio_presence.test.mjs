@@ -47,7 +47,7 @@ const base = {
     events: [{ sequence: 1, kind: 'QaStaticReportSaved',
       detail: 'Inspected app.js', createdUtc: '2026-11-23T09:02:00Z' }],
   },
-  repair: { cycle: { state: 'Failed', attempt: 6, errorCode: 'REPAIR_NO_CHANGE' } },
+  repair: { cycle: { state: 'Failed', attempt: 6, engineeringRunId: 'run1', errorCode: 'REPAIR_NO_CHANGE' } },
 };
 
 test('only persisted running jobs create active model-aware specialist status', () => {
@@ -65,6 +65,8 @@ test('only persisted running jobs create active model-aware specialist status', 
   assert.equal(qa.state, 'recorded');
   assert.equal(qa.assignment, '1 saved file report(s)');
   assert.equal(qa.modelForNextRun, 'qwen2.5-coder:14b');
+  const historical = { ...base, repair: { cycle: { ...base.repair.cycle, engineeringRunId: 'old-run' } } };
+  assert.equal(studioAgentPresence(historical, models).find(r => r.agent.id === 'SoftwareEngineer').state, 'recorded');
 });
 
 test('running QA displays the model pinned to the job instead of its next-work preference', () => {

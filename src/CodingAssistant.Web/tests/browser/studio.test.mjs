@@ -50,7 +50,7 @@ const done = (route, body, status = 200) => route.fulfill({
 });
 
 function mockApi(page, { architectureOutdated = false,
-  specificationStatus = 'Approved' } = {}) {
+  specificationStatus = 'Approved', historicalQuality = false, historicalRunning = false } = {}) {
   const selections = [
     { role: 'ProductOwner', model: 'qwen3-coder:30b',
       overridden: false, source: 'Interview selection' },
@@ -119,9 +119,11 @@ function mockApi(page, { architectureOutdated = false,
     }] });
     if (path.endsWith('/engineering-runs/latest'))
       return done(route, { snapshot: engineering });
-    if (path.endsWith('/qa-reviews/latest')) return done(route, { snapshot: qa });
+    if (path.endsWith('/qa-reviews/latest')) return done(route, { snapshot: historicalQuality ?
+      { ...qa, job: { ...qa.job, engineeringRunId: '8'.repeat(32), state: historicalRunning ? 'Running' : 'Failed', errorCode: 'MODEL_OUTPUT_REJECTED' }, sourceState: 'Failed' } : qa });
     if (path.endsWith('/repair-cycles/latest'))
-      return done(route, { snapshot: repairCycle });
+      return done(route, { snapshot: historicalQuality ? { ...repairCycle,
+        cycle: { ...repairCycle.cycle, engineeringRunId: '8'.repeat(32), state: historicalRunning ? 'Running' : repairCycle.cycle.state } } : repairCycle });
     if (path.endsWith('/repair-cycles'))
       return done(route, { cycles: Array.from({ length: 6 }, (_, i) => ({
         ...repairCycle.cycle, id: String(i + 1).repeat(32), attempt: i + 1,
@@ -182,6 +184,52 @@ before(async () => {
   browser = await chromium.launch({ headless: true });
 });
 after(async () => { await browser?.close();await vite?.close(); });
+
+test('new generated source takes priority over historical failed repair and QA', async () => {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  try {
+    await mockApi(page, { historicalQuality: true });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
+    const attention = studio.locator('aside.ca-studio-context');
+    await attention.getByText('New source ready for QA').waitFor();
+    assert.equal(await attention.getByText('Repair cycle 6 stopped').count(), 0);
+    const engineer = studio.locator('[data-agent="SoftwareEngineer"]');
+    assert.match(await engineer.textContent(), /Generated/);
+    assert.doesNotMatch(await engineer.textContent(), /Needs inspection/);
+    await studio.locator('[data-agent="QaEngineer"]').click();
+    const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
+    await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).waitFor();
+    assert.equal(await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).isEnabled(), true);
+    assert.match(await canvas.getByLabel('Current QA source').textContent(), /has not been independently reviewed/);
+    assert.equal(await canvas.locator('.qa-repair-progress').count(), 0);
+    await canvas.getByText('Earlier QA report', { exact: false }).waitFor();
+    assert.equal(await canvas.locator('.qa-repair-history').getAttribute('open'), null);
+  } finally { await page.close(); }
+});
+
+test('new generated source takes priority over historical running repair and QA', async () => {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  try {
+    await mockApi(page, { historicalQuality: true, historicalRunning: true });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
+    const attention = studio.locator('aside.ca-studio-context');
+    await attention.getByText('New source ready for QA').waitFor();
+    assert.equal(await attention.getByText('Repair cycle 6 stopped').count(), 0);
+    const engineer = studio.locator('[data-agent="SoftwareEngineer"]');
+    assert.match(await engineer.textContent(), /Generated/);
+    assert.doesNotMatch(await engineer.textContent(), /Needs inspection/);
+    await studio.locator('[data-agent="QaEngineer"]').click();
+    const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
+    await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).waitFor();
+    assert.equal(await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).isEnabled(), true);
+    assert.match(await canvas.getByLabel('Current QA source').textContent(), /has not been independently reviewed/);
+    assert.equal(await canvas.locator('.qa-repair-progress').count(), 0);
+    await canvas.getByText('Earlier QA report', { exact: false }).waitFor();
+    assert.equal(await canvas.locator('.qa-repair-history').getAttribute('open'), null);
+  } finally { await page.close(); }
+});
 
 test('studio prioritizes real QA, keeps prior failed repair separate, and exposes source on demand', async () => {
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
