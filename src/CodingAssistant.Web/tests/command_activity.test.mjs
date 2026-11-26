@@ -339,3 +339,15 @@ test('completed static QA is never a verified build stage', () => {
   assert.equal(stages.find(item => item.id === 'verify').state, 'attention');
   assert.equal(stages.find(item => item.id === 'verify').hint, 'Static review only');
 });
+
+test('supervised Command keeps the activity board without sending the owner through a second decision queue', () => {
+  const data=evidence();
+  data.decisions.specification={version:2,status:'Draft',sha256:'e'.repeat(64)};
+  const html=renderToStaticMarkup(React.createElement(CommandActivityView,{
+    task,evidence:data,supervised:true,onNavigate:()=>{},
+  }));
+  assert.match(html,/Agent Activity Board/);
+  assert.match(html,/Recent activity/);
+  assert.match(html,/Recorded activity · supervise the project above/);
+  assert.doesNotMatch(html,/Decision Queue|Review specification v2|approval to review/);
+});

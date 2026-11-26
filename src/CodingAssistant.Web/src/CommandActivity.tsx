@@ -172,9 +172,10 @@ export function commandAgents(evidence: CommandEvidence): AgentActivity[] {
   });
 }
 
-export function CommandActivityView({ task, evidence, onNavigate }: {
+export function CommandActivityView({ task, evidence, onNavigate, supervised = false }: {
   task: TaskItem;
   evidence: CommandEvidence;
+  supervised?: boolean;
   onNavigate: (destination: 'team' | 'work' | 'quality' | 'history' | 'diagnostics') => void;
 }) {
   const events = commandActivity(evidence);
@@ -242,16 +243,17 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
       <div className="ca-console-focus">
         <span className="wb-kicker">CURRENT STAGE</span>
         <strong>{missionState}</strong>
-        <button type="button" className="primary"
+        {!supervised && <button type="button" className="primary"
           onClick={() => onNavigate(recommendation.to)}>
           {recommendation.title}
-        </button>
+        </button>}
+        {supervised && <small>Recorded activity · supervise the project above</small>}
       </div>
     </header>
 
     <div className="ca-console-stats" aria-label="Saved project status">
       <span><strong>{running.length}</strong> recorded active agent{running.length === 1 ? '' : 's'}</span>
-      <span><strong>{reviewCount}</strong> approval{reviewCount === 1 ? '' : 's'} to review</span>
+      {!supervised && <span><strong>{reviewCount}</strong> approval{reviewCount === 1 ? '' : 's'} to review</span>}
       <span><strong>{evidence.engineering?.tasks.filter(t => t.state === 'Completed').length ?? 0}</strong>
         {' / '}{evidence.engineering?.tasks.length ?? 0} engineering assignments</span>
       <span>Source: <strong>{latestEngineering?.state ?? 'Not started'}</strong> · unverified</span>
@@ -319,10 +321,10 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
             {running.length ? running.map(item => item.detail).join(' · ') :
               latestEngineering
                 ? 'Most recent source run: ' + latestEngineering.state
-                : 'Awaiting an approved project step'}
+                : supervised ? 'No saved engineering run' : 'Awaiting an approved project step'}
           </span>
         </div>
-        {blockedSource && <p className="ca-console-blocked">
+        {blockedSource && !supervised && <p className="ca-console-blocked">
           <strong>Source needs attention:</strong>{' '}
           {evidence.sourceReadiness?.findings.filter(f => f.severity === 'Error').length}
           {' '}blocking completeness issue(s).
@@ -333,9 +335,9 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
       </section>
 
       <aside className="ca-console-side" aria-label="Owner attention and activity">
-        <DecisionQueueView items={queue} maxVisible={2}
+        {!supervised && <DecisionQueueView items={queue} maxVisible={2}
           onInspect={id => showDrawer({ kind: 'decision', id })}
-          onViewAll={() => onNavigate('work')} />
+          onViewAll={() => onNavigate('work')} />}
         <section className="mc-command-panel ca-activity ca-console-activity"
           aria-label="Recent Activity Stream">
           <div className="ca-console-section-head">
@@ -382,9 +384,10 @@ export function CommandActivityView({ task, evidence, onNavigate }: {
 
 }
 
-export function CommandActivity({ token, task, onNavigate }: {
+export function CommandActivity({ token, task, onNavigate, supervised = false }: {
   token: string;
   task: TaskItem;
+  supervised?: boolean;
   onNavigate: (destination: 'team' | 'work' | 'quality' | 'history' | 'diagnostics') => void;
 }) {
   const [evidence, setEvidence] = useState<CommandEvidence | null>(null);
@@ -464,5 +467,5 @@ export function CommandActivity({ token, task, onNavigate }: {
     <h2>Loading Command evidence…</h2>
     <p>Reading saved agent assignments, approvals, engineering and QA history.</p>
   </section>;
-  return <CommandActivityView task={task} evidence={evidence} onNavigate={onNavigate}/>;
+  return <CommandActivityView task={task} evidence={evidence} onNavigate={onNavigate} supervised={supervised}/>;
 }
