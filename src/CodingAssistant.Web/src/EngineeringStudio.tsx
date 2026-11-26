@@ -65,8 +65,8 @@ export function studioAttention(saved: StudioEvidence | null,
     items.unshift({ stage: 'delivery', kind: 'next', title: 'New source ready for QA',
       detail: 'Review the current saved source, not earlier repair history.' });
   } else if (eng && (eng.state === 'Failed' || eng.state === 'Interrupted') &&
-    saved.repair?.cycle.state !== 'Running' &&
-    saved.repair?.cycle.state !== 'QaRunning') {
+    currentRepair?.state !== 'Running' &&
+    currentRepair?.state !== 'QaRunning') {
     items.push({ stage: 'generation', kind: 'warning',
       title: 'Engineering stopped with saved work',
       detail: eng.errorCode ?? 'Inspect the stopped assignment and available source before resuming.' });
@@ -195,7 +195,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   const attention = useMemo(() => studioAttention(saved, decisions), [saved, decisions]);
   const engId = saved?.engineering?.job.id;
   const latest = saved?.repair?.cycle.engineeringRunId === engId ? saved?.repair?.cycle : null;
-  const activeQa = (saved?.qa?.job.engineeringRunId === engId && saved?.qa?.job.state === 'Running') || latest?.state === 'QaRunning';
+  const activeQa = (saved?.qa?.job.engineeringRunId === engId && saved?.qa?.job.planSha256 === saved?.engineering?.job.planSha256 && saved?.qa?.job.state === 'Running') || latest?.state === 'QaRunning';
   const activeEngineer = saved?.engineering?.job.state === 'Running' || latest?.state === 'Running';
   const working = activeQa ? 'QA Engineer reviewing' :
     activeEngineer ? 'Software Engineer working' : 'No active agent run recorded';
