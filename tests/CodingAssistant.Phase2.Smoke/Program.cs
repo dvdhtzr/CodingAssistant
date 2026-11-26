@@ -4777,7 +4777,8 @@ try
         aetCollabResult.Steps.Select(x=>x.Action).SequenceEqual(["ReviewCode","ResumeInterrupted","ReviewCode","ClassifyIssue","RequestOwnerRepair"]) &&
         aetCollabResult.Steps[0].ReferenceId is null &&
         aetCollabResult.Steps.Skip(1).All(x=>x.ReferenceId is not null) &&
-        aetCollaborationLead.Calls==3,
+        aetCollaborationLead.Calls==2 &&
+        aetCollabResult.Steps[2].Rationale.StartsWith("Host-required independent code review",StringComparison.Ordinal),
         "actual lead decision loop independently reviews, classifies and requests exact repair without bypassing owner gate");
     Check(engineeringStore.Latest(taskBound.Id)!.Job.Id==aetChildResumeId &&
         qaModel.ReviewedFiles.Count==10,
@@ -6000,6 +6001,11 @@ sealed class AetCollaborationLeadFixture:ICollaborationLead
     public Task<CollaborationDecision> DecideAsync(CollaborationInput input,CancellationToken token)
     {
         token.ThrowIfCancellationRequested();Calls++;
+        // A model that prematurely escalates when asked whether to gather
+        // mandatory evidence reproduces the reported live failure.
+        if(input.AllowedActions.Count==2 && input.AllowedActions.Contains("Escalate") &&
+            (input.AllowedActions.Contains("ReviewCode")||input.AllowedActions.Contains("ReviewAcceptance")))
+            return Task.FromResult(new CollaborationDecision("Escalate","Fixture model prematurely escalates instead of requesting evidence."));
         var decision=input.AllowedActions.Contains("ReviewCode")?
             new CollaborationDecision("ReviewCode","Request independent review of the exact generated source."):
             input.AllowedActions.Contains("RecheckIssue")?

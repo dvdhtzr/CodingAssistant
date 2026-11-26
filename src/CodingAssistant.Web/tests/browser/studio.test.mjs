@@ -985,3 +985,37 @@ test('routine repair dispatch does not present an owner approval before the link
     assert.deepEqual(writes,[]);
   }finally{await page.close();}
 });
+
+test('guided lead escalation explains the actual saved decision and offers a clearly labeled retry',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256};
+  const snapshot={job:{...candidate,id:'2'.repeat(32),taskId:id,model:'qwen3-coder:30b',
+    state:'Escalated',reason:'LEAD_ESCALATION'},steps:[{sequence:1,action:'Escalate',
+    issueId:null,referenceId:null,rationale:'The reviewer has not supplied sufficient evidence.',createdUtc:time}]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:true,canResume:false,reason:'READY',
+    policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:4}},
+    capacity:{capacity:1,active:0,waiting:0}};
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      if(path.endsWith('/collaboration/preview'))return done(route,preview);
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Team coordination stopped — source preserved'}).waitFor();
+    await guided.getByText(/The Technical Lead stopped: The reviewer has not supplied sufficient evidence/).waitFor();
+    await guided.getByRole('button',{name:'Retry team coordination'}).waitFor();
+    assert.equal(await guided.getByRole('button',{name:'Start team coordination'}).count(),0);
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});

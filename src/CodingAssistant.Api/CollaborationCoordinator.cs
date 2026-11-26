@@ -540,10 +540,29 @@ public sealed class CollaborationStore(TaskStore tasks)
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
         var input=Input(db,tx,Find(db,tx,taskId,id));tx.Commit();return input;
     }
+    // A mandatory independent review gathers evidence; it never grants
+    // write authority or claims that the Technical Lead made a model decision.
+    internal static CollaborationDecision? MandatoryReview(CollaborationInput input)
+    {
+        if(input.AllowedActions.Count!=2 || !input.AllowedActions.Contains("Escalate"))return null;
+        if(input.AllowedActions.Contains("ReviewCode"))
+            return new("ReviewCode","Host-required independent code review of the exact saved source.");
+        if(input.AllowedActions.Contains("ReviewAcceptance"))
+            return new("ReviewAcceptance","Host-required independent acceptance review of the exact saved source.");
+        return null;
+    }
+
     public CollaborationStep Record(string taskId,string id,CollaborationDecision decision)
+        =>RecordCore(taskId,id,decision,false);
+
+    internal CollaborationStep RecordMandatoryReview(string taskId,string id,CollaborationDecision decision)
+        =>RecordCore(taskId,id,decision,true);
+
+    private CollaborationStep RecordCore(string taskId,string id,CollaborationDecision decision,bool hostDirected)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
         var job=Find(db,tx,taskId,id);var input=Input(db,tx,job);
+        if(hostDirected && MandatoryReview(input)!=decision)throw new StoreFailure("INVALID_STATE");
         decision=MafCollaborationLead.Parse(JsonSerializer.Serialize(decision),input);
         var step=new CollaborationStep(input.Steps.Count+1,decision.Action,decision.IssueId,decision.Rationale,null,DateTimeOffset.UtcNow.ToString("O"));
         TaskStore.Execute(db,tx,"""
@@ -551,8 +570,8 @@ public sealed class CollaborationStore(TaskStore tasks)
             VALUES(@id,@seq,@action,@issue,@rationale,@utc)
             """,("@id",id),("@seq",step.Sequence),("@action",step.Action),
             ("@issue",(object?)step.IssueId??DBNull.Value),("@rationale",step.Rationale),("@utc",step.CreatedUtc));
-        EngineeringActivityStore.Record(db,tx,taskId,"CollaborationDecisionRecorded","TechnicalLead","Collaboration",id,step.Sequence,
-            sourceSha256:job.SourceSha256,model:job.Model,agentProposal:true);
+        EngineeringActivityStore.Record(db,tx,taskId,"CollaborationDecisionRecorded",hostDirected?"Host":"TechnicalLead","Collaboration",id,step.Sequence,
+            sourceSha256:job.SourceSha256,model:hostDirected?null:job.Model,agentProposal:!hostDirected);
         tx.Commit();tasks.SignalEngineeringActivity(taskId);return step;
     }
 
@@ -694,11 +713,20 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
             {
                 token.ThrowIfCancellationRequested();
                 var input=store.Prepare(job.TaskId,job.Id);
+                // Do not ask a model whether to gather mandatory evidence
+                // when the only alternative is premature escalation. The
+                // already authorized independent reviewer still does real work.
+                var mandatory=CollaborationStore.MandatoryReview(input);
                 CollaborationDecision decision;
-                using(EngineeringProviderActivity.Enter(tasks,job.TaskId,"TechnicalLead",job.Id,job.SourceSha256))
-                    decision=await lead.DecideAsync(input,token);
+                if(mandatory is not null)decision=mandatory;
+                else
+                {
+                    using(EngineeringProviderActivity.Enter(tasks,job.TaskId,"TechnicalLead",job.Id,job.SourceSha256))
+                        decision=await lead.DecideAsync(input,token);
+                }
                 token.ThrowIfCancellationRequested();
-                var step=store.Record(job.TaskId,job.Id,decision);
+                var step=mandatory is not null?store.RecordMandatoryReview(job.TaskId,job.Id,decision):
+                    store.Record(job.TaskId,job.Id,decision);
                 switch(step.Action)
                 {
                     case "ReviewCode":

@@ -249,8 +249,11 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         <button type="button" disabled={busy||loadError} onClick={()=>void act('revoke')}>Revoke delegation</button>
       </details></>}
     {approved&&preview.reason==='RECOVERY_DELEGATION_REQUIRED'&&<p role="status">The stopped revision needs a fresh exact delegation. Inspect or revoke the previous policy, then prepare a new bounded repair policy for the preserved source.</p>}
+    {job?.state==='Escalated'&&job.reason==='LEAD_ESCALATION'&&<p role="status">
+      The Technical Lead stopped: {preview.snapshot?.steps.slice().reverse().find(step=>step.action==='Escalate')?.rationale??'No explanation was recorded.'}
+      {' '}Your existing delegation is unchanged. Retrying opens a new session on the saved source; it does not regenerate it.</p>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
-      onClick={()=>void act('start')}>Start team coordination</button>}
+      onClick={()=>void act('start')}>{job?.state==='Escalated'||job?.state==='Failed'?'Retry team coordination':'Start team coordination'}</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('resume')}>Resume saved coordination</button>}
     {(repairing||job?.state==='Running'||dispatching)&&<button type="button" disabled={busy||loadError} onClick={()=>void act('cancel')}>Stop coordination</button>}
