@@ -5229,6 +5229,129 @@ try
     Check(aetSmokeStore.List(taskBound.Id,aetSmokeRun.Id).Single() is {Current:false,Verified:false},
         "architecture revision makes historical smoke evidence stale without deleting it");
 
+    // Independent projects exercise continuous owner-approved generation and
+    // host-owned handoff, with no UI/browser orchestrating the transitions.
+    async Task<(string TaskId,ImplementationPlan Plan)> PrepareUpfrontProject(string title)
+    {
+        var fixtureTask=tasks.CreateTask(new CreateTaskRequest(title,
+            "Create an offline static web timer with mouse and keyboard controls",Guid.NewGuid().ToString("N")));
+        var fixtureFirst=interviews.CommitTurn(fixtureTask.Id,new InterviewTurnRequest(0,null,"qwen3.5:4b"),
+            new InterviewReply("What are the timer controls?",false));
+        var fixtureAnswer=interviews.CommitTurn(fixtureTask.Id,new InterviewTurnRequest(fixtureFirst.LastSequence,
+            "Start, stop and reset. No server or packages.","qwen3.5:4b"),
+            new InterviewReply("Should the timer work offline?",true));
+        var fixtureDraft=interviews.CommitSpecification(fixtureTask.Id,fixtureAnswer.LastSequence,specBound.Content);
+        var fixtureSpec=interviews.Approve(fixtureTask.Id,new ApproveSpecificationRequest(
+            fixtureDraft.Specification!.Version,fixtureDraft.Specification.Sha256)).Specification!;
+        var newStack=decisionStore.Propose(fixtureTask.Id,new ProposeArchitectureDecisionRequest(
+            1,fixtureSpec.Version,fixtureSpec.Sha256,"technology-stack","static","Choose offline files with no package manager.",[
+                new("static","Static HTML and JavaScript","Offline, no installation","Manual DOM interaction","static-web"),
+                new("react","React and TypeScript","Reusable UI","Requires a build system",null)],0));
+        decisionStore.Review(fixtureTask.Id,"technology-stack",new ReviewArchitectureDecisionRequest(
+            1,1,newStack.ProposalSha256,"Approve","static","APPROVE "+newStack.ProposalSha256));
+        var newStyle=decisionStore.Propose(fixtureTask.Id,new ProposeArchitectureDecisionRequest(
+            1,fixtureSpec.Version,fixtureSpec.Sha256,"architecture-style","modular","Simple component boundaries for a small timer.",[
+                new("modular","Small event modules","Low complexity","Manual module boundaries",null),
+                new("layers","Full layered architecture","Explicit dependencies","Extra boilerplate",null)],0));
+        decisionStore.Review(fixtureTask.Id,"architecture-style",new ReviewArchitectureDecisionRequest(
+            1,1,newStyle.ProposalSha256,"Approve","modular","APPROVE "+newStyle.ProposalSha256));
+        using var fixtureReadiness=await client.GetAsync("/api/tasks/"+fixtureTask.Id+"/draft-build/architecture");
+        using var fixtureReadinessBody=await Body(fixtureReadiness);
+        var fixtureArchitecture=fixtureReadinessBody.RootElement.GetProperty("architectureSha256").GetString()!;
+        var fixtureProposed=new ImplementationPlanStore(tasks,interviews).Propose(fixtureTask.Id,
+            new GenerateImplementationPlanRequest(1,fixtureSpec.Version,fixtureSpec.Sha256,fixtureArchitecture,0),
+            "qwen3.5:4b",approvedEngineerPlan.Outline);
+        return (fixtureTask.Id,fixtureProposed);
+    }
+    softwareModel.RoutineMode=true;
+    softwareModel.RoutineInitialSource=true;
+    softwareModel.RoutineGate=null;
+    softwareModel.IntroduceRoutineRegression=false;
+    var upfrontStore=new UpfrontTeamAuthorizationStore(tasks);
+    foreach(var scenario in new[]{"continuous","missing-path"})
+    {
+        var (upfrontTask,upfrontPlan)=await PrepareUpfrontProject("Upfront fixture "+scenario);
+        var upfrontPath="/api/tasks/"+upfrontTask;
+        var upfrontRequest=new ApproveImplementationPlanRequest(1,upfrontPlan.Revision,upfrontPlan.PlanSha256,
+            "APPROVE "+upfrontPlan.PlanSha256,new UpfrontRepairAuthorization(
+                scenario=="continuous"?["app.js"]:["missing.js"],4));
+        using(var accepted=await Post(client,upfrontPath+"/implementation-plan/approve",upfrontRequest))
+            Check(accepted.StatusCode==HttpStatusCode.OK,"one explicit plan and future repair approval: "+scenario);
+        using(var replay=await Post(client,upfrontPath+"/implementation-plan/approve",upfrontRequest))
+            Check(replay.StatusCode==HttpStatusCode.Conflict,"combined owner approval cannot be replayed: "+scenario);
+        UpfrontTeamAuthorization? intent=null;
+        CollaborationSnapshot? team=null;
+        for(var poll=0;poll<800;poll++)
+        {
+            intent=upfrontStore.Read(upfrontTask);
+            team=aetCollabStore.Latest(upfrontTask);
+            if(intent?.State=="Stopped"||team?.Job.State is "AwaitingVerification" or "Escalated" or "Failed")break;
+            await Task.Delay(25);
+        }
+        var current=engineeringStore.Latest(upfrontTask)!;
+        if(scenario=="continuous")
+        {
+            var policy=new EngineeringDelegationStore(tasks).Read(upfrontTask);
+            var progress=new RepairProgressStore(tasks).Read(upfrontTask,current.Job.Id);
+            Check(intent is {State:"Bound"}&&team?.Job.State=="AwaitingVerification"&&
+                policy?.RoutineRepair?.BaselineRunId==intent.RunId &&
+                policy.RoutineRepair.Paths.SequenceEqual(new[]{"app.js"}) &&
+                policy.RoutineRepair.MaximumRepairs==4 &&
+                progress.Attempts.Count==2&&progress.Attempts.All(a=>a.IndependentStaticResolution),
+                "single approval completes generation plus two independently reassessed delegated repairs: "+team?.Job.Reason);
+            var delivery=new DeliveryEvidenceStore(tasks).Read(upfrontTask);
+            Check(!delivery.DeliveryAllowed,"continuous source-only team cannot authorize functional delivery");
+        }
+        else
+            Check(intent is {State:"Stopped",Reason:"REPAIR_SCOPE_VIOLATION"} &&
+                current.Job.State=="Generated"&&team is null&&new EngineeringDelegationStore(tasks).Read(upfrontTask) is null,
+                "missing future path stops handoff without granting broader authority or discarding generated source");
+        var reread=new UpfrontTeamAuthorizationStore(new TaskStore(root)).Read(upfrontTask);
+        Check(reread?.State==intent?.State&&reread?.RunId==intent?.RunId,
+            "upfront authority is durable across store reconstruction: "+scenario);
+    }
+
+    // Simulate interrupted host-owned admission and a crash between binding
+    // and collaboration dispatch without invoking a model or resetting DB state.
+    foreach(var handoffScenario in new[]{"cancel","restart-claimed","restart-bound"})
+    {
+        var (handoffTask,handoffPlan)=await PrepareUpfrontProject("Upfront stop fixture "+handoffScenario);
+        var approvedHandoff=new ImplementationPlanStore(tasks,interviews).Approve(handoffTask,
+            new ApproveImplementationPlanRequest(1,handoffPlan.Revision,handoffPlan.PlanSha256,
+                "APPROVE "+handoffPlan.PlanSha256,new UpfrontRepairAuthorization(["app.js"],4)));
+        var handoffRun=engineeringStore.Start(handoffTask,approvedHandoff,useApprovedTeamAuthorization:true);
+        Check(upfrontStore.Read(handoffTask) is {State:"Claimed"} claimedHandoff && claimedHandoff.RunId==handoffRun.Id,
+            "future authority is consumed by exactly one run before model invocation");
+        if(handoffScenario=="restart-bound")
+        {
+            engineeringStore.StartTask(handoffTask,handoffRun.Id,"timer-interface");
+            engineeringStore.CompleteTask(handoffTask,handoffRun.Id,"timer-interface",new EngineeringChangeSet(
+                "Save complete fixture entry.",[new EngineeringFileChange("index.html","Entry",
+                    "<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
+                ["Independently verify behavior."]));
+            engineeringStore.StartTask(handoffTask,handoffRun.Id,"timer-state");
+            engineeringStore.CompleteTask(handoffTask,handoffRun.Id,"timer-state",new EngineeringChangeSet(
+                "Save exact fixture behavior.",[new EngineeringFileChange("app.js","Behavior","console.log('routine-one');console.log('routine-two');")],
+                ["Independently verify behavior."]));
+            engineeringStore.Finish(handoffTask,handoffRun.Id,true,null);
+            // Exercise the exact production binding without dispatch.
+            var binder=typeof(EngineeringDelegationStore).GetMethod("BindUpfront",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!;
+            var boundRequest=(StartCollaborationRequest?)binder.Invoke(new EngineeringDelegationStore(tasks),[handoffTask,handoffRun.Id]);
+            Check(boundRequest is not null&&upfrontStore.Read(handoffTask)?.State=="Bound",
+                "fixture simulates a completed source and bound policy before dispatch");
+        }
+        if(handoffScenario=="cancel")
+            engineeringStore.Interrupt(handoffTask,handoffRun.Id);
+        else
+            upfrontStore.Recover();
+        Check(upfrontStore.Read(handoffTask) is {State:"Stopped"} stoppedHandoff &&
+            stoppedHandoff.Reason==(handoffScenario=="cancel"?"OWNER_CANCELLED":"PROCESS_INTERRUPTED")&&
+            aetCollabStore.Latest(handoffTask) is null &&
+            new EngineeringDelegationStore(tasks).Read(handoffTask)?.Status!="Approved",
+            "stop/restart cannot leave an orphan active future-file grant: "+handoffScenario);
+        if(handoffScenario=="restart-claimed")engineeringStore.Interrupt(handoffTask,handoffRun.Id);
+    }
+
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
 finally
@@ -5493,6 +5616,7 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
 {
     public bool RoutineMode { get; set; }
     public bool IntroduceRoutineRegression { get; set; }
+    public bool RoutineInitialSource { get; set; }
     public TaskCompletionSource<bool>? RoutineGate { get; set; }
     public TaskCompletionSource<bool>? RoutineEntered { get; set; }
     private async Task<EngineeringChangeSet> WaitForRoutineGate(EngineeringChangeSet changes,CancellationToken token)
@@ -5557,7 +5681,9 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
             return Task.FromResult(new EngineeringChangeSet(
                 "Connected timer state to the Start button and reset behavior.",
                 [new EngineeringFileChange("app.js", "Complete timer interactions",
-                    "document.getElementById('start').addEventListener('click', () => { console.log('start'); });")],
+                    RoutineInitialSource
+                        ? "document.getElementById('start').addEventListener('click',()=>{console.log('routine-one');console.log('routine-two');});"
+                        : "document.getElementById('start').addEventListener('click', () => { console.log('start'); });")],
                 ["Verify timer movement and reset without model claims"]));
         }
         throw new Exception("Unapproved task sent to engineer");

@@ -238,6 +238,7 @@ public static class ApiHost
         builder.Services.AddSingleton<EngineeringActivityStore>();
         var collaborationStore=new CollaborationStore(store);
         collaborationStore.Recover();
+        new UpfrontTeamAuthorizationStore(store).Recover();
         builder.Services.AddSingleton(collaborationStore);
         builder.Services.AddSingleton<ICollaborationLead>(collaborationLeadOverride??new MafCollaborationLead());
         builder.Services.AddSingleton<CollaborationCoordinator>();

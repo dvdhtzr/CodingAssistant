@@ -88,12 +88,46 @@ public sealed class UpfrontTeamAuthorizationStore(TaskStore tasks)
             WHERE task_id=@task AND run_id=@run
             """,("@task",taskId),("@run",runId));
     }
+    // Called only during host startup after existing engineering/coordination
+    // recovery. Never infer approval to start new work after a process exit.
+    public void Recover()
+    {
+        var abandoned=new List<(string TaskId,string RunId)>();
+        using(var db=tasks.Open())
+        using(var cmd=TaskStore.Command(db,null,"""
+            SELECT task_id,run_id FROM upfront_team_authorizations a
+            WHERE state='Claimed' OR (state='Bound' AND NOT EXISTS(
+                SELECT 1 FROM engineering_collaborations c WHERE c.task_id=a.task_id
+                AND c.policy_revision=a.bound_policy_revision AND c.policy_sha256=a.bound_policy_sha256))
+            """))
+        using(var reader=cmd.ExecuteReader())
+            while(reader.Read())abandoned.Add((reader.GetString(0),reader.GetString(1)));
+        foreach(var item in abandoned)MarkStopped(item.TaskId,item.RunId,"PROCESS_INTERRUPTED");
+    }
     public void MarkStopped(string taskId,string runId,string reason)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
+        // A bound policy with no admitted collaboration must not become a
+        // silent standing grant after a failed handoff. Do not revoke a
+        // successfully admitted collaboration merely because its response failed.
+        TaskStore.Execute(db,tx,"""
+            UPDATE engineering_delegation SET status='Revoked'
+            WHERE task_id=@task AND status='Approved' AND EXISTS(
+                SELECT 1 FROM upfront_team_authorizations a
+                WHERE a.task_id=@task AND a.run_id=@run AND a.state='Bound'
+                AND a.bound_policy_revision=engineering_delegation.revision
+                AND a.bound_policy_sha256=engineering_delegation.policy_sha256
+                AND NOT EXISTS(SELECT 1 FROM engineering_collaborations c
+                    WHERE c.task_id=a.task_id AND c.policy_revision=a.bound_policy_revision
+                    AND c.policy_sha256=a.bound_policy_sha256))
+            """,("@task",taskId),("@run",runId));
         TaskStore.Execute(db,tx,"""
             UPDATE upfront_team_authorizations SET state='Stopped',reason=@reason
-            WHERE task_id=@task AND run_id=@run AND state='Claimed'
+            WHERE task_id=@task AND run_id=@run AND (state='Claimed' OR
+                (state='Bound' AND NOT EXISTS(SELECT 1 FROM engineering_collaborations c
+                    WHERE c.task_id=upfront_team_authorizations.task_id
+                    AND c.policy_revision=upfront_team_authorizations.bound_policy_revision
+                    AND c.policy_sha256=upfront_team_authorizations.bound_policy_sha256)))
             """,("@task",taskId),("@run",runId),("@reason",reason));
         tx.Commit();tasks.SignalEngineeringActivity(taskId);
     }

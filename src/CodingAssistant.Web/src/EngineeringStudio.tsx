@@ -94,6 +94,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   const [guidedDecisionOpen, setGuidedDecisionOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [saved, setSaved] = useState<StudioEvidence | null>(null);
+  const [upfront,setUpfront]=useState<{state:string;runId:string|null;planRevision:number;planSha256:string;reason:string|null;boundPolicySha256:string|null}|null>(null);
   const [decisions, setDecisions] = useState<DecisionInboxSnapshot | null>(null);
   const [teamError, setTeamError] = useState(false);
   const [decisionError, setDecisionError] = useState(false);
@@ -157,7 +158,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   useEffect(() => {
     let closed = false;
     let loading = false;
-    setSaved(null); setDecisions(null); setTeamError(false); setDecisionError(false);
+    setSaved(null); setUpfront(null); setDecisions(null); setTeamError(false); setDecisionError(false);
     async function load() {
       if (closed || loading) return;
       loading = true;
@@ -172,6 +173,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
             api<{ snapshot: LeadReviewSnapshot | null }>(token, root + '/lead-reviews/latest').catch(() => ({ snapshot: null })),
             api<{ snapshot: StudioRepair | null }>(token, root + '/repair-cycles/latest'),
             api<{ snapshot: CollaborationSnapshot | null }>(token, root + '/collaboration/latest').catch(() => ({ snapshot: null })),
+            api<{authorization:typeof upfront}>(token,root+'/upfront-team-authorization').catch(()=>({authorization:null})),
           ]),
           Promise.all([
             api<{ specification: DecisionInboxSnapshot['specification'];
@@ -185,7 +187,8 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
         ]);
         if (closed) return;
         if (team.status === 'fulfilled') {
-          const [roster, handoffs, engineering, qa, lead, repair, collaboration] = team.value;
+          const [roster, handoffs, engineering, qa, lead, repair, collaboration, authorization] = team.value;
+          setUpfront(authorization.authorization);
           setSaved({ agents: roster.agents, handoffs: handoffs.events,
             engineering: engineering.snapshot, qa: qa.snapshot, lead: lead.snapshot, repair: repair.snapshot, collaboration: collaboration.snapshot });
           setTeamError(false);
@@ -223,7 +226,10 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
   const nextDecision = decisions ? buildDecisionInbox(decisions)[0] : undefined;
   const source = saved?.engineering?.job;
   const activeWork = activeLead || activeQa || activeEngineer || coordinating;
-  const canCoordinate = !teamError && !decisionError && !!decisions && !nextDecision &&
+  const upfrontHandoff=!!source&&upfront?.runId===source.id&&
+    (upfront.state==='Claimed'||(upfront.state==='Bound'&&
+      saved?.collaboration?.job.policySha256!==upfront.boundPolicySha256));
+  const canCoordinate = !upfrontHandoff && !teamError && !decisionError && !!decisions && !nextDecision &&
     (source?.state === 'Generated' || !!saved?.collaboration ||
       ((source?.state === 'Failed' || source?.state === 'Interrupted') &&
         latest?.engineeringRunId === source.id && !!saved?.engineering?.files.length));
@@ -261,7 +267,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
     finally {setStarting(false);}
   }
   async function stopInitialEngineering() {
-    if(stopping||!source||source.state!=='Running'||canCoordinate||teamError)return;
+    if(stopping||!source||(source.state!=='Running'&&!upfrontHandoff)||canCoordinate||teamError)return;
     setStopping(true);setStartError('');
     try {
       const updated=await api<EngineerSnapshot>(token,'/api/tasks/'+task.id+'/engineering-runs/'+source.id+'/cancel',{});
@@ -293,6 +299,8 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
         <section className="ca-guided-next" aria-label="Next project action">
           {teamError||decisionError ? <><h2>Unable to refresh project status</h2><p>Wait for current saved evidence before starting new work.</p></> :
             !saved||!decisions ? <p role="status">Reading saved project state…</p> :
+            upfrontHandoff&&source?.state==='Generated' ? <><h2>Starting independent review</h2><p>The host is binding the saved source to your approved repair scope. No additional authorization is required.</p>
+              <button type="button" className="outline" disabled={stopping} onClick={()=>void stopInitialEngineering()}>{stopping?'Stopping…':'Stop team'}</button></> :
             activeWork ? <><h2>{working}</h2><p>{currentActivity?.title??'The team is working from saved project evidence.'}</p>
               {activeEngineer&&totalAssignments>0&&<div className="ca-guided-progress">
                 <progress value={completedAssignments} max={totalAssignments} aria-label="Completed engineering assignments"/>
@@ -307,6 +315,7 @@ export function EngineeringStudio({ token, task, onTeam, active = true }: {
               {!canCoordinate&&<button type="button" className="primary" onClick={()=>navigate(latest?'delivery':'generation')}>Inspect stopped work</button>}</> :
             !source ? <><h2>Ready to implement</h2><p>Your approved plan is ready. Start source-only engineering; independent review follows separate authorization.</p><button type="button" className="primary" disabled={starting} onClick={()=>void startApprovedWork()}>{starting?'Starting…':'Start approved work'}</button></> :
             <><h2>{saved.collaboration?.job.state==='AwaitingVerification'?'Independent verification needed':'Source saved — coordinate independent review'}</h2><p>Use the team workflow below to authorize review and bounded repairs once. Source remains unverified.</p></>}
+          {upfront?.state==='Stopped'&&upfront.runId===source?.id&&<p role="status">Automatic handoff stopped: {upfront.reason??'Owner decision required'}. Saved source is preserved.</p>}
           {startError&&<p role="alert">{startError}</p>}
           {canCoordinate&&<CollaborationPanel key={task.id} token={token} taskId={task.id} guided />}
         </section>
