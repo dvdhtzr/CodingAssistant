@@ -5138,6 +5138,8 @@ try
         routineResult.Job.Id!=routineCollabId &&
         routineResult.Job.Reason=="QUALIFIED_VERIFICATION_REQUIRED",
         "two scoped routine repairs independently rechecked and stop at functional verification gate");
+    Check(aetCollabStore.Get(taskBound.Id,routineCollabId).Job.Reason=="ROUTINE_REPAIR_DISPATCH_PENDING",
+        "routine dispatch is recorded separately from exact manual owner approval");
     var routineFinal=engineeringStore.Latest(taskBound.Id)!;
     var routineProgress=new RepairProgressStore(tasks).Read(taskBound.Id,routineFinal.Job.Id);
     Check(routineProgress.Attempts.Count==2 &&
@@ -5281,13 +5283,13 @@ try
     softwareModel.RoutineGate=null;
     softwareModel.IntroduceRoutineRegression=false;
     var upfrontStore=new UpfrontTeamAuthorizationStore(tasks);
-    foreach(var scenario in new[]{"continuous","missing-path"})
+    foreach(var scenario in new[]{"continuous","missing-path","out-of-scope"})
     {
         var (upfrontTask,upfrontPlan)=await PrepareUpfrontProject("Upfront fixture "+scenario);
         var upfrontPath="/api/tasks/"+upfrontTask;
         var upfrontRequest=new ApproveImplementationPlanRequest(1,upfrontPlan.Revision,upfrontPlan.PlanSha256,
             "APPROVE "+upfrontPlan.PlanSha256,new UpfrontRepairAuthorization(
-                scenario=="continuous"?["app.js"]:["missing.js"],4));
+                scenario=="continuous"?["app.js"]:scenario=="out-of-scope"?["index.html"]:["missing.js"],4));
         using(var accepted=await Post(client,upfrontPath+"/implementation-plan/approve",upfrontRequest))
             Check(accepted.StatusCode==HttpStatusCode.OK,"one explicit plan and future repair approval: "+scenario);
         using(var replay=await Post(client,upfrontPath+"/implementation-plan/approve",upfrontRequest))
@@ -5316,6 +5318,11 @@ try
             var delivery=new DeliveryEvidenceStore(tasks).Read(upfrontTask);
             Check(!delivery.DeliveryAllowed,"continuous source-only team cannot authorize functional delivery");
         }
+        else if(scenario=="out-of-scope")
+            Check(intent is {State:"Bound"} && team?.Job.State=="Escalated" &&
+                team.Job.Reason=="REPAIR_SCOPE_VIOLATION" && current.Job.Id==intent.RunId &&
+                current.Job.State=="Generated" && new RepairProgressStore(tasks).Read(upfrontTask,current.Job.Id).Attempts.Count==0,
+                "out-of-scope routine repair escalates once without exposing manual repair approval or writing candidate source");
         else
             Check(intent is {State:"Stopped",Reason:"REPAIR_SCOPE_VIOLATION"} &&
                 current.Job.State=="Generated"&&team is null&&new EngineeringDelegationStore(tasks).Read(upfrontTask) is null,

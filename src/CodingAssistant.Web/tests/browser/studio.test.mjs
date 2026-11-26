@@ -944,3 +944,44 @@ test('guided team approval explains empty and duplicate repair scope without sil
     assert.deepEqual(writes,[],'valid scope is not itself authorization');
   }finally{await page.close();}
 });
+
+test('routine repair dispatch does not present an owner approval before the linked repair exists',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256};
+  const job={...candidate,id:'2'.repeat(32),taskId:id,model:'qwen3-coder:30b',
+    state:'AwaitingOwner',reason:'ROUTINE_REPAIR_DISPATCH_PENDING'};
+  const snapshot={job,steps:[]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:false,canResume:false,
+    reason:'BUILD_BUSY',policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:4}},
+    capacity:{capacity:1,active:1,waiting:0}};
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      if(path.endsWith('/collaboration/preview'))return done(route,preview);
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    const panel=guided.getByRole('region',{name:'Team coordination'});
+    await panel.getByText('Starting authorized repair',{exact:true}).waitFor();
+    assert.equal(await panel.getByRole('button',{name:'Confirm exact repair and continue'}).count(),0);
+    assert.equal(await panel.getByText('Owner decision needed',{exact:true}).count(),0);
+    await panel.getByRole('button',{name:'Stop coordination'}).waitFor();
+    assert.deepEqual(writes,[]);
+    job.state='Escalated';job.reason='REPAIR_SCOPE_VIOLATION';
+    preview.reason='READY';preview.canStart=true;
+    await panel.getByText('Needs inspection',{exact:true}).waitFor({timeout:15000});
+    await panel.getByText('repair scope violation',{exact:true}).waitFor();
+    assert.equal(await panel.getByRole('button',{name:'Confirm exact repair and continue'}).count(),0);
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});

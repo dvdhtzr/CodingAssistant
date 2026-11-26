@@ -159,6 +159,14 @@ public sealed class CollaborationStore(TaskStore tasks)
         using var db=tasks.Open();
         TaskStore.Execute(db,null,"UPDATE engineering_collaborations SET state='Interrupted',reason='PROCESS_INTERRUPTED',updated_utc=@utc WHERE state='Running'",
             ("@utc",DateTimeOffset.UtcNow.ToString("O")));
+        // A crashed dispatch is a stopped checkpoint, never a new owner
+        // approval request or a silently replayed routine repair.
+        TaskStore.Execute(db,null,"""
+            UPDATE engineering_collaborations SET state='Escalated',reason='PROCESS_INTERRUPTED',updated_utc=@utc
+            WHERE state='AwaitingOwner' AND reason='ROUTINE_REPAIR_DISPATCH_PENDING'
+            AND NOT EXISTS(SELECT 1 FROM engineering_collaboration_repairs l
+                WHERE l.parent_id=engineering_collaborations.id)
+            """,("@utc",DateTimeOffset.UtcNow.ToString("O")));
     }
     private const string Columns="""
         SELECT id,task_id,run_id,source_sha256,plan_sha256,policy_revision,policy_sha256,
@@ -260,9 +268,14 @@ public sealed class CollaborationStore(TaskStore tasks)
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
         var result=new CollaborationSnapshot(Find(db,tx,taskId,id),Steps(db,tx,id));tx.Commit();return result;
     }
-    internal static void RequireNoActive(SqliteConnection db,SqliteTransaction tx,string taskId)
+    internal static void RequireNoActive(SqliteConnection db,SqliteTransaction tx,string taskId,string? routineParentId=null)
     {
-        if(TaskStore.Scalar(db,tx,"SELECT 1 FROM engineering_collaborations WHERE task_id=@task AND state='Running'",("@task",taskId)) is not null)
+        if(TaskStore.Scalar(db,tx,"""
+            SELECT 1 FROM engineering_collaborations c WHERE c.task_id=@task AND
+            (c.state='Running' OR (c.state='AwaitingOwner' AND c.reason='ROUTINE_REPAIR_DISPATCH_PENDING'
+                AND (@parent IS NULL OR c.id<>@parent)
+                AND NOT EXISTS(SELECT 1 FROM engineering_collaboration_repairs l WHERE l.parent_id=c.id)))
+            """,("@task",taskId),("@parent",(object?)routineParentId??DBNull.Value)) is not null)
             throw new StoreFailure("BUILD_BUSY");
     }
     internal static void RequireCurrent(SqliteConnection db,SqliteTransaction tx,CollaborationRun job)
@@ -291,7 +304,8 @@ public sealed class CollaborationStore(TaskStore tasks)
         string? routineCandidateRunId=null)
     {
         var parent=Find(db,tx,taskId,parentId);
-        if(parent.State!="AwaitingOwner" || parent.Reason!="EXACT_REPAIR_APPROVAL_REQUIRED" ||
+        var expectedReason=routineCandidateRunId is null?"EXACT_REPAIR_APPROVAL_REQUIRED":"ROUTINE_REPAIR_DISPATCH_PENDING";
+        if(parent.State!="AwaitingOwner" || parent.Reason!=expectedReason ||
             parent.RunId!=proposal.EngineeringRunId || parent.SourceSha256!=proposal.SourceSha256 ||
             parent.PlanSha256!=proposal.PlanSha256)
             throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
@@ -613,7 +627,7 @@ public sealed class CollaborationStore(TaskStore tasks)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
         var job=Find(db,tx,taskId,id);
-        if(job.State!="AwaitingOwner" || job.Reason!="EXACT_REPAIR_APPROVAL_REQUIRED" ||
+        if(job.State!="AwaitingOwner" || job.Reason!="ROUTINE_REPAIR_DISPATCH_PENDING" ||
             TaskStore.Scalar(db,tx,"SELECT 1 FROM engineering_collaboration_repairs WHERE task_id=@task AND parent_id=@id",
                 ("@task",taskId),("@id",id)) is not null) return;
         TaskStore.Execute(db,tx,"UPDATE engineering_collaborations SET state='Escalated',reason=@reason,updated_utc=@utc WHERE id=@id",
@@ -757,14 +771,17 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         // Only a separately approved source-only scope can remove the
                         // per-finding owner gate. The old owner route stays unchanged.
                         // Persist the recoverable exact repair checkpoint before dispatch.
-                        store.Finish(job.TaskId,job.Id,"AwaitingOwner","EXACT_REPAIR_APPROVAL_REQUIRED");
-                        if(policy is { Current:true, Status:"Approved", RoutineRepair:not null } &&
-                            policy.PolicySha256==job.PolicySha256 &&
-                            policy.RoutineRepair.Paths.Contains(issue.Path,StringComparer.Ordinal))
+                        var routine=policy is { Current:true, Status:"Approved", RoutineRepair:not null } &&
+                            policy.PolicySha256==job.PolicySha256;
+                        store.Finish(job.TaskId,job.Id,"AwaitingOwner",
+                            routine?"ROUTINE_REPAIR_DISPATCH_PENDING":"EXACT_REPAIR_APPROVAL_REQUIRED");
+                        if(routine)
                         {
                             try
                             {
                                 token.ThrowIfCancellationRequested();
+                                if(!policy!.RoutineRepair!.Paths.Contains(issue.Path,StringComparer.Ordinal))
+                                    throw new StoreFailure("REPAIR_SCOPE_VIOLATION");
                                 var finding=issue.References.Last();
                                 var engineerModel=models.Resolve(job.TaskId,"SoftwareEngineer",job.Model);
                                 var qaModel=models.Resolve(job.TaskId,"QaEngineer",job.Model);
@@ -844,6 +861,8 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
     public CollaborationSnapshot Cancel(string taskId,string id)
     {
         var current=store.Get(taskId,id);
+        if(current.Job.State=="AwaitingOwner"&&current.Job.Reason=="ROUTINE_REPAIR_DISPATCH_PENDING")
+            store.EscalateRoutineCheckpoint(taskId,id,"OWNER_CANCELLED");
         if(_active.TryGetValue(id,out var token))token.Cancel();
         else if(current.Job.State=="Running")store.Finish(taskId,id,"Interrupted","OWNER_CANCELLED");
         return store.Get(taskId,id);

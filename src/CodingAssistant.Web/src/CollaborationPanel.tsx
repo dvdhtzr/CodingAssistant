@@ -149,7 +149,8 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
   const linkedRepair=preview?.linkedRepair;
   const repairing=linkedRepair?.state==='Running'||linkedRepair?.state==='QaRunning';
   const continuing=linkedRepair?.state==='Generated';
-  const running=job?.state==='Running'||repairing||continuing;
+  const dispatching=!linkedRepair&&job?.state==='AwaitingOwner'&&job.reason==='ROUTINE_REPAIR_DISPATCH_PENDING';
+  const running=job?.state==='Running'||repairing||continuing||dispatching;
   const recoverHandoff=continuing&&!!preview?.candidate&&
     preview.candidate.policySha256===job?.policySha256&&
     preview.candidate.runId!==job?.runId;
@@ -190,7 +191,7 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         await api(token,root+'/repair-cycles/'+linkedRepair.cycleId+'/resume-collaboration',{...preview.candidate});
       else if(action==='cancel'&&repairing&&linkedRepair)
         await api(token,root+'/repair-cycles/'+linkedRepair.cycleId+'/cancel',{});
-      else if(action==='cancel'&&job?.state==='Running')
+      else if(action==='cancel'&&job&&(job.state==='Running'||dispatching))
         await api(token,root+'/collaboration/'+job.id+'/cancel',{});
       else throw Error('This action is no longer available.');
       setVersion(v=>v+1);
@@ -204,7 +205,7 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
   const proposed=policy?.status==='Proposed'&&policy.current;
   return <section className="ca-coordination" aria-label="Team coordination">
     <div className="ca-coordination-state"><h3>Team coordination</h3>
-      <strong role="status">{repairing?'Repairing saved source':continuing?'Saved candidate · independent review pending':
+      <strong role="status">{dispatching?'Starting authorized repair':repairing?'Repairing saved source':continuing?'Saved candidate · independent review pending':
         linkedRepair?'Repair '+linkedRepair.state:job?stateLabel[job.state]??job.state:'Not started'}</strong></div>
     {!guided&&<p>Inference: {preview.capacity.active}/{preview.capacity.capacity} active · {preview.capacity.waiting} queued</p>}
     {loadError&&<p role="alert">Refresh unavailable. Actions are disabled until evidence is current.</p>}
@@ -252,7 +253,7 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
       onClick={()=>void act('start')}>Start team coordination</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('resume')}>Resume saved coordination</button>}
-    {(repairing||job?.state==='Running')&&<button type="button" disabled={busy||loadError} onClick={()=>void act('cancel')}>Stop coordination</button>}
+    {(repairing||job?.state==='Running'||dispatching)&&<button type="button" disabled={busy||loadError} onClick={()=>void act('cancel')}>Stop coordination</button>}
     {recoverHandoff&&<button type="button" disabled={busy||loadError}
       onClick={()=>void act('resumeHandoff')}>Resume independent review handoff</button>}
     {linkedRepair&&<p>{repairing?'The Software Engineer is working within the admitted scope.':
@@ -262,7 +263,8 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
       <ScopedRepairPanel key={job.id} token={token} root={root} snapshot={preview.snapshot}
         disabled={busy||loadError||preview.candidate?.sourceSha256!==job.sourceSha256||preview.candidate?.policySha256!==job.policySha256}
         onSaved={()=>setVersion(v=>v+1)} />}
-    {!linkedRepair&&job?.reason&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
+    {dispatching&&<p>The team is dispatching a repair within your existing approval. No confirmation is needed.</p>}
+    {!linkedRepair&&!dispatching&&job?.reason&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {!job&&!preview.canStart&&approved&&<p>{preview.reason==='BUILD_NOT_COMPLETE'?
       'Complete approved source generation before coordinating independent reviews.':preview.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {preview.snapshot?.steps.length ? <details>
