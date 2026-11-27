@@ -339,3 +339,80 @@ test('stale task/run/specification/plan/model/source selections and changed arch
   const wrongFingerprint={...currentScope,sourceFingerprint:'9'.repeat(64)};
   assert.throws(()=>prepareEvaluationCandidate({currentScope:wrongFingerprint,selection:wrongFingerprint,archive}),/FINGERPRINT_MISMATCH/);
 });
+
+import {prepareEvaluationAdmission,acknowledgeEvaluationPlan,bindTrustedFixtureReceipt}
+  from '../tools/m4/static_web_evaluation_admission.mjs';
+import {qualifyTrusted} from '../tools/m4/windows_aet8_trusted_qualification.mjs';
+import {SECURITY_CASES,FIXTURE_CASES} from '../tools/m4/windows_aet8_trusted_guest.mjs';
+import {CALCULATION_CASES,CALCULATION_CONTRACT_VERSION} from '../tools/m4/calculation_journal_contract.mjs';
+const allCases=(keys,value)=>Object.fromEntries(keys.map(k=>[k,value]));
+function admissionFixture(){
+  const archive=buildZip(working),currentScope=evaluationScope(archive);
+  const image={Id:'sha256:'+'a'.repeat(64),RepoDigests:['mcr.microsoft.com/playwright@sha256:'+'b'.repeat(64)],
+    Os:'linux',Architecture:'amd64'};
+  const name='ca-win-aet8-012345abcdef';
+  const receipt=qualifyTrusted({platform:'win32',env:{},name,docker(args){
+    if(args[0]==='context'&&args[1]==='show')return {status:0,stdout:'desktop-linux'};
+    if(args[0]==='context')return {status:0,stdout:JSON.stringify({Endpoints:{docker:{Host:'npipe:////./pipe/dockerDesktopLinuxEngine'}}})};
+    if(args[0]==='info')return {status:0,stdout:JSON.stringify({OSType:'linux',OperatingSystem:'Docker Desktop',PidsLimit:true,MemoryLimit:true})};
+    if(args[0]==='image')return {status:0,stdout:JSON.stringify(image)};
+    if(args[0]==='ps')return {status:0,stdout:''};
+    if(args[0]==='run')return {status:0,stdout:JSON.stringify({schemaVersion:1,
+      security:allCases(SECURITY_CASES,true),fixture:allCases(FIXTURE_CASES,true),
+      observations:{working:allCases(CALCULATION_CASES,true),broken:allCases(CALCULATION_CASES,false),spoof:allCases(CALCULATION_CASES,false)}})};
+    if(args[0]==='container')return {status:0,stdout:JSON.stringify({'codingassistant.aet8':name})};
+    if(args[0]==='rm')return {status:0,stdout:''};
+    throw Error('Unexpected command');
+  }});
+  assert.equal(receipt.status,'TRUSTED_INTEGRATED_EVALUATOR_PASS');
+  const criteria=CALCULATION_CASES.map((c,i)=>({id:'criterion-'+i,text:c}));
+  const reviewedContract={contractId:CALCULATION_CONTRACT_VERSION,planSha256:currentScope.planSha256,
+    specificationSha256:currentScope.specificationSha256,architectureSha256:currentScope.architectureSha256,
+    mappings:criteria.map(c=>({criterionId:c.id,criterionText:c.text,cases:[c.text]}))};
+  return {archive,currentScope,selection:currentScope,criteria,reviewedContract,
+    qualificationReport:receipt,currentImageMetadata:image};
+}
+test('exact functional evaluation admission remains non-executable even after explicit planning acknowledgement',()=>{
+  const inputs=admissionFixture();
+  const preview=prepareEvaluationAdmission(inputs);
+  assert.equal(preview.status,'ADMISSION_PREVIEW_ONLY');
+  assert.equal(preview.mappings.length,7);
+  assert.equal(preview.qualification.hostProvenanceEstablished,false);
+  assert.equal(preview.executionEnabled,false);
+  assert.equal(preview.runtimeQualified,false);
+  assert.equal(preview.generatedArtifactVerified,false);
+  assert.equal(preview.admissionSha256,prepareEvaluationAdmission(inputs).admissionSha256);
+  assert.ok(Object.isFrozen(preview.mappings[0].cases));
+  const request={admissionSha256:preview.admissionSha256,confirmation:'REVIEW EVALUATION '+preview.admissionSha256};
+  const ack=acknowledgeEvaluationPlan(inputs,request);
+  assert.equal(ack.status,'PLAN_REVIEWED_NON_EXECUTABLE');
+  assert.equal(ack.executionEnabled,false);
+  assert.throws(()=>acknowledgeEvaluationPlan(inputs,{...request,confirmation:'EXECUTE '+preview.admissionSha256}));
+  assert.throws(()=>acknowledgeEvaluationPlan(inputs,{...request,executionEnabled:true}));
+  assert.throws(()=>acknowledgeEvaluationPlan({...inputs,qualificationReport:{...inputs.qualificationReport,
+    recordedAtUtc:'2026-11-26T00:00:00.000Z'}},request),/CONFIRMATION_REQUIRED/);
+});
+test('admission rejects incomplete, spoofed and stale qualification rather than trusting the pass string',()=>{
+  const inputs=admissionFixture(),receipt=inputs.qualificationReport;
+  for(const mutated of [
+    {...receipt,containerRemoved:false},{...receipt,runtimeQualified:true},{...receipt,generatedArtifactVerified:true},
+    {...receipt,driverSha256:'1'.repeat(64)},{...receipt,seccompSha256:'2'.repeat(64)},
+    {...receipt,guestSha256:'3'.repeat(64)},{...receipt,trustedSourceHashes:{}},
+    {...receipt,security:{...receipt.security,[SECURITY_CASES[0]]:false}},
+    {...receipt,observations:{...receipt.observations,spoof:{...receipt.observations.spoof,[CALCULATION_CASES[0]]:true}}},
+    {...receipt,observations:{...receipt.observations,broken:null}},
+    {...receipt,extra:'VERIFIED'}
+  ])assert.throws(()=>bindTrustedFixtureReceipt(mutated,inputs.currentImageMetadata));
+  assert.throws(()=>bindTrustedFixtureReceipt(receipt,{...inputs.currentImageMetadata,Id:'sha256:'+'c'.repeat(64)}));
+});
+test('admission never substitutes a fixed calculator contract for unrelated or uncovered approved requirements',()=>{
+  const inputs=admissionFixture(),contract=inputs.reviewedContract;
+  assert.throws(()=>prepareEvaluationAdmission({...inputs,reviewedContract:null}),/CONTRACT_NOT_CURRENT/);
+  assert.throws(()=>prepareEvaluationAdmission({...inputs,criteria:[{id:'ideas',text:'Users can edit and delete ideas'}]}));
+  for(const mappings of [contract.mappings.slice(1),[...contract.mappings.slice(1),contract.mappings[1]],
+    contract.mappings.map((m,i)=>i===0?{...m,cases:['not-a-reviewed-case']}:m),
+    contract.mappings.map((m,i)=>i===0?{...m,criterionText:'different approved requirement'}:m),
+    contract.mappings.map(m=>({...m,cases:[CALCULATION_CASES[0]]}))])
+    assert.throws(()=>prepareEvaluationAdmission({...inputs,reviewedContract:{...contract,mappings}}));
+  assert.throws(()=>prepareEvaluationAdmission({...inputs,reviewedContract:{...contract,planSha256:'0'.repeat(64)}}));
+});

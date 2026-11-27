@@ -82,3 +82,28 @@ separate. A fixed Calculation Journal evaluator cannot verify Idea Vault
 or arbitrary tasks; contract selection and independent acceptance must
 match the approved objective. No generated-source execution until the
 remaining #76/#92/#111 security and exact approval gates are satisfied.
+
+## Exact evaluation admission planning contract
+
+`tools/m4/static_web_evaluation_admission.mjs` builds on the existing
+candidate binder. It validates the complete fixed-fixture qualification
+receipt (not merely a PASS string), exact security/positive/negative
+observations, cleanup, local image identity/digest, fixture bytes, driver,
+evaluator, guest payload and seccomp pins. It requires explicit contract
+selection and a mapping of every current approved acceptance criterion to
+reviewed mandatory evaluator cases. A fixed calculator contract is not
+automatically applicable to another static-web project. The host must
+supply the full current criteria and a human-reviewed semantic mapping;
+structural coverage alone cannot establish semantic correctness.
+
+The resulting digest pins the existing candidate, exact archive, scope,
+source, approvals, evaluator, qualification receipt and coverage mapping.
+A planning acknowledgement must match a freshly reconstructed descriptor.
+Both preview and acknowledgement are permanently non-executable. A receipt
+from disk is not host attestation; actual host provenance, durable owner
+execution consent, single-use transactional admission, cancellation, crash
+cleanup and actual candidate-runtime qualification remain separate gates.
+No new route, runtime capability, process invocation or registry promotion
+is introduced. Model-free tests cover incomplete/stale/contradictory
+qualification, changed image identity, incomplete contract mapping and
+stale/forged acknowledgement, not actual candidate execution.
