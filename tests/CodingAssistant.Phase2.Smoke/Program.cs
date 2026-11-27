@@ -5289,6 +5289,15 @@ try
     var missingReviewerRequest=new ApproveImplementationPlanRequest(1,missingReviewerPlan.Revision,
         missingReviewerPlan.PlanSha256,"APPROVE "+missingReviewerPlan.PlanSha256,
         new UpfrontRepairAuthorization(["app.js"],4));
+    using(var invalidWithMissingReviewer=await Post(client,missingReviewerPath+"/implementation-plan/approve",
+        missingReviewerRequest with {TeamRepair=new UpfrontRepairAuthorization(["app.js"],0)}))
+    using(var invalidBody=await Body(invalidWithMissingReviewer))
+        Check(invalidWithMissingReviewer.StatusCode==HttpStatusCode.BadRequest &&
+            invalidBody.RootElement.GetProperty("error").GetString()=="INVALID_INPUT" &&
+            new ImplementationPlanStore(tasks,interviews).Read(missingReviewerTask).Plan?.Status=="Proposed" &&
+            engineeringStore.Latest(missingReviewerTask) is null &&
+            new UpfrontTeamAuthorizationStore(tasks).Read(missingReviewerTask) is null,
+            "invalid authority takes precedence over missing models without admitting any work");
     using(var missingReviewerResponse=await Post(client,missingReviewerPath+"/implementation-plan/approve",missingReviewerRequest))
     using(var rejection=await Body(missingReviewerResponse))
     {

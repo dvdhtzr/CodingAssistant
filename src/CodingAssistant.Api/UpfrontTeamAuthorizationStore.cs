@@ -46,12 +46,19 @@ public sealed class UpfrontTeamAuthorizationStore(TaskStore tasks)
         if(TaskStore.FindTask(db,null,taskId) is null)throw new StoreFailure("NOT_FOUND");
         return Read(db,null,taskId);
     }
-    internal static void Record(SqliteConnection db,SqliteTransaction tx,ImplementationPlan plan,UpfrontRepairAuthorization scope)
+    internal static void ValidateScope(UpfrontRepairAuthorization scope)
     {
         if(scope.MaximumRepairs is <1 or >8||scope.Paths is null||scope.Paths.Length is <1 or >12||
             scope.Paths.Any(p=>string.IsNullOrWhiteSpace(p)||ProjectDraftStore.SafePath(p)!=p)||
             scope.Paths.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=scope.Paths.Length)
             throw new StoreFailure("INVALID_INPUT");
+    }
+
+    internal static void Record(SqliteConnection db,SqliteTransaction tx,ImplementationPlan plan,UpfrontRepairAuthorization scope)
+    {
+        // Recheck at the transactional authority boundary, even when the HTTP
+        // endpoint has already validated the request before model preflight.
+        ValidateScope(scope);
         var prior=EngineeringDelegationStore.Latest(db,tx,plan.TaskId);
         if(prior?.Status is "Approved" or "Proposed")throw new StoreFailure("DELEGATION_NOT_AUTHORIZED");
         TaskStore.Execute(db,tx,"""

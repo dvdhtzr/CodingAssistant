@@ -744,6 +744,9 @@ public static class ApiHost
              AgentRoleModelSettings roleModels,IOllamaModelCatalog catalog,CancellationToken cancellation) =>
                 SafeAsync(async ()=>{
                     if(input.TeamRepair is null)return Results.Ok(db.Approve(id,input));
+                    // Reject malformed authority before checking model availability.
+                    // The store repeats this check inside the approval transaction.
+                    UpfrontTeamAuthorizationStore.ValidateScope(input.TeamRepair);
                     var inherited=db.Read(id).Plan?.Model??LocalInterviewModel.DefaultModel;
                     // Check all participants before recording combined approval or
                     // launching generation. Runtime admission still rechecks models.
