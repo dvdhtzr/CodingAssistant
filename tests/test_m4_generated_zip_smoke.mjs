@@ -1682,7 +1682,7 @@ test('job crash control accepts no arbitrary arguments or generated input',()=>{
 });
 
 
-import {bindJobOwnershipEvidence,currentJobModulePins} from '../tools/m4/static_web_pilot_evidence.mjs';
+import {bindJobOwnershipEvidence,bindJobIoEvidence,currentJobModulePins} from '../tools/m4/static_web_pilot_evidence.mjs';
 async function jobOwnershipEvidenceFixture(root){
   const {input,pins}=pinnedEvidenceFixture(root),bundle=buildQualifiedCandidateBundle();
   const policy=preparePilotPolicy(input.imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
@@ -1782,4 +1782,80 @@ test('job stdin bridge rejects runtime environment overrides before request proc
     assert.equal(result.executionEnabled,false,key);
     assert.equal(result.runtimeQualified,false,key);
   }
+});
+
+async function jobIoEvidenceFixture(root){
+  const {input,pins,job,normalRaw,recoveryRaw}=await jobOwnershipEvidenceFixture(root);
+  const bundle=buildQualifiedCandidateBundle(),policy=preparePilotPolicy(input.imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  const controls={};
+  for(const [i,[control,options]] of [['build-working',{}],['build-spoof',{negative:true}],['build-missing-asset',{buildFailed:true}]].entries()){
+    const f=asyncDispatchFixture(options),attemptId=(210+i).toString(16).padStart(32,'0');
+    f.inspect.Name='/'+policy.identity(attemptId).name;
+    controls[control]=await qualifyCandidateDispatchControl({platform:'win32',env:{},docker:f.docker,attach:f.attach,root,attemptId,control});
+    assert.equal(controls[control].qualificationPassed,true,controls[control].reason);
+  }
+  const hash=x=>createHash('sha256').update(x).digest('hex');
+  const common={schemaVersion:1,recordedAtUtc:'2026-11-27T15:00:00Z',
+    bridgeSha256:hash(fs.readFileSync(new URL('../tools/m4/windows_job_fixed_io.mjs',import.meta.url))),
+    ...pins,currentModulePins:currentJobModulePins(),inspectorSha256:'c'.repeat(64),
+    ownerAssemblySha256:'a'.repeat(64),harnessAssemblySha256:'b'.repeat(64),
+    generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false};
+  const fixed={...common,stage:'AET-8-windows-job-fixed-io',status:'PILOT_JOB_FIXED_IO_PASS',
+    controls,invalidRequestRejected:true,preCancelledRequestRejected:true,jobEmptyConfirmed:true};
+  const interrupt={...common,stage:'AET-8-windows-job-io-interruptions',status:'PILOT_JOB_IO_INTERRUPTION_PASS'};
+  const recovery=new Map();
+  for(const [i,[key,mode]] of [['cancellation','running cancellation'],['crash','owner crash']].entries()){
+    const attemptId=(213+i).toString(16).padStart(32,'0'),containerId=attemptId.repeat(2);
+    const fixture=buildQualificationFixture('build-working',bundle,policy.policySha256,attemptId);
+    let j=reservePilotAttempt(root,{...policy.identity(attemptId),engineId:input.engineId,
+      candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256});
+    j.advance('Creating');j.advance('Created',containerId);j.advance('Audited');j.advance('Starting');
+    j=recoverPilotAttempt(root,{isAlive:()=>false});j.advance('CleanupPending');j.advance('Cleaned');j.archive();
+    const record={schemaVersion:1,stage:'AET-8-job-fixed-recovery',status:'PILOT_JOB_FIXED_RECOVERY_PASS',
+      attemptId,archiveSha256:bindPinnedInterruptedArchive(root,attemptId,'crash',policy,bundle,input.engineId),
+      containerRemoved:true,cleanupDebt:false,runtimeQualified:false,executionEnabled:false,generatedArtifactVerified:false,reason:null};
+    const name='windows-static-web-'+(213+i).toString(16).padStart(12,'0')+'.json',bytes=Buffer.from(JSON.stringify(record));
+    recovery.set(name,bytes);
+    interrupt[key]={mode,runningContainer:{running:true,attemptId,ownerPid:process.pid,engineId:input.engineId,
+      policySha256:policy.policySha256,containerId},observedProcessCount:4,observedProcessesExited:true,
+      jobClosedConfirmed:true,recoveryReceiptName:name,recoveryReceiptSha256:hash(bytes),containerRemoved:true,cleanupDebt:false,resultPublished:false};
+  }
+  const bind=(f=fixed,i=interrupt,read=name=>recovery.get(name))=>bindJobIoEvidence(input,pins,{job,normalRaw,recoveryRaw},{
+    fixedRaw:Buffer.from(JSON.stringify(f)),interruptionRaw:Buffer.from(JSON.stringify(i)),recoveryBytes:read});
+  return {fixed,interrupt,bind,job,recovery};
+}
+test('native I/O evidence binds five new exact archived attempts without granting execution',async()=>{
+  await withDispatchJournal(async root=>{
+    const {bind,fixed,interrupt}=await jobIoEvidenceFixture(root),value=bind();
+    assert.equal(value.status,'PILOT_JOB_IO_EVIDENCE_BOUND');
+    assert.equal(Object.keys(value.jobIoQualification.attempts).length,5);
+    assert.equal(value.jobIoQualification.bridgeSha256,fixed.bridgeSha256);
+    assert.equal(value.jobIoQualification.fixedReceiptSha256,createHash('sha256').update(JSON.stringify(fixed)).digest('hex'));
+    assert.equal(value.jobIoQualification.interruptionReceiptSha256,createHash('sha256').update(JSON.stringify(interrupt)).digest('hex'));
+    assert.equal(value.hostProvenanceEstablished,false);assert.equal(value.executionEnabled,false);
+    assert.equal(value.runtimeQualified,false);assert.equal(value.generatedArtifactVerified,false);
+  });
+});
+test('native I/O evidence rejects drift, incomplete controls, replay and changed recovery bytes',async()=>{
+  await withDispatchJournal(async root=>{
+    const {bind,fixed,interrupt,job,recovery}=await jobIoEvidenceFixture(root);
+    for(const mutate of [
+      x=>{x.invalidRequestRejected=false;},x=>{x.preCancelledRequestRejected=false;},x=>{x.jobEmptyConfirmed=false;},
+      x=>{x.bridgeSha256='0'.repeat(64);},x=>{x.nodeSha256='0'.repeat(64);},
+      x=>{x.currentModulePins['tools/m4/static_web_candidate_dispatch.mjs']='0'.repeat(64);},
+      x=>{x.controls['build-working'].status='VERIFIED';},
+      x=>{x.controls['build-working'].attemptId=job.runningContainer.attemptId;}]) {
+      const changed=structuredClone(fixed);mutate(changed);assert.throws(()=>bind(changed));
+    }
+    for(const mutate of [
+      x=>{x.cancellation.observedProcessCount=1;},x=>{x.cancellation.resultPublished=true;},
+      x=>{x.crash.jobClosedConfirmed=false;},x=>{x.crash.cleanupDebt=true;},
+      x=>{x.crash.runningContainer.ownerPid++;},x=>{x.crash.runningContainer.containerId='0'.repeat(64);},
+      x=>{x.crash.recoveryReceiptName=x.cancellation.recoveryReceiptName;},
+      x=>{x.crash.runningContainer=structuredClone(x.cancellation.runningContainer);},
+      x=>{x.inspectorSha256='0'.repeat(64);}]) {
+      const changed=structuredClone(interrupt);mutate(changed);assert.throws(()=>bind(fixed,changed));
+    }
+    assert.throws(()=>bind(fixed,interrupt,name=>Buffer.concat([recovery.get(name),Buffer.from(' ')])),/RECOVERY_INVALID/);
+  });
 });
