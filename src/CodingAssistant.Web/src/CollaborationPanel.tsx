@@ -18,12 +18,17 @@ interface Preview { planSha256: string | null; policy: Policy | null;
   routineRepairCandidate?: {runId:string;sourceSha256:string;paths:string[]}|null;
   linkedRepair?: {cycleId:string;state:string;errorCode:string|null}|null;
   reviewFailure?: {role:string;reviewId:string;model:string;state:string;errorCode:string|null}|null;
-  canInvestigateStall?:boolean;
+  canInvestigateStall?:boolean;canRefineStall?:boolean;
   rootCauseInvestigation?: {id:string;runId:string;sourceSha256:string;model:string;state:string;errorCode:string|null;
     assessment:{findings:Array<{issueId:string;outcome:string;causePath:string|null;line:number|null;
       evidence:string|null;rationale:string;alternativeStrategy:string|null}>}|null;
     independentReview?: {model:string;state:string;errorCode:string|null;assessment:{findings:Array<{
-      issueId:string;outcome:string;path:string|null;line:number|null;evidence:string|null;rationale:string}>}|null}|null}|null;
+      issueId:string;outcome:string;path:string|null;line:number|null;evidence:string|null;rationale:string}>}|null}|null;
+    refinement?:{model:string;reviewerModel:string;state:string;errorCode:string|null;
+      assessment:{findings:Array<{issueId:string;outcome:string;causePath:string|null;line:number|null;
+        evidence:string|null;rationale:string;alternativeStrategy:string|null}>}|null;
+      independentAssessment:{findings:Array<{issueId:string;outcome:string;path:string|null;line:number|null;
+        evidence:string|null;rationale:string}>}|null}|null}|null;
   stallEvidence?: {reason:string;attemptCount:number;recentAttempts:Array<{cycleId:string;state:string;
     originalSourceSha256:string;candidateSourceSha256:string;origin:string;independentStaticResolution:boolean;recurringExactFinding:boolean}>;
     findings:Array<{id:string;origin:string;path:string;requirement:string;evidence:string;recommendation:string}>}|null;
@@ -33,7 +38,7 @@ const actionLabel: Record<string,string>={
   ReviewCode:'Independent code review',ReviewAcceptance:'Independent QA review',
   ClassifyIssue:'Classify finding',RequestOwnerRepair:'Request scoped repair',
   RecheckIssue:'Independent finding recheck',AwaitQualifiedVerification:'Await qualified verification',
-  InvestigateStall:'Cross-file root cause investigation',
+  InvestigateStall:'Cross-file root cause investigation',RefineStall:'Respond to independent critique',
   Escalate:'Escalate',ResumeInterrupted:'Owner resumed checkpoint'
 };
 const stateLabel:Record<string,string>={
@@ -315,12 +320,27 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
           <p>{f.rationale}</p>
         </div>)}
       </section>}
+      {preview.rootCauseInvestigation.refinement&&<section aria-label="Revised root cause assessment">
+        <h4>Revised diagnosis · {preview.rootCauseInvestigation.refinement.state}</h4>
+        <p>{preview.rootCauseInvestigation.refinement.model} → {preview.rootCauseInvestigation.refinement.reviewerModel}</p>
+        {preview.rootCauseInvestigation.refinement.errorCode&&<p role="alert">{preview.rootCauseInvestigation.refinement.errorCode}</p>}
+        {preview.rootCauseInvestigation.refinement.assessment?.findings.map(f=><div key={f.issueId}>
+          <strong>{f.outcome}</strong>{f.causePath&&<p>{f.causePath}:{f.line} · <code>{f.evidence}</code></p>}
+          <p>{f.rationale}</p>{f.alternativeStrategy&&<p>{f.alternativeStrategy}</p>}
+        </div>)}
+        {preview.rootCauseInvestigation.refinement.independentAssessment?.findings.map(f=><div key={f.issueId}>
+          <strong>Independent: {f.outcome}</strong>{f.path&&<p>{f.path}:{f.line} · <code>{f.evidence}</code></p>}
+          <p>{f.rationale}</p>
+        </div>)}
+        <p>Read-only evidence. No source changed, no repair authorized.</p>
+      </section>}
       {preview.rootCauseInvestigation.state==='Recorded'&&<p>{preview.rootCauseInvestigation.independentReview?.state==='Recorded'?
         'Investigation and independent assessment saved. No repair has been admitted and the original stall guard is still active.':
         'Independent assessment of these proposals is required before any repair.'}</p>}
     </section>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
-      onClick={()=>void act('start')}>{preview.canInvestigateStall?'Investigate recurring findings':
+      onClick={()=>void act('start')}>{preview.canRefineStall?'Reassess disputed findings':
+        preview.canInvestigateStall?'Investigate recurring findings':
         job?.state==='Escalated'||job?.state==='Failed'?'Retry team coordination':'Start team coordination'}</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('resume')}>Resume saved coordination</button>}

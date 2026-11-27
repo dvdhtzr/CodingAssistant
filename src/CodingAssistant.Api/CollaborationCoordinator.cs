@@ -33,7 +33,7 @@ public sealed record CollaborationPreview(string? PlanSha256,DelegationPolicy? P
     string Reason,InferenceCapacity Capacity,RoutineRepairCandidate? RoutineRepairCandidate=null,
     CollaborationLinkedRepair? LinkedRepair=null,CollaborationReviewFailure? ReviewFailure=null,
     CollaborationStallEvidence? StallEvidence=null,RootCauseReceipt? RootCauseInvestigation=null,
-    bool CanInvestigateStall=false);
+    bool CanInvestigateStall=false,bool CanRefineStall=false);
 
 public interface ICollaborationLead
 {
@@ -223,7 +223,7 @@ public sealed class CollaborationStore(TaskStore tasks)
         RoutineRepairCandidate? routineCandidate=null;
         var reason="PLAN_NOT_APPROVED";var start=false;var resume=false;
         CollaborationStallEvidence? stallEvidence=null;
-        RootCauseReceipt? investigation=null;var canInvestigate=false;
+        RootCauseReceipt? investigation=null;var canInvestigate=false;var canRefine=false;
         try
         {
             var plan=ImplementationPlanStore.RequireCurrentApproved(db,tx,taskId);
@@ -260,11 +260,11 @@ public sealed class CollaborationStore(TaskStore tasks)
             // failure. Only suppress an identical retry if the current host
             // evidence still establishes that same stop.
             if(same && snapshot!.Job.State=="Escalated" && snapshot.Job.Reason is
-                ("RECURRING_UNRESOLVED_FINDING" or "REPEATED_SOURCE_SNAPSHOT" or "POTENTIAL_CANDIDATE_REGRESSION" or "ROOT_CAUSE_INVESTIGATION_COMPLETE"))
+                ("RECURRING_UNRESOLVED_FINDING" or "REPEATED_SOURCE_SNAPSHOT" or "POTENTIAL_CANDIDATE_REGRESSION" or "ROOT_CAUSE_INVESTIGATION_COMPLETE" or "ROOT_CAUSE_REFINEMENT_COMPLETE"))
             {
                 var progress=RepairProgressStore.Read(db,tx,taskId,run.Id,policy.RoutineRepair);
                 if(progress.StrategyChangeRequired && (progress.Reason==snapshot.Job.Reason ||
-                    snapshot.Job.Reason=="ROOT_CAUSE_INVESTIGATION_COMPLETE"))
+                    snapshot.Job.Reason is ("ROOT_CAUSE_INVESTIGATION_COMPLETE" or "ROOT_CAUSE_REFINEMENT_COMPLETE")))
                 {
                     var ids=progress.StalledIssueIds.Concat(progress.PotentialRegressionIssueIds??[]).ToHashSet(StringComparer.Ordinal);
                     var findings=EngineeringIssueStore.Read(db,tx,taskId,run.Id).Issues
@@ -273,23 +273,24 @@ public sealed class CollaborationStore(TaskStore tasks)
                     stallEvidence=new(progress.Reason,progress.Attempts.Count,progress.Attempts.TakeLast(2).ToArray(),findings);
                     investigation=RootCauseInvestigationStore.Read(db,tx,taskId,run.Id,fingerprint,plan.PlanSha256);
                     canInvestigate=RootCauseInvestigationStore.Eligible(db,tx,snapshot.Job,progress,policy.RoutineRepair);
-                    start=canInvestigate;reason=progress.Reason;
+                    canRefine=RootCauseInvestigationStore.EligibleRefinement(db,tx,snapshot.Job,progress,policy.RoutineRepair);
+                    start=canInvestigate||canRefine;reason=progress.Reason;
                 }
             }
         }catch(StoreFailure e){reason=e.Code;}
         if(linkedRepair?.State is "Running" or "QaRunning" or "Generated")
         {
-            start=false;resume=false;reason="LINKED_REPAIR_PENDING";
+            start=false;resume=false;canInvestigate=false;canRefine=false;reason="LINKED_REPAIR_PENDING";
         }
         if(candidate is not null)
             investigation??=RootCauseInvestigationStore.Read(db,tx,taskId,candidate.RunId,candidate.SourceSha256,candidate.PlanSha256);
         if(investigation is not null && snapshot?.Job.State is ("Failed" or "Interrupted") &&
-            snapshot.Job.RunId==investigation.RunId && snapshot.Steps.Any(step=>step.Action=="InvestigateStall"))
-        {start=false;resume=false;canInvestigate=false;}
+            snapshot.Job.RunId==investigation.RunId && snapshot.Steps.Any(step=>step.Action is ("InvestigateStall" or "RefineStall")))
+        {start=false;resume=false;canInvestigate=false;canRefine=false;}
         var reviewFailure=snapshot is null?null:ReadReviewFailure(db,tx,snapshot);
         tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,
             LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair,reviewFailure,stallEvidence,
-            investigation,canInvestigate);
+            investigation,canInvestigate,canRefine);
     }
 
     public CollaborationSnapshot? Latest(string taskId)
@@ -622,6 +623,11 @@ public sealed class CollaborationStore(TaskStore tasks)
         {
             actions.Clear();actions.Add("InvestigateStall");
         }
+        else if(lead=="Reviewed" && recheckCandidates.Count==0 &&
+            RootCauseInvestigationStore.EligibleRefinement(db,tx,job,progress,scope))
+        {
+            actions.Clear();actions.Add("RefineStall");
+        }
         actions.Add("Escalate");
         var task=TaskStore.FindTask(db,tx,job.TaskId)??throw new StoreFailure("NOT_FOUND");
         return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress,recheckCandidates);
@@ -636,6 +642,8 @@ public sealed class CollaborationStore(TaskStore tasks)
     internal static CollaborationDecision? MandatoryReview(CollaborationInput input)
     {
         if(input.AllowedActions.Count!=2 || !input.AllowedActions.Contains("Escalate"))return null;
+        if(input.AllowedActions.Contains("RefineStall"))
+            return new("RefineStall","Host-required bounded revision responding to independent root cause critique.");
         if(input.AllowedActions.Contains("InvestigateStall"))
             return new("InvestigateStall","Host-required cross-file investigation of recurring unresolved findings.");
         if(input.AllowedActions.Contains("ReviewCode"))
@@ -884,7 +892,33 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         catch(OperationCanceledException){investigations.StopReview(job.TaskId,receipt,"OWNER_CANCELLED",true);throw;}
                         catch(StoreFailure e){investigations.StopReview(job.TaskId,receipt,e.Code);throw;}
                         catch(Exception){investigations.StopReview(job.TaskId,receipt,"ROOT_CAUSE_REVIEW_FAILED");throw;}
+                        if(store.Prepare(job.TaskId,job.Id).AllowedActions.Contains("RefineStall"))break;
                         store.Finish(job.TaskId,job.Id,"Escalated","ROOT_CAUSE_INVESTIGATION_COMPLETE");return;
+                    }
+                    case "RefineStall":
+                    {
+                        var reviewerModel=models.Resolve(job.TaskId,"LeadSoftwareEngineer",job.Model);
+                        if(!(await catalog.ListAsync(token)).Contains(reviewerModel,StringComparer.Ordinal))
+                            throw new StoreFailure("MODEL_NOT_INSTALLED");
+                        var investigations=new RootCauseInvestigationStore(tasks);
+                        var (receipt,evidence)=investigations.AdmitRefinement(job.TaskId,new(job.Id,step.Sequence),reviewerModel);
+                        try
+                        {
+                            RootCauseAssessment assessment;
+                            using(EngineeringProviderActivity.Enter(tasks,job.TaskId,"TechnicalLead",receipt,job.SourceSha256))
+                                assessment=await services.GetRequiredService<IRootCauseInvestigator>().InvestigateAsync(evidence,token);
+                            token.ThrowIfCancellationRequested();
+                            var proposal=investigations.RecordRefinementProposal(receipt,evidence,assessment);
+                            RootCauseReviewAssessment reviewed;
+                            using(EngineeringProviderActivity.Enter(tasks,job.TaskId,"LeadSoftwareEngineer",receipt,job.SourceSha256))
+                                reviewed=await services.GetRequiredService<IRootCauseReviewer>().ReviewAsync(evidence,proposal,reviewerModel,token);
+                            token.ThrowIfCancellationRequested();
+                            investigations.RecordRefinementReview(receipt,evidence,reviewerModel,reviewed);
+                        }
+                        catch(OperationCanceledException){investigations.StopRefinement(job.TaskId,receipt,"OWNER_CANCELLED",true);throw;}
+                        catch(StoreFailure e){investigations.StopRefinement(job.TaskId,receipt,e.Code);throw;}
+                        catch(Exception){investigations.StopRefinement(job.TaskId,receipt,"ROOT_CAUSE_REFINEMENT_FAILED");throw;}
+                        store.Finish(job.TaskId,job.Id,"Escalated","ROOT_CAUSE_REFINEMENT_COMPLETE");return;
                     }
                     case "RecheckIssue":
                     {

@@ -4802,6 +4802,21 @@ try
         }catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED"){Check(true,"independent root cause review cannot invent source or omit an issue");}
     }
 
+    var rootCauseReceiptFixture=new RootCauseReceipt("receipt",rootCauseFixture.Job.RunId,
+        rootCauseFixture.Job.SourceSha256,rootCauseFixture.Job.PlanSha256,1,rootCauseFixture.Job.PolicySha256,
+        rootCauseFixture.Job.Model,rootCauseFixture.HistorySha256,"Recorded",null,rootCauseProposal,
+        new RootCauseReviewReceipt("qwen3.5:4b","Recorded",null,rootCauseIndependent));
+    Check(!RootCauseInvestigationStore.NeedsRefinement(rootCauseReceiptFixture),
+        "supported diagnosis does not automatically trigger another investigation");
+    var rootCauseDisputedFixture=rootCauseReceiptFixture with {IndependentReview=
+        rootCauseReceiptFixture.IndependentReview! with {Assessment=new RootCauseReviewAssessment(
+            [rootCauseIndependent.Findings[0] with {Outcome="Disputed"}])}};
+    Check(RootCauseInvestigationStore.NeedsRefinement(rootCauseDisputedFixture),
+        "independent disagreement allows a bounded revision");
+    Check(!RootCauseInvestigationStore.NeedsRefinement(rootCauseDisputedFixture with {
+        Refinement=new RootCauseRefinementReceipt("qwen3.5:4b","qwen3.5:4b","Failed","MODEL_OUTPUT_REJECTED",null,null)}),
+        "failed revision does not silently replay on the same snapshot");
+
     // Recovery is driven by evidence, not a lifetime three-repair cap.
     var aetProgressAttempts=Enumerable.Range(0,5).Select(i=>new RepairProgressAttempt(
         "fixture-"+i,"run-"+i,"run-"+(i+1),"hash-"+i,"hash-"+(i+1),"QaReviewed",
