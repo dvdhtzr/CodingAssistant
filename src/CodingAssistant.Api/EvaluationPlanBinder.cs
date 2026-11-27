@@ -66,13 +66,16 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
         "windows_docker_qualification.mjs"
     ];
 
+    internal static bool HasExactModulePins(IReadOnlyDictionary<string,string>? pins)=>
+        pins is not null && pins.Count==RequiredModules.Length &&
+        pins.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(RequiredModules);
+
     internal static void RequirePinnedModules(string directory,IReadOnlyDictionary<string,string>? pins)
     {
-        if(pins is null||pins.Count!=RequiredModules.Length||
-            !pins.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(RequiredModules))
+        if(!HasExactModulePins(pins))
             throw new StoreFailure("EVALUATION_BINDER_MODULE_PINS_REQUIRED");
         foreach(var name in RequiredModules)
-            RequirePinnedFile(Path.Combine(directory,name),pins[name]);
+            RequirePinnedFile(Path.Combine(directory,name),pins![name]);
     }
 
     internal static void RemoveNodeEnvironmentOverrides(ProcessStartInfo start)

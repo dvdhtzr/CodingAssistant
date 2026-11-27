@@ -185,3 +185,23 @@ attestation mechanism. This still requires independently established,
 trusted configuration and owner-local end-to-end validation; pins cannot
 establish host integrity or eliminate same-account file replacement races.
 No execution authority or Docker run path was added.
+
+### Owner-private planning configuration
+
+The internal `EvaluationPlanningHostConfiguration` reads only
+`evaluation-planning-host.json` from the already owner-private control-plane
+data directory. It reuses the existing directory/file privacy checks,
+rejects redirected ancestors, missing files, oversized or malformed JSON,
+duplicate/unknown fields, relative paths and incomplete module pins.
+It provides a factory for the existing planning binder, not a new API route.
+No configuration is generated, written, enrolled or activated automatically.
+A missing configuration blocks planning through this factory.
+
+Schema 1 requires repositoryRoot, nodeExecutable, nodeSha256, binderSha256,
+modulePins (the exact twelve names), dockerExecutable and dockerSha256.
+All digests are lowercase SHA-256; paths must be absolute. Digests must be
+independently established from reviewed artifacts, not computed from
+arbitrary current files as a trust shortcut. This configuration is still
+not executable authorization or current host attestation. Actual owner
+enrollment and C# to Node process integration remain separate validation
+steps.

@@ -157,6 +157,71 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     finally{Directory.Delete(folder,true);}
 }
 
+// Read-only owner-private planning configuration, no real executables or
+// Docker process. Invalid configuration never falls back or creates a file.
+{
+    var configRoot=Path.Combine(Path.GetTempPath(),"ca-planning-config-"+Guid.NewGuid().ToString("N"));
+    PrivateDataDirectory.Ensure(configRoot);
+    try
+    {
+        var configPath=Path.Combine(configRoot,EvaluationPlanningHostConfiguration.FileName);
+        void RejectConfig(string code,string label)
+        {
+            try
+            {
+                _=EvaluationPlanningHostConfiguration.Load(configRoot);
+                Check(false,label);
+            }
+            catch(StoreFailure e)when(e.Code==code){Check(true,label);}
+        }
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_REQUIRED","missing host configuration does not auto-enroll");
+        Check(!File.Exists(configPath),"configuration load never writes trust data");
+        var modulePins=new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach(var name in new[]{
+            "calculation_journal_contract.mjs","smoke_generated_zip.mjs",
+            "static_web_evaluation_admission.mjs","static_web_evaluation_candidate.mjs",
+            "windows_aet8_trusted_guest.mjs","windows_aet8_trusted_qualification.mjs",
+            "windows_calculator_evaluator_guest.mjs","windows_calculator_evaluator_qualification.mjs",
+            "windows_chromium_sandbox_guest.mjs","windows_chromium_sandbox_qualification.mjs",
+            "windows_docker_guest.mjs","windows_docker_qualification.mjs"})
+            modulePins.Add(name,new string('a',64));
+        var configuration=new Dictionary<string,object>{
+            ["schemaVersion"]=1,["repositoryRoot"]=configRoot,
+            ["nodeExecutable"]=Path.Combine(configRoot,"node.exe"),["nodeSha256"]=new string('b',64),
+            ["binderSha256"]=new string('c',64),["modulePins"]=modulePins,
+            ["dockerExecutable"]=Path.Combine(configRoot,"docker.exe"),["dockerSha256"]=new string('d',64)};
+        void SaveConfig(string content)
+        {
+            File.WriteAllText(configPath,content);
+            if(!OperatingSystem.IsWindows())File.SetUnixFileMode(configPath,
+                UnixFileMode.UserRead|UnixFileMode.UserWrite);
+        }
+        string ValidConfig()=>JsonSerializer.Serialize(configuration);
+        SaveConfig(ValidConfig());
+        var loaded=EvaluationPlanningHostConfiguration.Load(configRoot);
+        Check(loaded.RepositoryRoot==configRoot && loaded.ModulePins.Count==12 &&
+            loaded.NodeSha256==new string('b',64),"exact owner-private config retains explicit identities");
+        configuration["executionEnabled"]=true;
+        SaveConfig(ValidConfig());
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","config cannot introduce execution permission");
+        configuration.Remove("executionEnabled");
+        SaveConfig(ValidConfig().Insert(1,"\"schemaVersion\":1,"));
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","duplicate config field is rejected");
+        configuration["nodeExecutable"]="node.exe";
+        SaveConfig(ValidConfig());
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","relative executable config cannot use PATH");
+        configuration["nodeExecutable"]=Path.Combine(configRoot,"node.exe");
+        modulePins.Remove("smoke_generated_zip.mjs");
+        SaveConfig(ValidConfig());
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","incomplete module pins cannot be enrolled");
+        SaveConfig(new string('x',16385));
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","oversized host configuration is rejected");
+        SaveConfig("{");
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","malformed host configuration is rejected");
+    }
+    finally{Directory.Delete(configRoot,true);}
+}
+
 // Planning bridge pipe limits: no model, Docker, generated code or host
 // command execution. Verify exact-boundary reads and the fail-closed signal.
 {
