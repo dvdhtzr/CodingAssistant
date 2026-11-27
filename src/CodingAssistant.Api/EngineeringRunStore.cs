@@ -729,7 +729,7 @@ public sealed class EngineeringRunStore(
                 ?? throw new StoreFailure("INVALID_STATE");
             var recovery=RootCauseRecoveryStore.ForCandidate(db,tx,taskId,runId);
             var allowedPaths = recovery is null?repairFindings.Select(f => f.Path)
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[recovery.TargetPath];
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():new[]{recovery.TargetPath};
             if (allowedPaths.Length != 1 || safe.Files.Any(f =>
                 !allowedPaths.Contains(f.Path, StringComparer.OrdinalIgnoreCase)))
                 throw new StoreFailure("REPAIR_SCOPE_VIOLATION");

@@ -20,7 +20,8 @@ public sealed record CollaborationDecision(string Action,string Rationale,string
 public sealed record CollaborationInput(string Objective,CollaborationRun Job,
     IReadOnlyList<string> AllowedActions,IReadOnlyList<EngineeringIssue> Issues,
     IReadOnlyList<CollaborationStep> Steps,RepairProgressReport? RepairProgress=null,
-    IReadOnlyList<EngineeringIssue>? RecheckCandidates=null,RootCauseRepairTarget? RecoveryTarget=null);
+    IReadOnlyList<EngineeringIssue>? RecheckCandidates=null,RootCauseRepairTarget? RecoveryTarget=null,
+    bool RecoveryRecheckRequired=false);
 public sealed record CollaborationAdmission(string JobId,int Sequence);
 public sealed record RoutineRepairCandidate(string RunId,string SourceSha256,IReadOnlyList<string> Paths);
 public sealed record CollaborationLinkedRepair(string CycleId,string State,string? ErrorCode);
@@ -286,7 +287,15 @@ public sealed class CollaborationStore(TaskStore tasks)
                     start=canInvestigate||canRefine||recoveryTarget is not null;reason=progress.Reason;
                 }
             }
-        }catch(StoreFailure e){reason=e.Code;}
+            var currentRecovery=RootCauseRecoveryStore.ForCandidate(db,tx,taskId,run.Id);
+            if(currentRecovery is not null &&
+                !RootCauseRecoveryStore.HasIndependentRecheck(db,tx,taskId,run.Id,currentRecovery) &&
+                !resume)
+            {
+                start=false;canInvestigate=false;canRefine=false;recoveryTarget=null;
+                reason="ROOT_CAUSE_RECHECK_REQUIRED";
+            }
+        }catch(StoreFailure e){start=false;resume=false;reason=e.Code;}
         if(linkedRepair?.State is "Running" or "QaRunning" or "Generated")
         {
             start=false;resume=false;canInvestigate=false;canRefine=false;recoveryTarget=null;reason="LINKED_REPAIR_PENDING";
@@ -403,6 +412,10 @@ public sealed class CollaborationStore(TaskStore tasks)
         var job=new CollaborationRun(Guid.NewGuid().ToString("N"),taskId,request.RunId,request.SourceSha256,
             request.PlanSha256,request.PolicyRevision,request.PolicySha256,model,"Running",null,now,now);
         RequireCurrent(db,tx,job);
+        var currentRecovery=RootCauseRecoveryStore.ForCandidate(db,tx,taskId,job.RunId);
+        if(currentRecovery is not null && continuationCycleId is null &&
+            !RootCauseRecoveryStore.HasIndependentRecheck(db,tx,taskId,job.RunId,currentRecovery))
+            throw new StoreFailure("ROOT_CAUSE_RECHECK_REQUIRED");
         foreach(var (role,operation) in new[]{("LeadSoftwareEngineer","ReviewCode"),("QaEngineer","ReviewAcceptance")})
             EngineeringDelegationStore.Require(db,tx,taskId,job.PolicyRevision,job.PolicySha256,role,operation);
         TaskStore.Execute(db,tx,"""
@@ -657,9 +670,21 @@ public sealed class CollaborationStore(TaskStore tasks)
             actions.Clear();
             if(recoveryTarget is not null)actions.Add("RequestRecoveryRepair");
         }
+        var recoveryCandidate=RootCauseRecoveryStore.ForCandidate(db,tx,job.TaskId,job.RunId);
+        var recoveryRecheckRequired=recoveryCandidate is not null &&
+            !RootCauseRecoveryStore.HasIndependentRecheck(db,tx,job.TaskId,job.RunId,recoveryCandidate);
+        if(recoveryRecheckRequired)
+        {
+            // The new candidate cannot schedule unrelated repairs, bypass
+            // independent review, or restart investigation before the original
+            // acceptance concern has an actual current recheck receipt.
+            actions.RemoveAll(a=>a is not ("ReviewCode" or "ReviewAcceptance" or "RecheckIssue"));
+            recoveryTarget=null;
+            if(cycleId is null)actions.Clear();
+        }
         actions.Add("Escalate");
         var task=TaskStore.FindTask(db,tx,job.TaskId)??throw new StoreFailure("NOT_FOUND");
-        return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress,recheckCandidates,recoveryTarget);
+        return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress,recheckCandidates,recoveryTarget,recoveryRecheckRequired);
     }
     public CollaborationInput Prepare(string taskId,string id)
     {
@@ -671,6 +696,10 @@ public sealed class CollaborationStore(TaskStore tasks)
     internal static CollaborationDecision? MandatoryReview(CollaborationInput input)
     {
         if(input.AllowedActions.Count!=2 || !input.AllowedActions.Contains("Escalate"))return null;
+        if(input.RecoveryRecheckRequired && input.AllowedActions.Contains("RecheckIssue") &&
+            input.RecheckCandidates is {Count:1})
+            return new("RecheckIssue","Host-required independent cross-file recheck of the original acceptance concern.",
+                input.RecheckCandidates[0].Id);
         if(input.AllowedActions.Contains("RequestRecoveryRepair") && input.RecoveryTarget is not null)
             return new("RequestRecoveryRepair","Host-selected independently supported alternative source repair within the existing delegation.",input.RecoveryTarget.IssueId);
         if(input.AllowedActions.Contains("RefineStall"))
@@ -1061,7 +1090,7 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         store.Finish(job.TaskId,job.Id,"AwaitingVerification","QUALIFIED_VERIFICATION_REQUIRED");return;
                     case "Escalate":
                         store.Finish(job.TaskId,job.Id,"Escalated",input.RepairProgress?.StrategyChangeRequired==true?
-                            input.RepairProgress.Reason:"LEAD_ESCALATION");return;
+                            input.RepairProgress.Reason:input.RecoveryRecheckRequired?"ROOT_CAUSE_RECHECK_REQUIRED":"LEAD_ESCALATION");return;
                     default:throw new StoreFailure("INVALID_STATE");
                 }
             }

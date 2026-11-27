@@ -70,7 +70,7 @@ public sealed class RepairCycleCoordinator(
             var files = engineering.Get(taskId, runId).Files;
             var recovery=RootCauseRecoveryStore.ForCandidate(tasks,taskId,runId);
             var allowed = recovery is null?cycle.Findings.Select(f => f.Path)
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[recovery.TargetPath];
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():new[]{recovery.TargetPath};
             var assignedFindings=recovery is null?cycle.Findings:cycle.Findings.Select(f=>f with {
                 Path=recovery.TargetPath,Evidence=recovery.Evidence,
                 Recommendation=recovery.Strategy

@@ -4835,6 +4835,17 @@ try
         [rootCauseDisputedFixture,groundedRecoveryInput])!).Count==0,
         "disputed proposals require refinement before repair admission");
 
+    var alreadyAttemptedRecovery=groundedRecoveryInput with {Attempts=[
+        new RepairProgressAttempt("old","before","after","before-hash","after-hash","QaReviewed",
+            [new RepairFindingReference("app.js",0,"Major","Timer starts","old evidence","old repair","ImplementationDefect")],
+            "QaEngineer",false,true)]};
+    Check(((IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseReceiptFixture,alreadyAttemptedRecovery])!).Count==0,
+        "alternative repair must target a different file from the unsuccessful strategy");
+    Check(((IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseReceiptFixture,groundedRecoveryInput with {HistorySha256=new string('c',64)}])!).Count==0,
+        "changed repair history invalidates recovery evidence");
+
     // Recovery is driven by evidence, not a lifetime three-repair cap.
     var aetProgressAttempts=Enumerable.Range(0,5).Select(i=>new RepairProgressAttempt(
         "fixture-"+i,"run-"+i,"run-"+(i+1),"hash-"+i,"hash-"+(i+1),"QaReviewed",

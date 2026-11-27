@@ -39,6 +39,20 @@ internal static class RootCauseRecoveryStore
         return ForCandidate(db,null,taskId,candidateId);
     }
 
+    internal static bool HasIndependentRecheck(SqliteConnection db,SqliteTransaction tx,
+        string taskId,string candidateId,RootCauseRepairTarget target)
+    {
+        var original=TaskStore.Scalar(db,tx,"""
+            SELECT base_run_id FROM engineering_root_cause_repairs
+            WHERE task_id=@task AND candidate_run_id=@run AND investigation_id=@id
+            """,("@task",taskId),("@run",candidateId),("@id",target.InvestigationId));
+        if(original is null)return false;
+        var issue=EngineeringIssueStore.Read(db,tx,taskId,original).Issues
+            .SingleOrDefault(i=>i.Id==target.IssueId);
+        return issue?.Verifications.LastOrDefault(v=>v.Current && v.CandidateRunId==candidateId)
+            ?.Assessment.Outcome=="ResolvedByStaticEvidence";
+    }
+
     // Select only actual supported alternative causes. Never treat an
     // unsupported, contradicted or merely differently worded old claim as
     // a defect. Keep the first increment to one different existing file.
@@ -98,7 +112,8 @@ internal static class RootCauseRecoveryStore
         {
             var issue=issues.SingleOrDefault(i=>i.Id==option.IssueId);
             if(issue is null || !issue.CurrentSource || !issue.LatestReview ||
-                issue.RepairCycleId is not null || issue.State is ("WithdrawnByReviewer" or "StaticResolutionRecorded") ||
+                issue.RepairCycleId is not null || issue.Challenges.Count>0 ||
+                issue.State is ("WithdrawnByReviewer" or "StaticResolutionRecorded") ||
                 issue.Origin!="QaEngineer" ||
                 !input.Plan.Outline.Tasks.Any(w=>w.AcceptanceCriteria.Contains(issue.Requirement,StringComparer.Ordinal)))
                 continue;

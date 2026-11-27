@@ -297,7 +297,9 @@ public sealed class MafEngineeringIssueVerifier(IMafChatClientFactory? factory=n
             new(ChatRole.User,"APPROVED PLAN (data):\n"+JsonSerializer.Serialize(input.Plan.Outline.Tasks)),
             new(ChatRole.User,"ORIGINAL FINDING AND CHALLENGE (data):\n"+JsonSerializer.Serialize(input.Issue)),
             new(ChatRole.User,"ORIGINAL FILE (data):\n"+input.Before.Content),
-            new(ChatRole.User,"CANDIDATE FILE (data):\n"+input.After.Content)
+            new(ChatRole.User,"CANDIDATE FILE (data):\n"+(input.RecoveryTarget is null?input.After.Content:
+                string.Join("\n",input.After.Content.Split('\n').Select((line,i)=>
+                    (i+1).ToString(System.Globalization.CultureInfo.InvariantCulture)+" | "+line))))
         };
         if(input.RecoveryTarget is not null)
         {
@@ -307,7 +309,7 @@ public sealed class MafEngineeringIssueVerifier(IMafChatClientFactory? factory=n
                 "\nIndependently recheck the original acceptance concern across the complete candidate, "+
                 "not just the correction or old report. Cite an actual line of the changed causal file. "+
                 "Do not assume the original claim or new diagnosis was correct."));
-            foreach(var file in input.CandidateFiles??[])
+            foreach(var file in (input.CandidateFiles??[]).Where(f=>f.Path!=input.After.Path))
             {
                 var numbered=string.Join("\n",file.Content.Split('\n').Select((line,i)=>
                     (i+1).ToString(System.Globalization.CultureInfo.InvariantCulture)+" | "+line));
@@ -319,10 +321,13 @@ public sealed class MafEngineeringIssueVerifier(IMafChatClientFactory? factory=n
         for(var attempt=0;;attempt++)
         {
             token.ThrowIfCancellationRequested();
-            var answer=await agent.RunAsync(messages,cancellationToken:token);
-            try{return IssueVerificationStore.Parse(answer.Text,input);}
-            catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED" && attempt==0)
-            {messages.Add(new(ChatRole.User,"Invalid result. Return exact JSON and actual candidate source evidence only."));}
+            try
+            {
+                var answer=await agent.RunAsync(messages,cancellationToken:token);
+                return IssueVerificationStore.Parse(answer.Text,input);
+            }
+            catch(StoreFailure e) when(attempt==0 && e.Code is ("MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or "MODEL_THINKING_ONLY"))
+            {messages.Add(new(ChatRole.User,"Invalid result. Return exact JSON and actual candidate source evidence only. If uncertain, return InsufficientEvidence."));}
         }
     }
 }

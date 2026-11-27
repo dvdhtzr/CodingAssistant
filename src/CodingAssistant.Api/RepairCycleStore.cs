@@ -266,7 +266,7 @@ public sealed class RepairCycleStore(
             selected.Add(finding);
         }
         var allowedPaths = recovery is null?selected.Select(f => f.Path)
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[recovery.TargetPath];
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():new[]{recovery.TargetPath};
         if(recovery is not null && (!routine || selected.Count!=1 ||
             selected[0].Path!=recovery.ObservedPath || selected[0].Index!=recovery.FindingIndex))
             throw new StoreFailure("REPAIR_NOT_AUTHORIZED");

@@ -339,6 +339,7 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         'Investigation and independent assessment saved. No repair has been admitted and the original stall guard is still active.':
         'Independent assessment of these proposals is required before any repair.'}</p>}
     </section>}
+    {preview.reason==='ROOT_CAUSE_RECHECK_REQUIRED'&&<p role="status">The alternative candidate still requires an independent recheck of its original acceptance concern. No further automatic repair or completion is authorized.</p>}
     {preview.recoveryTarget&&<p role="status">Independently supported alternative: {preview.recoveryTarget.observedPath} → {preview.recoveryTarget.targetPath}.
       {' '}{preview.recoveryTarget.strategy} · existing source-only approval and budget apply.</p>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
