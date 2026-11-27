@@ -125,7 +125,7 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
         // exact sandbox policy and single-use admission are implemented.
         throw new StoreFailure("EVALUATION_EXECUTION_ADAPTER_NOT_QUALIFIED");
     }
-    internal void Recover()
+    public void Recover()
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
         TaskStore.Execute(db,tx,"UPDATE evaluation_execution_proposals SET state='Interrupted',updated_utc=@now WHERE state='Proposed'",

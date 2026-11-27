@@ -5314,13 +5314,13 @@ try
     var stalePreview=EvaluationPreview(new string('2',64),evaluationInput.ArchiveSha256);
     var stalePlan=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,stalePreview,behavioral.Id);
     evaluationReviewStore.Review(taskBound.Id,stalePlan.Id,stalePlan.AdmissionSha256,"REVIEW EVALUATION "+stalePlan.AdmissionSha256);
-    var staleProposal=executionProposalStore.Propose(taskBound.Id,stalePlan.Id);
+    var staleEvaluationExecutionProposal=executionProposalStore.Propose(taskBound.Id,stalePlan.Id);
     evaluationReviewStore.Cancel(taskBound.Id,stalePlan.Id);
-    Check(!executionProposalStore.Get(taskBound.Id,staleProposal.Id).Current,
+    Check(!executionProposalStore.Get(taskBound.Id,staleEvaluationExecutionProposal.Id).Current,
         "cancelled evaluation plan invalidates its execution proposal");
     try
     {
-        executionProposalStore.Authorize(taskBound.Id,staleProposal.Id,"AUTHORIZE EVALUATION "+staleProposal.AuthorizationSha256);
+        executionProposalStore.Authorize(taskBound.Id,staleEvaluationExecutionProposal.Id,"AUTHORIZE EVALUATION "+staleEvaluationExecutionProposal.AuthorizationSha256);
         Check(false,"stale proposal cannot authorize");
     }
     catch(StoreFailure ex)when(ex.Code=="EVALUATION_EXECUTION_PROPOSAL_NOT_CURRENT")
