@@ -359,7 +359,7 @@ internal static class PilotWindowsJobSmoke
         EvaluationPlanBinder.RequirePinnedFile(config.NodeExecutable,config.NodeSha256);
         EvaluationPlanBinder.RequirePinnedFile(config.DockerExecutable,config.DockerSha256);
         var evidence=new {schemaVersion=1,stage="AET-8-windows-job-io-interruptions",status="PILOT_JOB_IO_INTERRUPTION_PASS",
-            recordedAtUtc=DateTimeOffset.UtcNow.ToString("O"),bridgeSha256=bridge,config.NodeSha256,config.DockerSha256,
+            recordedAtUtc=DateTimeOffset.UtcNow.ToString("O"),bridgeSha256=bridge,nodeSha256=config.NodeSha256,dockerSha256=config.DockerSha256,
             currentModulePins=config.ModulePins,inspectorSha256=config.BinderSha256,
             ownerAssemblySha256=Hash(typeof(PilotWindowsJob).Assembly.Location),
             harnessAssemblySha256=Hash(typeof(PilotWindowsJobSmoke).Assembly.Location),
