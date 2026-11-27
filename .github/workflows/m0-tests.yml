@@ -2,7 +2,8 @@ name: M0 Model-Free Checks
 
 on:
   push:
-    branches: [main, "feature/**"]
+    # Temporary local-first experiment; keep manual, PR and main CI intact.
+    branches: [main, "feature/**", "!feature/autonomous-engineering-team"]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, closed]
