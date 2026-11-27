@@ -5586,8 +5586,79 @@ try
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_INVALID")
     {Check(true,"result classification recomputes case counts");}
-    using(var fixtureDb=tasks.Open())
-        TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",resultFixtureAdmission.Id));
+    // Exercise the private persistence primitive only in this disposable
+    // database. Reflection here cannot grant authority through a production
+    // route, invoke the dispatcher, or qualify an executable.
+    var transitionMethod=typeof(PilotExecutionAdmissionStore).GetMethod("RecordTransition",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing private transition primitive");
+    void FixtureTransition(Microsoft.Data.Sqlite.SqliteConnection db,Microsoft.Data.Sqlite.SqliteTransaction tx,
+        PilotExecutionAdmission admission,string next)
+    {
+        try{transitionMethod.Invoke(null,new object[]{db,tx,admission,next});}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
+        {throw failure;}
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        FixtureTransition(db,tx,resultFixtureAdmission,"Authorized");
+        tx.Rollback();
+    }
+    Check(admissionStore.Get(taskBound.Id,resultFixtureAdmission.Id).State=="Prepared",
+        "rolled-back authorization leaves admission prepared");
+    using(var db=tasks.Open())
+    {
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"rolled-back authorization leaves no durable transition");
+        using var tx=db.BeginTransaction();
+        FixtureTransition(db,tx,resultFixtureAdmission,"Authorized");
+        tx.Commit();
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try
+        {
+            FixtureTransition(db,tx,resultFixtureAdmission with {ConsentSha256=new string('0',64)},"Consumed");
+            Check(false,"changed consent cannot consume");
+        }
+        catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED")
+        {Check(true,"changed consent rejected by exact durable authorization");}
+        tx.Rollback();
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        FixtureTransition(db,tx,resultFixtureAdmission,"Consumed");
+        tx.Rollback();
+    }
+    Check(admissionStore.Get(taskBound.Id,resultFixtureAdmission.Id).State=="Authorized",
+        "rolled-back consumption preserves authorization");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id AND state='Consumed'",
+            ("@id",resultFixtureAdmission.Id)) is null,"rolled-back consumption leaves no consumed record");
+    using(var startConsumers=new ManualResetEventSlim(false))
+    {
+        Task<bool> Compete()=>Task.Run(()=>{
+            startConsumers.Wait();
+            using var db=tasks.Open();using var tx=db.BeginTransaction();
+            try{FixtureTransition(db,tx,resultFixtureAdmission,"Consumed");tx.Commit();return true;}
+            catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED"){return false;}
+        });
+        var first=Compete();var second=Compete();startConsumers.Set();
+        var outcomes=await Task.WhenAll(first,second);
+        Check(outcomes.Count(x=>x)==1,"two independent connections can consume exactly once");
+    }
+    using(var db=tasks.Open())
+    {
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id AND state='Authorized' AND consent_sha256=@consent",
+            ("@id",resultFixtureAdmission.Id),("@consent",resultFixtureAdmission.ConsentSha256))==resultFixtureAdmission.Id,
+            "authorization identity remains durable after consumption");
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id AND state='Consumed' AND consent_sha256=@consent",
+            ("@id",resultFixtureAdmission.Id),("@consent",resultFixtureAdmission.ConsentSha256))==resultFixtureAdmission.Id,
+            "consumed identity is recorded exactly once");
+    }
     var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
