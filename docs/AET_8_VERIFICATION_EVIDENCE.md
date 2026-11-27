@@ -1005,3 +1005,27 @@ if ($LASTEXITCODE -eq 0) { dotnet run --project tests/CodingAssistant.Api.Smoke/
 Expected AET-8 WINDOWS_PILOT_JOB_IO_INTERRUPTION_PASS. Stop on a failed
 control or active journal; never manually delete the journal. This is a
 qualification-only increment, not evidence binding or executable consent.
+
+
+### Owner-reported complete native I/O historical inspection PASS
+
+On 2026-11-27, after PR #211 and the native I/O receipt schema correction
+in PR #212 (main `ad98aa11cfc08fba618a36f80783f7b643ec2aca`), the owner
+reported the following actual Windows host markers:
+
+```text
+Receipt count: 10
+EVALUATION_PLANNING_NODE_TRANSPORT_PASS
+PILOT_JOB_IO_EVIDENCE_INSPECTION_PASS
+M2 LOCAL_CONTROL_PLANE_SMOKE_PASS (439 assertions)
+```
+
+The ten-receipt, 23-attempt historical inspection gate is complete as
+owner-reported evidence. Original receipt bytes and hashes remain private
+and unchanged. Do not rerun unchanged qualification controls solely to
+repeat these markers. This is not current native executable attestation,
+production Static Web qualification, generated-source execution consent,
+or functional verification of any generated application. The existing
+seven-receipt admission binding must still be upgraded to the complete
+chain before executable admission can be considered; the executable gate
+remains closed. No private receipt names or digests are inferred here.
