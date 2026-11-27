@@ -220,15 +220,134 @@ export function readDispatchPins(env=process.env){
     fail('PILOT_DISPATCH_PIN_CHANGED');
   return {nodeSha256,dockerSha256:env.CA_EVALUATION_DOCKER_SHA256};
 }
+// The job receipt records a later fixed-only native qualification. Keep
+// its historical assembly/inspector hashes separate from the current
+// launcher identity; a rebuilt binary does not inherit executable trust.
+const jobControls=['build-working','build-spoof','build-missing-asset'];
+const jobReceiptName=/^windows-static-web-[a-f0-9]{12}\.json$/;
+const rawSha=x=>createHash('sha256').update(x).digest('hex');
+const hash64=x=>typeof x==='string'&&x.length===64&&/^[a-f0-9]{64}$/.test(x);
+export function currentJobModulePins(){
+  const root=fileURLToPath(new URL('../../',import.meta.url));
+  const pins={...dispatchClosure().pins};
+  for(const relative of ['static_web_candidate_payload.mjs','static_web_candidate_transport.mjs',
+    'static_web_candidate_transport_bridge.mjs','static_web_candidate_dispatch.mjs','windows_job_recovery_control.mjs'].map(x=>'tools/m4/'+x)){
+    const file=path.join(root,relative),st=fs.lstatSync(file);
+    if(!st.isFile()||st.isSymbolicLink()||st.size>1024*1024||
+      fs.realpathSync(file).toLowerCase()!==path.resolve(file).toLowerCase())fail('PILOT_JOB_MODULE_INVALID');
+    pins[relative]=rawSha(fs.readFileSync(file));
+  }
+  return pins;
+}
+function readJobReceiptBytes(name,env){
+  if(!jobReceiptName.test(name??'')||!env.LOCALAPPDATA||!path.isAbsolute(env.LOCALAPPDATA))
+    fail('PILOT_JOB_RECEIPT_INVALID');
+  const root=path.join(env.LOCALAPPDATA,'CodingAssistant','qualifications'),file=path.join(root,name);
+  if(fs.realpathSync(root).toLowerCase()!==path.resolve(root).toLowerCase()||
+    fs.realpathSync(file).toLowerCase()!==path.resolve(file).toLowerCase()||!fs.lstatSync(file).isFile())
+    fail('PILOT_JOB_RECEIPT_INVALID');
+  const fd=fs.openSync(file,'r');
+  try{
+    const st=fs.fstatSync(fd);
+    if(!st.isFile()||st.size<2||st.size>65536)fail('PILOT_JOB_RECEIPT_INVALID');
+    const bytes=Buffer.alloc(st.size+1),size=fs.readSync(fd,bytes,0,bytes.length,null);
+    if(size!==st.size)fail('PILOT_JOB_RECEIPT_INVALID');
+    return bytes.subarray(0,size);
+  }finally{fs.closeSync(fd);}
+}
+export function bindJobOwnershipEvidence(input,pins,{job,normalRaw,recoveryRaw}){
+  const prior=bindPinnedDispatchEvidence(input,pins);
+  const {root,engineId,imageMetadata}=input;
+  const bundle=buildQualifiedCandidateBundle(),policy=preparePilotPolicy(imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  if(!header(job,['jobListAtomic','killOnClose','ownerExitConfirmed','observedProcessCount','observedProcessesExited',
+    'jobClosedConfirmed','crashControl','runningContainer','normalReceiptName','normalReceiptSha256',
+    'recoveryReceiptName','recoveryReceiptSha256','nodeSha256','dockerSha256','ownerAssemblySha256','harnessAssemblySha256',
+    'currentModulePins','inspectorSha256','containerRemoved','cleanupDebt'],
+    'AET-8-windows-job-ownership','PILOT_JOB_OWNERSHIP_PASS')||
+    !['jobListAtomic','killOnClose','ownerExitConfirmed','observedProcessesExited','jobClosedConfirmed','containerRemoved'].every(k=>job[k]===true)||
+    job.cleanupDebt!==false||job.crashControl!=='fixed-attach-stdin-held-open'||
+    !Number.isSafeInteger(job.observedProcessCount)||job.observedProcessCount<2||job.observedProcessCount>128||
+    job.nodeSha256!==pins.nodeSha256||job.dockerSha256!==pins.dockerSha256||
+    !['normalReceiptSha256','recoveryReceiptSha256','ownerAssemblySha256','harnessAssemblySha256','inspectorSha256'].every(k=>hash64(job[k]))||
+    ![job.normalReceiptName,job.recoveryReceiptName].every(x=>typeof x==='string'&&jobReceiptName.test(x))||
+    job.normalReceiptName===job.recoveryReceiptName||json(job.currentModulePins)!==json(currentJobModulePins()))
+    fail('PILOT_JOB_EVIDENCE_INVALID');
+  if(!Buffer.isBuffer(normalRaw)||!Buffer.isBuffer(recoveryRaw)||normalRaw.length>65536||recoveryRaw.length>65536||
+    rawSha(normalRaw)!==job.normalReceiptSha256||rawSha(recoveryRaw)!==job.recoveryReceiptSha256)
+    fail('PILOT_JOB_RECEIPT_CHANGED');
+  const normal=JSON.parse(normalRaw.toString('utf8')),recovery=JSON.parse(recoveryRaw.toString('utf8'));
+  if(!header(normal,['controls','reason'],'AET-8-candidate-dispatch-lifecycle-controls','PILOT_CANDIDATE_DISPATCH_CONTROLS_PASS')||
+    normal.reason!==null||!exact(normal.controls,jobControls))
+    fail('PILOT_JOB_NORMAL_INVALID');
+  const used=new Set([...Object.values(prior.attempts),prior.boundary,...Object.values(prior.buildQualification.attempts),
+    ...Object.values(prior.dispatchQualification.attempts)].map(x=>x.attemptId));
+  const reserve=id=>{if(used.has(id))fail('PILOT_QUALIFICATION_ATTEMPT_REUSED');used.add(id);};
+  const attempts={};
+  for(const control of jobControls){
+    const r=normal.controls[control];
+    if(!exact(r,['schemaVersion','stage','status','attemptId','engineId','policySha256','transportSha256',
+      'configurationAudited','attachClosed','containerRemoved','cleanupDebt','archiveSha256','observations','reason',
+      'executionEnabled','runtimeQualified','generatedArtifactVerified','control','qualificationPassed'])||
+      r.schemaVersion!==1||r.stage!=='AET-8-candidate-dispatch-lifecycle'||r.control!==control||
+      r.engineId!==engineId||r.policySha256!==policy.policySha256||r.reason!==null||r.cleanupDebt!==false||
+      !['configurationAudited','attachClosed','containerRemoved','qualificationPassed'].every(k=>r[k]===true)||
+      !['executionEnabled','runtimeQualified','generatedArtifactVerified'].every(k=>r[k]===false))
+      fail('PILOT_JOB_NORMAL_INVALID');
+    reserve(r.attemptId);
+    const archive=readArchivedPilotAttempt(root,r.attemptId);
+    const fixture=buildQualificationFixture(control,bundle,policy.policySha256,r.attemptId);
+    const identity={...policy.identity(r.attemptId),engineId,candidateSha256:fixture.expected.candidateSha256,
+      archiveSha256:fixture.expected.archiveSha256};
+    if(json(archive.identity)!==json(identity)||json(archive.events.map(e=>e.stage))!==json(goodStages)||
+      archive.recoveryClaimed||r.archiveSha256!==rawSha(JSON.stringify(archive))||r.transportSha256!==rawSha(fixture.source))
+      fail('PILOT_JOB_ARCHIVE_CHANGED');
+    const o=r.observations;
+    if(!o)fail('PILOT_JOB_NORMAL_INVALID');
+    const checked=parseCandidateObservations(JSON.stringify({schemaVersion:1,...fixture.expected,
+      security:o.security,build:o.build,infrastructure:o.infrastructure,cases:o.cases}),fixture.expected);
+    if(json(checked)!==json(o)||checked.status!==r.status||!buildControlMatches(control,checked))
+      fail('PILOT_JOB_NORMAL_INVALID');
+    attempts[control]={attemptId:r.attemptId,archiveSha256:r.archiveSha256,receiptSha256:sha(r)};
+  }
+  const live=job.runningContainer;
+  if(!exact(live,['running','attemptId','ownerPid','engineId','policySha256','containerId'])||
+    live.running!==true||!Number.isSafeInteger(live.ownerPid)||live.ownerPid<1||live.engineId!==engineId||
+    live.policySha256!==policy.policySha256||!hash64(live.containerId)||
+    !exact(recovery,['schemaVersion','stage','status','attemptId','archiveSha256','containerRemoved','cleanupDebt',
+      'runtimeQualified','executionEnabled','generatedArtifactVerified','reason'])||
+    recovery.schemaVersion!==1||recovery.stage!=='AET-8-job-fixed-recovery'||recovery.status!=='PILOT_JOB_FIXED_RECOVERY_PASS'||
+    recovery.attemptId!==live.attemptId||recovery.reason!==null||recovery.containerRemoved!==true||
+    !['cleanupDebt','runtimeQualified','executionEnabled','generatedArtifactVerified'].every(k=>recovery[k]===false))
+    fail('PILOT_JOB_RECOVERY_INVALID');
+  reserve(live.attemptId);
+  const archive=readArchivedPilotAttempt(root,live.attemptId);
+  if(archive.ownerPid!==live.ownerPid||archive.events.at(-1).containerId!==live.containerId||
+    recovery.archiveSha256!==bindPinnedInterruptedArchive(root,live.attemptId,'crash',policy,bundle,engineId))
+    fail('PILOT_JOB_ARCHIVE_CHANGED');
+  attempts.crash={attemptId:live.attemptId,archiveSha256:recovery.archiveSha256,receiptSha256:sha(recovery)};
+  const jobQualification={policySha256:policy.policySha256,adapterSha256:bundle.adapterSha256,
+    nodeSha256:pins.nodeSha256,dockerSha256:pins.dockerSha256,jobReceiptSha256:sha(job),
+    normalReceiptSha256:job.normalReceiptSha256,recoveryReceiptSha256:job.recoveryReceiptSha256,
+    modulePinsSha256:sha(job.currentModulePins),historicalInspectorSha256:job.inspectorSha256,
+    historicalOwnerAssemblySha256:job.ownerAssemblySha256,historicalHarnessAssemblySha256:job.harnessAssemblySha256,
+    attempts};
+  return Object.freeze({...prior,status:'PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND',jobQualification,
+    jobEvidenceSha256:sha({dispatchEvidenceSha256:prior.dispatchEvidenceSha256,jobQualification})});
+}
+
 export function inspectPilotEvidence(names,{platform=process.platform,env=process.env,docker=shellDocker,dispatchPins}={}){
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT)fail('PILOT_LOCAL_WINDOWS_ONLY');
-  if(!Array.isArray(names)||![3,4,5,7].includes(names.length)||new Set(names).size!==names.length)fail('PILOT_RECEIPT_SELECTION_INVALID');
-  const [working,negatives,interruptions,boundary,build,dispatch,pinnedInterruptions]=names.map(name=>readLocalReceipt(name,env));
+  if(!Array.isArray(names)||![3,4,5,7,8].includes(names.length)||new Set(names).size!==names.length)fail('PILOT_RECEIPT_SELECTION_INVALID');
+  const [working,negatives,interruptions,boundary,build,dispatch,pinnedInterruptions,job]=names.map(name=>readLocalReceipt(name,env));
   const root=pilotLocalRoot(env),host=pilotHostTools(docker);
   const engineId=host.engine(),imageMetadata=readLocalImage({platform,env,docker});
   if(host.list('label=codingassistant.static-web-pilot-qualification')!=='')fail('PILOT_PRIOR_CLEANUP_REQUIRED');
   const input={working,negatives,interruptions,boundary,build,dispatch,pinnedInterruptions,imageMetadata,engineId,root};
-  const bound=names.length===7?bindPinnedDispatchEvidence(input,dispatchPins??{}):names.length===5?bindBuildQualifiedPilotEvidence(input):names.length===4?bindCompletePilotEvidence(input):bindPilotEvidence(input);
+  if(job&&new Set([...names,job.normalReceiptName,job.recoveryReceiptName]).size!==names.length+2)
+    fail('PILOT_RECEIPT_SELECTION_INVALID');
+  const bound=names.length===8?bindJobOwnershipEvidence(input,dispatchPins??{}, {job,
+    normalRaw:readJobReceiptBytes(job.normalReceiptName,env),recoveryRaw:readJobReceiptBytes(job.recoveryReceiptName,env)}):
+    names.length===7?bindPinnedDispatchEvidence(input,dispatchPins??{}):names.length===5?bindBuildQualifiedPilotEvidence(input):names.length===4?bindCompletePilotEvidence(input):bindPilotEvidence(input);
   if(host.engine()!==engineId||host.list('label=codingassistant.static-web-pilot-qualification')!==''||readPilotAttempt(root)!==null)
     fail('PILOT_HOST_CHANGED');
   return bound;
@@ -243,9 +362,9 @@ export function main(argv=process.argv.slice(2)){
       if(size>4096)fail('PILOT_RECEIPT_SELECTION_INVALID');
       const input=JSON.parse(buffer.subarray(0,size).toString('utf8'));
       if(!exact(input,['operation','receiptNames'])||input.operation!=='inspect-complete-pilot'||
-        !Array.isArray(input.receiptNames)||![4,5,7].includes(input.receiptNames.length))fail('PILOT_RECEIPT_SELECTION_INVALID');
+        !Array.isArray(input.receiptNames)||![4,5,7,8].includes(input.receiptNames.length))fail('PILOT_RECEIPT_SELECTION_INVALID');
       names=input.receiptNames;options={docker:pinnedMetadataDocker(),
-        ...(names.length===7?{dispatchPins:readDispatchPins()}:{})};
+        ...(names.length>=7?{dispatchPins:readDispatchPins()}:{})};
     }else if([4,5,6].includes(argv.length)&&argv[0]==='--inspect')names=argv.slice(1);
     else if(argv.length===8&&argv[0]==='--inspect-pinned-dispatch'){
       names=argv.slice(1);

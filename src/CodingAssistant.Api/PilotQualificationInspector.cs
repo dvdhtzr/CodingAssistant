@@ -72,7 +72,7 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
     private static readonly Regex Digest=new("^[0-9a-f]{64}\\z",RegexOptions.CultureInvariant);
     internal async Task<JsonElement> InspectAsync(IReadOnlyList<string> receipts,CancellationToken token)
     {
-        if(receipts.Count is not (4 or 5 or 7)||receipts.Distinct(StringComparer.Ordinal).Count()!=receipts.Count||
+        if(receipts.Count is not (4 or 5 or 7 or 8)||receipts.Distinct(StringComparer.Ordinal).Count()!=receipts.Count||
             receipts.Any(x=>x is null||!x.StartsWith("windows-static-web-",StringComparison.Ordinal)||!Receipt.IsMatch(x)))
             throw new StoreFailure("PILOT_RECEIPT_SELECTION_INVALID");
         if(!OperatingSystem.IsWindows())throw new StoreFailure("PILOT_LOCAL_WINDOWS_ONLY");
@@ -98,9 +98,10 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
         var value=await EvaluationPlanBinder.InvokePlanningProcessAsync(start,payload,TimeSpan.FromSeconds(60),token);
         Validate(value);
         if((receipts.Count>=5)!=value.TryGetProperty("buildQualification",out _)||
-            (receipts.Count==7)!=value.TryGetProperty("dispatchQualification",out var dispatch))
+            (receipts.Count>=7)!=value.TryGetProperty("dispatchQualification",out var dispatch)||
+            (receipts.Count==8)!=value.TryGetProperty("jobQualification",out _))
             throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
-        if(receipts.Count==7&&(dispatch.GetProperty("nodeSha256").GetString()!=configuration.NodeSha256||
+        if(receipts.Count>=7&&(dispatch.GetProperty("nodeSha256").GetString()!=configuration.NodeSha256||
             dispatch.GetProperty("dockerSha256").GetString()!=configuration.DockerSha256))
             throw new StoreFailure("PILOT_DISPATCH_BINDING_CHANGED");
         // Recheck every current executable and trusted data input after
@@ -122,13 +123,16 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
         {
             var upgraded=value.TryGetProperty("buildQualification",out var build);
             var pinned=value.TryGetProperty("dispatchQualification",out var dispatch);
+            var jobBound=value.TryGetProperty("jobQualification",out var job);
             var fields=new[]{"schemaVersion","status","engineId","policySha256","policy","attempts","evidenceSha256",
                 "hostProvenanceEstablished","runtimeQualified","executionEnabled","generatedArtifactVerified","boundary","completeEvidenceSha256"};
             if(upgraded)fields=[..fields,"buildQualification","qualifiedEvidenceSha256"];
             if(pinned)fields=[..fields,"dispatchQualification","dispatchEvidenceSha256"];
+            if(jobBound)fields=[..fields,"jobQualification","jobEvidenceSha256"];
             if(!Exact(value,fields)||
                 value.GetProperty("schemaVersion").GetInt32()!=1||
-                value.GetProperty("status").GetString()!=(pinned?"PILOT_PINNED_DISPATCH_EVIDENCE_BOUND":upgraded?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")||
+                value.GetProperty("status").GetString()!=(jobBound?"PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND":pinned?"PILOT_PINNED_DISPATCH_EVIDENCE_BOUND":upgraded?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")||
+                (jobBound&&(!pinned||!Hash(value,"jobEvidenceSha256")))||
                 (pinned&&(!upgraded||!Hash(value,"dispatchEvidenceSha256")))||
                 (upgraded&&!Hash(value,"qualifiedEvidenceSha256"))||
                 !Hash(value,"policySha256")||!Hash(value,"evidenceSha256")||!Hash(value,"completeEvidenceSha256")||
@@ -208,6 +212,20 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
                 var dispatchAttempts=dispatch.GetProperty("attempts");
                 if(!Exact(dispatchAttempts,"working","cancel","crash"))throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
                 foreach(var property in dispatchAttempts.EnumerateObject())Attempt(property.Value);
+            }
+            if(jobBound)
+            {
+                var jobHashes=new[]{"policySha256","adapterSha256","nodeSha256","dockerSha256","jobReceiptSha256",
+                    "normalReceiptSha256","recoveryReceiptSha256","modulePinsSha256","historicalInspectorSha256",
+                    "historicalOwnerAssemblySha256","historicalHarnessAssemblySha256"};
+                if(!Exact(job,[..jobHashes,"attempts"])||!jobHashes.All(k=>Hash(job,k))||
+                    new[]{"policySha256","adapterSha256","nodeSha256","dockerSha256"}.Any(k=>
+                        job.GetProperty(k).GetString()!=dispatch.GetProperty(k).GetString()))
+                    throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+                var jobAttempts=job.GetProperty("attempts");
+                if(!Exact(jobAttempts,"build-working","build-spoof","build-missing-asset","crash"))
+                    throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+                foreach(var property in jobAttempts.EnumerateObject())Attempt(property.Value);
             }
         }
         catch(Exception e)when(e is InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)

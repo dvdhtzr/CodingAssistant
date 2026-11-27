@@ -1680,3 +1680,66 @@ test('job crash control accepts no arbitrary arguments or generated input',()=>{
   const invalid=spawnSync(process.execPath,[script,'--run-job-crash-control','project.zip'],{encoding:'utf8',timeout:5000});
   assert.equal(invalid.status,2);
 });
+
+
+import {bindJobOwnershipEvidence,currentJobModulePins} from '../tools/m4/static_web_pilot_evidence.mjs';
+async function jobOwnershipEvidenceFixture(root){
+  const {input,pins}=pinnedEvidenceFixture(root),bundle=buildQualifiedCandidateBundle();
+  const policy=preparePilotPolicy(input.imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  const controls={};
+  for(const [i,[control,options]] of [['build-working',{}],['build-spoof',{negative:true}],['build-missing-asset',{buildFailed:true}]].entries()){
+    const f=asyncDispatchFixture(options);
+    const attemptId=(200+i).toString(16).padStart(32,'0');
+    f.inspect.Name='/'+policy.identity(attemptId).name;
+    controls[control]=await qualifyCandidateDispatchControl({platform:'win32',env:{},docker:f.docker,attach:f.attach,root,attemptId,control});
+    assert.equal(controls[control].qualificationPassed,true,controls[control].reason);
+  }
+  const attemptId=(203).toString(16).padStart(32,'0'),fixture=buildQualificationFixture('build-working',bundle,policy.policySha256,attemptId);
+  const containerId=attemptId.repeat(2);
+  let j=reservePilotAttempt(root,{...policy.identity(attemptId),engineId:input.engineId,
+    candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256});
+  j.advance('Creating');j.advance('Created',containerId);j.advance('Audited');j.advance('Starting');
+  j=recoverPilotAttempt(root,{isAlive:()=>false});j.advance('CleanupPending');j.advance('Cleaned');j.archive();
+  const recovery={schemaVersion:1,stage:'AET-8-job-fixed-recovery',status:'PILOT_JOB_FIXED_RECOVERY_PASS',
+    attemptId,archiveSha256:bindPinnedInterruptedArchive(root,attemptId,'crash',policy,bundle,input.engineId),
+    containerRemoved:true,cleanupDebt:false,runtimeQualified:false,executionEnabled:false,generatedArtifactVerified:false,reason:null};
+  const flags={generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false};
+  const normal={schemaVersion:1,stage:'AET-8-candidate-dispatch-lifecycle-controls',status:'PILOT_CANDIDATE_DISPATCH_CONTROLS_PASS',
+    recordedAtUtc:'2026-11-27T12:00:00Z',controls,...flags,reason:null};
+  const normalRaw=Buffer.from(JSON.stringify(normal)),recoveryRaw=Buffer.from(JSON.stringify(recovery));
+  const hash=x=>createHash('sha256').update(x).digest('hex');
+  const job={schemaVersion:1,stage:'AET-8-windows-job-ownership',status:'PILOT_JOB_OWNERSHIP_PASS',
+    recordedAtUtc:'2026-11-27T12:00:00Z',jobListAtomic:true,killOnClose:true,ownerExitConfirmed:true,
+    observedProcessCount:2,observedProcessesExited:true,jobClosedConfirmed:true,crashControl:'fixed-attach-stdin-held-open',
+    runningContainer:{running:true,attemptId,ownerPid:process.pid,engineId:input.engineId,policySha256:policy.policySha256,containerId},
+    normalReceiptName:'windows-static-web-aaaa00000000.json',normalReceiptSha256:hash(normalRaw),
+    recoveryReceiptName:'windows-static-web-bbbb00000000.json',recoveryReceiptSha256:hash(recoveryRaw),
+    ...pins,ownerAssemblySha256:'a'.repeat(64),harnessAssemblySha256:'b'.repeat(64),
+    currentModulePins:currentJobModulePins(),inspectorSha256:'c'.repeat(64),containerRemoved:true,cleanupDebt:false,...flags};
+  return {input,pins,job,normalRaw,recoveryRaw};
+}
+test('job ownership binds eighteen archived attempts and historical native hashes without granting execution',async()=>{
+  await withDispatchJournal(async root=>{
+    const {input,pins,job,normalRaw,recoveryRaw}=await jobOwnershipEvidenceFixture(root);
+    const result=bindJobOwnershipEvidence(input,pins,{job,normalRaw,recoveryRaw});
+    assert.equal(result.status,'PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND');
+    assert.equal(Object.keys(result.jobQualification.attempts).length,4);
+    assert.equal(result.dispatchEvidenceSha256,bindPinnedDispatchEvidence(input,pins).dispatchEvidenceSha256);
+    assert.equal(result.jobQualification.historicalOwnerAssemblySha256,job.ownerAssemblySha256);
+    assert.equal(result.hostProvenanceEstablished,false);assert.equal(result.executionEnabled,false);
+    assert.equal(result.runtimeQualified,false);
+  });
+});
+test('job evidence rejects incomplete ownership, changed receipt bytes and changed current module pins',async()=>{
+  await withDispatchJournal(async root=>{
+    const {input,pins,job,normalRaw,recoveryRaw}=await jobOwnershipEvidenceFixture(root);
+    for(const mutate of [
+      x=>{x.jobClosedConfirmed=false;},x=>{x.observedProcessCount=1;},
+      x=>{x.runningContainer.ownerPid++;},x=>{x.runningContainer.containerId='0'.repeat(64);},
+      x=>{x.currentModulePins['tools/m4/static_web_candidate_dispatch.mjs']='0'.repeat(64);}]) {
+      const changed=structuredClone(job);mutate(changed);
+      assert.throws(()=>bindJobOwnershipEvidence(input,pins,{job:changed,normalRaw,recoveryRaw}));
+    }
+    assert.throws(()=>bindJobOwnershipEvidence(input,pins,{job,normalRaw:Buffer.concat([normalRaw,Buffer.from('\n')]),recoveryRaw}),/RECEIPT_CHANGED/);
+  });
+});

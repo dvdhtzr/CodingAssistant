@@ -927,3 +927,25 @@ Before retrying, check for retained active journal/labelled containers
 from the failed observation. Do not remove unrelated containers or
 manually delete the journal. If debt remains, report it before retrying;
 prior unknown process ownership must not be treated as confirmed clean.
+
+
+### Windows job ownership PASS and eighteen-attempt diagnostic binding
+
+At `47e3313` the owner reported AET-8 WINDOWS_PILOT_JOB_OWNERSHIP_PASS.
+The exact new receipt basename was not supplied. The new read-only
+inspector accepts eight names (the previous seven plus the job
+ownership receipt); it loads the two nested receipts using exact
+basenames, verifies their raw byte hashes, rechecks all current module
+pins and both binary pins, reconstructs the three frozen normal
+controls and recovered crash archive, and excludes reuse across all
+eighteen attempts. The .NET inspector validates the new schema and
+distinct identities. API smoke emits PILOT_JOB_EVIDENCE_INSPECTION_PASS.
+
+The job report's native assembly and old inspector hashes are historical
+identity data, not an attestation of a newly rebuilt .NET executable.
+The previously qualified launcher, guest, and module pin closure are
+unchanged. The eight-receipt mode is diagnostic only; the production
+proposal/transport continues to use the prior seven receipts until the
+new native stdin/stdout dispatch and cancellation path is implemented
+and independently qualified. No executable permission or VERIFIED
+state is introduced. No unchanged Docker qualification rerun required.
