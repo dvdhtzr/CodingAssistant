@@ -255,6 +255,34 @@ function readJobReceiptBytes(name,env){
     return bytes.subarray(0,size);
   }finally{fs.closeSync(fd);}
 }
+function bindJobNormalControls(controls,{root,engineId,bundle,policy,reserve,attempts}){
+  for(const control of jobControls){
+    const r=controls[control];
+    if(!exact(r,['schemaVersion','stage','status','attemptId','engineId','policySha256','transportSha256',
+      'configurationAudited','attachClosed','containerRemoved','cleanupDebt','archiveSha256','observations','reason',
+      'executionEnabled','runtimeQualified','generatedArtifactVerified','control','qualificationPassed'])||
+      r.schemaVersion!==1||r.stage!=='AET-8-candidate-dispatch-lifecycle'||r.control!==control||
+      r.engineId!==engineId||r.policySha256!==policy.policySha256||r.reason!==null||r.cleanupDebt!==false||
+      !['configurationAudited','attachClosed','containerRemoved','qualificationPassed'].every(k=>r[k]===true)||
+      !['executionEnabled','runtimeQualified','generatedArtifactVerified'].every(k=>r[k]===false))
+      fail('PILOT_JOB_NORMAL_INVALID');
+    reserve(r.attemptId);
+    const archive=readArchivedPilotAttempt(root,r.attemptId);
+    const fixture=buildQualificationFixture(control,bundle,policy.policySha256,r.attemptId);
+    const identity={...policy.identity(r.attemptId),engineId,candidateSha256:fixture.expected.candidateSha256,
+      archiveSha256:fixture.expected.archiveSha256};
+    if(json(archive.identity)!==json(identity)||json(archive.events.map(e=>e.stage))!==json(goodStages)||
+      archive.recoveryClaimed||r.archiveSha256!==rawSha(JSON.stringify(archive))||r.transportSha256!==rawSha(fixture.source))
+      fail('PILOT_JOB_ARCHIVE_CHANGED');
+    const o=r.observations;
+    if(!o)fail('PILOT_JOB_NORMAL_INVALID');
+    const checked=parseCandidateObservations(JSON.stringify({schemaVersion:1,...fixture.expected,
+      security:o.security,build:o.build,infrastructure:o.infrastructure,cases:o.cases}),fixture.expected);
+    if(json(checked)!==json(o)||checked.status!==r.status||!buildControlMatches(control,checked))
+      fail('PILOT_JOB_NORMAL_INVALID');
+    attempts[control]={attemptId:r.attemptId,archiveSha256:r.archiveSha256,receiptSha256:sha(r)};
+  }
+}
 export function bindJobOwnershipEvidence(input,pins,{job,normalRaw,recoveryRaw}){
   const prior=bindPinnedDispatchEvidence(input,pins);
   const {root,engineId,imageMetadata}=input;
@@ -283,32 +311,7 @@ export function bindJobOwnershipEvidence(input,pins,{job,normalRaw,recoveryRaw})
     ...Object.values(prior.dispatchQualification.attempts)].map(x=>x.attemptId));
   const reserve=id=>{if(used.has(id))fail('PILOT_QUALIFICATION_ATTEMPT_REUSED');used.add(id);};
   const attempts={};
-  for(const control of jobControls){
-    const r=normal.controls[control];
-    if(!exact(r,['schemaVersion','stage','status','attemptId','engineId','policySha256','transportSha256',
-      'configurationAudited','attachClosed','containerRemoved','cleanupDebt','archiveSha256','observations','reason',
-      'executionEnabled','runtimeQualified','generatedArtifactVerified','control','qualificationPassed'])||
-      r.schemaVersion!==1||r.stage!=='AET-8-candidate-dispatch-lifecycle'||r.control!==control||
-      r.engineId!==engineId||r.policySha256!==policy.policySha256||r.reason!==null||r.cleanupDebt!==false||
-      !['configurationAudited','attachClosed','containerRemoved','qualificationPassed'].every(k=>r[k]===true)||
-      !['executionEnabled','runtimeQualified','generatedArtifactVerified'].every(k=>r[k]===false))
-      fail('PILOT_JOB_NORMAL_INVALID');
-    reserve(r.attemptId);
-    const archive=readArchivedPilotAttempt(root,r.attemptId);
-    const fixture=buildQualificationFixture(control,bundle,policy.policySha256,r.attemptId);
-    const identity={...policy.identity(r.attemptId),engineId,candidateSha256:fixture.expected.candidateSha256,
-      archiveSha256:fixture.expected.archiveSha256};
-    if(json(archive.identity)!==json(identity)||json(archive.events.map(e=>e.stage))!==json(goodStages)||
-      archive.recoveryClaimed||r.archiveSha256!==rawSha(JSON.stringify(archive))||r.transportSha256!==rawSha(fixture.source))
-      fail('PILOT_JOB_ARCHIVE_CHANGED');
-    const o=r.observations;
-    if(!o)fail('PILOT_JOB_NORMAL_INVALID');
-    const checked=parseCandidateObservations(JSON.stringify({schemaVersion:1,...fixture.expected,
-      security:o.security,build:o.build,infrastructure:o.infrastructure,cases:o.cases}),fixture.expected);
-    if(json(checked)!==json(o)||checked.status!==r.status||!buildControlMatches(control,checked))
-      fail('PILOT_JOB_NORMAL_INVALID');
-    attempts[control]={attemptId:r.attemptId,archiveSha256:r.archiveSha256,receiptSha256:sha(r)};
-  }
+  bindJobNormalControls(normal.controls,{root,engineId,bundle,policy,reserve,attempts});
   const live=job.runningContainer;
   if(!exact(live,['running','attemptId','ownerPid','engineId','policySha256','containerId'])||
     live.running!==true||!Number.isSafeInteger(live.ownerPid)||live.ownerPid<1||live.engineId!==engineId||
@@ -333,6 +336,79 @@ export function bindJobOwnershipEvidence(input,pins,{job,normalRaw,recoveryRaw})
     attempts};
   return Object.freeze({...prior,status:'PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND',jobQualification,
     jobEvidenceSha256:sha({dispatchEvidenceSha256:prior.dispatchEvidenceSha256,jobQualification})});
+}
+
+// Fixed native I/O receipts extend historical evidence, never executable authority.
+export function bindJobIoEvidence(input,pins,priorReceipts,{fixedRaw,interruptionRaw,recoveryBytes}){
+  const prior=bindJobOwnershipEvidence(input,pins,priorReceipts);
+  const {root,engineId,imageMetadata}=input;
+  const bundle=buildQualifiedCandidateBundle(),policy=preparePilotPolicy(imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  const decode=bytes=>{
+    if(!Buffer.isBuffer(bytes)||bytes.length<2||bytes.length>65536)fail('PILOT_JOB_IO_RECEIPT_INVALID');
+    return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
+  };
+  const fixed=decode(fixedRaw),interrupt=decode(interruptionRaw);
+  const identities=['bridgeSha256','nodeSha256','dockerSha256','currentModulePins','inspectorSha256',
+    'ownerAssemblySha256','harnessAssemblySha256'];
+  if(!header(fixed,[...identities,'controls','invalidRequestRejected','preCancelledRequestRejected','jobEmptyConfirmed'],
+      'AET-8-windows-job-fixed-io','PILOT_JOB_FIXED_IO_PASS')||
+    !header(interrupt,[...identities,'cancellation','crash'],'AET-8-windows-job-io-interruptions','PILOT_JOB_IO_INTERRUPTION_PASS')||
+    !exact(fixed.controls,jobControls)||
+    !['invalidRequestRejected','preCancelledRequestRejected','jobEmptyConfirmed'].every(k=>fixed[k]===true))
+    fail('PILOT_JOB_IO_RECEIPT_INVALID');
+  const bridge=path.join(fileURLToPath(new URL('./',import.meta.url)),'windows_job_fixed_io.mjs');
+  const st=fs.lstatSync(bridge);
+  if(!st.isFile()||st.isSymbolicLink()||st.size>1024*1024||
+    fs.realpathSync(bridge).toLowerCase()!==path.resolve(bridge).toLowerCase())fail('PILOT_JOB_IO_BINDING_CHANGED');
+  for(const r of [fixed,interrupt]){
+    if(r.bridgeSha256!==rawSha(fs.readFileSync(bridge))||r.nodeSha256!==pins.nodeSha256||
+      r.dockerSha256!==pins.dockerSha256||json(r.currentModulePins)!==json(currentJobModulePins())||
+      !['inspectorSha256','ownerAssemblySha256','harnessAssemblySha256'].every(k=>hash64(r[k])))
+      fail('PILOT_JOB_IO_BINDING_CHANGED');
+  }
+  if(fixed.inspectorSha256!==interrupt.inspectorSha256)fail('PILOT_JOB_IO_BINDING_CHANGED');
+  const used=new Set([...Object.values(prior.attempts),prior.boundary,...Object.values(prior.buildQualification.attempts),
+    ...Object.values(prior.dispatchQualification.attempts),...Object.values(prior.jobQualification.attempts)].map(x=>x.attemptId));
+  const reserve=id=>{if(used.has(id))fail('PILOT_QUALIFICATION_ATTEMPT_REUSED');used.add(id);};
+  const attempts={};
+  bindJobNormalControls(fixed.controls,{root,engineId,bundle,policy,reserve,attempts});
+  const receiptNames=new Set([priorReceipts.job.normalReceiptName,priorReceipts.job.recoveryReceiptName]);
+  for(const [key,mode] of [['cancellation','running cancellation'],['crash','owner crash']]){
+    const report=interrupt[key],live=report?.runningContainer;
+    if(!exact(report,['mode','runningContainer','observedProcessCount','observedProcessesExited','jobClosedConfirmed',
+      'recoveryReceiptName','recoveryReceiptSha256','containerRemoved','cleanupDebt','resultPublished'])||
+      report.mode!==mode||!Number.isSafeInteger(report.observedProcessCount)||report.observedProcessCount<2||report.observedProcessCount>128||
+      !['observedProcessesExited','jobClosedConfirmed','containerRemoved'].every(k=>report[k]===true)||
+      report.cleanupDebt!==false||report.resultPublished!==false||!jobReceiptName.test(report.recoveryReceiptName??'')||
+      receiptNames.has(report.recoveryReceiptName)||!hash64(report.recoveryReceiptSha256)||
+      !exact(live,['running','attemptId','ownerPid','engineId','policySha256','containerId'])||
+      live.running!==true||!Number.isSafeInteger(live.ownerPid)||live.ownerPid<1||live.engineId!==engineId||
+      live.policySha256!==policy.policySha256||!hash64(live.containerId))fail('PILOT_JOB_IO_INTERRUPTION_INVALID');
+    receiptNames.add(report.recoveryReceiptName);
+    const bytes=recoveryBytes(report.recoveryReceiptName),recovery=decode(bytes);
+    if(rawSha(bytes)!==report.recoveryReceiptSha256||
+      !exact(recovery,['schemaVersion','stage','status','attemptId','archiveSha256','containerRemoved','cleanupDebt',
+        'runtimeQualified','executionEnabled','generatedArtifactVerified','reason'])||
+      recovery.schemaVersion!==1||recovery.stage!=='AET-8-job-fixed-recovery'||recovery.status!=='PILOT_JOB_FIXED_RECOVERY_PASS'||
+      recovery.attemptId!==live.attemptId||recovery.reason!==null||recovery.containerRemoved!==true||
+      !['cleanupDebt','runtimeQualified','executionEnabled','generatedArtifactVerified'].every(k=>recovery[k]===false))
+      fail('PILOT_JOB_IO_RECOVERY_INVALID');
+    reserve(live.attemptId);
+    const archive=readArchivedPilotAttempt(root,live.attemptId);
+    if(archive.ownerPid!==live.ownerPid||archive.events.at(-1).containerId!==live.containerId||
+      recovery.archiveSha256!==bindPinnedInterruptedArchive(root,live.attemptId,'crash',policy,bundle,engineId))
+      fail('PILOT_JOB_ARCHIVE_CHANGED');
+    attempts[key]={attemptId:live.attemptId,archiveSha256:recovery.archiveSha256,receiptSha256:rawSha(bytes)};
+  }
+  const jobIoQualification={policySha256:policy.policySha256,adapterSha256:bundle.adapterSha256,
+    nodeSha256:pins.nodeSha256,dockerSha256:pins.dockerSha256,bridgeSha256:fixed.bridgeSha256,
+    fixedReceiptSha256:rawSha(fixedRaw),interruptionReceiptSha256:rawSha(interruptionRaw),
+    modulePinsSha256:sha(fixed.currentModulePins),historicalInspectorSha256:fixed.inspectorSha256,
+    fixedOwnerAssemblySha256:fixed.ownerAssemblySha256,fixedHarnessAssemblySha256:fixed.harnessAssemblySha256,
+    interruptionOwnerAssemblySha256:interrupt.ownerAssemblySha256,interruptionHarnessAssemblySha256:interrupt.harnessAssemblySha256,
+    attempts};
+  return Object.freeze({...prior,status:'PILOT_JOB_IO_EVIDENCE_BOUND',jobIoQualification,
+    jobIoEvidenceSha256:sha({jobEvidenceSha256:prior.jobEvidenceSha256,jobIoQualification})});
 }
 
 export function inspectPilotEvidence(names,{platform=process.platform,env=process.env,docker=shellDocker,dispatchPins}={}){
