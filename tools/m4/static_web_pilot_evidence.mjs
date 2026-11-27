@@ -347,7 +347,19 @@ export function bindJobIoEvidence(input,pins,priorReceipts,{fixedRaw,interruptio
     if(!Buffer.isBuffer(bytes)||bytes.length<2||bytes.length>65536)fail('PILOT_JOB_IO_RECEIPT_INVALID');
     return JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));
   };
-  const fixed=decode(fixedRaw),interrupt=decode(interruptionRaw);
+  // Historical C# anonymous-property inference emitted these two names in
+  // PascalCase. Accept only the exact pair, never mixed or duplicate aliases.
+  // Preserve raw receipt bytes for the evidence digest below.
+  const normalizeIoIdentity=record=>{
+    if(!record||typeof record!=='object'||Array.isArray(record))return record;
+    const upper=['NodeSha256','DockerSha256'],lower=['nodeSha256','dockerSha256'];
+    if(!upper.some(k=>Object.hasOwn(record,k)))return record;
+    if(!upper.every(k=>Object.hasOwn(record,k))||lower.some(k=>Object.hasOwn(record,k)))
+      fail('PILOT_JOB_IO_RECEIPT_INVALID');
+    const {NodeSha256,DockerSha256,...rest}=record;
+    return {...rest,nodeSha256:NodeSha256,dockerSha256:DockerSha256};
+  };
+  const fixed=normalizeIoIdentity(decode(fixedRaw)),interrupt=normalizeIoIdentity(decode(interruptionRaw));
   const identities=['bridgeSha256','nodeSha256','dockerSha256','currentModulePins','inspectorSha256',
     'ownerAssemblySha256','harnessAssemblySha256'];
   if(!header(fixed,[...identities,'controls','invalidRequestRejected','preCancelledRequestRejected','jobEmptyConfirmed'],
