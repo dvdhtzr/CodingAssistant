@@ -151,3 +151,24 @@ Model-free tests use injected metadata and receipt input, not actual host
 qualification. Node process launch/timeout and actual C# integration require
 local validation; executable admission and cancellation/cleanup are still
 separate future gates.
+
+
+### Explicit planning process identity
+
+The internal C# binder now requires an explicit absolute repository root,
+absolute local Node executable path, and independently established SHA-256
+pins for the Node executable and fixed binder entry script. It no longer
+searches the working directory or parent directories for the script, or
+launches Node by an unqualified name. Missing, changed, relative or
+reparse-point paths fail closed. Node-specific and OpenSSL configuration
+environment overrides are removed from the child process. The direct
+owner CLI receipt-inspection command is unchanged.
+
+No request-facing configuration, HTTP route or model tool is introduced.
+These file checks do not authenticate the transitive Node module graph,
+Docker CLI or current host capability, and do not protect against an
+already-compromised owner account or concurrent same-account file changes.
+Establishing a trusted host-owned configuration source and validating the
+full process/dependency provenance remain prerequisites before any
+executable admission. The C# binder must not be enabled by deriving pins
+from unreviewed files at request time.

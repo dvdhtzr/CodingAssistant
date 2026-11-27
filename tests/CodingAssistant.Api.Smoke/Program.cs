@@ -65,6 +65,51 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     };
 }
 
+// The planning bridge never resolves an executable or script from PATH or
+// the current directory. Test file identity without launching a process.
+{
+    var folder=Path.Combine(Path.GetTempPath(),"ca-binder-pin-"+Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(folder);
+    try
+    {
+        var fixture=Path.Combine(folder,"reviewed.txt");
+        File.WriteAllText(fixture,"reviewed fixture");
+        var digest=Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fixture)));
+        Check(EvaluationPlanBinder.RequirePinnedFile(fixture,digest)==Path.GetFullPath(fixture),
+            "planning binder accepts exact explicit pinned file");
+        foreach(var invalid in new[]{(Path.GetFileName(fixture),digest),(fixture,new string('0',64)),
+            (fixture,"not-a-pin"),(Path.Combine(folder,"missing"),digest)})
+        {
+            try
+            {
+                _=EvaluationPlanBinder.RequirePinnedFile(invalid.Item1,invalid.Item2);
+                Check(false,"invalid planning file identity must be blocked");
+            }
+            catch(StoreFailure e)when(e.Code is "EVALUATION_BINDER_PROVENANCE_REQUIRED" or
+                "EVALUATION_BINDER_PROVENANCE_INVALID")
+            {Check(true,"relative, missing, malformed or mismatched pin fails closed");}
+        }
+        File.AppendAllText(fixture,"changed");
+        try
+        {
+            _=EvaluationPlanBinder.RequirePinnedFile(fixture,digest);
+            Check(false,"changed reviewed file must be blocked");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_PROVENANCE_INVALID")
+        {Check(true,"changed file invalidates planning provenance");}
+        var start=new System.Diagnostics.ProcessStartInfo();
+        start.Environment["NODE_OPTIONS"]="--require unreviewed";
+        start.Environment["NODE_PATH"]="unreviewed";
+        start.Environment["OPENSSL_CONF"]="unreviewed";
+        start.Environment["CA_BINDER_TEST"]="retain";
+        EvaluationPlanBinder.RemoveNodeEnvironmentOverrides(start);
+        Check(!start.Environment.ContainsKey("NODE_OPTIONS")&&!start.Environment.ContainsKey("NODE_PATH")&&
+            !start.Environment.ContainsKey("OPENSSL_CONF")&&start.Environment["CA_BINDER_TEST"]=="retain",
+            "planning process removes Node and OpenSSL overrides without mutating parent environment");
+    }
+    finally{Directory.Delete(folder,true);}
+}
+
 // Planning bridge pipe limits: no model, Docker, generated code or host
 // command execution. Verify exact-boundary reads and the fail-closed signal.
 {

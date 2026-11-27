@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -8,24 +9,51 @@ namespace CodingAssistant.Api;
 // Internal bridge: no HTTP route or model tool exposes this seam. It
 // invokes only the reviewed non-executing Node planning binder. The owner
 // must still independently review semantic test coverage. No runtime grant.
-public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=null)
+public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=null,
+    string? nodeExecutable=null,string? nodeSha256=null,string? binderSha256=null)
 {
     private static readonly Regex Receipt=new("^windows-static-web-[0-9a-f]{12}\\.json\\z",
         RegexOptions.CultureInvariant);
-    private static string? Locate(string? root)
+    // These inputs must come from trusted host configuration, never a model,
+    // request, project directory, or digest calculated from an unreviewed file.
+    // File identity checks narrow the launch surface; they are not OS attestation
+    // or a proof against concurrent modification by the same host account.
+    internal static string RequirePinnedFile(string? file,string? digest)
     {
-        foreach(var start in new[]{root,Directory.GetCurrentDirectory(),AppContext.BaseDirectory})
+        if(string.IsNullOrWhiteSpace(file)||!Path.IsPathFullyQualified(file)||
+            digest is null||!Regex.IsMatch(digest,"^[0-9a-f]{64}\\z",RegexOptions.CultureInvariant))
+            throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_REQUIRED");
+        try
         {
-            if(string.IsNullOrWhiteSpace(start))continue;
-            DirectoryInfo? current=new(Path.GetFullPath(start));
-            for(var i=0;i<8 && current is not null;i++,current=current.Parent)
-            {
-                var script=Path.Combine(current.FullName,"tools","m4","static_web_evaluation_host_bridge.mjs");
-                if(File.Exists(script)&&(File.GetAttributes(script)&FileAttributes.ReparsePoint)==0)
-                    return script;
-            }
+            var full=Path.GetFullPath(file);
+            if(OperatingSystem.IsWindows() &&
+                !Regex.IsMatch(Path.GetPathRoot(full)??"","^[A-Za-z]:\\\\\\z",RegexOptions.CultureInvariant))
+                throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
+            var attributes=File.GetAttributes(full);
+            if((attributes&(FileAttributes.ReparsePoint|FileAttributes.Directory))!=0)
+                throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
+            for(var parent=Directory.GetParent(full);parent is not null;parent=parent.Parent)
+                if((parent.Attributes&FileAttributes.ReparsePoint)!=0)
+                    throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
+            using var stream=File.OpenRead(full);
+            var actual=Convert.ToHexStringLower(SHA256.HashData(stream));
+            if(!string.Equals(actual,digest,StringComparison.Ordinal))
+                throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
+            return full;
         }
-        return null;
+        catch(IOException){throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");}
+        catch(UnauthorizedAccessException){throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");}
+        catch(ArgumentException){throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");}
+        catch(NotSupportedException){throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");}
+    }
+
+    internal static void RemoveNodeEnvironmentOverrides(ProcessStartInfo start)
+    {
+        foreach(var key in start.Environment.Keys.ToArray())
+            if(key.StartsWith("NODE_",StringComparison.OrdinalIgnoreCase)||
+                key.Equals("OPENSSL_CONF",StringComparison.OrdinalIgnoreCase)||
+                key.Equals("OPENSSL_MODULES",StringComparison.OrdinalIgnoreCase))
+                start.Environment.Remove(key);
     }
 
     // Count decoded characters while reading; never buffer an unbounded stream.
@@ -72,13 +100,21 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
         },new JsonSerializerOptions(JsonSerializerDefaults.Web));
         if(System.Text.Encoding.UTF8.GetByteCount(payload)>3*1024*1024)
             throw new StoreFailure("EVALUATION_HOST_REQUEST_TOO_LARGE");
-        var script=Locate(repositoryRoot)??throw new StoreFailure("EVALUATION_BINDER_NOT_FOUND");
-        var start=new ProcessStartInfo("node"){
+        if(string.IsNullOrWhiteSpace(repositoryRoot)||!Path.IsPathFullyQualified(repositoryRoot))
+            throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_REQUIRED");
+        var script=RequirePinnedFile(Path.Combine(repositoryRoot,"tools","m4",
+            "static_web_evaluation_host_bridge.mjs"),binderSha256);
+        var executable=RequirePinnedFile(nodeExecutable,nodeSha256);
+        if(!string.Equals(Path.GetFileName(executable),"node.exe",StringComparison.OrdinalIgnoreCase))
+            throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
+        var start=new ProcessStartInfo(executable){
+            WorkingDirectory=Path.GetDirectoryName(script)!,
             UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,
             RedirectStandardOutput=true,RedirectStandardError=true,
             StandardInputEncoding=new System.Text.UTF8Encoding(false),
             StandardOutputEncoding=System.Text.Encoding.UTF8
         };
+        RemoveNodeEnvironmentOverrides(start);
         start.ArgumentList.Add(script);start.ArgumentList.Add("--stdin");
         using var process=new Process{StartInfo=start};
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
