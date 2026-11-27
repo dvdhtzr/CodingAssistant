@@ -1755,9 +1755,28 @@ test('job-owned stdin accepts only exact fixed-control identity',()=>{
   }
   assert.throws(()=>parseFixedIoRequest(' '.repeat(4097)));
 });
+function fixedIoTestEnvironment(){
+  // Node's test runner supplies NODE_TEST_CONTEXT to its workers.
+  // Do not forward runtime overrides to the guarded child process.
+  return Object.fromEntries(Object.entries(process.env).filter(([key])=>
+    !/^NODE_|^OPENSSL_(CONF|MODULES)$/i.test(key)));
+}
 test('job stdin bridge rejects malformed request without starting Docker',()=>{
   const p=spawnSync(process.execPath,['tools/m4/windows_job_fixed_io.mjs','--stdin-fixed'],
-    {input:JSON.stringify({operation:'generated-source'}),encoding:'utf8',timeout:5000});
+    {input:JSON.stringify({operation:'generated-source'}),encoding:'utf8',timeout:5000,
+      env:fixedIoTestEnvironment()});
   assert.equal(p.status,2);
   assert.equal(JSON.parse(p.stdout).reason,'PILOT_JOB_REQUEST_INVALID');
+});
+test('job stdin bridge rejects runtime environment overrides before request processing',()=>{
+  for(const key of ['NODE_TEST_CONTEXT','OPENSSL_CONF','OPENSSL_MODULES']){
+    const p=spawnSync(process.execPath,['tools/m4/windows_job_fixed_io.mjs','--stdin-fixed'],
+      {input:JSON.stringify({operation:'generated-source'}),encoding:'utf8',timeout:5000,
+        env:{...fixedIoTestEnvironment(),[key]:'test-override'}});
+    assert.equal(p.status,2,key);
+    const result=JSON.parse(p.stdout);
+    assert.equal(result.reason,'PILOT_DISPATCH_ENVIRONMENT_OVERRIDE',key);
+    assert.equal(result.executionEnabled,false,key);
+    assert.equal(result.runtimeQualified,false,key);
+  }
 });
