@@ -348,6 +348,40 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     }
 }
 
+// Synthetic identity controls only: no host or executable qualification.
+{
+    string Id(int n)=>n.ToString("x32");
+    object Attempt(int n)=>new {attemptId=Id(n)};
+    object Attempts(int start,int count)=>Enumerable.Range(start,count)
+        .ToDictionary(n=>n.ToString(),n=>Attempt(n));
+    var evidence=JsonSerializer.SerializeToElement(new {
+        attempts=Attempts(1,5),boundary=Attempt(6),
+        buildQualification=new {attempts=Attempts(7,5)},
+        dispatchQualification=new {attempts=Attempts(12,3)},
+        jobQualification=new {attempts=Attempts(15,4)},
+        jobIoQualification=new {attempts=Attempts(19,5)}
+    });
+    PilotExecutionAdmissionStore.RequireFreshHistoricalAttempt(evidence,Id(24));
+    Check(true,"fresh candidate identity allowed by historical reuse guard only");
+    foreach(var n in Enumerable.Range(1,23))
+    {
+        try{PilotExecutionAdmissionStore.RequireFreshHistoricalAttempt(evidence,Id(n));Check(false,"historical attempt reused");}
+        catch(StoreFailure e)when(e.Code=="PILOT_ADMISSION_ATTEMPT_REUSED"){Check(true,"historical attempt reuse rejected");}
+    }
+    var incomplete=JsonSerializer.SerializeToElement(new {attempts=Attempts(1,5)});
+    try{PilotExecutionAdmissionStore.RequireFreshHistoricalAttempt(incomplete,Id(24));Check(false,"incomplete chain");}
+    catch(StoreFailure e)when(e.Code=="PILOT_JOB_IO_EVIDENCE_REQUIRED"){Check(true,"incomplete chain rejected");}
+    var duplicate=JsonSerializer.SerializeToElement(new {
+        attempts=Attempts(1,5),boundary=Attempt(6),
+        buildQualification=new {attempts=Attempts(7,5)},
+        dispatchQualification=new {attempts=Attempts(12,3)},
+        jobQualification=new {attempts=Attempts(15,4)},
+        jobIoQualification=new {attempts=Attempts(18,5)}
+    });
+    try{PilotExecutionAdmissionStore.RequireFreshHistoricalAttempt(duplicate,Id(24));Check(false,"contradictory chain");}
+    catch(StoreFailure e)when(e.Code=="PILOT_HOST_RESPONSE_INVALID"){Check(true,"duplicate historical identity rejected");}
+}
+
 // Separate pilot inspector pin closure and opt-in actual host evidence read.
 {
     var folder=Path.Combine(Path.GetTempPath(),"ca-pilot-pins-"+Guid.NewGuid().ToString("N"));
