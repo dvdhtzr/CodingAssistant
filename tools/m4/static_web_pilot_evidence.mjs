@@ -413,16 +413,23 @@ export function bindJobIoEvidence(input,pins,priorReceipts,{fixedRaw,interruptio
 
 export function inspectPilotEvidence(names,{platform=process.platform,env=process.env,docker=shellDocker,dispatchPins}={}){
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT)fail('PILOT_LOCAL_WINDOWS_ONLY');
-  if(!Array.isArray(names)||![3,4,5,7,8].includes(names.length)||new Set(names).size!==names.length)fail('PILOT_RECEIPT_SELECTION_INVALID');
-  const [working,negatives,interruptions,boundary,build,dispatch,pinnedInterruptions,job]=names.map(name=>readLocalReceipt(name,env));
+  if(!Array.isArray(names)||![3,4,5,7,8,10].includes(names.length)||new Set(names).size!==names.length)fail('PILOT_RECEIPT_SELECTION_INVALID');
+  const [working,negatives,interruptions,boundary,build,dispatch,pinnedInterruptions,job]=names.slice(0,8).map(name=>readLocalReceipt(name,env));
   const root=pilotLocalRoot(env),host=pilotHostTools(docker);
   const engineId=host.engine(),imageMetadata=readLocalImage({platform,env,docker});
   if(host.list('label=codingassistant.static-web-pilot-qualification')!=='')fail('PILOT_PRIOR_CLEANUP_REQUIRED');
   const input={working,negatives,interruptions,boundary,build,dispatch,pinnedInterruptions,imageMetadata,engineId,root};
   if(job&&new Set([...names,job.normalReceiptName,job.recoveryReceiptName]).size!==names.length+2)
     fail('PILOT_RECEIPT_SELECTION_INVALID');
-  const bound=names.length===8?bindJobOwnershipEvidence(input,dispatchPins??{}, {job,
-    normalRaw:readJobReceiptBytes(job.normalReceiptName,env),recoveryRaw:readJobReceiptBytes(job.recoveryReceiptName,env)}):
+  const priorReceipts=job?{job,normalRaw:readJobReceiptBytes(job.normalReceiptName,env),
+    recoveryRaw:readJobReceiptBytes(job.recoveryReceiptName,env)}:null;
+  const bound=names.length===10?bindJobIoEvidence(input,dispatchPins??{},priorReceipts,{
+    fixedRaw:readJobReceiptBytes(names[8],env),interruptionRaw:readJobReceiptBytes(names[9],env),
+    recoveryBytes:name=>{
+      if(names.includes(name))fail('PILOT_RECEIPT_SELECTION_INVALID');
+      return readJobReceiptBytes(name,env);
+    }}):
+    names.length===8?bindJobOwnershipEvidence(input,dispatchPins??{},priorReceipts):
     names.length===7?bindPinnedDispatchEvidence(input,dispatchPins??{}):names.length===5?bindBuildQualifiedPilotEvidence(input):names.length===4?bindCompletePilotEvidence(input):bindPilotEvidence(input);
   if(host.engine()!==engineId||host.list('label=codingassistant.static-web-pilot-qualification')!==''||readPilotAttempt(root)!==null)
     fail('PILOT_HOST_CHANGED');
@@ -438,7 +445,7 @@ export function main(argv=process.argv.slice(2)){
       if(size>4096)fail('PILOT_RECEIPT_SELECTION_INVALID');
       const input=JSON.parse(buffer.subarray(0,size).toString('utf8'));
       if(!exact(input,['operation','receiptNames'])||input.operation!=='inspect-complete-pilot'||
-        !Array.isArray(input.receiptNames)||![4,5,7,8].includes(input.receiptNames.length))fail('PILOT_RECEIPT_SELECTION_INVALID');
+        !Array.isArray(input.receiptNames)||![4,5,7,8,10].includes(input.receiptNames.length))fail('PILOT_RECEIPT_SELECTION_INVALID');
       names=input.receiptNames;options={docker:pinnedMetadataDocker(),
         ...(names.length>=7?{dispatchPins:readDispatchPins()}:{})};
     }else if([4,5,6].includes(argv.length)&&argv[0]==='--inspect')names=argv.slice(1);
