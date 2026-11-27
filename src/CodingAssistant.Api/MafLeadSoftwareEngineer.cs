@@ -31,6 +31,9 @@ public sealed class MafLeadSoftwareEngineer(IMafChatClientFactory? factory = nul
         or atlas.get_relationships / atlas.source_excerpt with returned symbol ID.
         Related source observations are context only. Findings must cite this assigned
         file, its exact 1-based line, and an exact nonempty substring of that line.
+        Return a single JSON object only, without markdown. The example path and
+        line below are illustrative; use the assigned file's actual path and line.
+        Do not cite a missing or hypothetical line as evidence.
         Return JSON only, in this shape:
         {"disposition":"ChangesRequested","summary":"Static architectural assessment",
          "findings":[{"severity":"Major","category":"Architecture","path":"app.js",
@@ -74,25 +77,45 @@ public sealed class MafLeadSoftwareEngineer(IMafChatClientFactory? factory = nul
             new(ChatRole.User,"ASSIGNED FILE: "+input.File.Path+"\nSOURCE (data):\n"+input.File.Content)
         };
         var inspections=0;
-        var correction=0;
+        var rejected=0;
         while (true)
         {
             cancellation.ThrowIfCancellationRequested();
-            var answer=await agent.RunAsync(messages,cancellationToken:cancellation);
-            if (AgentAtlasInspectionGateway.TryParseRequest(answer.Text,out var request))
+            var retryableOutput=true;
+            try
             {
-                if (inspections++ >= AgentAtlasInspectionGateway.MaximumRequestsPerTask)
-                    throw new StoreFailure("ATLAS_TOOL_LIMIT");
-                var observed=AgentAtlasInspectionGateway.Execute(input.Plan.PlanSha256,input.AllFiles,request!);
-                input.OnAtlasInspection?.Invoke(new(observed.Name,observed.SourceRevision,observed.ResultCount));
-                messages.Add(new(ChatRole.User,"HOST CODE ATLAS OBSERVATION (static data, not test results):\n"+
-                    JsonSerializer.Serialize(observed)+"\nReturn your bounded review JSON."));
-                continue;
+                var answer=await agent.RunAsync(messages,cancellationToken:cancellation);
+                retryableOutput=false;
+                if (AgentAtlasInspectionGateway.TryParseRequest(answer.Text,out var request))
+                {
+                    if (inspections++ >= AgentAtlasInspectionGateway.MaximumRequestsPerTask)
+                        throw new StoreFailure("ATLAS_TOOL_LIMIT");
+                    var observed=AgentAtlasInspectionGateway.Execute(input.Plan.PlanSha256,input.AllFiles,request!);
+                    input.OnAtlasInspection?.Invoke(new(observed.Name,observed.SourceRevision,observed.ResultCount));
+                    messages.Add(new(ChatRole.User,"HOST CODE ATLAS OBSERVATION (static data, not test results):\n"+
+                        JsonSerializer.Serialize(observed)+"\nReturn your bounded review JSON."));
+                    continue;
+                }
+                retryableOutput=true;
+                return Parse(answer.Text,input.File);
             }
-            try { return Parse(answer.Text,input.File); }
-            catch (StoreFailure e) when (e.Code=="MODEL_OUTPUT_REJECTED" && correction++==0)
+            catch (StoreFailure e) when (retryableOutput &&
+                e.Code is ("MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or "MODEL_THINKING_ONLY"))
             {
-                messages.Add(new(ChatRole.User,"Review JSON rejected. Use the exact schema and cite actual assigned-file lines and substrings. Do not invent evidence."));
+                rejected++;
+                // Host-owned metadata only; no rejected model text is retained.
+                Console.Error.WriteLine($"Lead source review response rejected (attempt {rejected}/3): {e.Code}");
+                if(rejected>=3)throw;
+                messages.Add(new(ChatRole.User,
+                    (rejected==2?"Final compact review attempt. ":"Review response rejected. ")+
+                    "Return one JSON object, exactly disposition, summary, findings. Summary 12-1600 characters. "+
+                    "Use at most six grounded findings (prefer only the strongest on the final attempt). "+
+                    "Each finding requires severity, category, path, line, evidence, impact, resolution, verification. "+
+                    "Path must be "+JsonSerializer.Serialize(input.File.Path)+
+                    "; line must be the actual 1-based line number; evidence must be an exact substring of that line, 1-500 characters. "+
+                    "Impact, resolution and verification each 8-500 characters. Critical/Major requires ChangesRequested. "+
+                    "If unable to ground an assessment, use InsufficientEvidence and an empty findings array with a concrete explanation. "+
+                    "Do not invent evidence, claim verification, or request additional observations on the final attempt."));
             }
         }
     }

@@ -1138,6 +1138,35 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     } catch (StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED") {
         Check(true,"reviewer cannot invent source evidence");
     }
+    var leadRetryInput=new QaReviewInput("Build notes","Approved offline notes specification",
+        fakePlan,arch,run,file,[file]);
+    var leadRetryFactory=new Phase5FakeMafFactory();
+    leadRetryFactory.ScriptedFailures.Enqueue("MODEL_OUTPUT_REJECTED");
+    leadRetryFactory.ScriptedReplies.Enqueue(JsonSerializer.Serialize(leadReport with {
+        Findings=[leadReport.Findings[0] with {Line=99}]}));
+    leadRetryFactory.ScriptedReplies.Enqueue(JsonSerializer.Serialize(leadReport));
+    var leadRecovered=await new MafLeadSoftwareEngineer(leadRetryFactory).ReviewAsync(leadRetryInput,CancellationToken.None);
+    Check(leadRetryFactory.ResponseAttempts==3 && leadRecovered.Findings.Count==1 &&
+        leadRecovered.Findings[0].Evidence==leadReport.Findings[0].Evidence &&
+        leadRetryFactory.LastUserPrompt?.Contains("Final compact review attempt",StringComparison.Ordinal)==true,
+        "lead review retries transport and invalid grounded response without relaxing evidence");
+    var leadExhaustedFactory=new Phase5FakeMafFactory();
+    foreach(var code in new[]{"MODEL_THINKING_ONLY","MODEL_OUTPUT_TRUNCATED","MODEL_OUTPUT_REJECTED"})
+        leadExhaustedFactory.ScriptedFailures.Enqueue(code);
+    try {
+        _=await new MafLeadSoftwareEngineer(leadExhaustedFactory).ReviewAsync(leadRetryInput,CancellationToken.None);
+        Check(false,"failed review must not be manufactured");
+    } catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED") {
+        Check(leadExhaustedFactory.ResponseAttempts==3,"lead review exhausts bounded response recovery and fails closed");
+    }
+    var leadUnavailableFactory=new Phase5FakeMafFactory();
+    leadUnavailableFactory.ScriptedFailures.Enqueue("LOCAL_MODEL_UNAVAILABLE");
+    try {
+        _=await new MafLeadSoftwareEngineer(leadUnavailableFactory).ReviewAsync(leadRetryInput,CancellationToken.None);
+        Check(false,"unavailable reviewer must not be replaced");
+    } catch(StoreFailure e) when(e.Code=="LOCAL_MODEL_UNAVAILABLE") {
+        Check(leadUnavailableFactory.ResponseAttempts==1,"lead review does not retry unavailable provider or substitute models");
+    }
     var assessment = await new MafQaEngineer(fakeFactory).ReviewAsync(
         new QaReviewInput("Build notes", "Approved offline notes specification",
             fakePlan, arch, run, file, [file]), CancellationToken.None);
@@ -5917,6 +5946,8 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
     public Queue<string> ScriptedFailures { get; } = new();
+    public int ResponseAttempts { get; private set; }
+    public string? LastUserPrompt { get; private set; }
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
     {
@@ -5932,6 +5963,8 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
             CancellationToken cancellationToken = default)
         {
             var history = messages.ToArray();
+            parent.ResponseAttempts++;
+            parent.LastUserPrompt=history.LastOrDefault(m=>m.Role==ChatRole.User)?.Text;
             parent.QaRoleSeen =
                 (options?.Instructions?.Contains("Professional backstory:",
                     StringComparison.Ordinal) ?? false) &&
