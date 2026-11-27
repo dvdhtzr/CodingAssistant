@@ -781,3 +781,28 @@ five receipt names. No historical module provenance is inferred for
 the earlier positive dispatcher run. The new closure excludes planning
 and evidence-only entrypoints so their changes do not invalidate the
 pinned interruption control.
+
+
+### Owner-reported pinned interruption PASS and complete admission binding
+
+At `5b568bd` the owner reported both actual pinned interruption controls
+running/interrupted/owner exit/removal true, cleanup debt false,
+AET-8 WINDOWS_PILOT_PINNED_INTERRUPTION_CONTROLS_PASS, receipt
+`windows-static-web-d3d7e9c05727.json`. The positive pinned dispatch
+receipt is `windows-static-web-559e3505e708.json`.
+
+The .NET inspector now accepts the exact seven-receipt selection,
+validates all fourteen distinct attempt identities, requires the
+dispatcher policy, adapter and current executable pins to match,
+and uses the bounded metadata-only stdin operation. The proposal,
+transport and single-attempt admission ledger bind the full dispatch
+evidence digest. Earlier build-only proposals are diagnostic and
+cannot reserve candidate attempts. No launch-dependent module changes
+are made, preserving the pinned interruption closure. The opt-in API
+smoke emits PILOT_PINNED_DISPATCH_EVIDENCE_INSPECTION_PASS when the
+seven-receipt inspection succeeds.
+
+This does not qualify a generated-source dispatcher or prove orphaned
+host Docker client termination. The next implementation must address
+actual generated dispatch ownership/termination and result persistence
+under exact consumed authorization; the runtime gate remains closed.

@@ -48,19 +48,22 @@ internal sealed class PilotExecutionAdmissionStore(TaskStore tasks)
         var evidence=historical.RootElement;
         if(!evidence.TryGetProperty("buildQualification",out var build))
             throw new StoreFailure("PILOT_BUILD_EVIDENCE_REQUIRED");
+        if(!evidence.TryGetProperty("dispatchQualification",out var dispatch))
+            throw new StoreFailure("PILOT_DISPATCH_EVIDENCE_REQUIRED");
         try
         {
             var attempt=transport.GetProperty("attemptId").GetString()??"";
             ExecutionStore.CheckId(attempt);
             var used=evidence.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString())
                 .Append(evidence.GetProperty("boundary").GetProperty("attemptId").GetString())
-                .Concat(build.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()));
+                .Concat(build.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()))
+                .Concat(dispatch.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()));
             if(used.Contains(attempt,StringComparer.Ordinal))throw new StoreFailure("PILOT_ADMISSION_ATTEMPT_REUSED");
             var selection=JsonSerializer.SerializeToElement(new {
                 attemptId=attempt,admissionSha256=captured.Descriptor.GetProperty("admissionSha256").GetString(),
                 candidateSha256=captured.Descriptor.GetProperty("candidateSha256").GetString(),
                 archiveSha256=captured.Input.ArchiveSha256,
-                completeEvidenceSha256=evidence.GetProperty("qualifiedEvidenceSha256").GetString(),
+                completeEvidenceSha256=evidence.GetProperty("dispatchEvidenceSha256").GetString(),
                 policySha256=build.GetProperty("policySha256").GetString(),
                 adapterSha256=build.GetProperty("policy").GetProperty("adapterSha256").GetString()
             });

@@ -6,7 +6,7 @@ import {createHash} from 'node:crypto';
 import {prepareEvaluationAdmission} from './static_web_evaluation_admission.mjs';
 import {prepareCandidatePayload} from './static_web_candidate_payload.mjs';
 import {fixedCandidateBundle} from './windows_candidate_fixture_qualification.mjs';
-import {bindCompletePilotEvidence,bindBuildQualifiedPilotEvidence} from './static_web_pilot_evidence.mjs';
+import {bindCompletePilotEvidence,bindBuildQualifiedPilotEvidence,bindPinnedDispatchEvidence} from './static_web_pilot_evidence.mjs';
 import {buildQualifiedCandidateBundle} from './static_web_build_qualification.mjs';
 import {preparePilotPolicy} from './static_web_pilot_policy.mjs';
 import {createCandidateAssets} from './static_web_candidate_assets.mjs';
@@ -17,7 +17,7 @@ const exact=(x,keys)=>x!==null&&typeof x==='object'&&!Array.isArray(x)&&
 const digest=x=>typeof x==='string'&&x.length===64&&/^[a-f0-9]{64}$/.test(x);
 const fail=code=>{throw Error(code);};
 const MARKER='__CA_FIXED_CANDIDATE_INPUT__';
-export function prepareReviewedCandidateTransport(inputs,pilotInputs,selection){
+export function prepareReviewedCandidateTransport(inputs,pilotInputs,selection,dispatchPins){
   if(!exact(selection,['attemptId','admissionSha256','candidateSha256','archiveSha256',
     'completeEvidenceSha256','policySha256','adapterSha256'])||
     typeof selection.attemptId!=='string'||!/^[a-f0-9]{32}$/.test(selection.attemptId)||selection.attemptId.length!==32||
@@ -26,8 +26,10 @@ export function prepareReviewedCandidateTransport(inputs,pilotInputs,selection){
   // Both sides are reconstructed from actual inputs, never a caller-supplied
   // pass descriptor. No permission is inferred from the selection hashes.
   const upgraded=Object.hasOwn(pilotInputs,'build')&&pilotInputs.build!==undefined;
-  const historical=upgraded?bindBuildQualifiedPilotEvidence(pilotInputs):bindCompletePilotEvidence(pilotInputs);
-  const evidenceHash=upgraded?historical.qualifiedEvidenceSha256:historical.completeEvidenceSha256;
+  const pinned=pilotInputs.dispatch!==undefined||pilotInputs.pinnedInterruptions!==undefined;
+  const historical=pinned?bindPinnedDispatchEvidence(pilotInputs,dispatchPins??{}):
+    upgraded?bindBuildQualifiedPilotEvidence(pilotInputs):bindCompletePilotEvidence(pilotInputs);
+  const evidenceHash=pinned?historical.dispatchEvidenceSha256:upgraded?historical.qualifiedEvidenceSha256:historical.completeEvidenceSha256;
   const selectedPolicy=upgraded?historical.buildQualification:historical;
   const admission=prepareEvaluationAdmission(inputs);
   const bundle=upgraded?buildQualifiedCandidateBundle():fixedCandidateBundle();
@@ -43,7 +45,8 @@ export function prepareReviewedCandidateTransport(inputs,pilotInputs,selection){
     fixture.seccompSha256!==policy.descriptor.seccompSha256||fixture.fixturePidLimit!==policy.descriptor.pidLimit)
     fail('CANDIDATE_TRANSPORT_BINDING_CHANGED');
   if([...Object.values(historical.attempts).map(x=>x.attemptId),historical.boundary.attemptId,
-    ...Object.values(historical.buildQualification?.attempts??{}).map(x=>x.attemptId)].includes(selection.attemptId))
+    ...Object.values(historical.buildQualification?.attempts??{}).map(x=>x.attemptId),
+    ...Object.values(historical.dispatchQualification?.attempts??{}).map(x=>x.attemptId)].includes(selection.attemptId))
     fail('CANDIDATE_TRANSPORT_ATTEMPT_REUSED');
   const staged=prepareCandidatePayload(inputs,selection.admissionSha256);
   createCandidateAssets(staged.payloadJson,staged.binding);

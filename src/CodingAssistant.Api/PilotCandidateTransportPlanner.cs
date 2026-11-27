@@ -37,16 +37,21 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
             throw new StoreFailure("PILOT_HOST_CONFIGURATION_CHANGED");
         using var historical=JsonDocument.Parse(captured.Binding.GetProperty("evidenceJson").GetString()!);
         var evidence=historical.RootElement;
-        // The old fixture-only preview remains diagnostic. This host
-        // path now requires the separately build-qualified adapter.
+        // Historical fixture/build-only previews are diagnostic. Reserve
+        // an actual candidate attempt only with pinned dispatch evidence.
         if(!evidence.TryGetProperty("buildQualification",out var build))
             throw new StoreFailure("PILOT_BUILD_EVIDENCE_REQUIRED");
+        if(!evidence.TryGetProperty("dispatchQualification",out var dispatch))
+            throw new StoreFailure("PILOT_DISPATCH_EVIDENCE_REQUIRED");
+        if(dispatch.GetProperty("nodeSha256").GetString()!=config.NodeSha256||
+            dispatch.GetProperty("dockerSha256").GetString()!=config.DockerSha256)
+            throw new StoreFailure("PILOT_DISPATCH_BINDING_CHANGED");
         var selection=JsonSerializer.SerializeToElement(new {
             attemptId=attemptId??Guid.NewGuid().ToString("N"),
             admissionSha256=captured.Descriptor.GetProperty("admissionSha256").GetString(),
             candidateSha256=captured.Descriptor.GetProperty("candidateSha256").GetString(),
             archiveSha256=captured.Input.ArchiveSha256,
-            completeEvidenceSha256=evidence.GetProperty("qualifiedEvidenceSha256").GetString(),
+            completeEvidenceSha256=evidence.GetProperty("dispatchEvidenceSha256").GetString(),
             policySha256=build.GetProperty("policySha256").GetString(),
             adapterSha256=build.GetProperty("policy").GetProperty("adapterSha256").GetString()
         });
@@ -75,6 +80,7 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
             RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,
             StandardInputEncoding=new UTF8Encoding(false),StandardOutputEncoding=Encoding.UTF8};
         EvaluationPlanBinder.RemoveNodeEnvironmentOverrides(start);
+        start.Environment["CA_PILOT_NODE_SHA256"]=config.NodeSha256;
         start.Environment["CA_EVALUATION_DOCKER_EXE"]=config.DockerExecutable;
         start.Environment["CA_EVALUATION_DOCKER_SHA256"]=config.DockerSha256;
         start.ArgumentList.Add(script);start.ArgumentList.Add("--stdin");

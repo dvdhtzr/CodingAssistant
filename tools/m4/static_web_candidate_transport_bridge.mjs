@@ -7,6 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {readLocalReceipt,readLocalImage,pinnedMetadataDocker} from './static_web_evaluation_host_bridge.mjs';
 import {pilotHostTools,pilotLocalRoot} from './windows_pilot_lifecycle_qualification.mjs';
 import {readPilotAttempt} from './static_web_pilot_attempt_journal.mjs';
+import {readDispatchPins} from './static_web_pilot_evidence.mjs';
 import {prepareReviewedCandidateTransport} from './static_web_candidate_transport.mjs';
 const fail=code=>{throw Error(code);};
 const exact=(x,keys)=>x!==null&&typeof x==='object'&&!Array.isArray(x)&&
@@ -17,7 +18,7 @@ export function previewLocalCandidateTransport(request,{platform=process.platfor
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT)fail('PILOT_LOCAL_WINDOWS_ONLY');
   if(!exact(request,['operation','trustedReceiptName','receiptNames','currentScope','criteria','reviewedContract','archiveBase64','selection'])||
     request.operation!=='prepare-candidate-transport'||typeof request.trustedReceiptName!=='string'||!receipt.test(request.trustedReceiptName)||
-    !Array.isArray(request.receiptNames)||![4,5].includes(request.receiptNames.length)||
+    !Array.isArray(request.receiptNames)||![4,5,7].includes(request.receiptNames.length)||
     new Set([request.trustedReceiptName,...request.receiptNames]).size!==request.receiptNames.length+1||
     !request.receiptNames.every(x=>typeof x==='string'&&receipt.test(x))||
     typeof request.archiveBase64!=='string'||request.archiveBase64.length>2800000||
@@ -31,12 +32,13 @@ export function previewLocalCandidateTransport(request,{platform=process.platfor
   if(readPilotAttempt(root)!==null||host.list('label=codingassistant.static-web-pilot-qualification')!=='')
     fail('PILOT_PRIOR_CLEANUP_REQUIRED');
   const engineId=host.engine(),imageMetadata=readLocalImage({platform,env,docker});
-  const [working,negatives,interruptions,boundary,build]=request.receiptNames.map(name=>readReceipt(name,env));
+  const [working,negatives,interruptions,boundary,build,dispatch,pinnedInterruptions]=request.receiptNames.map(name=>readReceipt(name,env));
   const inputs={currentScope:request.currentScope,selection:request.currentScope,archive,criteria:request.criteria,
     reviewedContract:request.reviewedContract,qualificationReport:readReceipt(request.trustedReceiptName,env),
     currentImageMetadata:imageMetadata};
   const {descriptor}=prepareReviewedCandidateTransport(inputs,
-    {working,negatives,interruptions,boundary,build,imageMetadata,engineId,root},request.selection);
+    {working,negatives,interruptions,boundary,build,dispatch,pinnedInterruptions,imageMetadata,engineId,root},request.selection,
+    request.receiptNames.length===7?readDispatchPins(env):undefined);
   if(host.engine()!==engineId||host.list('label=codingassistant.static-web-pilot-qualification')!==''||readPilotAttempt(root)!==null)
     fail('PILOT_HOST_CHANGED');
   return descriptor;

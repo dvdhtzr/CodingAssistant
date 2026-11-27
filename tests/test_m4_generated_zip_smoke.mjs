@@ -1558,3 +1558,20 @@ test('pinned dispatch evidence blocks changed module, executable, transport and 
   }
   assert.throws(()=>bindPinnedDispatchEvidence(input,{...pins,nodeSha256:'0'.repeat(64)}),/BINDING_CHANGED/);
 }));
+
+
+test('transport preparation binds pinned dispatch evidence and excludes all fourteen prior attempts',()=>withPilotJournal(root=>{
+  const {input,pins}=pinnedEvidenceFixture(root),evidence=bindPinnedDispatchEvidence(input,pins);
+  const inputs=admissionFixture(),admission=prepareEvaluationAdmission(inputs),bundle=buildQualifiedCandidateBundle();
+  const selection={attemptId:'e'.repeat(32),admissionSha256:admission.admissionSha256,
+    candidateSha256:admission.candidateSha256,archiveSha256:admission.archiveSha256,
+    completeEvidenceSha256:evidence.dispatchEvidenceSha256,policySha256:evidence.buildQualification.policySha256,
+    adapterSha256:bundle.adapterSha256};
+  const prepared=prepareReviewedCandidateTransport(inputs,input,selection,pins);
+  assert.equal(prepared.descriptor.completeEvidenceSha256,evidence.dispatchEvidenceSha256);
+  assert.equal(prepared.descriptor.executionEnabled,false);
+  assert.throws(()=>prepareReviewedCandidateTransport(inputs,input,selection),/DISPATCH_EVIDENCE_INVALID/);
+  assert.throws(()=>prepareReviewedCandidateTransport(inputs,input,{...selection,completeEvidenceSha256:evidence.qualifiedEvidenceSha256},pins),/BINDING_CHANGED/);
+  for(const item of Object.values(evidence.dispatchQualification.attempts))
+    assert.throws(()=>prepareReviewedCandidateTransport(inputs,input,{...selection,attemptId:item.attemptId},pins),/ATTEMPT_REUSED/);
+}));

@@ -5364,7 +5364,7 @@ try
         catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_POLICY_MISMATCH")
         {Check(true,"pilot evidence must match reviewed evaluator identity");}
     }
-    // Eleven-attempt structural fixture. Still no runtime grant.
+    // Fourteen-attempt structural fixture. Still no runtime grant.
     var admissionPolicy=System.Text.Json.Nodes.JsonNode.Parse(pilotPolicyFixture.GetRawText())!.AsObject();
     admissionPolicy["adapterSha256"]=new string('9',64);
     var admissionPolicyHash=PilotHash(admissionPolicy.ToJsonString());
@@ -5379,19 +5379,46 @@ try
             .ToDictionary(x=>x.name,x=>x.attempt)
     });
     admissionEvidence["buildQualification"]=System.Text.Json.Nodes.JsonNode.Parse(admissionBuildFixture.GetRawText());
-    var admissionReceipts=pilotReceipts.Append("windows-static-web-555555555555.json").ToArray();
+    var buildOnlyReceipts=pilotReceipts.Append("windows-static-web-555555555555.json").ToArray();
+    var buildOnlyBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),buildOnlyReceipts);
+    var buildOnlyProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,buildOnlyBinding);
+    admissionEvidence["status"]="PILOT_PINNED_DISPATCH_EVIDENCE_BOUND";
+    admissionEvidence["dispatchEvidenceSha256"]=new string('4',64);
+    var admissionDispatchFixture=JsonSerializer.SerializeToElement(new {
+        policySha256=admissionPolicyHash,adapterSha256=new string('9',64),nodeSha256=new string('a',64),
+        dockerSha256=new string('b',64),moduleClosureSha256=new string('c',64),interruptionReceiptSha256=new string('d',64),
+        attempts=new[]{"working","cancel","crash"}.Select((name,i)=>new {name,attempt=new {
+            attemptId=(i+12).ToString("x32"),archiveSha256=new string('1',64),receiptSha256=new string('2',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt)
+    });
+    admissionEvidence["dispatchQualification"]=System.Text.Json.Nodes.JsonNode.Parse(admissionDispatchFixture.GetRawText());
+    var admissionReceipts=buildOnlyReceipts.Concat(new[]{"windows-static-web-666666666666.json","windows-static-web-777777777777.json"}).ToArray();
     var admissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),admissionReceipts);
     var admissionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,admissionBinding);
     JsonElement AdmissionTransport(string attemptId,string transportHash)=>JsonSerializer.SerializeToElement(new {
         schemaVersion=1,status="CANDIDATE_TRANSPORT_PREPARED_ONLY",attemptId,candidateSha256=new string('a',64),
         archiveSha256=evaluationInput.ArchiveSha256,evaluatorSha256=new string('b',64),adapterSha256=new string('9',64),
-        policySha256=admissionPolicyHash,admissionSha256=evaluationHash,completeEvidenceSha256=new string('8',64),
+        policySha256=admissionPolicyHash,admissionSha256=evaluationHash,completeEvidenceSha256=new string('4',64),
         engineId="structural-fixture",sourceFingerprint=evaluationInput.Scope.SourceFingerprint,
         assetCount=evaluationInput.Scope.Files.Count,payloadSha256=new string('3',64),transportSha256=transportHash,
         transportBytes=2000,executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false
     });
     var admissionStore=new PilotExecutionAdmissionStore(tasks);
     var admissionTransport=AdmissionTransport(new string('e',32),new string('4',64));
+    try
+    {
+        admissionStore.Stage(taskBound.Id,buildOnlyProposal.Id,admissionTransport);
+        Check(false,"build evidence alone cannot reserve an admission");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_DISPATCH_EVIDENCE_REQUIRED")
+    {Check(true,"admission requires complete pinned dispatch evidence");}
+    try
+    {
+        admissionStore.Stage(taskBound.Id,admissionProposal.Id,AdmissionTransport((12).ToString("x32"),new string('4',64)));
+        Check(false,"dispatcher qualification attempt cannot be reused");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ATTEMPT_REUSED")
+    {Check(true,"admission excludes pinned qualification attempt IDs");}
     var preparedAdmission=admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport);
     Check(preparedAdmission is {State:"Prepared",Current:true,ExecutionEnabled:false}&&
         admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport).Id==preparedAdmission.Id,

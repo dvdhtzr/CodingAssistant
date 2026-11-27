@@ -212,6 +212,14 @@ export function bindPinnedDispatchEvidence(input,{nodeSha256,dockerSha256}){
     dispatchEvidenceSha256:sha({qualifiedEvidenceSha256:prior.qualifiedEvidenceSha256,dispatchQualification})});
 }
 
+// Use only the explicit pins passed by the trusted .NET subprocess
+// environment. The metadata adapter validates the Docker executable.
+export function readDispatchPins(env=process.env){
+  const nodeSha256=createHash('sha256').update(fs.readFileSync(process.execPath)).digest('hex');
+  if(nodeSha256!==env.CA_PILOT_NODE_SHA256||! /^[a-f0-9]{64}$/.test(env.CA_EVALUATION_DOCKER_SHA256??''))
+    fail('PILOT_DISPATCH_PIN_CHANGED');
+  return {nodeSha256,dockerSha256:env.CA_EVALUATION_DOCKER_SHA256};
+}
 export function inspectPilotEvidence(names,{platform=process.platform,env=process.env,docker=shellDocker,dispatchPins}={}){
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT)fail('PILOT_LOCAL_WINDOWS_ONLY');
   if(!Array.isArray(names)||![3,4,5,7].includes(names.length)||new Set(names).size!==names.length)fail('PILOT_RECEIPT_SELECTION_INVALID');
@@ -235,8 +243,9 @@ export function main(argv=process.argv.slice(2)){
       if(size>4096)fail('PILOT_RECEIPT_SELECTION_INVALID');
       const input=JSON.parse(buffer.subarray(0,size).toString('utf8'));
       if(!exact(input,['operation','receiptNames'])||input.operation!=='inspect-complete-pilot'||
-        !Array.isArray(input.receiptNames)||![4,5].includes(input.receiptNames.length))fail('PILOT_RECEIPT_SELECTION_INVALID');
-      names=input.receiptNames;options={docker:pinnedMetadataDocker()};
+        !Array.isArray(input.receiptNames)||![4,5,7].includes(input.receiptNames.length))fail('PILOT_RECEIPT_SELECTION_INVALID');
+      names=input.receiptNames;options={docker:pinnedMetadataDocker(),
+        ...(names.length===7?{dispatchPins:readDispatchPins()}:{})};
     }else if([4,5,6].includes(argv.length)&&argv[0]==='--inspect')names=argv.slice(1);
     else if(argv.length===8&&argv[0]==='--inspect-pinned-dispatch'){
       names=argv.slice(1);

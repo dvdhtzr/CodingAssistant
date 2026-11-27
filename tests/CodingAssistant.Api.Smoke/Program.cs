@@ -363,10 +363,14 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
         var configuration=new EvaluationPlanningHostConfiguration(pilotRepositoryRoot,node,Hash(node),
             Hash(Path.Combine(pilotRepositoryRoot,PilotQualificationInspector.ScriptPath)),pins,docker,Hash(docker));
         var result=await new PilotQualificationInspector(configuration).InspectAsync(selected.Split(';'),CancellationToken.None);
-        var buildSelected=selected.Split(';').Length==5;
-        Check(result.GetProperty("status").GetString()==(buildSelected?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")&&
+        var receiptCount=selected.Split(';').Length;
+        var buildSelected=receiptCount==5;
+        var dispatchSelected=receiptCount==7;
+        Check(result.GetProperty("status").GetString()==(dispatchSelected?"PILOT_PINNED_DISPATCH_EVIDENCE_BOUND":
+            buildSelected?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")&&
             !result.GetProperty("executionEnabled").GetBoolean(),"real pinned .NET pilot evidence inspection is non-executable");
-        Console.WriteLine(buildSelected?"PILOT_PINNED_BUILD_EVIDENCE_INSPECTION_PASS":"PILOT_PINNED_HOST_INSPECTION_PASS");
+        Console.WriteLine(dispatchSelected?"PILOT_PINNED_DISPATCH_EVIDENCE_INSPECTION_PASS":
+            buildSelected?"PILOT_PINNED_BUILD_EVIDENCE_INSPECTION_PASS":"PILOT_PINNED_HOST_INSPECTION_PASS");
     }
 }
 
