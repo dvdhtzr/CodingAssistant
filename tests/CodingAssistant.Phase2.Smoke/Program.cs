@@ -5394,7 +5394,49 @@ try
     admissionEvidence["dispatchQualification"]=System.Text.Json.Nodes.JsonNode.Parse(admissionDispatchFixture.GetRawText());
     var admissionReceipts=buildOnlyReceipts.Concat(new[]{"windows-static-web-666666666666.json","windows-static-web-777777777777.json"}).ToArray();
     var admissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),admissionReceipts);
+    var dispatchOnlyProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,admissionBinding);
+    // Complete synthetic native evidence, with the same canonical chain
+    // hashing as the Node inspector. No actual host qualification implied.
+    string CanonicalPilot(JsonElement x)=>x.ValueKind switch
+    {
+        JsonValueKind.Object=>"{"+string.Join(",",x.EnumerateObject().OrderBy(p=>p.Name,StringComparer.Ordinal)
+            .Select(p=>JsonSerializer.Serialize(p.Name)+":"+CanonicalPilot(p.Value)))+"}",
+        JsonValueKind.Array=>"["+string.Join(",",x.EnumerateArray().Select(CanonicalPilot))+"]",
+        _=>x.GetRawText()
+    };
+    string ChainPilot(string prior,string member)=>PilotHash(CanonicalPilot(JsonSerializer.SerializeToElement(
+        new Dictionary<string,System.Text.Json.Nodes.JsonNode?>{
+            [prior]=admissionEvidence[prior]!.DeepClone(),[member]=admissionEvidence[member]!.DeepClone()})));
+    var jobFixture=JsonSerializer.SerializeToElement(new {
+        policySha256=admissionPolicyHash,adapterSha256=new string('9',64),nodeSha256=new string('a',64),
+        dockerSha256=new string('b',64),jobReceiptSha256=new string('c',64),normalReceiptSha256=new string('d',64),
+        recoveryReceiptSha256=new string('e',64),modulePinsSha256=new string('f',64),
+        historicalInspectorSha256=new string('1',64),historicalOwnerAssemblySha256=new string('2',64),
+        historicalHarnessAssemblySha256=new string('3',64),
+        attempts=new[]{"build-working","build-spoof","build-missing-asset","crash"}
+            .Select((name,i)=>new {name,attempt=new {attemptId=(i+15).ToString("x32"),archiveSha256=new string('1',64),receiptSha256=new string('2',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt)
+    });
+    admissionEvidence["jobQualification"]=System.Text.Json.Nodes.JsonNode.Parse(jobFixture.GetRawText());
+    admissionEvidence["jobEvidenceSha256"]=ChainPilot("dispatchEvidenceSha256","jobQualification");
+    var ioFixture=JsonSerializer.SerializeToElement(new {
+        policySha256=admissionPolicyHash,adapterSha256=new string('9',64),nodeSha256=new string('a',64),
+        dockerSha256=new string('b',64),bridgeSha256=new string('c',64),fixedReceiptSha256=new string('d',64),
+        interruptionReceiptSha256=new string('e',64),modulePinsSha256=new string('f',64),
+        historicalInspectorSha256=new string('1',64),fixedOwnerAssemblySha256=new string('2',64),
+        fixedHarnessAssemblySha256=new string('3',64),interruptionOwnerAssemblySha256=new string('4',64),
+        interruptionHarnessAssemblySha256=new string('5',64),
+        attempts=new[]{"build-working","build-spoof","build-missing-asset","cancellation","crash"}
+            .Select((name,i)=>new {name,attempt=new {attemptId=(i+19).ToString("x32"),archiveSha256=new string('1',64),receiptSha256=new string('2',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt)
+    });
+    admissionEvidence["jobIoQualification"]=System.Text.Json.Nodes.JsonNode.Parse(ioFixture.GetRawText());
+    admissionEvidence["jobIoEvidenceSha256"]=ChainPilot("jobEvidenceSha256","jobIoQualification");
+    admissionEvidence["status"]="PILOT_JOB_IO_EVIDENCE_BOUND";
+    admissionReceipts=admissionReceipts.Concat(new[]{"windows-static-web-888888888888.json","windows-static-web-999999999999.json","windows-static-web-aaaaaaaaaaaa.json"}).ToArray();
+    admissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),admissionReceipts);
     var admissionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,admissionBinding);
+
     JsonElement AdmissionTransport(string attemptId,string transportHash)=>JsonSerializer.SerializeToElement(new {
         schemaVersion=1,status="CANDIDATE_TRANSPORT_PREPARED_ONLY",attemptId,candidateSha256=new string('a',64),
         archiveSha256=evaluationInput.ArchiveSha256,evaluatorSha256=new string('b',64),adapterSha256=new string('9',64),
@@ -5419,6 +5461,23 @@ try
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ATTEMPT_REUSED")
     {Check(true,"admission excludes pinned qualification attempt IDs");}
+    try
+    {
+        admissionStore.Stage(taskBound.Id,dispatchOnlyProposal.Id,admissionTransport);
+        Check(false,"fourteen-attempt evidence cannot reserve new admission");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_JOB_IO_EVIDENCE_REQUIRED")
+    {Check(true,"complete native I/O evidence required");}
+    foreach(var n in Enumerable.Range(15,9))
+    {
+        try
+        {
+            admissionStore.Stage(taskBound.Id,admissionProposal.Id,AdmissionTransport(n.ToString("x32"),new string('4',64)));
+            Check(false,"native qualification attempt cannot be reused");
+        }
+        catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ATTEMPT_REUSED")
+        {Check(true,"native historical attempt excluded");}
+    }
     var preparedAdmission=admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport);
     Check(preparedAdmission is {State:"Prepared",Current:true,ExecutionEnabled:false}&&
         admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport).Id==preparedAdmission.Id,
