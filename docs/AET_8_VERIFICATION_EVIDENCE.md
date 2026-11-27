@@ -283,3 +283,21 @@ execution or proves process cleanup. The trusted fixed fixture runner,
 its hashes and policy are unchanged. Before any generated source can
 execute, a real independent candidate adapter must be qualified and its
 exact executable policy separately authorized.
+
+
+### Candidate browser driver (unqualified)
+
+The separate candidate driver uses a fixed loopback /index.html endpoint,
+private Chromium pipe transport, a restricted calculator locator/key
+vocabulary and CDP isolated-world DOM reads, rather than running test
+expressions against the candidate's modified JavaScript builtins.
+Every case receives a fresh profile and browser process. Cold restart
+requires a clean previous exit and preserves only that case's profile.
+Stale page handles and concurrent sessions fail closed. A failed shutdown
+blocks further cases; the container lifecycle must establish cleanup.
+Model-free tests exercise the lifecycle and CDP command shape with
+injected operations, not a real browser or generated application. The
+real candidate driver is not connected to a CLI, host dispatcher or
+authorization grant. The existing trusted fixture driver and policy
+remain unchanged. Isolated-world observation is not proof of renderer
+security, browser sandbox qualification or independent guest integrity.

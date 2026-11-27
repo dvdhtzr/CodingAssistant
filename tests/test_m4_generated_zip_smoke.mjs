@@ -535,3 +535,73 @@ test('candidate observations reject forged success, stale identity and contradic
     {...report,cases:{...report.cases,[CALCULATION_CASES[0]]:'true'}}])
     assert.throws(()=>parseCandidateObservations(JSON.stringify(bad),expected),/OBSERVATIONS_INVALID/);
 });
+
+import {createCandidatePage,createCandidateSessionManager} from '../tools/m4/static_web_candidate_driver.mjs';
+test('candidate driver uses isolated world DOM observations and fixed locator vocabulary',async()=>{
+  const calls=[],origin='http://127.0.0.1:12345',url=origin+'/index.html';
+  let frameUrl=url,active=true;
+  const transport={async send(method,params,sessionId){
+    calls.push({method,params,sessionId});
+    if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame',url:frameUrl}}};
+    if(method==='Page.createIsolatedWorld')return {executionContextId:42};
+    if(method==='Runtime.evaluate')return {result:{value:'5'}};
+    throw Error('unexpected CDP command');
+  }};
+  const {page}=createCandidatePage(transport,'session',origin,()=>{if(!active)throw Error('STALE');});
+  assert.equal(await page.locator('output#display').innerText(),'5');
+  assert.deepEqual(calls.map(c=>c.method),['Page.getFrameTree','Page.createIsolatedWorld','Runtime.evaluate']);
+  assert.equal(calls[2].params.contextId,42);
+  assert.equal(calls[1].params.worldName,'ca-candidate-independent-v1');
+  assert.ok(!Object.hasOwn(calls[1].params,'grantUniveralAccess'));
+  assert.throws(()=>page.locator('body'),/NOT_REVIEWED/);
+  assert.throws(()=>page.getByRole('button',{name:'unreviewed',exact:true}),/NOT_REVIEWED/);
+  await assert.rejects(()=>page.keyboard.type('arbitrary'),/NOT_REVIEWED/);
+  frameUrl='http://127.0.0.1:12345/other.html';
+  await assert.rejects(()=>page.locator('output#display').innerText(),/NAVIGATION_CHANGED/);
+  active=false;
+  await assert.rejects(()=>page.locator('output#display').innerText(),/STALE/);
+  assert.throws(()=>createCandidatePage(transport,'session','https://example.org'),/ORIGIN_INVALID/);
+});
+function candidateLifecycleFixture({closeFails=false}={}){
+  const calls=[];let profiles=0,processes=0;
+  const driver=createCandidateSessionManager('http://127.0.0.1:12345',{
+    createProfile:async()=>{const profile=++profiles;calls.push(['profile',profile]);return profile;},
+    async launch(profile,origin,assertActive){
+      const pid=++processes;calls.push(['launch',profile,pid]);
+      return {page:{pid,read(){assertActive();return pid;}},
+        async navigate(){assertActive();calls.push(['navigate',pid]);},
+        async close(){calls.push(['close',pid]);if(closeFails)throw Error('SHUTDOWN_FAILED');}};
+    },
+    removeProfile:async profile=>calls.push(['remove',profile])
+  });
+  return {driver,calls};
+}
+test('candidate cases use new profiles and cold restart preserves only the current case profile',async()=>{
+  const {driver,calls}=candidateLifecycleFixture();
+  const first=await driver.openFresh();
+  assert.equal(first.page.read(),1);
+  await assert.rejects(()=>driver.openFresh(),/SESSION_BUSY/);
+  const restarted=await first.restart();
+  assert.equal(restarted.read(),2);
+  assert.throws(()=>first.page.read(),/SESSION_STALE/);
+  await assert.rejects(()=>first.restart(),/SESSION_STALE/);
+  await first.close();
+  assert.throws(()=>restarted.read(),/SESSION_STALE/);
+  const second=await driver.openFresh();
+  assert.equal(second.page.read(),3);
+  await second.close();await driver.close();
+  assert.deepEqual(calls.filter(c=>c[0]==='launch'),[['launch',1,1],['launch',1,2],['launch',2,3]]);
+  assert.deepEqual(calls.filter(c=>c[0]==='close'),[['close',1],['close',2],['close',3]]);
+  assert.deepEqual(calls.filter(c=>c[0]==='remove'),[['remove',1],['remove',2]]);
+  await assert.rejects(()=>driver.openFresh(),/DRIVER_BLOCKED/);
+});
+test('failed candidate browser shutdown prevents restart or fresh case and retains profile for host cleanup',async()=>{
+  const {driver,calls}=candidateLifecycleFixture({closeFails:true});
+  const session=await driver.openFresh();
+  await assert.rejects(()=>session.restart(),/SHUTDOWN_FAILED/);
+  await assert.rejects(()=>driver.openFresh(),/DRIVER_BLOCKED/);
+  await assert.rejects(()=>session.close(),/CLEANUP_UNCONFIRMED/);
+  await assert.rejects(()=>driver.close(),/DRIVER_BLOCKED/);
+  assert.equal(calls.filter(c=>c[0]==='launch').length,1);
+  assert.equal(calls.filter(c=>c[0]==='remove').length,0);
+});
