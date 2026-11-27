@@ -587,3 +587,35 @@ functional calculator or real executable grant.
 No public dispatch or owner-consent bypass is introduced. Next work:
 separate candidate transport/build restrictions and qualified executable
 policy, followed by one-use consent and result persistence.
+
+
+### Phase 2 proposal binding PASS and exact candidate transport assembly
+
+At `4f6f85d` the owner reported PHASE 2 MODEL-FREE ACCEPTANCE: PASS
+709 checks. The evidence-bound proposal ledger remains non-executable.
+The next transport assembly module recomputes admission, candidate archive,
+complete historical qualification, policy and adapter bindings from the
+actual inputs. It rejects any mismatch or reuse of a qualification attempt
+ID. The unchanged qualified guest template receives only bounded base64
+JSON data; reverse substitution confirms exact template identity. The
+result is a private in-memory preparation plus a digest/size descriptor,
+never a grant, a command line or a user-facing artifact. No guest launches
+and no files are extracted. There is no CLI or control-plane dispatcher
+for this source yet. The inherited build probe is fixed-fixture-oriented;
+candidate build scope and qualification of the actual executable policy
+are still required before one-use execution authorization. Structural
+fixtures in these tests are not functional calculator acceptance.
+
+
+The private .NET transport planner captures the exact bound proposal,
+current archive and stored reviewed contract transactionally. It invokes
+only the pinned metadata-only transport preview bridge, selecting the
+original trusted fixture receipt and the four stored pilot receipts.
+It rechecks owner-private pin configuration, exact source and proposal
+after the subprocess. The preview returns only hashes, counts and
+lengths, never raw guest source or candidate bytes. The separate pilot
+configuration pin closure now includes the three transport modules.
+The previous guest adapter/policy and historical receipt identities
+remain unchanged. No production host pin enrollment or execution
+dispatch is introduced. The host-only planner's real integration is
+not yet exercised against a live project and private configuration.

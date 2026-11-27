@@ -147,6 +147,24 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
             throw new StoreFailure("PILOT_EXECUTION_BINDING_CHANGED");
         tx.Commit();return item with {Current=true};
     }
+    // Reconstruct the exact candidate and linked historical evidence in
+    // one read transaction. No caller supplies archive, scope or contract.
+    internal (EvaluationExecutionProposal Proposal,EvaluationPlanningInput Input,JsonElement Descriptor,
+        JsonElement Contract,JsonElement Binding) CaptureBoundTransport(string taskId,string id)
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
+        var item=Find(db,tx,taskId,id);
+        if(item.PilotBindingSha256 is null||!Current(db,tx,item))
+            throw new StoreFailure("PILOT_EXECUTION_BINDING_CHANGED");
+        var (plan,descriptor,contractId)=EvaluationPlanReviewStore.RequireReviewedAdmission(db,tx,taskId,item.PlanReviewId);
+        var input=EvaluationPlanReviewStore.Capture(db,tx,taskId,plan.RunId);
+        var contract=BehavioralContractReviewStore.RequireReviewed(db,tx,input,contractId,descriptor.GetProperty("evaluatorSha256").GetString());
+        var raw=TaskStore.Scalar(db,tx,"SELECT binding_json FROM evaluation_execution_pilot_bindings WHERE proposal_id=@id",("@id",item.Id))
+            ??throw new StoreFailure("PILOT_EXECUTION_BINDING_CHANGED");
+        if(Sha(raw)!=item.PilotBindingSha256)throw new StoreFailure("PILOT_EXECUTION_BINDING_CHANGED");
+        using var binding=JsonDocument.Parse(raw);
+        tx.Commit();return (item with {Current=true},input,descriptor,contract,binding.RootElement.Clone());
+    }
     public EvaluationExecutionProposal Get(string taskId,string id)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);

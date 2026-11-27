@@ -5334,6 +5334,18 @@ try
         pilotBoundExecutionProposal.AuthorizationSha256!=executionProposal.AuthorizationSha256&&
         executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,pilotBinding).Id==pilotBoundExecutionProposal.Id,
         "pilot evidence creates a distinct exact non-executable proposal");
+    var capturedPilotTransport=executionProposalStore.CaptureBoundTransport(taskBound.Id,pilotBoundExecutionProposal.Id);
+    Check(capturedPilotTransport.Proposal.AuthorizationSha256==pilotBoundExecutionProposal.AuthorizationSha256&&
+        capturedPilotTransport.Input.ArchiveSha256==evaluationInput.ArchiveSha256&&
+        capturedPilotTransport.Contract.GetProperty("contractId").GetString()=="calculation-journal-v1",
+        "transport snapshot is reconstructed from exact bound proposal and current reviewed source");
+    try
+    {
+        executionProposalStore.CaptureBoundTransport(taskBound.Id,executionProposal.Id);
+        Check(false,"unbound proposal cannot prepare transport");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_EXECUTION_BINDING_CHANGED")
+    {Check(true,"transport capture requires pilot evidence binding");}
     // Change the structurally valid policy and recompute its own hash:
     // the candidate admission must still reject the mismatched evaluator.
     var changedPolicy=System.Text.Json.Nodes.JsonNode.Parse(pilotPolicyFixture.GetRawText())!.AsObject();
@@ -5369,6 +5381,13 @@ try
     executionProposalStore.Recover();
     Check(executionProposalStore.Get(taskBound.Id,pilotBoundExecutionProposal.Id) is {State:"Interrupted",Current:false},
         "restart interrupts evidence-bound proposal");
+    try
+    {
+        executionProposalStore.CaptureBoundTransport(taskBound.Id,pilotBoundExecutionProposal.Id);
+        Check(false,"interrupted proposal cannot capture transport");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_EXECUTION_BINDING_CHANGED")
+    {Check(true,"interrupted proposal cannot capture transport");}
     Check(executionProposalStore.Get(taskBound.Id,executionProposal.Id) is {State:"Interrupted",Current:false} &&
         executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id) is {State:"Interrupted",Current:false},
         "restart interrupts exact proposal and replay cannot reactivate");

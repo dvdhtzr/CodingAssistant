@@ -1219,3 +1219,101 @@ test('pilot evidence stdin rejects missing pinned Docker identity and extra requ
     assert.equal(result.status,2);assert.equal(JSON.parse(result.stdout).reason,reason);
   }
 });
+
+
+import {prepareReviewedCandidateTransport} from '../tools/m4/static_web_candidate_transport.mjs';
+function transportFixture(root){
+  const pilot=completePilotEvidenceFixture(root),inputs=admissionFixture();
+  // Same synthetic image as the historical fixture, no real host action.
+  assert.equal(inputs.currentImageMetadata.Id,pilot.imageMetadata.Id);
+  assert.deepEqual(inputs.currentImageMetadata.RepoDigests,pilot.imageMetadata.RepoDigests);
+  const admission=prepareEvaluationAdmission(inputs),historical=bindCompletePilotEvidence(pilot);
+  return {inputs,pilot,selection:{attemptId:'e'.repeat(32),admissionSha256:admission.admissionSha256,
+    candidateSha256:admission.candidateSha256,archiveSha256:admission.archiveSha256,
+    completeEvidenceSha256:historical.completeEvidenceSha256,policySha256:historical.policySha256,
+    adapterSha256:historical.policy.adapterSha256}};
+}
+test('exact reviewed candidate transport preserves qualified template and carries only data',()=>withPilotJournal(root=>{
+  const f=transportFixture(root),prepared=prepareReviewedCandidateTransport(f.inputs,f.pilot,f.selection);
+  const {descriptor,source,expected}=prepared;
+  assert.equal(descriptor.status,'CANDIDATE_TRANSPORT_PREPARED_ONLY');
+  assert.equal(descriptor.executionEnabled,false);assert.equal(descriptor.runtimeQualified,false);
+  assert.equal(descriptor.transportSha256,createHash('sha256').update(source).digest('hex'));
+  assert.equal(descriptor.transportBytes,Buffer.byteLength(source));
+  const encoded=source.match(/const INPUT='([^']+)'/)[1];
+  assert.equal(source.replace(encoded,'__CA_FIXED_CANDIDATE_INPUT__'),fixedCandidateBundle().source);
+  const request=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+  assert.deepEqual(request.expected,expected);
+  const assets=createCandidateAssets(request.payloadJson,request.binding);
+  assert.equal(assets.resolve('GET','/index.html').body,working[0][1]);
+  assert.equal(assets.resolve('GET','/app.js').body,working[1][1]);
+  assert.equal(prepareReviewedCandidateTransport(f.inputs,f.pilot,f.selection).descriptor.transportSha256,descriptor.transportSha256);
+}));
+test('transport preparation refuses changed source, evidence, policy, adapter and reused attempts',()=>withPilotJournal(root=>{
+  const f=transportFixture(root);
+  for(const key of ['admissionSha256','candidateSha256','archiveSha256','completeEvidenceSha256','policySha256','adapterSha256'])
+    assert.throws(()=>prepareReviewedCandidateTransport(f.inputs,f.pilot,{...f.selection,[key]:'0'.repeat(64)}),/BINDING_CHANGED/);
+  assert.throws(()=>prepareReviewedCandidateTransport(f.inputs,f.pilot,{...f.selection,attemptId:f.pilot.working.attemptId}),/ATTEMPT_REUSED/);
+  assert.throws(()=>prepareReviewedCandidateTransport(f.inputs,f.pilot,{...f.selection,executionEnabled:true}),/SELECTION_INVALID/);
+  assert.throws(()=>prepareReviewedCandidateTransport({...f.inputs,archive:buildZip([['index.html','changed']])},f.pilot,f.selection));
+  const changed=structuredClone(f.pilot);changed.boundary.containerRemoved=false;
+  assert.throws(()=>prepareReviewedCandidateTransport(f.inputs,changed,f.selection));
+}));
+test('transport encodes source punctuation and marker text as data rather than substituting guest code',()=>withPilotJournal(root=>{
+  const f=transportFixture(root);
+  const files=[['index.html',working[0][1]],['app.js',"// __CA_FIXED_CANDIDATE_INPUT__ ' \u0060 \nconsole.log('fixture text');"]];
+  const archive=buildZip(files),scope=evaluationScope(archive);
+  f.inputs={...f.inputs,archive,currentScope:scope,selection:scope};
+  const admission=prepareEvaluationAdmission(f.inputs);
+  Object.assign(f.selection,{admissionSha256:admission.admissionSha256,candidateSha256:admission.candidateSha256,
+    archiveSha256:admission.archiveSha256});
+  const prepared=prepareReviewedCandidateTransport(f.inputs,f.pilot,f.selection);
+  const encoded=prepared.source.match(/const INPUT='([^']+)'/)[1];
+  const request=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+  assert.equal(createCandidateAssets(request.payloadJson,request.binding).resolve('GET','/app.js').body,files[1][1]);
+  assert.equal(prepared.source.replace(encoded,'__CA_FIXED_CANDIDATE_INPUT__'),fixedCandidateBundle().source);
+}));
+
+import {previewLocalCandidateTransport} from '../tools/m4/static_web_candidate_transport_bridge.mjs';
+test('transport preview CLI requires pinned metadata Docker and does not accept source arguments',()=>{
+  const script='tools/m4/static_web_candidate_transport_bridge.mjs';
+  const inert=spawnSync(process.execPath,[script],{encoding:'utf8',timeout:5000});
+  assert.equal(inert.status,0);assert.match(inert.stdout,/NOT_RUN/);
+  const invalid=spawnSync(process.execPath,[script,'--run','project.zip'],{encoding:'utf8',timeout:5000});
+  assert.equal(invalid.status,2);assert.equal(JSON.parse(invalid.stdout).reason,'CANDIDATE_TRANSPORT_REQUEST_INVALID');
+  const env={...process.env};delete env.CA_EVALUATION_DOCKER_EXE;delete env.CA_EVALUATION_DOCKER_SHA256;
+  const blocked=spawnSync(process.execPath,[script,'--stdin'],{env,input:'{}',encoding:'utf8',timeout:5000});
+  assert.equal(blocked.status,2);assert.equal(JSON.parse(blocked.stdout).reason,'EVALUATION_DOCKER_PROVENANCE_REQUIRED');
+});
+test('transport preview rejects nonlocal hosts, arbitrary operations and paths before Docker',()=>{
+  const options={platform:'win32',env:{},docker:()=>{throw Error('unexpected Docker call');}};
+  assert.throws(()=>previewLocalCandidateTransport({operation:'execute'},options),/REQUEST_INVALID/);
+  assert.throws(()=>previewLocalCandidateTransport({}, {...options,env:{DOCKER_HOST:'tcp://remote'}}),/LOCAL_WINDOWS_ONLY/);
+  assert.throws(()=>previewLocalCandidateTransport({operation:'prepare-candidate-transport',trustedReceiptName:'../secret',
+    receiptNames:[],currentScope:{},criteria:[],reviewedContract:{},archiveBase64:'YQ==',selection:{}},options),/REQUEST_INVALID/);
+});
+
+test('read-only transport bridge reconstructs exact data using only metadata commands and selected receipts',()=>withPilotJournal(root=>{
+  const env={LOCALAPPDATA:root},journalRoot=path.join(root,'CodingAssistant','pilot-attempts');
+  const f=transportFixture(journalRoot);
+  const names=Array.from({length:5},(_,i)=>'windows-static-web-'+String(i+1).repeat(12)+'.json');
+  const receipts=new Map(names.map((name,i)=>[name,[f.inputs.qualificationReport,f.pilot.working,
+    f.pilot.negatives,f.pilot.interruptions,f.pilot.boundary][i]]));
+  const calls=[];
+  const docker=args=>{
+    calls.push(args);
+    if(args[0]==='context'&&args[1]==='show')return {status:0,stdout:'desktop-linux'};
+    if(args[0]==='context'&&args[1]==='inspect')return {status:0,stdout:JSON.stringify({Endpoints:{docker:{Host:'npipe:////./pipe/dockerDesktopLinuxEngine'}}})};
+    if(args[0]==='info')return {status:0,stdout:JSON.stringify({...info,ID:f.pilot.engineId})};
+    if(args[0]==='image'&&args[1]==='inspect')return {status:0,stdout:JSON.stringify(f.pilot.imageMetadata)};
+    if(args[0]==='ps')return {status:0,stdout:''};
+    throw Error('unexpected Docker command');
+  };
+  const request={operation:'prepare-candidate-transport',trustedReceiptName:names[0],receiptNames:names.slice(1),
+    currentScope:f.inputs.currentScope,criteria:f.inputs.criteria,reviewedContract:f.inputs.reviewedContract,
+    archiveBase64:f.inputs.archive.toString('base64'),selection:f.selection};
+  const result=previewLocalCandidateTransport(request,{platform:'win32',env,docker,readReceipt:name=>receipts.get(name)});
+  assert.deepEqual(result,prepareReviewedCandidateTransport(f.inputs,f.pilot,f.selection).descriptor);
+  assert.ok(!Object.hasOwn(result,'source')&&!Object.hasOwn(result,'payloadJson'));
+  assert.ok(calls.every(args=>['context','info','image','ps'].includes(args[0])));
+}));
