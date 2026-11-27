@@ -398,3 +398,42 @@ Expected `AET-8 WINDOWS_PILOT_CONTAINER_CONFIGURATION_PASS`, actual
 configuration audited true, container removed true, guest started false.
 This is a distinct real host policy audit, not generated-source
 qualification or consent.
+
+
+### Owner-reported stopped-container PASS and durable pilot lifecycle
+
+At `e1823cd` the owner reported
+`AET-8 WINDOWS_PILOT_CONTAINER_CONFIGURATION_PASS`, configuration
+audited true, removed true, guest started false. Local evidence file
+`windows-static-web-871073428168.json` is not independently retrieved.
+The conditional regression command reached the configuration probe.
+
+The new qualification-only lifecycle reserves a durable exclusive
+owner-local journal before container creation. It records the exact
+attempt, candidate/archive, policy/image and Docker engine identity,
+then creates, audits, starts **only the frozen working control**, checks
+actual guest exit and independently removes the exact owned container.
+It archives the append-only fsynced journal only after absence checks.
+A crash retains the active journal, rejects new attempts, and requires
+explicit recovery of the same identity. Recovery never resumes or
+replays the guest. Unknown create outcomes, damaged journals, live
+owner PIDs and interrupted recovery remain blocked for owner
+reconciliation. The CLI is a trusted owner-local diagnostic, not OS
+attestation, a hardened service lock or authorization. In particular,
+local same-account tampering and simultaneous Docker administrative
+actions are outside this diagnostic's trust boundary.
+
+Run model-free tests, then the new fixed-control lifecycle qualification:
+
+~~~powershell
+node tools/m4/windows_pilot_lifecycle_qualification.mjs --run
+~~~
+
+Expected `AET-8 WINDOWS_PILOT_DURABLE_FIXED_CONTROL_PASS`, working
+7/7, container removed true, cleanup debt false. This exercises the
+actual pilot configuration, not the old fixture-only run policy.
+No project archive or generated source is accepted. Actual
+cancellation/crash adversarial runs, full negative control matrix,
+pinned control-plane integration and executable authorization remain
+required. Do not run recovery against an active owner process or
+manually delete unresolved journals.

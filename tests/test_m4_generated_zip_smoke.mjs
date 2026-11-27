@@ -902,3 +902,122 @@ test('pilot configuration CLI is inert without explicit run and rejects source p
     if(args.length===0)assert.match(result.stdout,/NOT_RUN/);
   }
 });
+
+
+import {reservePilotAttempt,readPilotAttempt,recoverPilotAttempt} from '../tools/m4/static_web_pilot_attempt_journal.mjs';
+import {qualifyPilotLifecycle,reconcilePilotLifecycle} from '../tools/m4/windows_pilot_lifecycle_qualification.mjs';
+function withPilotJournal(callback){
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'ca-pilot-journal-'));
+  try{return callback(root);}finally{fs.rmSync(root,{recursive:true,force:true});}
+}
+function journalIdentity(){
+  const {policy,attempt}=pilotPolicyFixture();
+  return {...policy.identity(attempt),engineId:'engine-test',
+    candidateSha256:'1'.repeat(64),archiveSha256:'2'.repeat(64)};
+}
+test('pilot attempt journal persists exact state, rejects replay, illegal transitions and live recovery',()=>withPilotJournal(root=>{
+  const identity=journalIdentity(),j=reservePilotAttempt(root,identity);
+  assert.throws(()=>reservePilotAttempt(root,identity),/PRIOR_CLEANUP_REQUIRED/);
+  assert.throws(()=>j.advance('Starting','d'.repeat(64)),/TRANSITION_INVALID/);
+  j.advance('Creating');j.advance('Created','d'.repeat(64));j.advance('Audited');
+  assert.deepEqual(readPilotAttempt(root).current,{sequence:3,stage:'Audited',containerId:'d'.repeat(64)});
+  assert.throws(()=>recoverPilotAttempt(root,{isAlive:()=>true}),/OWNER_STILL_ACTIVE/);
+  j.advance('CleanupPending');assert.throws(()=>j.archive(),/CLEANUP_REQUIRED/);
+  j.advance('Cleaned');j.archive();
+  assert.equal(readPilotAttempt(root),null);
+  assert.throws(()=>reservePilotAttempt(root,identity),/ATTEMPT_REPLAY/);
+}));
+test('pilot attempt recovery claims interrupted journal once and never grants a new start',()=>withPilotJournal(root=>{
+  const identity=journalIdentity(),j=reservePilotAttempt(root,identity);
+  j.advance('Creating');j.advance('Created','d'.repeat(64));j.advance('Audited');j.advance('Starting');
+  const recovered=recoverPilotAttempt(root,{isAlive:()=>false});
+  assert.equal(recovered.current.stage,'Starting');
+  assert.throws(()=>recovered.advance('Exited'),/RECOVERY_CLEANUP_ONLY/);
+  assert.throws(()=>j.advance('Exited'),/RECOVERY_ALREADY_CLAIMED/);
+  assert.throws(()=>recoverPilotAttempt(root,{isAlive:()=>false}),/RECOVERY_ALREADY_CLAIMED/);
+  recovered.advance('CleanupPending');recovered.advance('Cleaned');recovered.archive();
+  assert.equal(readPilotAttempt(root),null);
+}));
+function durablePilotDocker({badExit=false,cleanupFails=false,wrongOwner=false}={}){
+  const {image,attempt,containerId,inspect}=pilotPolicyFixture();
+  const calls=[];let active=false;
+  const docker=(args,timeout,source)=>{
+    calls.push(args);
+    if(args[0]==='context'&&args[1]==='show')return {status:0,stdout:'desktop-linux'};
+    if(args[0]==='context')return {status:0,stdout:JSON.stringify({Endpoints:{docker:{Host:'npipe:////./pipe/dockerDesktopLinuxEngine'}}})};
+    if(args[0]==='info')return {status:0,stdout:JSON.stringify({...info,ID:'engine-test'})};
+    if(args[0]==='image')return {status:0,stdout:JSON.stringify(image)};
+    if(args[0]==='ps')return {status:0,stdout:active?containerId:''};
+    if(args[0]==='create'){
+      active=true;inspect.Config.Labels=Object.fromEntries(args.flatMap((a,i)=>a==='--label'?[args[i+1].split('=')]:[]));
+      if(wrongOwner)inspect.Config.Labels['codingassistant.pilot-policy']='0'.repeat(64);
+      return {status:0,stdout:containerId};
+    }
+    if(args[0]==='container')return {status:0,stdout:JSON.stringify(inspect)};
+    if(args[0]==='start'){
+      inspect.State={Status:'exited',Running:false,ExitCode:badExit?2:0};
+      const request=JSON.parse(Buffer.from(source.match(/const INPUT='([^']+)'/)[1],'base64').toString('utf8'));
+      const {report}=candidateObservationFixture();Object.assign(report,request.expected);
+      return {status:badExit?2:0,stdout:JSON.stringify({kind:'progress',stage:'COMPLETE'})+'\n'+JSON.stringify(report)};
+    }
+    if(args[0]==='rm'){if(!cleanupFails)active=false;return {status:0,stdout:containerId};}
+    throw Error('unexpected Docker command');
+  };
+  return {docker,calls,attempt,inspect,containerId,setActive:()=>{active=true;}};
+}
+test('durable pilot qualification audits before fixed start and archives only after confirmed cleanup',()=>withPilotJournal(root=>{
+  const f=durablePilotDocker();
+  const result=qualifyPilotLifecycle({platform:'win32',env:{},docker:f.docker,attemptId:f.attempt,root});
+  assert.equal(result.status,'PILOT_DURABLE_FIXED_CONTROL_PASS',result.reason);
+  assert.equal(result.observations.passed,7);assert.equal(result.containerRemoved,true);
+  assert.equal(result.generatedCodeExecutionEnabled,false);assert.equal(readPilotAttempt(root),null);
+  const commands=f.calls.map(x=>x[0]);assert.ok(commands.indexOf('create')<commands.indexOf('container'));
+  assert.ok(commands.indexOf('container')<commands.indexOf('start'));assert.ok(commands.indexOf('start')<commands.indexOf('rm'));
+  assert.ok(!commands.includes('run')&&!commands.includes('exec'));
+}));
+test('durable pilot blocks failed exit, wrong ownership and cleanup debt without replay',()=>{
+  for(const scenario of [{badExit:true},{wrongOwner:true},{cleanupFails:true}]){
+    withPilotJournal(root=>{
+      const f=durablePilotDocker(scenario);
+      const result=qualifyPilotLifecycle({platform:'win32',env:{},docker:f.docker,attemptId:f.attempt,root});
+      assert.equal(result.status,'BLOCKED',JSON.stringify(scenario));
+      assert.equal(result.cleanupDebt,!scenario.badExit);
+      if(scenario.wrongOwner)assert.ok(!f.calls.some(x=>x[0]==='start'||x[0]==='rm'));
+      if(result.cleanupDebt){
+        const count=f.calls.length;
+        const again=qualifyPilotLifecycle({platform:'win32',env:{},docker:f.docker,attemptId:'e'.repeat(32),root});
+        assert.equal(again.reason,'PILOT_PRIOR_CLEANUP_REQUIRED');assert.equal(f.calls.length,count);
+      }
+    });
+  }
+});
+test('explicit interrupted pilot recovery removes only exact owned container and never starts or replays',()=>withPilotJournal(root=>{
+  const f=durablePilotDocker(),identity=journalIdentity();
+  const j=reservePilotAttempt(root,identity);j.advance('Creating');j.advance('Created',f.containerId);j.advance('Audited');j.advance('Starting');
+  f.setActive();
+  f.inspect.Config.Labels[identity.label]=identity.attemptId;
+  f.inspect.Config.Labels['codingassistant.pilot-policy']=identity.policySha256;
+  f.inspect.State={Status:'running',Running:true};
+  const result=reconcilePilotLifecycle({platform:'win32',env:{},docker:f.docker,root,isAlive:()=>false});
+  assert.equal(result.status,'PILOT_INTERRUPTED_ATTEMPT_RECONCILED',result.reason);
+  assert.equal(result.containerRemoved,true);assert.equal(readPilotAttempt(root),null);
+  assert.ok(f.calls.some(x=>x[0]==='rm'&&x[1]==='-f'&&x[2]===f.containerId));
+  assert.ok(!f.calls.some(x=>['create','start','run','exec'].includes(x[0])));
+}));
+test('ambiguous create interruption with no exact container stays blocked rather than clearing debt',()=>withPilotJournal(root=>{
+  const f=durablePilotDocker(),j=reservePilotAttempt(root,journalIdentity());j.advance('Creating');
+  const result=reconcilePilotLifecycle({platform:'win32',env:{},docker:f.docker,root,isAlive:()=>false});
+  assert.equal(result.reason,'PILOT_CREATE_OUTCOME_UNCERTAIN');
+  assert.equal(result.cleanupDebt,true);assert.equal(readPilotAttempt(root).current.stage,'Creating');
+  assert.ok(!f.calls.some(x=>x[0]==='rm'||x[0]==='start'));
+}));
+
+test('truncated active journal blocks all new work and recovery without deleting evidence',()=>withPilotJournal(root=>{
+  const j=reservePilotAttempt(root,journalIdentity());j.advance('Creating');
+  const file=path.join(root,'active','events.jsonl');
+  fs.appendFileSync(file,'{"sequence":2');
+  assert.throws(()=>readPilotAttempt(root),/JOURNAL_INVALID/);
+  assert.throws(()=>recoverPilotAttempt(root,{isAlive:()=>false}),/JOURNAL_INVALID/);
+  assert.throws(()=>reservePilotAttempt(root,{...journalIdentity(),attemptId:'e'.repeat(32),name:'ca-win-pilot-'+'e'.repeat(32)}),/PRIOR_CLEANUP_REQUIRED/);
+  assert.ok(fs.readFileSync(file,'utf8').endsWith('{"sequence":2'));
+}));

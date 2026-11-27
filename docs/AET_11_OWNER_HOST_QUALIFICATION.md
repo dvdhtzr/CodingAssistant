@@ -215,3 +215,14 @@ in the AET-8 evidence document. It does not start a browser or repeat
 the trusted candidate fixture run. It blocks if any prior pilot
 qualification container is still present, leaving recovery to an
 explicit reconciler rather than guessing ownership.
+
+
+The owner reported the stopped-container configuration probe PASS at
+`e1823cd` (private receipt `windows-static-web-871073428168.json`).
+The next fixed-control lifecycle probe records its attempt under
+`%LOCALAPPDATA%/CodingAssistant/pilot-attempts`. It starts only the
+frozen working reference under the separate audited policy. Explicit
+recovery is available for an interrupted, exact owned attempt; it
+does not restart the guest. A live owner or ambiguous create outcome
+blocks recovery. No generated execution or runtime registry promotion
+follows from these checks.
