@@ -50,7 +50,7 @@ test('owner attention is source- and plan-bound; failed repair is not mistaken f
       state: 'Reviewed' },
       reports: [{ path: 'app.js', reviewedUtc: '2026-11-23T12:00:00Z',
         assessment: { findings: [{ severity: 'Major', requirement: 'Fix interaction' }] } }] },
-    repair: { cycle: { state: 'Failed', attempt: 6, errorCode: 'REPAIR_NO_CHANGE' } },
+    repair: { cycle: { state: 'Failed', attempt: 6, engineeringRunId: 'run-1', errorCode: 'REPAIR_NO_CHANGE' } },
   };
   const focus = studioAttention(saved, null);
   assert.equal(focus[0].stage, 'delivery');
@@ -59,8 +59,11 @@ test('owner attention is source- and plan-bound; failed repair is not mistaken f
   assert.equal(focus[1].detail, 'REPAIR_NO_CHANGE');
   saved.qa.job.planSha256 = 'stale-hash';
   const stale = studioAttention(saved, null);
-  assert.equal(stale.length, 1);
-  assert.equal(stale[0].title, 'Repair cycle 6 stopped');
+  assert.equal(stale.length, 2);
+  assert.equal(stale[0].title, 'New source ready for QA');
+  assert.equal(stale[1].title, 'Repair cycle 6 stopped');
+  saved.repair.cycle.engineeringRunId = 'old-run';
+  assert.deepEqual(studioAttention(saved, null).map(x => x.title), ['New source ready for QA']);
 });
 
 test('decision lane navigates to original approval forms and never approves by itself', () => {

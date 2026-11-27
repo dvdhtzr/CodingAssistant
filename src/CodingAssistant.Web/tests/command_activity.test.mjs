@@ -118,11 +118,13 @@ test('compact Work agent strip reports only saved running roles and repair hando
   assert.equal(status.find(x => x.agent.id === 'SoftwareEngineer').active, true);
   assert.equal(status.find(x => x.agent.id === 'QaEngineer').active, false);
   data.engineering.job.state = 'Generated';
-  const repair = { cycle: { state: 'QaRunning', attempt: 4 } };
+  const repair = { cycle: { state: 'QaRunning', attempt: 4, engineeringRunId: data.engineering.job.id } };
   const duringQa = workAgentStatuses({ ...data, repair });
   assert.equal(duringQa.find(x => x.agent.id === 'SoftwareEngineer').active, false);
   assert.equal(duringQa.find(x => x.agent.id === 'QaEngineer').active, true);
   assert.equal(duringQa.find(x => x.agent.id === 'ProductOwner').active, false);
+  repair.cycle.engineeringRunId = 'old-run';
+  assert.equal(workAgentStatuses({ ...data, repair }).some(x => x.active), false);
   const html = renderToStaticMarkup(React.createElement(WorkTeamStrip, {
     token: 'f'.repeat(64), taskId: task.id, onOpen: () => {},
   }));

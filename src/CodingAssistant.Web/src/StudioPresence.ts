@@ -93,7 +93,8 @@ export function studioRecordedActivity(saved: StudioEvidence | null): StudioLedg
       title: friendlyEvent(event.kind),
       detail: event.detail,
       originalKind: event.kind,
-      historical: false,
+      historical: saved.qa?.job.engineeringRunId !== saved.engineering?.job.id ||
+        saved.qa?.job.planSha256 !== saved.engineering?.job.planSha256,
       stage: 'delivery' as JourneyId,
     })),
   ];
@@ -111,14 +112,17 @@ export function studioAgentPresence(saved: StudioEvidence | null,
       event.fromAgent === agent.id || event.toAgent === agent.id);
     const recent = handoffs.slice().sort((a, b) =>
       b.createdUtc.localeCompare(a.createdUtc))[0];
+    const currentQa = saved.qa?.job.engineeringRunId === saved.engineering?.job.id &&
+      saved.qa?.job.planSha256 === saved.engineering?.job.planSha256 ? saved.qa : null;
+    const currentRepair = saved.repair?.cycle.engineeringRunId === saved.engineering?.job.id ? saved.repair : null;
     const job = agent.id === 'SoftwareEngineer' ? saved.engineering?.job :
-      agent.id === 'QaEngineer' ? saved.qa?.job : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job :
+      agent.id === 'QaEngineer' ? currentQa?.job : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job :
       agent.id === 'TechnicalLead' ? saved.collaboration?.job : null;
     const model = models?.find(item => item.role === agent.id)?.model ?? null;
     const stopped = job?.state === 'Failed' || job?.state === 'Interrupted' ||
       agent.id === 'SoftwareEngineer' &&
-      (saved.repair?.cycle.state === 'Failed' ||
-       saved.repair?.cycle.state === 'Interrupted');
+      (currentRepair?.cycle.state === 'Failed' ||
+       currentRepair?.cycle.state === 'Interrupted');
     const state = active ? 'running' : stopped ? 'stopped' :
       job || recent ? 'recorded' : 'unstarted';
     const assignment = agent.id === 'SoftwareEngineer' ?
@@ -127,8 +131,8 @@ export function studioAgentPresence(saved: StudioEvidence | null,
         ' of ' + saved.engineering?.tasks.length + ' assigned task(s) saved' :
         'No source work recorded'
       : agent.id === 'QaEngineer' ? active ?
-        saved.qa?.reports.length + ' file(s) inspected · source-only QA' :
-        job ? saved.qa?.reports.length + ' saved file report(s)' :
+        currentQa?.reports.length + ' file(s) inspected · source-only QA' :
+        job ? currentQa?.reports.length + ' saved file report(s)' :
           'No source review recorded'
       : agent.id === 'LeadSoftwareEngineer' || agent.id === 'TechnicalLead' ? detail
       : recent ? 'Last recorded: ' + friendlyEvent(recent.kind) :
