@@ -1070,3 +1070,75 @@ test('real interruption qualification CLI is inert without explicit run and reje
     if(args.length===0)assert.match(result.stdout,/NOT_RUN/);
   }
 });
+
+
+import {readArchivedPilotAttempt} from '../tools/m4/static_web_pilot_attempt_journal.mjs';
+import {bindPilotEvidence} from '../tools/m4/static_web_pilot_evidence.mjs';
+function pilotEvidenceFixture(root){
+  const {image}=pilotPolicyFixture(),engineId='engine-test',bundle=fixedCandidateBundle();
+  const policy=preparePilotPolicy(image,bundle.adapterSha256,bundle.evaluatorSha256);
+  const base={schemaVersion:1,recordedAtUtc:'2026-11-27T12:00:00Z',
+    generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false};
+  let n=0;
+  function archived(name,mode=null){
+    const attemptId=String(++n).repeat(32),fixture=fixedCandidateFixture(name,bundle,policy.policySha256,attemptId);
+    const identity={...policy.identity(attemptId),engineId,candidateSha256:fixture.expected.candidateSha256,
+      archiveSha256:fixture.expected.archiveSha256};
+    let j=reservePilotAttempt(root,identity);
+    j.advance('Creating');j.advance('Created',String(n).repeat(64));j.advance('Audited');j.advance('Starting');
+    if(!mode)j.advance('Exited');
+    if(mode==='crash')j=recoverPilotAttempt(root,{isAlive:()=>false});
+    j.advance('CleanupPending');j.advance('Cleaned');j.archive();
+    if(mode)return {mode,attemptId,observedRunning:true,interruptionRequested:true,childExitConfirmed:true,
+      containerRemoved:true,cleanupDebt:false,reason:null};
+    const {report}=candidateObservationFixture();
+    Object.assign(report,fixture.expected);report.cases=allCases(CALCULATION_CASES,name==='working');
+    return {...base,stage:'AET-8-pilot-durable-lifecycle',status:'PILOT_DURABLE_FIXED_CONTROL_PASS',
+      attemptId,policySha256:policy.policySha256,engineId,configurationAudited:true,
+      observations:parseCandidateObservations(JSON.stringify(report),fixture.expected),containerRemoved:true,cleanupDebt:false,reason:null};
+  }
+  return {working:archived('working'),negatives:{...base,stage:'AET-8-pilot-negative-controls',
+    status:'PILOT_DURABLE_NEGATIVE_CONTROLS_PASS',controls:{broken:archived('broken'),spoof:archived('spoof')}},
+    interruptions:{...base,stage:'AET-8-pilot-real-interruption-controls',status:'PILOT_REAL_INTERRUPTION_CONTROLS_PASS',
+      controls:{cancel:archived('working','cancel'),crash:archived('working','crash')},reason:null},
+    imageMetadata:image,engineId,root};
+}
+test('pilot historical evidence binds five distinct archived attempts without granting runtime or host trust',()=>withPilotJournal(root=>{
+  const input=pilotEvidenceFixture(root);
+  const bound=bindPilotEvidence(input);
+  assert.equal(bound.status,'PILOT_HISTORICAL_EVIDENCE_BOUND');
+  assert.equal(Object.keys(bound.attempts).length,5);
+  assert.equal(bound.hostProvenanceEstablished,false);assert.equal(bound.executionEnabled,false);
+  assert.equal(bound.runtimeQualified,false);
+  assert.equal(bindPilotEvidence(input).evidenceSha256,bound.evidenceSha256);
+  assert.equal(readArchivedPilotAttempt(root,input.interruptions.controls.crash.attemptId).recoveryClaimed,true);
+}));
+test('pilot historical evidence rejects forged outcomes, mismatched engine, duplicate attempts and omitted controls',()=>withPilotJournal(root=>{
+  const input=pilotEvidenceFixture(root);
+  for(const change of [
+    x=>{x.working.observations.passed=0;},
+    x=>{x.working.observations.security[SECURITY_CASES[0]]=false;},
+    x=>{x.engineId='other-engine';},
+    x=>{delete x.negatives.controls.spoof;},
+    x=>{x.interruptions.controls.crash.attemptId=x.interruptions.controls.cancel.attemptId;},
+    x=>{x.interruptions.controls.cancel.containerRemoved=false;},
+    x=>{x.working.executionEnabled=true;}]){
+    const changed=structuredClone(input);change(changed);assert.throws(()=>bindPilotEvidence(changed));
+  }
+}));
+test('pilot historical evidence requires complete unchanged archived journals and blocks active cleanup debt',()=>withPilotJournal(root=>{
+  const input=pilotEvidenceFixture(root);
+  const j=reservePilotAttempt(root,{...journalIdentity(),attemptId:'e'.repeat(32),name:'ca-win-pilot-'+'e'.repeat(32)});
+  assert.throws(()=>bindPilotEvidence(input),/PRIOR_CLEANUP_REQUIRED/);
+  j.advance('CleanupPending');j.advance('Cleaned');j.archive();
+  const file=path.join(root,'attempt-'+input.working.attemptId,'events.jsonl');
+  const original=fs.readFileSync(file,'utf8');
+  fs.writeFileSync(file,original.replace('"stage":"Audited"','"stage":"Starting"'));
+  assert.throws(()=>bindPilotEvidence(input),/JOURNAL_INVALID/);
+}));
+test('pilot evidence inspection CLI is inert and rejects missing receipt selections',()=>{
+  for(const args of [[],['--inspect','one.json']]){
+    const result=spawnSync(process.execPath,['tools/m4/static_web_pilot_evidence.mjs',...args],{encoding:'utf8',timeout:5000});
+    assert.equal(result.status,args.length===0?0:2,result.stderr);
+  }
+});

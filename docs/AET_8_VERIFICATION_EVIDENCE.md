@@ -473,3 +473,25 @@ arbitrary generated-source renderer isolation, establish host
 attestation, grant execution or promote the runtime. Exact policy
 and host evidence binding and remaining candidate security controls
 are still required.
+
+
+### Read-only binding of actual pilot qualification evidence
+
+The pilot evidence inspector requires the existing durable working receipt,
+negative-controls receipt and real interruption receipt. It reconstructs
+the current fixed adapter and policy against the local Docker engine/image,
+reclassifies every functional observation, and validates five distinct
+archived attempt identities and complete journal transitions. Crash recovery
+must have its recovery claim; cancellation and normal evaluation must not.
+An active attempt, missing archive, changed source/control, image, policy,
+engine, unexpected result or unresolved container blocks inspection.
+No existing qualification command or qualified guest bytes change.
+
+`node tools/m4/static_web_pilot_evidence.mjs --inspect WORKING_RECEIPT NEGATIVE_RECEIPT INTERRUPTION_RECEIPT`
+takes only owner-local receipt basenames. It returns
+`PILOT_HISTORICAL_EVIDENCE_BOUND` only when all records match; it cannot
+establish that local files were not fabricated, bind historical host
+executables, establish current host attestation, or grant runtime
+qualification. Actual candidate-specific security qualification and
+separate executable authorization remain mandatory. The negative and
+interruption runs are still pending owner evidence.

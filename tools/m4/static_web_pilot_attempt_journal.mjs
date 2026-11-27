@@ -58,8 +58,8 @@ function checkEvent(prev,event){
       event.stage==='Creating'&&event.containerId!==null)fail('PILOT_JOURNAL_TRANSITION_INVALID');
   }
 }
-function load(root){
-  const active=path.join(root,'active');regular(active,true);
+function load(root,directory='active'){
+  const active=path.join(root,directory);regular(active,true);
   try{
     const header=JSON.parse(readBounded(path.join(active,'identity.json'),8192));
     if(!exact(header,['schemaVersion','ownerPid','identity'])||header.schemaVersion!==1||
@@ -131,4 +131,24 @@ export function recoverPilotAttempt(root,{isAlive=processAlive}={}){
   try{writeDurable(path.join(x.active,'recovery.lock'),{ownerPid:process.pid},'wx');}
   catch{fail('PILOT_RECOVERY_ALREADY_CLAIMED');}
   return handle(root,x,true);
+}
+
+ // Read-only archived evidence; validate the entire durable transition
+ // sequence rather than accepting a final Cleaned marker in isolation.
+export function readArchivedPilotAttempt(root,attemptId){
+  if(!hex(attemptId,32)||typeof root!=='string'||!path.isAbsolute(root))fail('PILOT_ARCHIVE_INVALID');
+  regular(root,true);
+  const x=load(path.resolve(root),'attempt-'+attemptId);
+  if(x.header.identity.attemptId!==attemptId||x.last.stage!=='Cleaned'||!hex(x.last.containerId,64))
+    fail('PILOT_ARCHIVE_INVALID');
+  const recoveryFile=path.join(x.active,'recovery.lock');
+  let recoveryClaimed=false;
+  if(fs.existsSync(recoveryFile)){
+    const claim=JSON.parse(readBounded(recoveryFile,1024));
+    if(!exact(claim,['ownerPid'])||!Number.isSafeInteger(claim.ownerPid)||claim.ownerPid<1)
+      fail('PILOT_ARCHIVE_INVALID');
+    recoveryClaimed=true;
+  }
+  return Object.freeze({identity:Object.freeze({...x.header.identity}),ownerPid:x.header.ownerPid,
+    events:Object.freeze(x.events.map(e=>Object.freeze({...e}))),recoveryClaimed});
 }
