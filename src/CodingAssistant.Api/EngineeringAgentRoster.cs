@@ -43,6 +43,12 @@ public static class EngineeringAgentRoster
             "Prefers working behavior over mockups, honors approved dependencies, "
             + "documents unverified assumptions, and never claims tests have run.",
             ["language-guidance", "framework-guidance", "source-implementation"], false),
+        new("LeadSoftwareEngineer", "Lead Software Engineer",
+            "Independently challenge source architecture, maintainability and security.",
+            "A fictional senior reviewer who has learned to substantiate every concern "
+            + "with exact source evidence rather than personal preferences.",
+            "Reviews before QA, proposes concrete remedies, never writes source or asserts executed tests.",
+            ["architecture-review", "static-code-review", "security-review"], false),
         new("QaEngineer", "QA Engineer",
             "Independently inspect generated source against approved acceptance "
             + "criteria and record evidence-backed defect hypotheses.",

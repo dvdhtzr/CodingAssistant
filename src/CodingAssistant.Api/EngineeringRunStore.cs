@@ -8,7 +8,8 @@ using Microsoft.Data.Sqlite;
 namespace CodingAssistant.Api;
 
 public sealed record StartEngineeringRunRequest(
-    int PlanRevision, string? PlanSha256, string? ResumeRunId = null);
+    int PlanRevision, string? PlanSha256, string? ResumeRunId = null,
+    AdaptivePlanSelection? WorkPlan = null,bool UseApprovedTeamAuthorization=false);
 public sealed record EngineeringRun(
     string Id, string TaskId, int PlanRevision, string PlanSha256,
     int SpecificationVersion, string SpecificationSha256,
@@ -155,7 +156,7 @@ public sealed class EngineeringRunStore(
         reader.GetString(9), reader.IsDBNull(10) ? null : reader.GetString(10),
         reader.GetString(11), reader.GetString(12));
 
-    private static EngineeringRun? Find(SqliteConnection db, SqliteTransaction? tx,
+    internal static EngineeringRun? Find(SqliteConnection db, SqliteTransaction? tx,
         string runId)
     {
         using var cmd = TaskStore.Command(db, tx, """
@@ -204,10 +205,18 @@ public sealed class EngineeringRunStore(
                 @kind,@detail,@now)
             """, ("@run", runId), ("@kind", kind), ("@detail", detail),
             ("@now", DateTimeOffset.UtcNow.ToString("O")));
+        if (kind is "EngineeringTaskStarted" or "EngineeringTaskCompleted")
+            return; // The richer atomic assignment receipt supplies this activity.
+        var job = Find(db,tx,runId);
+        if (job is not null)
+            EngineeringActivityStore.Record(db,tx,job.TaskId,kind,"SoftwareEngineer",
+                "EngineeringRun",runId,long.Parse(TaskStore.Scalar(db,tx,
+                    "SELECT MAX(sequence) FROM engineering_run_events WHERE run_id=@run",
+                    ("@run",runId))!),model:job.Model);
     }
 
     public EngineeringRun Start(string taskId, ImplementationPlan approved,
-        string? agentModel = null)
+        string? agentModel = null,AdaptivePlanSelection? selection=null,bool useApprovedTeamAuthorization=false)
     {
         ValidId(taskId);
         if (approved.TaskId != taskId || approved.Status != "Approved" ||
@@ -222,6 +231,9 @@ public sealed class EngineeringRunStore(
             approved.SpecificationSha256, approved.ArchitectureSha256,
             agentModel ?? approved.Model, "Running", "Queued", null, now, now);
         RequireBinding(db, tx, candidate);
+        CollaborationStore.RequireNoActive(db,tx,taskId);
+        var adaptive=selection is null?null:AdaptiveWorkPlanStore.RequireSelected(db,tx,taskId,
+            approved.PlanSha256,selection);
         try
         {
             TaskStore.Execute(db, tx, """
@@ -251,10 +263,14 @@ public sealed class EngineeringRunStore(
                 """, ("@run", id), ("@item", task.Id),
                 ("@ordinal", ordinal++), ("@title", task.Title));
         }
+        if(useApprovedTeamAuthorization)
+            UpfrontTeamAuthorizationStore.Claim(db,tx,candidate);
+        if(adaptive is not null)AdaptiveWorkPlanStore.Bind(db,tx,candidate,adaptive);
         Event(db, tx, id, "EngineeringRunAdmitted",
             "Owner-approved plan v" + approved.Revision +
             " assigned to SoftwareEngineer; unverified source only");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return candidate;
     }
 
@@ -275,6 +291,7 @@ public sealed class EngineeringRunStore(
 
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
+        CollaborationStore.RequireNoActive(db,tx,taskId);
         var original = Find(db, tx, sourceRunId);
         if (original is null || original.TaskId != taskId)
             throw new StoreFailure("NOT_FOUND");
@@ -295,6 +312,7 @@ public sealed class EngineeringRunStore(
         if (latest != sourceRunId)
             throw new StoreFailure("STALE_SOURCE_RUN");
 
+        var adaptive=AdaptiveWorkPlanStore.RequireBound(db,tx,original);
         var carried = new List<EngineeringAssignedTask>();
         var ordinal = 0;
         var sawIncomplete = false;
@@ -314,7 +332,7 @@ public sealed class EngineeringRunStore(
                 var state = reader.GetString(3);
                 if (state == "Completed")
                 {
-                    if (sawIncomplete || reader.IsDBNull(6) || reader.IsDBNull(4))
+                    if ((adaptive is null && sawIncomplete) || reader.IsDBNull(6) || reader.IsDBNull(4))
                         throw new StoreFailure("RESUME_NOT_AVAILABLE");
                     carried.Add(new EngineeringAssignedTask(reader.GetString(0),
                         ordinal, reader.GetString(2), state,
@@ -329,10 +347,14 @@ public sealed class EngineeringRunStore(
                 ordinal++;
             }
         }
+        var partial=adaptive is null?null:AdaptiveWorkPlanStore.PartialCheckpoint(db,tx,original,adaptive,carried);
         if (ordinal != approved.Outline.Tasks.Count || !sawIncomplete ||
-            carried.Count == 0 || carried.Count == ordinal)
+            (carried.Count == 0 && partial is null) || carried.Count == ordinal)
             throw new StoreFailure("RESUME_NOT_AVAILABLE");
 
+        if(adaptive is not null && adaptive.Packages.Where(p=>carried.Any(c=>c.Id==p.Id))
+            .Any(p=>p.DependsOn.Any(d=>!carried.Any(c=>c.Id==d))))
+            throw new StoreFailure("RESUME_NOT_AVAILABLE");
         var savedCount = 0;
         long characters = 0;
         using (var cmd = TaskStore.Command(db, tx, """
@@ -347,7 +369,8 @@ public sealed class EngineeringRunStore(
                 var content = reader.GetString(1);
                 var sha = reader.GetString(2);
                 var owner = reader.GetString(3);
-                if (!carried.Any(t => t.Id == owner) ||
+                if ((!carried.Any(t => t.Id == owner) &&
+                     !(partial?.WorkItemId==owner && partial.AllowedPaths.Contains(path,StringComparer.OrdinalIgnoreCase))) ||
                     ProjectDraftStore.SafePath(path) != path ||
                     Convert.ToHexString(SHA256.HashData(
                         Encoding.UTF8.GetBytes(content))).ToLowerInvariant() != sha)
@@ -389,7 +412,7 @@ public sealed class EngineeringRunStore(
 
         foreach (var item in approved.Outline.Tasks.Select((task, i) => (task, i)))
         {
-            var prior = item.i < carried.Count ? carried[item.i] : null;
+            var prior = carried.SingleOrDefault(t=>t.Id==item.task.Id);
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_tasks(
                     run_id,work_item_id,ordinal,title,state,summary,started_utc,completed_utc)
@@ -410,11 +433,17 @@ public sealed class EngineeringRunStore(
         if (copied != savedCount)
             throw new StoreFailure("SOURCE_CHANGED");
 
+        if(adaptive is not null)
+        {
+            AdaptiveWorkPlanStore.Bind(db,tx,job,adaptive);
+            if(partial is not null)AdaptiveWorkPlanStore.CarrySubpackages(db,tx,job,sourceRunId,partial);
+        }
         Event(db, tx, id, "EngineeringRunResumed",
             "Carried forward " + carried.Count + " approved task(s), " +
             savedCount + " saved file(s) from run " + sourceRunId +
             "; remaining assignments unverified");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return job;
     }
 
@@ -491,18 +520,70 @@ public sealed class EngineeringRunStore(
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireBinding(db, tx, job);
+        EngineeringDelegationStore.RequireRoutineWrite(db,tx,job);
+        _=StartTaskCore(db,tx,job,workItemId);
+        tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
+    }
+
+    public bool HasAdaptiveBinding(string taskId,string runId)
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
+        var job=Find(db,tx,runId);
+        if(job is null || job.TaskId!=taskId)throw new StoreFailure("NOT_FOUND");
+        var result=AdaptiveWorkPlanStore.Bound(db,tx,runId) is not null;
+        tx.Commit();return result;
+    }
+
+    public AdaptiveWorkPackage? StartNextAdaptiveTask(string taskId,string runId)
+    {
+        ValidId(taskId);ValidId(runId);
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var job=Find(db,tx,runId);
+        if(job is null || job.TaskId!=taskId)throw new StoreFailure("NOT_FOUND");
+        if(job.State!="Running")throw new StoreFailure("INVALID_STATE");
+        RequireBinding(db,tx,job);
+        var plan=AdaptiveWorkPlanStore.RequireBound(db,tx,job)??throw new StoreFailure("STALE_WORK_PLAN");
+        var next=AdaptiveWorkPlanStore.Next(plan.Packages,AdaptiveWorkPlanStore.States(db,tx,runId));
+        if(next is null){tx.Commit();return null;}
+        var package=StartTaskCore(db,tx,job,next);
+        tx.Commit();tasks.SignalEngineeringActivity(taskId);return package;
+    }
+
+    public AdaptiveWorkSubpackage? StartNextSubpackage(string taskId,string runId,string workItemId)
+    {
+        ValidId(taskId);ValidId(runId);
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var job=Find(db,tx,runId);
+        if(job is null || job.TaskId!=taskId)throw new StoreFailure("NOT_FOUND");
+        if(job.State!="Running")throw new StoreFailure("INVALID_STATE");
+        RequireBinding(db,tx,job);
+        var step=AdaptiveWorkPlanStore.AdmitNextSubpackage(db,tx,job,workItemId);
+        if(step is not null)Event(db,tx,runId,"EngineeringSubpackageStarted",
+            workItemId+" / "+step.Id+" dispatched within approved parent scope");
+        tx.Commit();tasks.SignalEngineeringActivity(taskId);return step;
+    }
+
+    private static AdaptiveWorkPackage? StartTaskCore(SqliteConnection db,SqliteTransaction tx,
+        EngineeringRun job,string workItemId)
+    {
+        var runId=job.Id;
         var ordinal = TaskStore.Scalar(db, tx, """
             SELECT ordinal FROM engineering_run_tasks
             WHERE run_id=@run AND work_item_id=@item AND state='Pending'
             """, ("@run", runId), ("@item", workItemId));
         if (ordinal is null)
             throw new StoreFailure("INVALID_STATE");
-        var incomplete = TaskStore.Scalar(db, tx, """
-            SELECT 1 FROM engineering_run_tasks
-            WHERE run_id=@run AND ordinal<@ordinal AND state!='Completed' LIMIT 1
-            """, ("@run", runId), ("@ordinal", int.Parse(ordinal)));
-        if (incomplete is not null)
-            throw new StoreFailure("INVALID_STATE");
+        var package=AdaptiveWorkPlanStore.Admit(db,tx,job,workItemId);
+        if(package is null)
+        {
+            var incomplete = TaskStore.Scalar(db, tx, """
+                SELECT 1 FROM engineering_run_tasks
+                WHERE run_id=@run AND ordinal<@ordinal AND state!='Completed' LIMIT 1
+                """, ("@run", runId), ("@ordinal", int.Parse(ordinal)));
+            if (incomplete is not null)
+                throw new StoreFailure("INVALID_STATE");
+        }
         var now = DateTimeOffset.UtcNow.ToString("O");
         TaskStore.Execute(db, tx, """
             UPDATE engineering_run_tasks SET state='Running',started_utc=@now
@@ -510,7 +591,8 @@ public sealed class EngineeringRunStore(
             """, ("@run", runId), ("@item", workItemId), ("@now", now));
         Event(db, tx, runId, "EngineeringTaskStarted",
             "SoftwareEngineer received approved task " + workItemId);
-        tx.Commit();
+        EngineeringMessageStore.Record(db, tx, job, workItemId, completed: false);
+        return package;
     }
 
     /// <summary>
@@ -539,6 +621,7 @@ public sealed class EngineeringRunStore(
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireBinding(db, tx, job);
+        EngineeringDelegationStore.RequireRoutineWrite(db,tx,job);
         if (TaskStore.Scalar(db, tx, """
             SELECT 1 FROM engineering_run_tasks
             WHERE run_id=@run AND work_item_id=@item AND state='Running'
@@ -550,6 +633,7 @@ public sealed class EngineeringRunStore(
             observation.SourceRevision[..12] + " (" +
             observation.ResultCount + " results)");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     /// <summary>
@@ -573,7 +657,8 @@ public sealed class EngineeringRunStore(
                 "REPAIR_SCOPE" or "REPAIR_EDIT_INVALID" or "REPAIR_EDIT_NOT_UNIQUE" or
                 "REPAIR_EDIT_NO_CHANGE" or "REPAIR_EDIT_SHAPE" or "REPAIR_EDIT_LENGTH" or
                 "REPAIR_EDIT_OVERLAP" or "REPAIR_EDIT_SOURCE" or
-                "REPAIR_EDIT_SIZE" or "REPAIR_EDIT_FIELDS" or "OUTPUT_TRUNCATED" or
+                "REPAIR_EDIT_SIZE" or "REPAIR_EDIT_FIELDS" or "REPAIR_LINE_BINDING" or
+                "REPAIR_LINE_RANGE" or "REPAIR_LINE_NOT_ADMITTED" or "OUTPUT_TRUNCATED" or
                 "MODEL_THINKING_ONLY" or "EMPTY_OR_INVALID_RESPONSE"))
             throw new StoreFailure("INVALID_INPUT");
         using var db = tasks.Open();
@@ -605,10 +690,11 @@ public sealed class EngineeringRunStore(
             workItemId + ": attempt " + rejection.Attempt + "/3, category " +
             rejection.Category + "; no source saved for this attempt");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public AtlasSourceEvent? CompleteTask(string taskId, string runId, string workItemId,
-        EngineeringChangeSet changes)
+        EngineeringChangeSet changes,string? subpackageId=null)
     {
         ValidId(taskId); ValidId(runId);
         var safe = MafSoftwareEngineer.Parse(JsonSerializer.Serialize(changes));
@@ -620,11 +706,14 @@ public sealed class EngineeringRunStore(
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireBinding(db, tx, job);
+        EngineeringDelegationStore.RequireRoutineWrite(db,tx,job,safe.Files);
         if (TaskStore.Scalar(db, tx, """
             SELECT 1 FROM engineering_run_tasks
             WHERE run_id=@run AND work_item_id=@item AND state='Running'
             """, ("@run", runId), ("@item", workItemId)) is null)
             throw new StoreFailure("INVALID_STATE");
+
+        AdaptiveWorkPlanStore.RequireWrite(db,tx,job,workItemId,safe.Files,subpackageId);
 
         // Repair runs are allowed to replace only the exact owner-triaged
         // source paths. Enforce this INSIDE the same SQLite transaction that
@@ -638,8 +727,9 @@ public sealed class EngineeringRunStore(
             var repairFindings =
                 JsonSerializer.Deserialize<RepairFindingReference[]>(repairScopeJson)
                 ?? throw new StoreFailure("INVALID_STATE");
-            var allowedPaths = repairFindings.Select(f => f.Path)
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var recovery=RootCauseRecoveryStore.ForCandidate(db,tx,taskId,runId);
+            var allowedPaths = recovery is null?repairFindings.Select(f => f.Path)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():new[]{recovery.TargetPath};
             if (allowedPaths.Length != 1 || safe.Files.Any(f =>
                 !allowedPaths.Contains(f.Path, StringComparer.OrdinalIgnoreCase)))
                 throw new StoreFailure("REPAIR_SCOPE_VIOLATION");
@@ -700,6 +790,18 @@ public sealed class EngineeringRunStore(
         }
         var atlasEvent = EngineeringAtlasLedger.Append(
             db, tx, runId, workItemId, beforeAtlas, previousGraph, currentGraph);
+        if(subpackageId is not null)
+        {
+            var last=AdaptiveWorkPlanStore.CompleteSubpackage(db,tx,job,workItemId,subpackageId);
+            Event(db,tx,runId,"EngineeringSubpackageCompleted",
+                workItemId+" / "+subpackageId+" source persisted; not tested");
+            if(!last)
+            {
+                TaskStore.Execute(db,tx,"UPDATE engineering_runs SET phase=@phase,updated_utc=@now WHERE id=@run",
+                    ("@phase","SavedSubpackage:"+subpackageId),("@now",now),("@run",runId));
+                tx.Commit();tasks.SignalEngineeringActivity(taskId);return atlasEvent;
+            }
+        }
         TaskStore.Execute(db, tx, """
             UPDATE engineering_run_tasks SET state='Completed',
                 summary=@summary,completed_utc=@now
@@ -713,7 +815,10 @@ public sealed class EngineeringRunStore(
         Event(db, tx, runId, "EngineeringTaskCompleted",
             workItemId + ": " + safe.Files.Count +
             " complete source file replacement(s) persisted (not tested)");
+        EngineeringMessageStore.Record(db, tx, job, workItemId, completed: true);
+        AdaptiveWorkPlanStore.Complete(db,tx,job,workItemId);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return atlasEvent;
     }
 
@@ -730,6 +835,8 @@ public sealed class EngineeringRunStore(
         if (success)
         {
             RequireBinding(db, tx, job);
+            EngineeringDelegationStore.RequireRoutineWrite(db,tx,job);
+            _=AdaptiveWorkPlanStore.RequireBound(db,tx,job);
             if (TaskStore.Scalar(db, tx, """
                 SELECT 1 FROM engineering_run_tasks
                 WHERE run_id=@run AND state!='Completed' LIMIT 1
@@ -766,6 +873,7 @@ public sealed class EngineeringRunStore(
             success ? "All planned tasks saved as unverified source, not executed" :
                 "Stopped safely: " + (reason ?? "GENERATION_FAILED"));
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public void Interrupt(string taskId, string runId)
@@ -773,6 +881,14 @@ public sealed class EngineeringRunStore(
         ValidId(taskId); ValidId(runId);
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
+        UpfrontTeamAuthorizationStore.Stop(db,tx,taskId,runId);
+        InterruptInTransaction(db,tx,taskId,runId);
+        tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
+    }
+
+    internal static void InterruptInTransaction(SqliteConnection db,SqliteTransaction tx,string taskId,string runId)
+    {
         var job = Find(db, tx, runId);
         if (job is null || job.TaskId != taskId)
             throw new StoreFailure("NOT_FOUND");
@@ -791,7 +907,6 @@ public sealed class EngineeringRunStore(
             Event(db, tx, runId, "EngineeringRunInterrupted",
                 "Owner stopped unverified source generation");
         }
-        tx.Commit();
     }
 
     public byte[] Zip(string taskId, string runId)

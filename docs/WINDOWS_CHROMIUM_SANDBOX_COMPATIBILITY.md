@@ -1,6 +1,6 @@
 # M4.7 — Windows Chromium sandbox-on compatibility qualification
 
-**Status: pending Windows Docker Desktop owner-host acceptance.**
+**Status: owner-reported Windows Docker Desktop fixed-fixture compatibility PASS (11/11), November 24, 2026. Untrusted generated-source qualification remains pending.**
 The owner reports M4.2 fixed guest 18/18, M4.3 scoped disposable
 workspace 17/17 + independent host 9/9, and M4.4 trusted Calculation
 Journal evaluator GREEN. M4.5 and M4.6 implement non-executable,
@@ -20,7 +20,7 @@ remain: local Windows Docker Desktop Linux engine only, immutable image
 ID and trusted registry digest, no image downloads/builds, network
 disabled, read-only root, no host mounts/ports/secrets/sockets,
 non-root 1000:1000, all capabilities dropped, no-new-privileges,
-the **byte-pinned official Playwright seccomp profile** (default-deny
+the **byte-pinned fixture-only derivative of the official Playwright seccomp profile** (default-deny
 with its documented clone/setns/unshare namespace exceptions), finite
 CPU/PID/memory/runtime limits, private IPC, disposable /tmp and
 shared-memory limits.
@@ -101,13 +101,13 @@ security finding. Complete #76/#92/#111 using integrated cases tied
 to that actual workflow, with actionable application-specific evidence.
 
 Reference: https://playwright.dev/docs/docker
-## One command on Windows after GitHub CI green and PR merge
+## One command on Windows after GitHub CI green
 
 From the existing CodingAssistant checkout, with Docker Desktop
 running in Linux-container mode:
 
 ~~~powershell
-git switch main
+git switch feature/autonomous-engineering-team
 git pull --ff-only
 node tools/m4/windows_chromium_sandbox_qualification.mjs --run
 ~~~
@@ -122,7 +122,9 @@ Expected success, *only if independently observed on the owner host*:
 M4.7 WINDOWS_SANDBOX_COMPATIBILITY_PASS
   fixed isolation and browser checks: 11/11
   container removed: true
-  Chromium: HEADLESS_SHELL; fixed DOM: PASS; sandbox status: PASS
+  seccomp fixture policy: m47-fixed-chromium-chroot-v1
+  fixed fixture PID limit: 256
+  Chromium: FULL_CHROMIUM; fixed DOM: PASS; sandbox status: PASS
   generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED
 ~~~
 
@@ -151,3 +153,37 @@ disabled regardless of the fixed compatibility result.
 CI only validates command policy, exact guest source and result schema,
 browser flag omissions, simulated Docker/cleanup negatives and local
 Node syntax. CI does **not** run this guest inside Docker Desktop.
+
+## November 24 follow-up — full Chromium and stronger observations
+
+Owner-host evidence again reports 9/11 with HEADLESS_SHELL and CHROMIUM_CRASH for both browser checks; cleanup is confirmed. The generic crash category did not establish the cause. The probe now prefers the cached full Chromium binary for its internal WebUI, creates separate private HOME/XDG/profile directories inside the same disposable tmpfs, and distinguishes allowlisted crash signals, Crashpad and profile errors. No Docker privileges, mounts, limits or seccomp policy change. The headless shell cannot establish a positive internal sandbox status.
+
+The DOM check now requires the changed output element, not merely the marker in the script text. Script/style/template content is excluded from the internal status assertion. A positive browser Boolean with a conflicting diagnostic is rejected. The unchanged 11/11 requirement and cleanup gate still apply; this is a targeted compatibility/measurement correction, not a confirmed host fix or qualification. A subsequent BLOCKED report is actionable by its narrower category.
+
+## SIGABRT follow-up
+
+The owner confirmed both full-Chromium invocations abort with SIGABRT. The fixed guest now records bounded, allowlisted fatal-site categories, PID/memory cgroup event deltas and a fixed unprivileged user namespace probe. This distinguishes resource exhaustion from namespace/zygote failure without changing the sandbox, raising limits or exposing raw browser logs. Diagnostic observations are not additional pass criteria and cannot override any of the eleven checks. No generated source is executed.
+
+## Owner-approved fixed-fixture chroot adjustment
+
+On November 24, 2026 the owner-host result reported 9/11, FULL_CHROMIUM, SIGABRT, USER_NAMESPACE_OK and ZYGOTE_FATAL for both invocations. The upstream policy only allows chroot with CAP_SYS_CHROOT at the outer container level; Chromium may need the call within its own user namespace. The owner explicitly approved a single-system-call adjustment for the fixed fixture only. The separate m47-fixed-chromium-chroot-seccomp.json adds exactly one unconditional SCMP_ACT_ALLOW rule for chroot, leaves the original upstream file unchanged, and grants no capability. Its bytes must equal the canonical reconstruction from the independently pinned upstream original plus that one constant rule; all deviations fail closed. Evidence records the variant, derived SHA-256 and original SHA-256 and Git blob. No generated-source runner or registry uses this derivative. All other Docker arguments and eleven compatibility checks remain unchanged. The hypothesis is not confirmed until the real owner-host probe succeeds; even then, generated execution remains unauthorized.
+
+## Post-chroot owner-host result
+
+Owner-host output confirms the approved fixture-only variant removes both SIGABRT startup failures. The two browser checks still lack affirmative rendered evidence, despite normal process exits. The probe now supplies a bounded virtual-time budget and navigation timeout (within the existing outer process timeout), following the existing trusted Calculation Journal capture approach. Failed evidence records distinguish empty/blank/unchanged/error DOM, negative or pending sandbox status, child-renderer failure, and PID/memory event deltas even when the browser process exits zero. No raw log or rendered HTML leaves the guest. This does not assert that capture timing was the sole cause. No further security policy or resource limit changes, and no generated-source execution. All eleven original checks still must pass.
+
+## Owner-approved fixed-fixture PID ceiling
+
+The subsequent owner-host run reported 9/11, normal Chromium exits, USER_NAMESPACE_OK and PID_LIMIT_HIT for both browser invocations. Kernel cgroup event deltas demonstrate that the existing 96-task limit was reached; this includes threads. The owner approved a bounded increase to 256 for M4.7's fixed fixture only. The exact ceiling is enforced by the Docker argument and recorded in the evidence. The two-CPU and 2 GiB memory limits, timeouts, seccomp policy, non-root identity, zero capabilities, no network, read-only root, and no mounts remain unchanged. No other guest or runtime profile is modified. Actual compatibility is still pending owner-host results; no generated-source execution is authorized even on 11/11.
+
+## Owner-host 10/11 — sandbox WebUI capture ceiling
+
+After the approved PID ceiling increase, the owner observed actual fixed DOM PASS, all nine isolation checks PASS and confirmed cleanup. The remaining status probe exited normally but was classified DOM_OUTPUT_OVERSIZED. The full Chromium internal WebUI contains substantially more markup than the tiny HTML fixture. The status-only capture ceiling is now 256 KiB (byte-counted), while the fixed DOM remains capped at 32 KiB. The browser process retains its existing wall-clock timeout and container limits. No raw DOM leaves the guest. The existing affirmative status assertion remains mandatory and negative/pending/oversized evidence still blocks. No changes to the approved seccomp profile, PID ceiling, container capabilities, network or runtime authorization. A subsequent owner-host result is required to demonstrate the final check.
+
+## Internal WebUI navigation correction
+
+The owner-host 10/11 result now reports UNEXPECTED_DOM_OUTPUT rather than an oversized document; the ordinary fixture continues to pass. Chrome's official Headless CLI documentation specifies that from Chrome 123, internal chrome:// URLs require the --allow-chrome-scheme-url option (https://developer.chrome.com/docs/automation-and-testing/headless-cli). The flag was missing. It is now restricted to the fixed chrome://sandbox status invocation; neither the ordinary HTML fixture nor any generated-source execution path receives it. The actual target URL is fixed by the invocation kind, not caller-supplied input. No sandbox-disable flag, remote debugging, privilege, network, seccomp, or resource-policy change. Existing affirmative-status and eleven-check gates remain mandatory. This is a documented navigation correction, not evidence of a successful owner-host run.
+
+## Owner-host compatibility acceptance — November 24, 2026
+
+The owner supplied the actual Windows console result at branch revision `9d78e08c464198ba0ce91ef26d762f00f85f945f`: `WINDOWS_SANDBOX_COMPATIBILITY_PASS`, all 11 fixed checks, full Chromium, DOM PASS, sandbox status PASS, user namespace OK, no browser diagnostics, and container removed true. The approved policy variant is `m47-fixed-chromium-chroot-v1`, with fixed fixture PID ceiling 256. The owner retains the original private evidence JSON locally; the repository records the reported observation, not a copied or independently parsed evidence file. This closes the fixed compatibility blocker only. The owner expressly limited both policy adjustments to this fixed fixture. Do not reuse them for generated source, or mark the planning registry qualified, without separately reviewed executable scope and independent adversarial qualification. Continue the task-specific workflow rather than adding redundant compatibility stages.

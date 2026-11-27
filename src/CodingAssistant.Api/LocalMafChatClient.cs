@@ -55,6 +55,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             MafAgentPurpose.TechnicalLead => 3500,
             MafAgentPurpose.SoftwareEngineer => 8000,
             MafAgentPurpose.QaEngineer => 2200,
+            MafAgentPurpose.LeadSoftwareEngineer => 3500,
             _ => 1800
         };
         var chat = new
@@ -72,7 +73,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             {
                 temperature = purpose == MafAgentPurpose.Architecture ? 0.15 : 0.2,
                 num_predict = maxTokens,
-                num_ctx = purpose == MafAgentPurpose.SoftwareEngineer ? 16384 :
+                num_ctx = purpose is MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer ? 16384 :
                     purpose == MafAgentPurpose.Specification ? 12288 : 8192
             }
         };
@@ -94,6 +95,13 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
             Content = new StringContent(JsonSerializer.Serialize(chat),
                 Encoding.UTF8, "application/json")
         };
+        // Acquire capacity before recording an actual transport request.
+        using var slot=await LocalInferenceScheduler.Shared.AcquireAsync(cancellationToken,
+            ()=>EngineeringProviderActivity.RecordQueued(model,purpose));
+        cancellationToken.ThrowIfCancellationRequested();
+        // The actual transport boundary, not an estimate of model progress.
+        using var activity = EngineeringProviderActivity.StartProvider(model,purpose,
+            cancellationToken);
         try
         {
             using var response = await client.SendAsync(request,
@@ -107,12 +115,14 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
                 throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             try
             {
-                return new ChatResponse(new ChatMessage(
+                var accepted = new ChatResponse(new ChatMessage(
                     ChatRole.Assistant, ReadAssistantContent(payload, purpose)));
+                activity?.Complete();
+                return accepted;
             }
             catch (StoreFailure error) when (
                 (purpose is MafAgentPurpose.Specification or
-                    MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.QaEngineer) &&
+                    MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer or MafAgentPurpose.QaEngineer) &&
                 (error.Code is "MODEL_OUTPUT_REJECTED" or "MODEL_THINKING_ONLY" or
                     "MODEL_OUTPUT_TRUNCATED"))
             {
@@ -191,8 +201,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         if (response.ValueKind != JsonValueKind.Object)
             throw new StoreFailure("MODEL_OUTPUT_REJECTED");
 
-        if ((purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer or
-            MafAgentPurpose.QaEngineer) &&
+        if ((purpose is MafAgentPurpose.Specification or MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer or MafAgentPurpose.QaEngineer) &&
             response.TryGetProperty("done_reason", out var reason) &&
             reason.ValueKind == JsonValueKind.String &&
             reason.GetString() == "length")
@@ -222,11 +231,11 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         // Engineering answers are JSON. A real source string can itself
         // contain literal "<think>" markup; do not mistake a tag inside a
         // syntactically JSON-prefixed answer for hidden model reasoning.
-        if ((purpose is MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.QaEngineer) &&
+        if ((purpose is MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer or MafAgentPurpose.QaEngineer) &&
             finalText.TrimStart().StartsWith("{", StringComparison.Ordinal))
             return finalText.Trim();
         return purpose is MafAgentPurpose.Specification or
-            MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.QaEngineer
+            MafAgentPurpose.SoftwareEngineer or MafAgentPurpose.LeadSoftwareEngineer or MafAgentPurpose.QaEngineer
             ? StripClosedThinkingPrefix(finalText) : finalText;
     }
 
@@ -274,6 +283,7 @@ public sealed class LocalMafChatClient(string model, MafAgentPurpose purpose)
         MafAgentPurpose.TechnicalLead => "json",
         MafAgentPurpose.SoftwareEngineer => "json",
         MafAgentPurpose.QaEngineer => "json",
+        MafAgentPurpose.LeadSoftwareEngineer => "json",
         _ => null
     };
 
@@ -296,7 +306,8 @@ public enum MafAgentPurpose
     Architecture,
     TechnicalLead,
     SoftwareEngineer,
-    QaEngineer
+    QaEngineer,
+    LeadSoftwareEngineer
 }
 
 public interface IMafChatClientFactory

@@ -17,7 +17,7 @@ public sealed record SourceSmokeResponse(
     int Passed, int Required, bool ContainerRemoved,
     string BrowserSandbox, string? Reason,
     IReadOnlyDictionary<string, bool> Checks,
-    bool Verified);
+    bool Verified,string? EvidenceId=null,bool Current=false);
 
 public sealed record LocalSourceSmokeResult(
     string Status, int Passed, int Required, bool ContainerRemoved,
@@ -267,11 +267,22 @@ public sealed class SourceSmokeCoordinator(
                 throw new StoreFailure("SOURCE_CHANGED");
             // Internal, short-lived bytes only. No browser download.
             var sourceZip = engineering.Zip(taskId, runId);
-            var report = await runner.RunAsync(sourceZip, cancellationToken);
-            return new SourceSmokeResponse(runId, checkedScope.ScopeSha256!,
-                report.Status, report.Passed, report.Required,
-                report.ContainerRemoved, report.BrowserSandbox,
-                report.Reason, report.Checks, Verified: false);
+            var evidenceStore=new SourceSmokeEvidenceStore(tasks);
+            var admitted=evidenceStore.Start(checkedScope,request);
+            try
+            {
+                var report=await runner.RunAsync(sourceZip,cancellationToken);
+                var evidence=evidenceStore.Finish(taskId,admitted.Id,report);
+                var saved=evidence.Report!;
+                return new SourceSmokeResponse(runId,checkedScope.ScopeSha256!,
+                    saved.Status,saved.Passed,saved.Required,saved.ContainerRemoved,saved.BrowserSandbox,
+                    saved.Reason,saved.Checks,Verified:false,EvidenceId:evidence.Id,Current:evidence.Current);
+            }
+            catch
+            {
+                evidenceStore.Interrupt(taskId,admitted.Id);
+                throw;
+            }
         }
         finally { _oneAtATime.Release(); }
     }

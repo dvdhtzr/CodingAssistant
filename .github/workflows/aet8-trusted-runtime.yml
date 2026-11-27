@@ -1,0 +1,28 @@
+name: AET-8 real trusted sandbox regression
+
+on:
+  push:
+    branches: ["feature/autonomous-engineering-team"]
+    paths:
+      - "tools/m4/**"
+      - "tests/run_aet8_trusted_ci.mjs"
+      - ".github/workflows/aet8-trusted-runtime.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trusted-linux-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      # This is CI-only provisioning, not a change to the offline Windows runner.
+      - name: Cache approved versioned browser image for this CI job
+        run: docker pull mcr.microsoft.com/playwright:v1.65.1-noble-amd64
+      - name: Real sandboxed private-pipe regression (trusted fixtures only)
+        run: node tests/run_aet8_trusted_ci.mjs

@@ -5,9 +5,10 @@ import {spawnSync} from 'node:child_process';
 import {
   sandboxDockerArgs,parseSandboxReport,runSandboxCompatibility,main,
   OFFICIAL_SECCOMP_GIT_BLOB,checkedChromiumSeccomp,validateChromiumSeccompBytes,
+  validateFixtureSeccompBytes,FIXTURE_SECCOMP_VARIANT,FIXTURE_PID_LIMIT,
 } from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
 import {
-  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,
+  CASES,BROWSER_ARGS,BROWSER_CODES,BROWSER_KINDS,classifyBrowser,fixedDomPassed,sandboxStatusPassed,crashDetail,outputDetail,boundedBrowserOutput,DOM_OUTPUT_LIMIT,SANDBOX_OUTPUT_LIMIT,fixedBrowserArgs,
 } from '../tools/m4/windows_chromium_sandbox_guest.mjs';
 
 const NAME='ca-win-m47-012345abcdef';
@@ -17,7 +18,8 @@ const META={Id:ID,RepoDigests:[DIGEST],Os:'linux',Architecture:'amd64'};
 const INFO={OSType:'linux',OperatingSystem:'Docker Desktop',
   PidsLimit:true,MemoryLimit:true};
 const GOOD=Object.fromEntries(CASES.map(key=>[key,true]));
-const BROWSER={binary:'HEADLESS_SHELL',dom:'PASS',sandbox:'PASS'};
+const BROWSER={binary:'FULL_CHROMIUM',dom:'PASS',sandbox:'PASS',
+  domDetail:'NONE',sandboxDetail:'NONE',namespaceProbe:'USER_NAMESPACE_OK'};
 function envelope(cases=GOOD,browser=BROWSER){
   return {schemaVersion:1,cases,browser};
 }
@@ -91,11 +93,13 @@ test('Docker contract has immutable offline image and bounded no-mount isolation
   for(const required of ['--rm','-i','--pull=never',
     '--network=none','--read-only','--cap-drop=all',
     '--security-opt=no-new-privileges','--user=1000:1000',
-    '--pids-limit=96','--memory=2g','--cpus=2',
+    '--pids-limit=256','--memory=2g','--cpus=2',
     '--ipc=private','--shm-size=256m',
     '--input-type=module','-','--run-fixed-sandbox-probe'])
     assert.ok(argv.includes(required),required);
   assert.ok(argv.includes(ID));
+  assert.equal(FIXTURE_PID_LIMIT,256);
+  assert.deepEqual(argv.filter(a=>a.startsWith('--pids-limit=')),['--pids-limit=256']);
   const seccomp=checkedChromiumSeccomp();
   const opts=argv.filter(a=>a.startsWith('--security-opt=seccomp='));
   assert.deepEqual(opts,['--security-opt=seccomp='+seccomp.path]);
@@ -116,8 +120,9 @@ test('exact upstream Playwright seccomp profile is pinned and fails on tampering
     'fddc05fb520affb145404e6f6f647ca96af8087d');
   assert.equal(attested.upstreamGitBlob,OFFICIAL_SECCOMP_GIT_BLOB);
   assert.match(attested.sha256,/^[0-9a-f]{64}$/);
-  assert.match(attested.path,/playwright-chromium-seccomp\.json$/);
-  const original=fs.readFileSync(attested.path);
+  assert.match(attested.path,/m47-fixed-chromium-chroot-seccomp\.json$/);
+  assert.equal(attested.variant,FIXTURE_SECCOMP_VARIANT);
+  const original=fs.readFileSync(new URL('../tools/m4/profiles/playwright-chromium-seccomp.json',import.meta.url));
   const normalized=Buffer.from(original.toString('utf8').replace(/\r\n/g,'\n'));
   assert.deepEqual(validateChromiumSeccompBytes(original),
     validateChromiumSeccompBytes(normalized));
@@ -154,6 +159,10 @@ test('strict report rejects malformed, oversized, unknown, and forged categories
     JSON.stringify({...envelope(),cases:{...GOOD,extra:true}}),
     JSON.stringify({...envelope(),cases:{...GOOD,non_root_uid:'true'}}),
     JSON.stringify({...envelope(),browser:{...BROWSER,dom:'raw log'}}),
+    JSON.stringify(envelope(GOOD,{...BROWSER,binary:'HEADLESS_SHELL'})),
+    JSON.stringify(envelope(GOOD,{...BROWSER,domDetail:'raw secret'})),
+    JSON.stringify(envelope(GOOD,{...BROWSER,namespaceProbe:'raw secret'})),
+    JSON.stringify(envelope(GOOD,{...BROWSER,dom:'CHROMIUM_CRASH_SIGTRAP'})),
     JSON.stringify({...envelope(),browser:{...BROWSER,path:'/home/user'}}),
     JSON.stringify({...envelope(),browser:{...BROWSER,sandbox:0}}),
     '{unclosed',
@@ -171,7 +180,10 @@ test('Chrome error categorizer emits only allowlisted codes and no stderr',()=>{
       'CHROMIUM_SANDBOX_REJECTED'],
     [{stderr:'no usable sandbox!'},'CHROMIUM_SANDBOX_REJECTED'],
     [{stderr:'Resource temporarily unavailable'},'CHROMIUM_RESOURCE_EXHAUSTED'],
-    [{signal:'SIGSYS',stderr:'SECRET'},'CHROMIUM_CRASH'],
+    [{signal:'SIGSYS',stderr:'SECRET'},'CHROMIUM_CRASH_SIGSYS'],
+    [{signal:'SIGTRAP',stderr:'SECRET'},'CHROMIUM_CRASH_SIGTRAP'],
+    [{signal:'SIGABRT',stderr:'SECRET'},'CHROMIUM_CRASH_SIGABRT'],
+    [{signal:'SIGTRAP',stderr:'chrome_crashpad_handler: --database is required SECRET'},'CHROMIUM_CRASHPAD_ERROR'],
     [{status:1,stderr:'SECRET'},'CHROMIUM_EXIT_NONZERO'],
   ];
   for(const [input,expected] of cases){
@@ -189,6 +201,10 @@ test('simulated positive Windows run never sets untrusted execution permission',
   assert.equal(result.passedChecks,11);
   assert.equal(result.containerRemoved,true);
   assert.deepEqual(result.browser,BROWSER);
+  assert.equal(result.seccompVariant,FIXTURE_SECCOMP_VARIANT);
+  assert.equal(result.fixturePidLimit,256);
+  assert.equal(result.seccompSha256,checkedChromiumSeccomp().sha256);
+  assert.equal(result.seccompUpstreamSha256,checkedChromiumSeccomp().upstreamSha256);
   for(const prop of [
     'modelInvoked','generatedSourceExecuted','sourceMounted',
     'untrustedBrowserQualified','staticWebRuntimeQualified',
@@ -257,4 +273,103 @@ test('no arguments is NOT_RUN and never contacts Docker',()=>{
     });
   assert.equal(processResult.status,0,processResult.stderr);
   assert.match(processResult.stdout,/NOT_RUN/);
+});
+
+test('rendered fixture must change actual output; script source is not a pass',()=>{
+  assert.equal(fixedDomPassed('<output id="result">PENDING</output><script>document.querySelector("#result").textContent="CA_M47_SANDBOXED_DOM_OK"</script>'),false);
+  assert.equal(fixedDomPassed('<script>const x=\'<output id="result">CA_M47_SANDBOXED_DOM_OK</output>\'</script>'),false);
+  assert.equal(fixedDomPassed('<output id="result">CA_M47_SANDBOXED_DOM_OK</output>'),true);
+  assert.equal(sandboxStatusPassed('<script>const status="You are adequately sandboxed."</script>'),false);
+  assert.equal(sandboxStatusPassed('<p>You are not adequately sandboxed!</p>'),false);
+  assert.equal(sandboxStatusPassed('<p>You are adequately sandboxed.</p>'),true);
+});
+
+test('crash details distinguish kernel resource limits from sandbox startup without returning raw logs',()=>{
+  assert.equal(crashDetail({status:null,stderr:'SECRET'},{pids:1},{pids:2}),'PID_LIMIT_HIT');
+  assert.equal(crashDetail({status:null},{oom:0},{oom:1}),'MEMORY_LIMIT_HIT');
+  assert.equal(crashDetail({status:null,stderr:'FATAL:sandbox/linux/services/credentials.cc:137] Check failed: Permission denied (13) SECRET'}),'NAMESPACE_CREDENTIALS_FATAL');
+  assert.equal(crashDetail({status:null,stderr:'pthread_create: Resource temporarily unavailable SECRET'}),'THREAD_CREATION_FATAL');
+  assert.equal(crashDetail({status:null,stderr:'FATAL:zygote_host_impl_linux.cc:126 SECRET'}),'ZYGOTE_FATAL');
+  assert.equal(crashDetail({status:null,stderr:'SECRET'}),'NO_FATAL_LOG');
+  assert.equal(crashDetail({status:0},{pids:0},{pids:1}),'PID_LIMIT_HIT');
+  assert.equal(crashDetail({status:0},{pids:0},{pids:0}),'NONE');
+});
+
+test('owner-approved fixture policy differs by exactly one unconditional chroot syscall rule',()=>{
+  const original=fs.readFileSync(new URL('../tools/m4/profiles/playwright-chromium-seccomp.json',import.meta.url));
+  const checked=checkedChromiumSeccomp();
+  const derived=fs.readFileSync(checked.path);
+  const p=JSON.parse(original.toString('utf8')), q=JSON.parse(derived.toString('utf8'));
+  const extra=q.syscalls.pop();
+  assert.deepEqual(q,p);
+  assert.deepEqual(extra.names,['chroot']);
+  assert.equal(extra.action,'SCMP_ACT_ALLOW');
+  assert.deepEqual(extra.args,[]);
+  assert.deepEqual(extra.includes,{});
+  assert.deepEqual(extra.excludes,{});
+  assert.equal(p.defaultAction,'SCMP_ACT_ERRNO');
+  assert.equal(validateFixtureSeccompBytes(original,derived).sha256,checked.sha256);
+  assert.deepEqual(validateFixtureSeccompBytes(original,Buffer.from(derived.toString('utf8').replace(/\r?\n/g,'\r\n'))),validateFixtureSeccompBytes(original,derived));
+  for(const mutate of [
+    x=>x.defaultAction='SCMP_ACT_ALLOW',
+    x=>x.syscalls.at(-1).names.push('mount'),
+    x=>x.syscalls.at(-1).names=['pivot_root'],
+    x=>x.syscalls.splice(0,1),
+    x=>x.syscalls.pop(),
+  ]){
+    const changed=JSON.parse(derived.toString('utf8'));mutate(changed);
+    assert.throws(()=>validateFixtureSeccompBytes(original,Buffer.from(JSON.stringify(changed,null,2)+'\n')));
+  }
+  assert.throws(()=>validateFixtureSeccompBytes(Buffer.from(original.toString('utf8')+' '),derived));
+});
+
+test('normal exit without rendered evidence yields actionable bounded diagnostics',()=>{
+  const result=(stdout,stderr='')=>({status:0,stdout,stderr});
+  assert.equal(outputDetail(result(''),'dom'),'EMPTY_DOM_OUTPUT');
+  assert.equal(outputDetail(result('<html><body></body></html>'),'dom'),'BLANK_DOM_OUTPUT');
+  assert.equal(outputDetail(result('<output id="result">PENDING</output>'),'dom'),'FIXTURE_PENDING');
+  assert.equal(outputDetail(result('<div id="main-frame-error">SECRET</div>'),'dom'),'BROWSER_ERROR_PAGE');
+  assert.equal(outputDetail(result('<h1>Sandbox Status</h1>'),'status'),'SANDBOX_STATUS_PENDING');
+  assert.equal(outputDetail(result('<p>You are not adequately sandboxed.</p>'),'status'),'SANDBOX_NEGATIVE');
+  assert.equal(outputDetail(result('','pthread_create: Resource temporarily unavailable SECRET'),'dom'),'RENDERER_THREAD_FAILED');
+  assert.equal(outputDetail(result('','zygote failed SECRET'),'dom'),'NAMESPACE_CHILD_FAILED');
+  assert.equal(outputDetail(result('','renderer process crashed SECRET'),'dom'),'RENDERER_PROCESS_FAILED');
+  assert.equal(outputDetail(result(''),'status',{pids:0},{pids:1}),'PID_LIMIT_HIT');
+  assert.equal(outputDetail(result(''),'status',{oom:0},{oom:1}),'MEMORY_LIMIT_HIT');
+  assert.equal(outputDetail(result('x'.repeat(40000)),'dom'),'DOM_OUTPUT_OVERSIZED');
+  assert.equal(outputDetail(result('<p>SECRET</p>'),'dom'),'UNEXPECTED_DOM_OUTPUT');
+  assert.ok(BROWSER_ARGS.includes('--virtual-time-budget=5000'));
+  assert.ok(BROWSER_ARGS.includes('--timeout=12000'));
+});
+
+test('sandbox status has its own bounded capture ceiling without weakening evidence assertions',()=>{
+  assert.equal(DOM_OUTPUT_LIMIT,32768);
+  assert.equal(SANDBOX_OUTPUT_LIMIT,262144);
+  const padding='<style>/*'+'x'.repeat(40000)+'*/</style>';
+  const yes=padding+'<p>You are adequately sandboxed.</p>';
+  const no=padding+'<p>You are not adequately sandboxed.</p>';
+  const scriptOnly=padding+'<script>const msg="You are adequately sandboxed."</script>';
+  assert.equal(boundedBrowserOutput(yes,'dom'),false);
+  assert.equal(boundedBrowserOutput(yes,'status'),true);
+  assert.equal(sandboxStatusPassed(yes),true);
+  assert.equal(sandboxStatusPassed(no),false);
+  assert.equal(sandboxStatusPassed(scriptOnly),false);
+  assert.equal(outputDetail({status:0,stdout:no},'status'),'SANDBOX_NEGATIVE');
+  assert.equal(outputDetail({status:0,stdout:'x'.repeat(SANDBOX_OUTPUT_LIMIT+1)},'status'),'DOM_OUTPUT_OVERSIZED');
+  assert.equal(boundedBrowserOutput('é'.repeat(16385),'dom'),false);
+});
+
+test('headless internal-scheme permission is restricted to the fixed sandbox-status invocation',()=>{
+  const dom=fixedBrowserArgs('dom','/tmp/fixture-profile');
+  const status=fixedBrowserArgs('status','/tmp/status-profile');
+  assert.deepEqual(dom,[...BROWSER_ARGS,'--user-data-dir=/tmp/fixture-profile','file:///tmp/ca-m47-sandbox.html']);
+  assert.deepEqual(status,[...BROWSER_ARGS,'--allow-chrome-scheme-url','--user-data-dir=/tmp/status-profile','chrome://sandbox']);
+  assert.ok(!BROWSER_ARGS.includes('--allow-chrome-scheme-url'));
+  assert.ok(!dom.includes('--allow-chrome-scheme-url'));
+  for(const args of [dom,status]){
+    for(const bypass of ['--no-sandbox','--disable-setuid-sandbox','--single-process','--no-zygote','--disable-seccomp-filter-sandbox','--disable-web-security'])
+      assert.ok(!args.includes(bypass));
+    assert.ok(!args.some(a=>a.startsWith('--remote-debugging')));
+  }
+  assert.throws(()=>fixedBrowserArgs('https://example.com','/tmp/status-profile'));
 });

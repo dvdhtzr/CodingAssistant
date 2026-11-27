@@ -385,6 +385,8 @@ public sealed class LocalInterviewModel : IInterviewModel
             Content = new StringContent(JsonSerializer.Serialize(chat),
                                         Encoding.UTF8, "application/json")
         };
+        using var slot=await LocalInferenceScheduler.Shared.AcquireAsync(cancellation);
+        cancellation.ThrowIfCancellationRequested();
         try
         {
             using var response = await client.SendAsync(

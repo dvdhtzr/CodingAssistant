@@ -54,7 +54,12 @@ public static class ApiHost
         IEngineeringTaskModel? engineeringModelOverride = null,
         IQaSourceReviewer? qaReviewerOverride = null,
         ILocalSourceSmokeRunner? sourceSmokeOverride = null,
-        IAtlasCommitArchiveDownloader? atlasArchiveOverride = null)
+        IAtlasCommitArchiveDownloader? atlasArchiveOverride = null,
+        ILeadSourceReviewer? leadReviewerOverride = null,
+        IEngineeringIssueVerifier? issueVerifierOverride = null,
+        ICollaborationLead? collaborationLeadOverride=null,
+        IRootCauseInvestigator? rootCauseInvestigatorOverride=null,
+        IRootCauseReviewer? rootCauseReviewerOverride=null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -72,6 +77,12 @@ public static class ApiHost
 
         // Fail before opening a network listener if data permissions are unsafe.
         var store = new TaskStore(settings.DataDirectory);
+        _=LocalInferenceScheduler.Shared;
+        new InferenceLeaseStore(store).Recover();
+        new SourceSmokeEvidenceStore(store).Recover();
+        new EvaluationPlanReviewStore(store).Recover();
+        new BehavioralContractReviewStore(store).Recover();
+        new EvaluationExecutionAuthorizationStore(store).Recover();
         var roleModels = new AgentRoleModelSettings(store);
         roleModels.Initialize();
         var runs = new RunStore(store);
@@ -104,6 +115,8 @@ public static class ApiHost
             atlasArchiveOverride ?? new PublicGitHubCommitArchiveDownloader());
         atlasImports.Initialize();
         engineeringRuns.MarkInterruptedOnStartup();
+        var leadReviews = new LeadReviewStore(store);
+        leadReviews.MarkInterruptedOnStartup();
         var qaReviews = new QaReviewStore(store, implementationPlans);
         qaReviews.Initialize();
         qaReviews.MarkInterruptedOnStartup();
@@ -190,6 +203,10 @@ public static class ApiHost
         builder.Services.AddSingleton(atlasImports);
         builder.Services.AddSingleton<IEngineeringTaskModel>(softwareEngineer);
         builder.Services.AddSingleton<EngineeringRunCoordinator>();
+        builder.Services.AddSingleton(leadReviews);
+        builder.Services.AddSingleton<ILeadSourceReviewer>(leadReviewerOverride ?? new MafLeadSoftwareEngineer());
+        builder.Services.AddSingleton<LeadReviewCoordinator>();
+        builder.Services.AddSingleton<IEngineeringIssueVerifier>(issueVerifierOverride ?? new MafEngineeringIssueVerifier());
         builder.Services.AddSingleton(qaReviews);
         builder.Services.AddSingleton(repairProposals);
         builder.Services.AddSingleton(repairTriage);
@@ -223,6 +240,16 @@ public static class ApiHost
         });
         builder.Services.AddSingleton<RunNotifier>();
         builder.Services.AddSingleton<EngineeringAtlasNotifier>();
+        builder.Services.AddSingleton<EngineeringActivityStore>();
+        var collaborationStore=new CollaborationStore(store);
+        collaborationStore.Recover();
+        new UpfrontTeamAuthorizationStore(store).Recover();
+        builder.Services.AddSingleton(collaborationStore);
+        builder.Services.AddSingleton<ICollaborationLead>(collaborationLeadOverride??new MafCollaborationLead());
+        builder.Services.AddSingleton<IRootCauseInvestigator>(rootCauseInvestigatorOverride??new MafRootCauseInvestigator());
+        builder.Services.AddSingleton<IRootCauseReviewer>(rootCauseReviewerOverride??new MafRootCauseReviewer());
+        builder.Services.AddSingleton<CollaborationCoordinator>();
+        builder.Services.AddHostedService<EngineeringActivityNotifier>();
 
         var app = builder.Build();
         app.Use(async (context, next) =>
@@ -420,6 +447,38 @@ public static class ApiHost
         // All steps are planning-only; none can launch the M1 execution plane.
         app.MapGet("/api/tasks/{id}/interview", (string id, InterviewStore db) =>
             Safe(() => Results.Ok(db.Read(id))));
+        // Owner-only policy management. These endpoints do not start work.
+        app.MapGet("/api/tasks/{id}/engineering-delegation",
+            (string id, TaskStore tasks) => Safe(() => Results.Ok(new {
+                policy = new EngineeringDelegationStore(tasks).Read(id)
+            })));
+        app.MapGet("/api/tasks/{id}/engineering-delegation/history",
+            (string id, TaskStore tasks) => Safe(() => Results.Ok(new {
+                history = new EngineeringDelegationStore(tasks).History(id)
+            })));
+        app.MapPost("/api/tasks/{id}/engineering-delegation/propose",
+            (string id, ProposeDelegationRequest input, TaskStore tasks) =>
+                Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Propose(id, input))));
+        app.MapPost("/api/tasks/{id}/engineering-delegation/approve",
+            (string id, ApproveDelegationRequest input, TaskStore tasks) =>
+                Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Approve(id, input))));
+        app.MapPost("/api/tasks/{id}/engineering-delegation/revoke",
+            (string id, ApproveDelegationRequest input, TaskStore tasks) =>
+                Safe(() => Results.Ok(new EngineeringDelegationStore(tasks).Revoke(id, input))));
+        app.MapGet("/api/tasks/{id}/engineering-activity",
+            (string id, long? after, int? limit, EngineeringActivityStore activity) =>
+                Safe(() => Results.Ok(activity.Read(id,after ?? 0,limit ?? 200))));
+        app.MapGet("/api/tasks/{id}/agent-communications",
+            (string id, long? after, string? role, string? direction, TaskStore tasks) =>
+                Safe(() => Results.Ok(new {
+                    messages = new AgentCommunicationStore(tasks).List(
+                        id, after ?? 0, role, direction ?? "all")
+                })));
+        app.MapGet("/api/tasks/{id}/engineering-messages",
+            (string id, long? after, TaskStore tasks) =>
+                Safe(() => Results.Ok(new {
+                    messages = new EngineeringMessageStore(tasks).List(id, after ?? 0)
+                })));
         app.MapGet("/api/tasks/{id}/agent-handoffs",
             (string id, MafHandoffStore db, ImplementationPlanStore plans,
              EngineeringRunStore engineers, QaReviewStore qa) =>
@@ -474,6 +533,8 @@ public static class ApiHost
                         snapshot.LastSequence + 1, "owner",
                         InterviewStore.ValidOwnerMessage(input.Message),
                         DateTimeOffset.UtcNow.ToString("O")));
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
+                    "ProductOwner",id);
                 InterviewReply reply;
                 if (input.Skill is null)
                     reply = await model.AskAsync(task.Objective, context, selected, cancellation);
@@ -511,6 +572,8 @@ public static class ApiHost
                 var localNames = await catalog.ListAsync(cancellation);
                 if (!localNames.Contains(selectedModel, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
+                    "ProductOwner",id);
                 string content;
                 if (input.Skill is null)
                     content = await model.DraftAsync(task.Objective, snapshot.Messages,
@@ -589,6 +652,8 @@ public static class ApiHost
                 var models = await catalog.ListAsync(cancellation);
                 if (!models.Contains(chosen, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
+                    "SolutionArchitect",id);
                 ArchitectureRecommendation recommendation;
                 if (input.Skill is null)
                     recommendation = await advisor.RecommendAsync(
@@ -668,6 +733,8 @@ public static class ApiHost
                 var installed = await catalog.ListAsync(cancellation);
                 if (!installed.Contains(chosen, StringComparer.Ordinal))
                     throw new StoreFailure("MODEL_NOT_INSTALLED");
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,id,
+                    "TechnicalLead",id);
                 var outline = await planner.PlanAsync(task.Objective, spec.Content,
                     architecture, chosen, cancellation);
                 // Atomically recheck specification, architecture and revision
@@ -676,10 +743,34 @@ public static class ApiHost
                 return Results.Created($"/api/tasks/{id}/implementation-plan",
                     created);
             }));
+        app.MapGet("/api/tasks/{id}/upfront-team-authorization",
+            (string id,TaskStore tasks)=>Safe(()=>Results.Ok(new {authorization=new UpfrontTeamAuthorizationStore(tasks).Read(id)})));
         app.MapPost("/api/tasks/{id}/implementation-plan/approve",
             (string id, ApproveImplementationPlanRequest input,
-             ImplementationPlanStore db) =>
-                Safe(() => Results.Ok(db.Approve(id, input))));
+             ImplementationPlanStore db,EngineeringRunCoordinator coordinator,
+             AgentRoleModelSettings roleModels,IOllamaModelCatalog catalog,CancellationToken cancellation) =>
+                SafeAsync(async ()=>{
+                    if(input.TeamRepair is null)return Results.Ok(db.Approve(id,input));
+                    // Reject malformed authority before checking model availability.
+                    // The store repeats this check inside the approval transaction.
+                    UpfrontTeamAuthorizationStore.ValidateScope(input.TeamRepair);
+                    var inherited=db.Read(id).Plan?.Model??LocalInterviewModel.DefaultModel;
+                    // Check all participants before recording combined approval or
+                    // launching generation. Runtime admission still rechecks models.
+                    var selected=new[]{"SoftwareEngineer","TechnicalLead","LeadSoftwareEngineer","QaEngineer"}
+                        .Select(role=>new {Role=role,Model=roleModels.Resolve(id,role,inherited)}).ToArray();
+                    var installed=await catalog.ListAsync(cancellation);
+                    var missing=selected.Where(role=>!installed.Contains(role.Model,StringComparer.Ordinal))
+                        .Select(role=>role.Role).ToArray();
+                    if(missing.Length!=0)
+                        return Results.Json(new {error="MODEL_NOT_INSTALLED",missingRoles=missing},
+                            statusCode:StatusCodes.Status503ServiceUnavailable);
+                    var model=selected[0].Model;
+                    var plan=db.Approve(id,input);
+                    coordinator.Start(id,new StartEngineeringRunRequest(plan.Revision,plan.PlanSha256,
+                        UseApprovedTeamAuthorization:true),model);
+                    return Results.Ok(plan);
+                }));
         // Exact identity, goals, fictional work histories and future skill scopes
         // are host-owned; none of these fields grant executable permissions.
         app.MapGet("/api/agents/roster", () =>
@@ -720,6 +811,8 @@ public static class ApiHost
         app.MapGet("/api/tasks/{id}/engineering-runs/{runId}",
             (string id, string runId, EngineeringRunStore db) =>
                 Safe(() => Results.Ok(db.Get(id, runId))));
+        app.MapGet("/api/tasks/{id}/delivery-evidence",
+            (string id,TaskStore tasks)=>Safe(()=>Results.Ok(new DeliveryEvidenceStore(tasks).Read(id))));
         // M7: import only a public, exact-commit GitHub source archive.
         // No repo scripts, assembly loading, shell or untrusted execution.
         app.MapGet("/api/tasks/{id}/atlas-imports",
@@ -818,6 +911,8 @@ public static class ApiHost
         // snapshot; no ZIP download, no arbitrary file/command input.
         // Chromium inner sandbox is disabled ONLY inside restricted Docker.
         // This is a smoke test, never project VERIFIED or runtime QUALIFIED.
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/source-smoke-evidence",
+            (string id,string runId,TaskStore tasks)=>Safe(()=>Results.Ok(new {evidence=new SourceSmokeEvidenceStore(tasks).List(id,runId)})));
         app.MapPost("/api/tasks/{id}/engineering-runs/{runId}/source-smoke",
             (string id, string runId, StartSourceSmokeRequest request,
              SourceSmokeCoordinator coordinator,
@@ -879,7 +974,10 @@ public static class ApiHost
                     var qa = roleModels.Resolve(id, "QaEngineer", inherited);
                     var installed = await catalog.ListAsync(cancellation);
                     if (!installed.Contains(engineer, StringComparer.Ordinal) ||
-                        !installed.Contains(qa, StringComparer.Ordinal))
+                        !installed.Contains(qa, StringComparer.Ordinal) ||
+                        (request.ContinueCollaborationId is not null &&
+                            (!installed.Contains(roleModels.Resolve(id,"TechnicalLead",inherited),StringComparer.Ordinal) ||
+                             !installed.Contains(roleModels.Resolve(id,"LeadSoftwareEngineer",inherited),StringComparer.Ordinal))))
                         throw new StoreFailure("MODEL_NOT_INSTALLED");
                     return Results.Accepted($"/api/tasks/{id}/repair-cycles",
                         coordinator.Start(id, request, engineer, qa));
@@ -887,6 +985,74 @@ public static class ApiHost
         app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/cancel",
             (string id, string cycleId, RepairCycleCoordinator coordinator) =>
                 Safe(() => Results.Ok(coordinator.Cancel(id, cycleId))));
+        app.MapGet("/api/tasks/{id}/engineering-runs/{runId}/repair-progress",
+            (string id,string runId,TaskStore tasks)=>Safe(()=>Results.Ok(new RepairProgressStore(tasks).Read(id,runId))));
+        app.MapGet("/api/inference-capacity",()=>Results.Ok(LocalInferenceScheduler.Shared.Snapshot()));
+        app.MapGet("/api/tasks/{id}/inference-leases",
+            (string id,int? limit,TaskStore tasks)=>Safe(()=>Results.Ok(new {leases=new InferenceLeaseStore(tasks).List(id,limit??100)})));
+        app.MapGet("/api/tasks/{id}/collaboration/preview",
+            (string id,CollaborationStore db)=>Safe(()=>Results.Ok(db.Preview(id))));
+        app.MapGet("/api/tasks/{id}/collaboration/latest",
+            (string id,CollaborationStore db)=>Safe(()=>Results.Ok(new {snapshot=db.Latest(id)})));
+        app.MapPost("/api/tasks/{id}/collaboration",
+            (string id,StartCollaborationRequest request,CollaborationCoordinator coordinator,CancellationToken cancellation)=>
+                SafeAsync(async()=>Results.Accepted($"/api/tasks/{id}/collaboration/latest",
+                    await coordinator.StartAsync(id,request,cancellation))));
+        app.MapPost("/api/tasks/{id}/collaboration/{jobId}/resume",
+            (string id,string jobId,StartCollaborationRequest request,CollaborationCoordinator coordinator,CancellationToken cancellation)=>
+                SafeAsync(async()=>Results.Accepted($"/api/tasks/{id}/collaboration/latest",
+                    await coordinator.ResumeAsync(id,jobId,request,cancellation))));
+        app.MapPost("/api/tasks/{id}/repair-cycles/{cycleId}/resume-collaboration",
+            (string id,string cycleId,StartCollaborationRequest request,CollaborationCoordinator coordinator,CancellationToken cancellation)=>
+                SafeAsync(async()=>Results.Accepted($"/api/tasks/{id}/collaboration/latest",
+                    await coordinator.StartAsync(id,request,cancellation,cycleId))));
+        app.MapPost("/api/tasks/{id}/collaboration/{jobId}/cancel",
+            (string id,string jobId,CollaborationCoordinator coordinator)=>Safe(()=>Results.Ok(coordinator.Cancel(id,jobId))));
+        app.MapGet("/api/tasks/{id}/adaptive-work-plan",
+            (string id,TaskStore tasks)=>Safe(()=>Results.Ok(new AdaptiveWorkPlanStore(tasks).Read(id))));
+        app.MapGet("/api/tasks/{id}/engineering-issues",
+            (string id,string? runId,TaskStore tasks) =>
+                Safe(() => Results.Ok(new EngineeringIssueStore(tasks).Read(id,runId))));
+        app.MapPost("/api/tasks/{id}/engineering-issues/verify",
+            (string id,VerifyEngineeringIssueRequest request,TaskStore tasks,
+             IEngineeringIssueVerifier verifier,AgentRoleModelSettings roleModels,
+             IOllamaModelCatalog catalog,CancellationToken cancellation)=>
+                SafeAsync(async ()=>{
+                    var store=new IssueVerificationStore(tasks);
+                    var input=store.Prepare(id,request);
+                    var role=input.Issue.Origin;
+                    var model=roleModels.Resolve(id,role,input.Plan.Model);
+                    if(!(await catalog.ListAsync(cancellation)).Contains(model,StringComparer.Ordinal))
+                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    using var scope=EngineeringProviderActivity.Enter(tasks,id,role,
+                        input.Issue.Id,input.Request.CandidateSourceSha256);
+                    var assessment=await verifier.VerifyAsync(input,model,cancellation);
+                    cancellation.ThrowIfCancellationRequested();
+                    return Results.Ok(store.Record(id,input,role,model,assessment));
+                }));
+        app.MapGet("/api/tasks/{id}/lead-reviews/latest",
+            (string id, LeadReviewStore db) =>
+                Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
+        app.MapPost("/api/tasks/{id}/lead-reviews",
+            (string id, StartQaReviewRequest request,
+             LeadReviewCoordinator coordinator, ImplementationPlanStore plans,
+             AgentRoleModelSettings roleModels, IOllamaModelCatalog catalog,
+             CancellationToken cancellation) =>
+                SafeAsync(async () => {
+                    var inherited = plans.Read(id).Plan?.Model ?? LocalInterviewModel.DefaultModel;
+                    var model = roleModels.Resolve(id, "LeadSoftwareEngineer", inherited);
+                    var installed = await catalog.ListAsync(cancellation);
+                    if (!installed.Contains(model, StringComparer.Ordinal))
+                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    return Results.Accepted($"/api/tasks/{id}/lead-reviews",
+                        coordinator.Start(id,request,model));
+                }));
+        app.MapGet("/api/tasks/{id}/lead-reviews/{reviewId}",
+            (string id,string reviewId,LeadReviewStore db) =>
+                Safe(() => Results.Ok(db.Get(id,reviewId))));
+        app.MapPost("/api/tasks/{id}/lead-reviews/{reviewId}/cancel",
+            (string id,string reviewId,LeadReviewCoordinator coordinator) =>
+                Safe(() => Results.Ok(coordinator.Cancel(id,reviewId))));
         app.MapGet("/api/tasks/{id}/qa-reviews/latest",
             (string id, QaReviewStore db) =>
                 Safe(() => Results.Ok(new { snapshot = db.Latest(id) })));
@@ -1169,7 +1335,8 @@ public static class ApiHost
         var status = error.Code switch
         {
             "NOT_FOUND" => StatusCodes.Status404NotFound,
-            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" or "PRIVATE_DATA_UNAVAILABLE" =>
+            "LOCAL_MODEL_UNAVAILABLE" or "MODEL_NOT_INSTALLED" or "PRIVATE_DATA_UNAVAILABLE" or
+                "INFERENCE_QUEUE_FULL" or "INFERENCE_QUEUE_TIMEOUT" or "INFERENCE_LEASE_INTERRUPTED" =>
                 StatusCodes.Status503ServiceUnavailable,
             "REPAIR_NOT_AUTHORIZED" or "REPAIR_LIMIT_REACHED" or
                 "REPAIR_SCOPE_TOO_LARGE" or "REPAIR_SCOPE_VIOLATION" or
@@ -1183,7 +1350,10 @@ public static class ApiHost
                 "SOURCE_CHANGED" or "SOURCE_SCOPE_CHANGED" or
                 "SMOKE_BUSY" or "SMOKE_ISOLATION_ACK_REQUIRED" or
                 "SPECIFICATION_NOT_APPROVED" or
-                "STALE_SKILL_REVIEW" or "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
+                "STALE_DELEGATION_POLICY" or "DELEGATION_NOT_AUTHORIZED" or
+                "STALE_WORK_PLAN" or "WORK_SCOPE_EXPANSION" or "WORK_DEPENDENCY_CYCLE" or
+                "WORK_NOT_READY" or "WORK_SCOPE_VIOLATION" or "WORK_ALREADY_COMPLETED" or
+            "STALE_SKILL_REVIEW" or "STALE_VERSION" or "IDEMPOTENCY_CONFLICT" or
                 "APPROVAL_MISMATCH" or "PLAN_NOT_APPROVED" or
                 "INVALID_STATE" or "EXECUTION_BUSY" or
                 "EXECUTION_PLAN_CONFLICT" => StatusCodes.Status409Conflict,

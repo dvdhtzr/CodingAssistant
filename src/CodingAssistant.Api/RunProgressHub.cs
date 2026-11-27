@@ -7,10 +7,26 @@ namespace CodingAssistant.Api;
 /// Subscribe FIRST, then fetch /api/runs/{id}/events?after=cursor to close
 /// the snapshot/subscribe race. Deduplicate by (runId, sequence).
 /// </summary>
-public sealed class RunProgressHub(RunStore runs, EngineeringAtlasLedger atlas) : Hub
+public sealed class RunProgressHub(RunStore runs, EngineeringAtlasLedger atlas,
+    EngineeringActivityStore activity) : Hub
 {
     internal static string GroupName(string runId) => "run:" + runId;
     internal static string AtlasGroupName(string runId) => "atlas:" + runId;
+
+    internal static string EngineeringGroupName(string taskId) => "engineering:" + taskId;
+
+    public async Task<long> WatchEngineeringActivity(string taskId)
+    {
+        _ = activity.Read(taskId,0,1);
+        await Groups.AddToGroupAsync(Context.ConnectionId,EngineeringGroupName(taskId));
+        return activity.Read(taskId,0,1).LastSequence;
+    }
+
+    public Task UnwatchEngineeringActivity(string taskId)
+    {
+        _ = activity.Read(taskId,0,1);
+        return Groups.RemoveFromGroupAsync(Context.ConnectionId,EngineeringGroupName(taskId));
+    }
 
     public async Task<long> WatchRun(string runId)
     {

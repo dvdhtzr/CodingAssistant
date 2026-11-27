@@ -205,16 +205,22 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 FROM qa_review_events WHERE qa_id=@id),@kind,@detail,@now)
             """, ("@id", reviewId), ("@kind", kind), ("@detail", detail),
             ("@now", DateTimeOffset.UtcNow.ToString("O")));
+        var job = Find(db,tx,reviewId);
+        if (job is not null)
+            EngineeringActivityStore.Record(db,tx,job.TaskId,kind,"QaEngineer",
+                "QaReview",reviewId,long.Parse(TaskStore.Scalar(db,tx,
+                    "SELECT MAX(sequence) FROM qa_review_events WHERE qa_id=@id",
+                    ("@id",reviewId))!),sourceSha256:job.SourceSha256,model:job.Model);
     }
 
     public QaReviewRun Start(string taskId,
         EngineeringRunSnapshot source, ImplementationPlan plan,
-        string? agentModel = null) =>
-        StartBound(taskId, source, plan, agentModel, null, out _);
+        string? agentModel = null,CollaborationAdmission? admission=null) =>
+        StartBound(taskId, source, plan, agentModel, null, out _, admission);
 
     internal QaReviewRun StartBound(string taskId, EngineeringRunSnapshot source,
         ImplementationPlan plan, string? agentModel, QaSkillRequest? skill,
-        out QaSkillContext? skillContext)
+        out QaSkillContext? skillContext,CollaborationAdmission? admission=null)
     {
         ValidateId(taskId);
         if (source.Job.TaskId != taskId ||
@@ -234,6 +240,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         using var db = tasks.Open();
         using var tx = db.BeginTransaction();
         RequireSource(db, tx, review);
+        CollaborationStore.AdmitReview(db,tx,taskId,review.EngineeringRunId,review.SourceSha256,review.Id,"QaEngineer",admission);
         try
         {
             TaskStore.Execute(db, tx, """
@@ -278,6 +285,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 " saved source-inspection activity record(s) from this " +
                 "engineering run; no build or tests executed");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return review;
     }
 
@@ -442,6 +450,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireSource(db, tx, job);
+        CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"QaEngineer");
         var sha = TaskStore.Scalar(db, tx, """
             SELECT sha256 FROM engineering_run_files
             WHERE run_id=@run AND path=@path
@@ -503,6 +512,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             source.Path + " static review saved (" +
             valid.Findings.Count + " possible issue(s); not tested)");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     /// <summary>
@@ -533,6 +543,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         if (job.State != "Running")
             throw new StoreFailure("INVALID_STATE");
         RequireSource(db, tx, job);
+        CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"QaEngineer");
         var sha = TaskStore.Scalar(db, tx, """
             SELECT sha256 FROM engineering_run_files
             WHERE run_id=@run AND path=@path
@@ -574,6 +585,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
             fileKey + " source " + observation.SourceRevision[..12] +
             " (" + observation.ResultCount + " static result(s); not tested)");
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public void Finish(string taskId, string reviewId, bool success, string? code)
@@ -589,6 +601,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
         if (success)
         {
             RequireSource(db, tx, job);
+        CollaborationStore.RequireReviewAuthority(db,tx,taskId,job.Id,"QaEngineer");
             var expected = TaskStore.Scalar(db, tx, """
                 SELECT COUNT(*) FROM engineering_run_files WHERE run_id=@run
                 """, ("@run", job.EngineeringRunId));
@@ -618,6 +631,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 : "Independent source review stopped safely: " +
                     (code ?? "REVIEW_FAILED"));
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public void Interrupt(string taskId, string reviewId)
@@ -639,6 +653,7 @@ public sealed class QaReviewStore(TaskStore tasks, ImplementationPlanStore plans
                 "Owner stopped independent static source review");
         }
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     public IReadOnlyList<MafHandoffEvent> Handoffs(string taskId)

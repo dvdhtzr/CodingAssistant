@@ -17,6 +17,32 @@ using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.Data.Sqlite;
 
+if (args.Length == 1 && args[0] == "--pilot-job-fixed-io")
+{
+    Environment.ExitCode=await PilotWindowsIoSmoke.Run();
+    return;
+}
+if (args.Length == 1 && args[0] == "--pilot-job-io-interruptions")
+{
+    Environment.ExitCode=await PilotWindowsJobSmoke.RunIoInterruptions();
+    return;
+}
+if (args.Length == 2 && args[0] == "--pilot-job-io-owner")
+{
+    Environment.ExitCode=await PilotWindowsJobSmoke.IoOwner(args[1]);
+    return;
+}
+if (args.Length == 1 && args[0] == "--pilot-job-ownership")
+{
+    Environment.ExitCode=await PilotWindowsJobSmoke.Run();
+    return;
+}
+if (args.Length == 2 && args[0] == "--pilot-job-owner")
+{
+    Environment.ExitCode=PilotWindowsJobSmoke.Owner(args[1]);
+    return;
+}
+
 const string OwnerToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 var checks = 0;
 
@@ -63,6 +89,317 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     {
         BaseAddress = new Uri(address)
     };
+}
+
+// The planning bridge never resolves an executable or script from PATH or
+// the current directory. Test file identity without launching a process.
+{
+    var folder=Path.Combine(Path.GetTempPath(),"ca-binder-pin-"+Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(folder);
+    try
+    {
+        var fixture=Path.Combine(folder,"reviewed.txt");
+        File.WriteAllText(fixture,"reviewed fixture");
+        var digest=Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(fixture)));
+        Check(EvaluationPlanBinder.RequirePinnedFile(fixture,digest)==Path.GetFullPath(fixture),
+            "planning binder accepts exact explicit pinned file");
+        foreach(var invalid in new[]{(Path.GetFileName(fixture),digest),(fixture,new string('0',64)),
+            (fixture,"not-a-pin"),(Path.Combine(folder,"missing"),digest)})
+        {
+            try
+            {
+                _=EvaluationPlanBinder.RequirePinnedFile(invalid.Item1,invalid.Item2);
+                Check(false,"invalid planning file identity must be blocked");
+            }
+            catch(StoreFailure e)when(e.Code is "EVALUATION_BINDER_PROVENANCE_REQUIRED" or
+                "EVALUATION_BINDER_PROVENANCE_INVALID")
+            {Check(true,"relative, missing, malformed or mismatched pin fails closed");}
+        }
+        File.AppendAllText(fixture,"changed");
+        try
+        {
+            _=EvaluationPlanBinder.RequirePinnedFile(fixture,digest);
+            Check(false,"changed reviewed file must be blocked");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_PROVENANCE_INVALID")
+        {Check(true,"changed file invalidates planning provenance");}
+        var names=new[]{
+            "calculation_journal_contract.mjs",
+            "smoke_generated_zip.mjs",
+            "static_web_evaluation_admission.mjs",
+            "static_web_evaluation_candidate.mjs",
+            "windows_aet8_trusted_guest.mjs",
+            "windows_aet8_trusted_qualification.mjs",
+            "windows_calculator_evaluator_guest.mjs",
+            "windows_calculator_evaluator_qualification.mjs",
+            "windows_chromium_sandbox_guest.mjs",
+            "windows_chromium_sandbox_qualification.mjs",
+            "windows_docker_guest.mjs",
+            "windows_docker_qualification.mjs"
+        };
+        var pins=new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach(var name in names)
+        {
+            File.WriteAllText(Path.Combine(folder,name),"reviewed fixture");
+            pins.Add(name,digest);
+        }
+        EvaluationPlanBinder.RequirePinnedModules(folder,pins);
+        Check(true,"all reviewed planning modules match their exact pins");
+        pins.Remove(names[0]);
+        try
+        {
+            EvaluationPlanBinder.RequirePinnedModules(folder,pins);
+            Check(false,"missing module pin must be blocked");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_MODULE_PINS_REQUIRED")
+        {Check(true,"missing module pin fails closed");}
+        pins.Add("unexpected.mjs",digest);
+        try
+        {
+            EvaluationPlanBinder.RequirePinnedModules(folder,pins);
+            Check(false,"substituted module pin must be blocked");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_MODULE_PINS_REQUIRED")
+        {Check(true,"unexpected module cannot substitute for required module");}
+        pins.Remove("unexpected.mjs");pins.Add(names[0],digest);
+        File.AppendAllText(Path.Combine(folder,names[0]),"changed");
+        try
+        {
+            EvaluationPlanBinder.RequirePinnedModules(folder,pins);
+            Check(false,"changed dependency must be blocked");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_PROVENANCE_INVALID")
+        {Check(true,"changed imported module invalidates binder provenance");}
+        var start=new System.Diagnostics.ProcessStartInfo();
+        start.Environment["NODE_OPTIONS"]="--require unreviewed";
+        start.Environment["NODE_PATH"]="unreviewed";
+        start.Environment["OPENSSL_CONF"]="unreviewed";
+        start.Environment["CA_BINDER_TEST"]="retain";
+        EvaluationPlanBinder.RemoveNodeEnvironmentOverrides(start);
+        Check(!start.Environment.ContainsKey("NODE_OPTIONS")&&!start.Environment.ContainsKey("NODE_PATH")&&
+            !start.Environment.ContainsKey("OPENSSL_CONF")&&start.Environment["CA_BINDER_TEST"]=="retain",
+            "planning process removes Node and OpenSSL overrides without mutating parent environment");
+    }
+    finally{Directory.Delete(folder,true);}
+}
+
+// Read-only owner-private planning configuration, no real executables or
+// Docker process. Invalid configuration never falls back or creates a file.
+{
+    var configRoot=Path.Combine(Path.GetTempPath(),"ca-planning-config-"+Guid.NewGuid().ToString("N"));
+    PrivateDataDirectory.Ensure(configRoot);
+    try
+    {
+        var configPath=Path.Combine(configRoot,EvaluationPlanningHostConfiguration.FileName);
+        void RejectConfig(string code,string label)
+        {
+            try
+            {
+                _=EvaluationPlanningHostConfiguration.Load(configRoot);
+                Check(false,label);
+            }
+            catch(StoreFailure e)when(e.Code==code){Check(true,label);}
+        }
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_REQUIRED","missing host configuration does not auto-enroll");
+        Check(!File.Exists(configPath),"configuration load never writes trust data");
+        var modulePins=new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach(var name in new[]{
+            "calculation_journal_contract.mjs","smoke_generated_zip.mjs",
+            "static_web_evaluation_admission.mjs","static_web_evaluation_candidate.mjs",
+            "windows_aet8_trusted_guest.mjs","windows_aet8_trusted_qualification.mjs",
+            "windows_calculator_evaluator_guest.mjs","windows_calculator_evaluator_qualification.mjs",
+            "windows_chromium_sandbox_guest.mjs","windows_chromium_sandbox_qualification.mjs",
+            "windows_docker_guest.mjs","windows_docker_qualification.mjs"})
+            modulePins.Add(name,new string('a',64));
+        var configuration=new Dictionary<string,object>{
+            ["schemaVersion"]=1,["repositoryRoot"]=configRoot,
+            ["nodeExecutable"]=Path.Combine(configRoot,"node.exe"),["nodeSha256"]=new string('b',64),
+            ["binderSha256"]=new string('c',64),["modulePins"]=modulePins,
+            ["dockerExecutable"]=Path.Combine(configRoot,"docker.exe"),["dockerSha256"]=new string('d',64)};
+        void SaveConfig(string content)
+        {
+            File.WriteAllText(configPath,content);
+            if(!OperatingSystem.IsWindows())File.SetUnixFileMode(configPath,
+                UnixFileMode.UserRead|UnixFileMode.UserWrite);
+        }
+        string ValidConfig()=>JsonSerializer.Serialize(configuration);
+        SaveConfig(ValidConfig());
+        var loaded=EvaluationPlanningHostConfiguration.Load(configRoot);
+        Check(loaded.RepositoryRoot==configRoot && loaded.ModulePins.Count==12 &&
+            loaded.NodeSha256==new string('b',64),"exact owner-private config retains explicit identities");
+        configuration["executionEnabled"]=true;
+        SaveConfig(ValidConfig());
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","config cannot introduce execution permission");
+        configuration.Remove("executionEnabled");
+        SaveConfig(ValidConfig().Insert(1,"\"schemaVersion\":1,"));
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","duplicate config field is rejected");
+        configuration["nodeExecutable"]="node.exe";
+        SaveConfig(ValidConfig());
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","relative executable config cannot use PATH");
+        configuration["nodeExecutable"]=Path.Combine(configRoot,"node.exe");
+        modulePins.Remove("smoke_generated_zip.mjs");
+        SaveConfig(ValidConfig());
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","incomplete module pins cannot be enrolled");
+        SaveConfig(new string('x',16385));
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","oversized host configuration is rejected");
+        SaveConfig("{");
+        RejectConfig("EVALUATION_HOST_CONFIGURATION_INVALID","malformed host configuration is rejected");
+    }
+    finally{Directory.Delete(configRoot,true);}
+}
+
+// Planning bridge pipe limits: no model, Docker, generated code or host
+// command execution. Verify exact-boundary reads and the fail-closed signal.
+{
+    var overflow=0;
+    var atLimit=new string('x',90000);
+    using var valid=new StringReader(atLimit);
+    var result=await EvaluationPlanBinder.ReadBoundedAsync(valid,90000,()=>overflow++,CancellationToken.None);
+    Check(result==atLimit && overflow==0,"planning response at exact limit is retained");
+    foreach(var limit in new[]{90000,8192})
+    {
+        using var oversized=new StringReader(new string('x',limit+1));
+        var signalled=false;
+        try
+        {
+            _=await EvaluationPlanBinder.ReadBoundedAsync(oversized,limit,()=>signalled=true,CancellationToken.None);
+            Check(false,"oversized planning pipe must be rejected");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_RESPONSE_INVALID")
+        {Check(signalled,"oversized planning pipe signals cancellation before rejection");}
+    }
+    using var cancelled=new CancellationTokenSource();
+    cancelled.Cancel();
+    using var unread=new StringReader("not read");
+    try
+    {
+        _=await EvaluationPlanBinder.ReadBoundedAsync(unread,8192,()=>overflow++,cancelled.Token);
+        Check(false,"cancelled planning pipe must not succeed");
+    }
+    catch(OperationCanceledException)
+    {Check(overflow==0,"cancelled planning pipe does not report overflow");}
+}
+
+// Opt-in real Node transport probe. The executable is explicitly selected
+// by the local test operator. Only trusted inline fixtures and the real
+// non-executing bridge's missing-provenance case run; never generated source.
+{
+    var testNode=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_NODE_EXE");
+    if(!string.IsNullOrEmpty(testNode))
+    {
+        Check(Path.IsPathFullyQualified(testNode)&&File.Exists(testNode),
+            "explicit Node test executable exists");
+        System.Diagnostics.ProcessStartInfo Node(params string[] arguments)
+        {
+            var info=new System.Diagnostics.ProcessStartInfo(testNode){
+                UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,
+                RedirectStandardOutput=true,RedirectStandardError=true,
+                StandardInputEncoding=new System.Text.UTF8Encoding(false),
+                StandardOutputEncoding=System.Text.Encoding.UTF8};
+            EvaluationPlanBinder.RemoveNodeEnvironmentOverrides(info);
+            info.Environment.Remove("CA_EVALUATION_DOCKER_EXE");
+            info.Environment.Remove("CA_EVALUATION_DOCKER_SHA256");
+            foreach(var arg in arguments)info.ArgumentList.Add(arg);
+            return info;
+        }
+        var payload=JsonSerializer.Serialize(new {operation="transport-fixture",text="café",executionEnabled=false},
+            new JsonSerializerOptions{Encoder=System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping});
+        var echoed=await EvaluationPlanBinder.InvokePlanningProcessAsync(
+            Node("-e","const x=JSON.parse(require('node:fs').readFileSync(0,'utf8')); console.log(JSON.stringify(x));"),
+            payload,TimeSpan.FromSeconds(10),CancellationToken.None);
+        Check(echoed.GetProperty("text").GetString()=="café" &&
+            !echoed.GetProperty("executionEnabled").GetBoolean(),"real Node UTF-8 stdin/stdout round trip");
+        async Task RejectProcess(System.Diagnostics.ProcessStartInfo start,string input,string code,int milliseconds=10000)
+        {
+            try
+            {
+                _=await EvaluationPlanBinder.InvokePlanningProcessAsync(start,input,
+                    TimeSpan.FromMilliseconds(milliseconds),CancellationToken.None);
+                Check(false,"Node process must reject "+code);
+            }
+            catch(StoreFailure e)when(e.Code==code){Check(true,"real Node process rejects "+code);}
+        }
+        await RejectProcess(Node("-e","require('node:fs').readFileSync(0); console.log('[]');"),
+            "{}","EVALUATION_BINDER_RESPONSE_INVALID");
+        await RejectProcess(Node("-e","require('node:fs').readFileSync(0); process.stderr.write('x'.repeat(8193));"),
+            "{}","EVALUATION_BINDER_RESPONSE_INVALID");
+        await RejectProcess(Node("-e","require('node:fs').readFileSync(0); process.stdout.write('x'.repeat(90001));"),
+            "{}","EVALUATION_BINDER_RESPONSE_INVALID");
+        await RejectProcess(Node("-e","setInterval(()=>{},1000);"),"{}","EVALUATION_BINDER_TIMEOUT",500);
+        using(var stop=new CancellationTokenSource())
+        {
+            stop.CancelAfter(TimeSpan.FromMilliseconds(500));
+            try
+            {
+                _=await EvaluationPlanBinder.InvokePlanningProcessAsync(Node("-e","setInterval(()=>{},1000);"),
+                    "{}",TimeSpan.FromSeconds(10),stop.Token);
+                Check(false,"real Node caller cancellation must not return a descriptor");
+            }
+            catch(OperationCanceledException)when(stop.IsCancellationRequested)
+            {Check(true,"real Node caller cancellation stops the planning transport");}
+        }
+        var realBridge=Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(),"tools","m4",
+            "static_web_evaluation_host_bridge.mjs"));
+        Check(File.Exists(realBridge),"real bridge fixture is available from repository root");
+        await RejectProcess(Node(realBridge,"--stdin"),
+            "{\"operation\":\"inspect-receipt\",\"receiptName\":\"windows-static-web-012345abcdef.json\"}",
+            "EVALUATION_DOCKER_PROVENANCE_REQUIRED");
+        Console.WriteLine("EVALUATION_PLANNING_NODE_TRANSPORT_PASS");
+    }
+}
+
+// Separate pilot inspector pin closure and opt-in actual host evidence read.
+{
+    var folder=Path.Combine(Path.GetTempPath(),"ca-pilot-pins-"+Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(folder);
+    try
+    {
+        var pins=new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach(var name in PilotQualificationInspector.FileNames)
+        {
+            var file=Path.Combine(folder,name);
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file,"fixture");
+            pins.Add(name,Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file))));
+        }
+        PilotQualificationInspector.RequirePinnedFiles(folder,pins);
+        Check(true,"complete pilot input closure is explicitly pinned");
+        var removed=PilotQualificationInspector.FileNames[0];
+        var pin=pins[removed];pins.Remove(removed);
+        try{PilotQualificationInspector.RequirePinnedFiles(folder,pins);Check(false,"missing pilot pin");}
+        catch(StoreFailure e)when(e.Code=="PILOT_HOST_FILE_PINS_REQUIRED"){Check(true,"missing pilot pin rejected");}
+        pins.Add(removed,pin);File.AppendAllText(Path.Combine(folder,removed),"changed");
+        try{PilotQualificationInspector.RequirePinnedFiles(folder,pins);Check(false,"changed pilot input");}
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_PROVENANCE_INVALID"){Check(true,"changed pilot input rejected");}
+        using var forged=JsonDocument.Parse("{\"status\":\"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND\",\"executionEnabled\":true}");
+        try{PilotQualificationInspector.Validate(forged.RootElement);Check(false,"forged pilot response");}
+        catch(StoreFailure e)when(e.Code=="PILOT_HOST_RESPONSE_INVALID"){Check(true,"forged pilot response rejected");}
+    }
+    finally{Directory.Delete(folder,true);}
+    var selected=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_PILOT_RECEIPTS");
+    if(!string.IsNullOrEmpty(selected))
+    {
+        var pilotRepositoryRoot=Path.GetFullPath(Directory.GetCurrentDirectory());
+        var node=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_NODE_EXE")??throw new Exception("Explicit Node test path required");
+        var docker=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_DOCKER_EXE")??throw new Exception("Explicit Docker test path required");
+        string Hash(string file)=>Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file)));
+        // Test-only current checkout hashes, NOT production enrollment or
+        // evidence of prior host executable provenance. Nothing is saved.
+        var pins=PilotQualificationInspector.FileNames.ToDictionary(name=>name,name=>Hash(Path.Combine(pilotRepositoryRoot,name)),StringComparer.Ordinal);
+        var configuration=new EvaluationPlanningHostConfiguration(pilotRepositoryRoot,node,Hash(node),
+            Hash(Path.Combine(pilotRepositoryRoot,PilotQualificationInspector.ScriptPath)),pins,docker,Hash(docker));
+        var result=await new PilotQualificationInspector(configuration).InspectAsync(selected.Split(';'),CancellationToken.None);
+        var receiptCount=selected.Split(';').Length;
+        var buildSelected=receiptCount==5;
+        var dispatchSelected=receiptCount==7;
+        var jobSelected=receiptCount==8;
+        var ioSelected=receiptCount==10;
+        Check(result.GetProperty("status").GetString()==(ioSelected?"PILOT_JOB_IO_EVIDENCE_BOUND":jobSelected?"PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND":dispatchSelected?"PILOT_PINNED_DISPATCH_EVIDENCE_BOUND":
+            buildSelected?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")&&
+            !result.GetProperty("executionEnabled").GetBoolean(),"real pinned .NET pilot evidence inspection is non-executable");
+        Console.WriteLine(ioSelected?"PILOT_JOB_IO_EVIDENCE_INSPECTION_PASS":jobSelected?"PILOT_JOB_EVIDENCE_INSPECTION_PASS":dispatchSelected?"PILOT_PINNED_DISPATCH_EVIDENCE_INSPECTION_PASS":
+            buildSelected?"PILOT_PINNED_BUILD_EVIDENCE_INSPECTION_PASS":"PILOT_PINNED_HOST_INSPECTION_PASS");
+    }
 }
 
 // Private directory and existing database checks must fail BEFORE SQLite opens.
@@ -389,10 +726,33 @@ if (OperatingSystem.IsWindows())
         var roleTask = tasksForRoles.CreateTask(new CreateTaskRequest(
             "Model assignments", "Use independent local MAF models.",
             Guid.NewGuid().ToString("N")));
+        // Simulate a database created by the original five-role release.
+        using (var legacyDb = new SqliteConnection(new SqliteConnectionStringBuilder {
+            DataSource=Path.Combine(local,"codingassistant.db"),Pooling=false }.ToString()))
+        {
+            legacyDb.Open();
+            using var legacyCommand=legacyDb.CreateCommand();
+            legacyCommand.CommandText="""
+                CREATE TABLE agent_role_models (
+                    task_id TEXT NOT NULL REFERENCES tasks(id),
+                    agent_id TEXT NOT NULL CHECK(agent_id IN
+                        ('SolutionArchitect','TechnicalLead','SoftwareEngineer','QaEngineer')),
+                    model TEXT NOT NULL,updated_utc TEXT NOT NULL,
+                    PRIMARY KEY(task_id,agent_id)
+                );
+                INSERT INTO agent_role_models VALUES(@task,'QaEngineer','gemma4:latest','2026-11-21T00:00:00Z');
+                """;
+            legacyCommand.Parameters.AddWithValue("@task",roleTask.Id);
+            legacyCommand.ExecuteNonQuery();
+        }
         var settingsForRoles = new AgentRoleModelSettings(tasksForRoles);
         settingsForRoles.Initialize();
+        Check(settingsForRoles.Resolve(roleTask.Id,"QaEngineer","qwen3-coder:30b")=="gemma4:latest",
+            "five-role database migrates without losing existing owner assignment");
+        settingsForRoles.Initialize();
+        settingsForRoles.Set(roleTask.Id,"QaEngineer",null,"qwen3-coder:30b");
         var initial = settingsForRoles.Read(roleTask.Id, "qwen3-coder:30b");
-        Check(initial.Count == 5 &&
+        Check(initial.Count == 6 &&
               initial.Single(x => x.Role == "ProductOwner").Model ==
                 "qwen3-coder:30b" &&
               initial.Single(x => x.Role == "SolutionArchitect").Model ==
@@ -402,12 +762,14 @@ if (OperatingSystem.IsWindows())
               initial.Single(x => x.Role == "SoftwareEngineer").Model ==
                 "qwen2.5-coder:14b" &&
               initial.Single(x => x.Role == "QaEngineer").Model ==
-                "qwen2.5-coder:14b",
-            "five separate team roles with 14b coder preferred only for engineer and QA");
+                "qwen2.5-coder:14b" &&
+              initial.Single(x => x.Role == "LeadSoftwareEngineer").Model == "qwen3-coder:30b",
+            "six separate team roles with 14b coder preferred only for engineer and QA");
         settingsForRoles.Set(roleTask.Id, "QaEngineer", "gemma4:latest",
             "qwen3-coder:30b");
         settingsForRoles.Set(roleTask.Id, "SoftwareEngineer", "qwen3.5:4b",
             "qwen3-coder:30b");
+        settingsForRoles.Set(roleTask.Id, "LeadSoftwareEngineer", "qwen3.5:4b", "qwen3-coder:30b");
         var persisted = new AgentRoleModelSettings(tasksForRoles)
             .Read(roleTask.Id, "qwen3-coder:30b");
         Check(persisted.Single(x => x.Role == "QaEngineer").Model ==
@@ -415,7 +777,8 @@ if (OperatingSystem.IsWindows())
               persisted.Single(x => x.Role == "SoftwareEngineer").Model ==
                 "qwen3.5:4b" &&
               persisted.Single(x => x.Role == "TechnicalLead").Model ==
-                "qwen3-coder:30b",
+                "qwen3-coder:30b" &&
+              persisted.Single(x => x.Role == "LeadSoftwareEngineer").Model == "qwen3.5:4b",
             "agent assignment survives a new settings instance without cross-role leakage");
         settingsForRoles.Set(roleTask.Id, "QaEngineer", null, "qwen3-coder:30b");
         Check(settingsForRoles.Resolve(roleTask.Id, "QaEngineer",
@@ -1856,13 +2219,15 @@ try
         {
             var roles = json.RootElement.GetProperty("agents").EnumerateArray().ToArray();
             Check(choices.StatusCode == HttpStatusCode.OK &&
-                  roles.Length == 5 &&
+                  roles.Length == 6 &&
                   roles.Single(x => x.GetProperty("role").GetString() ==
                     "SoftwareEngineer").GetProperty("model").GetString() ==
                     "qwen2.5-coder:14b" &&
                   roles.Single(x => x.GetProperty("role").GetString() ==
                     "QaEngineer").GetProperty("model").GetString() ==
-                    "qwen2.5-coder:14b",
+                    "qwen2.5-coder:14b" &&
+                  roles.Single(x => x.GetProperty("role").GetString() ==
+                    "LeadSoftwareEngineer").GetProperty("model").GetString() == "qwen3-coder:30b",
                 "role defaults prefer 14b coder, independently of the interview model");
         }
         using (var missing = await Post(interviewClient,

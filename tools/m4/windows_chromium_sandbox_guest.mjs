@@ -19,17 +19,44 @@ export const BROWSER_CODES=Object.freeze([
   'CHROMIUM_TIMEOUT','CHROMIUM_SPAWN_ENOENT','CHROMIUM_SPAWN_EACCES',
   'CHROMIUM_SPAWN_ERROR','CHROMIUM_SHARED_LIBRARY_ERROR',
   'CHROMIUM_SANDBOX_REJECTED','CHROMIUM_RESOURCE_EXHAUSTED',
-  'CHROMIUM_CRASH','CHROMIUM_EXIT_NONZERO',
+  'CHROMIUM_CRASH','CHROMIUM_CRASH_SIGSYS','CHROMIUM_CRASH_SIGTRAP',
+  'CHROMIUM_CRASH_SIGSEGV','CHROMIUM_CRASH_SIGABRT','CHROMIUM_CRASH_SIGKILL',
+  'CHROMIUM_CRASHPAD_ERROR','CHROMIUM_PROFILE_ERROR','CHROMIUM_EXIT_NONZERO',
   'CHROMIUM_FIXED_DOM_MISSING','CHROMIUM_SANDBOX_STATUS_UNPROVEN',
 ]);
 // Deliberately absent: --no-sandbox, --disable-setuid-sandbox,
 // --single-process, --no-zygote, --disable-seccomp-filter-sandbox.
+export const CRASH_DETAILS=Object.freeze([
+  'NONE','PID_LIMIT_HIT','MEMORY_LIMIT_HIT','NAMESPACE_CREDENTIALS_FATAL',
+  'ZYGOTE_FATAL','SANDBOX_FATAL','THREAD_CREATION_FATAL','CRASHPAD_FATAL',
+  'PROFILE_FATAL','OTHER_FATAL_PERMISSION','OTHER_FATAL','NO_FATAL_LOG',
+  'RENDERER_PROCESS_FAILED','RENDERER_THREAD_FAILED','NAMESPACE_CHILD_FAILED',
+  'EMPTY_DOM_OUTPUT','BLANK_DOM_OUTPUT','FIXTURE_PENDING','BROWSER_ERROR_PAGE',
+  'SANDBOX_NEGATIVE','SANDBOX_STATUS_PENDING','UNEXPECTED_DOM_OUTPUT','DOM_OUTPUT_OVERSIZED',
+]);
+export const NAMESPACE_CODES=Object.freeze(['USER_NAMESPACE_OK','USER_NAMESPACE_DENIED',
+  'USER_NAMESPACE_TOOL_UNAVAILABLE','USER_NAMESPACE_PROBE_FAILED']);
+// The internal Chromium status WebUI includes bundled markup, unlike the tiny
+// fixed HTML fixture. Keep independent byte ceilings; never export raw HTML.
+export const DOM_OUTPUT_LIMIT=32*1024;
+export const SANDBOX_OUTPUT_LIMIT=256*1024;
+function outputLimit(kind){return kind==='status'?SANDBOX_OUTPUT_LIMIT:DOM_OUTPUT_LIMIT;}
+export function boundedBrowserOutput(html,kind){
+  return typeof html==='string'&&Buffer.byteLength(html,'utf8')<=outputLimit(kind);
+}
 export const BROWSER_ARGS=Object.freeze([
   '--headless','--disable-gpu','--disable-dev-shm-usage',
   '--disable-background-networking','--disable-crash-reporter',
   '--no-first-run','--no-default-browser-check',
-  '--user-data-dir=/tmp/ca-m47-browser','--dump-dom',
+  '--enable-logging=stderr','--virtual-time-budget=5000','--timeout=12000','--dump-dom',
 ]);
+// Chrome 123+ requires explicit internal-scheme permission in headless mode.
+// Only the reviewed status invocation may navigate to this fixed internal URL.
+export function fixedBrowserArgs(kind,profile){
+  if(kind==='status')return [...BROWSER_ARGS,'--allow-chrome-scheme-url','--user-data-dir='+profile,'chrome://sandbox'];
+  if(kind==='dom')return [...BROWSER_ARGS,'--user-data-dir='+profile,'file:///tmp/ca-m47-sandbox.html'];
+  throw new Error('Unsupported fixed browser fixture');
+}
 function denied(fn){try{fn();return false;}catch{return true;}}
 function child(command){
   return spawnSync(process.execPath,['-e',command],{
@@ -52,16 +79,18 @@ function browserExecutable(){
     const names=fs.readdirSync('/ms-playwright')
       .filter(n=>/^chromium(?:_headless_shell)?-\d+$/.test(n)).sort();
     const candidates=[];
+    // The full browser implements chrome://sandbox WebUI; old standalone
+    // headless shell is not an equivalent status-page verifier.
+    for(const name of names.filter(n=>n.startsWith('chromium-')))
+      for(const rel of ['chrome-linux64/chrome','chrome-linux/chrome'])
+        candidates.push({kind:'FULL_CHROMIUM',
+          executable:path.posix.join('/ms-playwright',name,rel)});
     for(const name of names.filter(n=>n.startsWith('chromium_headless_shell-')))
       for(const rel of [
         'chrome-headless-shell-linux64/chrome-headless-shell',
         'chrome-linux/headless_shell',
       ])candidates.push({kind:'HEADLESS_SHELL',
         executable:path.posix.join('/ms-playwright',name,rel)});
-    for(const name of names.filter(n=>n.startsWith('chromium-')))
-      for(const rel of ['chrome-linux64/chrome','chrome-linux/chrome'])
-        candidates.push({kind:'FULL_CHROMIUM',
-          executable:path.posix.join('/ms-playwright',name,rel)});
     return candidates.find(item=>fs.existsSync(item.executable)) ??
       {kind:'BINARY_NOT_FOUND',executable:null};
   }catch{return {kind:'DISCOVERY_FAILED',executable:null};}
@@ -72,35 +101,128 @@ export function classifyBrowser(proc){
   if(proc.error?.code==='EACCES')return 'CHROMIUM_SPAWN_EACCES';
   if(proc.error)return 'CHROMIUM_SPAWN_ERROR';
   const stderr=String(proc.stderr??'').slice(0,8192);
+  if(/crashpad.*(?:database|permission denied|read-only file system)|--database is required/i.test(stderr))
+    return 'CHROMIUM_CRASHPAD_ERROR';
+  if(/(?:profile|user data directory|SingletonLock).*(?:permission denied|read-only|failed|in use)|failed to create.*(?:profile|user data directory)/i.test(stderr))
+    return 'CHROMIUM_PROFILE_ERROR';
   if(/error while loading shared libraries|cannot open shared object/i.test(stderr))
     return 'CHROMIUM_SHARED_LIBRARY_ERROR';
   if(/no usable sandbox|failed to move to new namespace|failed to create.*namespace|operation not permitted|sandbox.*(fail|denied)/i.test(stderr))
     return 'CHROMIUM_SANDBOX_REJECTED';
   if(/resource temporarily unavailable|no space left on device|out of memory/i.test(stderr))
     return 'CHROMIUM_RESOURCE_EXHAUSTED';
+  if(['SIGSYS','SIGTRAP','SIGSEGV','SIGABRT','SIGKILL'].includes(proc.signal))
+    return 'CHROMIUM_CRASH_'+proc.signal;
   if(proc.signal)return 'CHROMIUM_CRASH';
   return 'CHROMIUM_EXIT_NONZERO';
 }
-function runBrowser(browser,url,kind){
-  if(!browser.executable)
-    return {passed:false,code:browser.kind};
-  const result=spawnSync(browser.executable,[...BROWSER_ARGS,url],{
-    encoding:'utf8',timeout:23000,maxBuffer:32768,
-    env:{HOME:'/tmp',PATH:process.env.PATH,XDG_CONFIG_HOME:'/tmp/config',
-      XDG_CACHE_HOME:'/tmp/cache',XDG_RUNTIME_DIR:'/tmp'},
-  });
-  if(result.status!==0)
-    return {passed:false,code:classifyBrowser(result)};
-  if(typeof result.stdout!=='string'||result.stdout.length>32768)
-    return {passed:false,code:'CHROMIUM_FIXED_DOM_MISSING'};
-  if(kind==='dom'){
-    const passed=result.stdout.includes('CA_M47_SANDBOXED_DOM_OK');
-    return {passed,code:passed?'PASS':'CHROMIUM_FIXED_DOM_MISSING'};
+// Only observed rendered output counts, not a marker embedded in script source.
+export function fixedDomPassed(html){
+  return typeof html==='string' && /<output\s+id=["']result["']\s*>\s*CA_M47_SANDBOXED_DOM_OK\s*<\/output>/i
+    .test(html.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi,''));
+}
+export function sandboxStatusPassed(html){
+  if(typeof html!=='string')return false;
+  const body=html.replace(/<(script|style|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,' ')
+    .replace(/<!--[^]*?-->/g,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+  return /you are adequately sandboxed/i.test(body) &&
+    !/you are not adequately sandboxed/i.test(body);
+}
+// Diagnostic-only read of this guest's kernel accounting; no policy change.
+function eventCount(paths,key){
+  for(const file of paths)try{
+    const lines=fs.readFileSync(file,'utf8').split('\n');
+    const line=lines.find(l=>l.startsWith(key+' '));
+    const value=line?Number(line.slice(key.length+1)):NaN;
+    if(Number.isSafeInteger(value)&&value>=0)return value;
+  }catch{}
+  return null;
+}
+function resourceEvents(){
+  return {pids:eventCount(['/sys/fs/cgroup/pids.events','/sys/fs/cgroup/pids/pids.events'],'max'),
+    oom:eventCount(['/sys/fs/cgroup/memory.events','/sys/fs/cgroup/memory/memory.events'],'oom'),
+    oomKill:eventCount(['/sys/fs/cgroup/memory.events','/sys/fs/cgroup/memory/memory.events'],'oom_kill')};
+}
+export function crashDetail(proc,before={},after={}){
+  const increased=key=>Number.isSafeInteger(before[key])&&Number.isSafeInteger(after[key])&&after[key]>before[key];
+  if(increased('pids'))return 'PID_LIMIT_HIT';
+  if(increased('oom')||increased('oomKill'))return 'MEMORY_LIMIT_HIT';
+  if(proc.status===0)return 'NONE';
+  const stderr=String(proc.stderr??'').slice(0,65536);
+  if(/FATAL[^\n]*credentials\.cc/i.test(stderr))return 'NAMESPACE_CREDENTIALS_FATAL';
+  if(/pthread_create|failed to create (?:a |new )?thread|thread creation failed/i.test(stderr))return 'THREAD_CREATION_FATAL';
+  if(/FATAL[^\n]*zygote/i.test(stderr))return 'ZYGOTE_FATAL';
+  if(/FATAL[^\n]*sandbox/i.test(stderr))return 'SANDBOX_FATAL';
+  if(/crashpad.*(?:database|permission denied)|--database is required/i.test(stderr))return 'CRASHPAD_FATAL';
+  if(/(?:SingletonLock|profile directory|user data directory).*(?:permission denied|failed|read-only)/i.test(stderr))return 'PROFILE_FATAL';
+  if(/FATAL[^\n]*(?:permission denied|operation not permitted)/i.test(stderr))return 'OTHER_FATAL_PERMISSION';
+  if(/FATAL|Check failed:/i.test(stderr))return 'OTHER_FATAL';
+  return 'NO_FATAL_LOG';
+}
+// A normal browser-process exit can hide renderer errors and exhausted
+// guest resources. Only bounded diagnostic categories leave the fixture.
+export function outputDetail(proc,kind,before={},after={}){
+  const resources=crashDetail(proc,before,after);
+  if(resources!=='NONE')return resources;
+  const stderr=String(proc.stderr??'').slice(0,65536);
+  if(/pthread_create|failed to create (?:a |new )?thread|thread creation failed/i.test(stderr))
+    return 'RENDERER_THREAD_FAILED';
+  if(/(?:zygote|namespace)[^\n]*(?:failed|denied|operation not permitted)|(?:failed|denied)[^\n]*(?:zygote|namespace)/i.test(stderr))
+    return 'NAMESPACE_CHILD_FAILED';
+  if(/(?:renderer|render process|fork|child process)[^\n]*(?:crash|failed|exited|killed|resource temporarily unavailable)|failed to (?:launch|start|fork)[^\n]*(?:renderer|child|process)/i.test(stderr))
+    return 'RENDERER_PROCESS_FAILED';
+  const html=typeof proc.stdout==='string'?proc.stdout:'';
+  if(!boundedBrowserOutput(html,kind))return 'DOM_OUTPUT_OVERSIZED';
+  if(!html.trim())return 'EMPTY_DOM_OUTPUT';
+  if(/chrome-error:\/\/|id=["']main-frame-error["']|ERR_(?:FILE_NOT_FOUND|ACCESS_DENIED|FAILED|BLOCKED_BY_CLIENT)/i.test(html))
+    return 'BROWSER_ERROR_PAGE';
+  const body=html.replace(/<(script|style|template)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,' ')
+    .replace(/<!--[^]*?-->/g,' ').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+  if(!body)return 'BLANK_DOM_OUTPUT';
+  if(kind==='dom'&&/<output\s+id=["']result["']\s*>\s*PENDING\s*<\/output>/i.test(html))
+    return 'FIXTURE_PENDING';
+  if(kind==='status'){
+    if(/not adequately sandboxed/i.test(body))return 'SANDBOX_NEGATIVE';
+    if(/sandbox status|sandbox internals/i.test(body))return 'SANDBOX_STATUS_PENDING';
   }
-  const body=result.stdout.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
-  // Ambiguous status-page responses are BLOCKED, not accepted as sandboxed.
-  const passed=/you are adequately sandboxed/i.test(body);
-  return {passed,code:passed?'PASS':'CHROMIUM_SANDBOX_STATUS_UNPROVEN'};
+  return 'UNEXPECTED_DOM_OUTPUT';
+}
+function userNamespaceProbe(){
+  // Fixed, harmless command in the already isolated guest. No UID mapping,
+  // mount, capability addition or host namespace access.
+  const result=spawnSync('/usr/bin/unshare',['--user','--','/usr/bin/true'],{
+    encoding:'utf8',timeout:5000,maxBuffer:4096,env:{HOME:'/tmp',PATH:'/usr/bin:/bin'},
+  });
+  if(result.status===0)return 'USER_NAMESPACE_OK';
+  if(result.error?.code==='ENOENT')return 'USER_NAMESPACE_TOOL_UNAVAILABLE';
+  if(/operation not permitted|permission denied/i.test(String(result.stderr??'')))return 'USER_NAMESPACE_DENIED';
+  return 'USER_NAMESPACE_PROBE_FAILED';
+}
+function runBrowser(browser,kind){
+  if(!browser.executable)
+    return {passed:false,code:browser.kind,detail:'NONE'};
+  if(kind==='status' && browser.kind!=='FULL_CHROMIUM')
+    return {passed:false,code:'CHROMIUM_SANDBOX_STATUS_UNPROVEN',detail:'NONE'};
+  // Explicitly create private, writable directories in the existing bounded
+  // guest tmpfs. Never mount the host or make the root filesystem writable.
+  const home=fs.mkdtempSync('/tmp/ca-m47-'+kind+'-');
+  const dirs=Object.fromEntries(['config','cache','runtime','profile'].map(name=>{
+    const dir=path.join(home,name);fs.mkdirSync(dir,{mode:0o700});return [name,dir];
+  }));
+  const before=resourceEvents();
+  const result=spawnSync(browser.executable,fixedBrowserArgs(kind,dirs.profile),{
+    encoding:'utf8',timeout:23000,maxBuffer:Math.max(65536,outputLimit(kind)),
+    env:{HOME:home,PATH:process.env.PATH,XDG_CONFIG_HOME:dirs.config,
+      XDG_CACHE_HOME:dirs.cache,XDG_RUNTIME_DIR:dirs.runtime},
+  });
+  const after=resourceEvents();
+  if(result.status!==0)
+    return {passed:false,code:classifyBrowser(result),detail:crashDetail(result,before,after)};
+  const valid=boundedBrowserOutput(result.stdout,kind);
+  // A zero exit is insufficient: require actual, bounded rendered evidence.
+  const passed=valid&&(kind==='dom'?fixedDomPassed(result.stdout):sandboxStatusPassed(result.stdout));
+  return {passed,code:passed?'PASS':kind==='dom'?'CHROMIUM_FIXED_DOM_MISSING':'CHROMIUM_SANDBOX_STATUS_UNPROVEN',
+    detail:passed?'NONE':outputDetail(result,kind,before,after)};
 }
 export async function runFixedCompatibility(){
   const cases={};
@@ -136,13 +258,15 @@ export async function runFixedCompatibility(){
     '<script>document.querySelector("#result").textContent='+
     '"CA_M47_SANDBOXED_DOM_OK"</script></body></html>',
     {flag:'wx',mode:0o600});
+  const namespaceProbe=userNamespaceProbe();
   const browser=browserExecutable();
-  const dom=runBrowser(browser,'file://'+sample,'dom');
-  const sandbox=runBrowser(browser,'chrome://sandbox','status');
+  const dom=runBrowser(browser,'dom');
+  const sandbox=runBrowser(browser,'status');
   cases.sandboxed_chromium_fixed_dom=dom.passed;
   cases.chromium_sandbox_status_adequate=sandbox.passed;
   return {cases,browser:{
     binary:browser.kind,dom:dom.code,sandbox:sandbox.code,
+    domDetail:dom.detail,sandboxDetail:sandbox.detail,namespaceProbe,
   }};
 }
 if(process.argv.includes('--run-fixed-sandbox-probe')){
@@ -152,7 +276,10 @@ if(process.argv.includes('--run-fixed-sandbox-probe')){
        !CASES.every(k=>typeof report.cases[k]==='boolean') ||
        !BROWSER_KINDS.includes(report.browser.binary) ||
        !BROWSER_CODES.includes(report.browser.dom) ||
-       !BROWSER_CODES.includes(report.browser.sandbox))
+       !BROWSER_CODES.includes(report.browser.sandbox) ||
+       !CRASH_DETAILS.includes(report.browser.domDetail) ||
+       !CRASH_DETAILS.includes(report.browser.sandboxDetail) ||
+       !NAMESPACE_CODES.includes(report.browser.namespaceProbe))
       throw Error('Invalid fixed guest schema');
     process.stdout.write(JSON.stringify({
       schemaVersion:1,cases:report.cases,browser:report.browser,

@@ -47,7 +47,7 @@ interface ArchitectureReadiness {
 }
 
 export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, expanded,
-  onExpand, onReady, onStageChange }: {
+  onExpand, onReady, onStageChange, guidedOwner=false }: {
   token: string;
   taskId: string;
   spec: ApprovedSpec | null;
@@ -56,6 +56,7 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
   onExpand: (stage: JourneyId) => void;
   onReady: () => void;
   onStageChange: (stage: JourneyStep) => void;
+  guidedOwner?: boolean;
 }) {
   const [saved, setSaved] = useState<PlanSnapshot | null>(null);
   const [architecture, setArchitecture] = useState<ArchitectureReadiness | null>(null);
@@ -63,6 +64,14 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [approveChecked, setApproveChecked] = useState(false);
+  const [teamMode,setTeamMode]=useState(false);
+  const [pathInput,setPathInput]=useState('');
+  const [budget,setBudget]=useState(4);
+  const paths=pathInput.split(/[\n,]/).map(p=>p.trim()).filter(Boolean);
+  const scopeError=paths.length===0?'Enter at least one exact file path from your plan to enable approval.':
+    paths.length>12?'Enter no more than 12 file paths.':
+    new Set(paths.map(p=>p.toLowerCase())).size!==paths.length?'Remove duplicate file paths.':'';
+  const scopeValid=!scopeError;
 
   useEffect(() => {
     let closed = false;
@@ -71,6 +80,7 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
     setLoading(true);
     setError('');
     setApproveChecked(false);
+    setTeamMode(false);setPathInput('');
     void Promise.all([
       api<PlanSnapshot>(token, '/api/tasks/' + taskId + '/implementation-plan'),
       api<ArchitectureReadiness>(token,
@@ -151,7 +161,7 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
 
   async function approve() {
     if (busy || !approveChecked || !plan || !planCurrent ||
-        plan.status !== 'Proposed') return;
+        plan.status !== 'Proposed'||(teamMode&&!scopeValid)) return;
     setBusy('approve');
     setError('');
     try {
@@ -160,6 +170,7 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
           schemaVersion: 1, expectedRevision: plan.revision,
           planSha256: plan.planSha256,
           confirmation: 'APPROVE ' + plan.planSha256,
+          ...(teamMode?{teamRepair:{paths,maximumRepairs:budget}}:{}),
         });
       setSaved(previous => previous ? {
         ...previous, plan: approved,
@@ -251,11 +262,26 @@ export function TechnicalLeadStudio({ token, taskId, spec, architectureSignal, e
             I have reviewed these tasks and acceptance criteria and approve
             this exact implementation plan.
           </label>
+          {guidedOwner&&<fieldset disabled={!!busy}>
+            <legend>Continuous source-only team workflow</legend>
+            <label className="spec-consent"><input type="checkbox" checked={teamMode} onChange={e=>setTeamMode(e.target.checked)}/>
+              Generate, independently review and repair within one approved scope</label>
+            {teamMode&&<>
+              <label>Exact future repair file paths (one per line, required)<textarea value={pathInput}
+                onChange={e=>setPathInput(e.target.value)} aria-required="true"
+                aria-invalid={!scopeValid} aria-describedby="team-scope-instructions team-scope-status"/></label>
+              <p className="hint" id="team-scope-instructions">Enter the filenames specified by your plan, not guessed filenames. For example, index.html, app.js and styles.css are valid only if your plan calls for those exact files.</p>
+              <p role="status" id="team-scope-status">{scopeError||paths.length+' explicit repair path(s) selected.'}</p>
+              <label>Maximum routine repairs <select value={budget} onChange={e=>setBudget(Number(e.target.value))}>
+                {[1,2,3,4,5,6,7,8].map(n=><option key={n} value={n}>{n}</option>)}</select></label>
+              <p>Only these exact existing files in the resulting source revision may be repaired. Missing paths, changed approvals, insufficient evidence or exhausted budget stop the team. No code execution, new repair files or delivery approval.</p>
+            </>}
+          </fieldset>}
           <div className="actions">
             <button type="button" className="primary"
-              disabled={!approveChecked || !!busy}
+              disabled={!approveChecked || !!busy || (teamMode&&!scopeValid)}
               onClick={() => void approve()}>
-              {busy === 'approve' ? 'Saving approval…' : 'Approve implementation plan'}
+              {busy === 'approve' ? 'Saving approval…' : teamMode?'Approve plan and start team':'Approve implementation plan'}
             </button>
           </div>
         </>}

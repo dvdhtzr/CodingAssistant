@@ -28,7 +28,9 @@ public sealed record GenerateImplementationPlanRequest(
 
 public sealed record ApproveImplementationPlanRequest(
     int SchemaVersion, int ExpectedRevision, string? PlanSha256,
-    string? Confirmation);
+    string? Confirmation, UpfrontRepairAuthorization? TeamRepair = null);
+
+public sealed record UpfrontRepairAuthorization(string[] Paths,int MaximumRepairs);
 
 public interface IImplementationPlanner
 {

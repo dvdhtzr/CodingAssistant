@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { api } from './api';
 import type { AgentIdentity } from './AgentIdentityPanel';
 import type { EngineerSnapshot } from './EngineeringWorkspace';
+import type { LeadReviewSnapshot } from './LeadReviewPanel';
+import type { CollaborationSnapshot } from './CollaborationPanel';
 import type { TeamHandoff, TeamQaSnapshot } from './TeamWorkroom';
 
 export interface WorkTeamEvidence {
@@ -9,6 +11,8 @@ export interface WorkTeamEvidence {
   handoffs: TeamHandoff[];
   engineering: EngineerSnapshot | null;
   qa: TeamQaSnapshot | null;
+  lead?: LeadReviewSnapshot | null;
+  collaboration?: CollaborationSnapshot | null;
   repair: { cycle: { state: string; attempt: number; engineeringRunId: string } } | null;
 }
 
@@ -25,7 +29,8 @@ export function workAgentStatuses(saved: WorkTeamEvidence) {
     const qaRunning = qa?.job.state === 'Running' ||
       repair?.cycle.state === 'QaRunning';
     const active = agent.id === 'SoftwareEngineer' ? engineerRunning :
-      agent.id === 'QaEngineer' ? qaRunning : false;
+      agent.id === 'QaEngineer' ? qaRunning : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job.state === 'Running' :
+      agent.id === 'TechnicalLead' ? saved.collaboration?.job.state === 'Running' : false;
     return { agent, active,
       detail: agent.id === 'SoftwareEngineer' ? (
         repair?.cycle.state === 'Running'
@@ -38,7 +43,8 @@ export function workAgentStatuses(saved: WorkTeamEvidence) {
         repair?.cycle.state === 'QaRunning' ? 'Independent repair review' :
           qa?.job.state === 'Running' ? 'Reviewing saved source' :
             qa?.job.state ?? 'Not started'
-      ) : 'No active run recorded' };
+      ) : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.disposition ?? 'No lead review recorded' :
+      agent.id === 'TechnicalLead' ? saved.collaboration?.job.state ?? 'No coordination recorded' : 'No active run recorded' };
   });
 }
 
@@ -57,18 +63,19 @@ export function WorkTeamStrip({ token, taskId, onOpen }: {
       busy = true;
       try {
         const prefix = '/api/tasks/' + taskId;
-        const [roster, handoffs, engineering, qa, repair] = await Promise.all([
+        const [roster, handoffs, engineering, qa, lead, repair] = await Promise.all([
           api<{ agents: AgentIdentity[] }>(token, '/api/agents/roster'),
           api<{ events: TeamHandoff[] }>(token, prefix + '/agent-handoffs'),
           api<{ snapshot: EngineerSnapshot | null }>(token,
             prefix + '/engineering-runs/latest'),
           api<{ snapshot: TeamQaSnapshot | null }>(token, prefix + '/qa-reviews/latest'),
+          api<{ snapshot: LeadReviewSnapshot | null }>(token, prefix + '/lead-reviews/latest').catch(() => ({ snapshot: null })),
           api<{ snapshot: WorkTeamEvidence['repair'] }>(token,
             prefix + '/repair-cycles/latest'),
         ]);
         if (!stopped) {
           setSaved({ agents: roster.agents, handoffs: handoffs.events,
-            engineering: engineering.snapshot, qa: qa.snapshot, repair: repair.snapshot });
+            engineering: engineering.snapshot, qa: qa.snapshot, lead: lead.snapshot, repair: repair.snapshot });
           setFailed(false);
         }
       } catch {

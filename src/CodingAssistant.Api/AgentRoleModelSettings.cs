@@ -14,8 +14,9 @@ public sealed record AgentRoleModelSelection(
 public sealed class AgentRoleModelSettings(TaskStore tasks)
 {
     public const string PreferredCoder = "qwen2.5-coder:14b";
+    public const string PreferredReviewer = "qwen3-coder:30b";
     private static readonly string[] Configurable =
-        ["SolutionArchitect", "TechnicalLead", "SoftwareEngineer", "QaEngineer"];
+        ["SolutionArchitect", "TechnicalLead", "SoftwareEngineer", "LeadSoftwareEngineer", "QaEngineer"];
 
     public void Initialize()
     {
@@ -24,12 +25,31 @@ public sealed class AgentRoleModelSettings(TaskStore tasks)
             CREATE TABLE IF NOT EXISTS agent_role_models (
                 task_id TEXT NOT NULL REFERENCES tasks(id),
                 agent_id TEXT NOT NULL CHECK(agent_id IN
-                    ('SolutionArchitect','TechnicalLead','SoftwareEngineer','QaEngineer')),
+                    ('SolutionArchitect','TechnicalLead','SoftwareEngineer','LeadSoftwareEngineer','QaEngineer')),
                 model TEXT NOT NULL,
                 updated_utc TEXT NOT NULL,
                 PRIMARY KEY(task_id,agent_id)
             );
             """);
+        var definition = TaskStore.Scalar(db, null,
+            "SELECT sql FROM sqlite_master WHERE name='agent_role_models'");
+        if (definition?.Contains("'LeadSoftwareEngineer'", StringComparison.Ordinal) != true)
+        {
+            using var tx = db.BeginTransaction();
+            TaskStore.Execute(db, tx, """
+                CREATE TABLE agent_role_models_v2 (
+                    task_id TEXT NOT NULL REFERENCES tasks(id),
+                    agent_id TEXT NOT NULL CHECK(agent_id IN
+                        ('SolutionArchitect','TechnicalLead','SoftwareEngineer','LeadSoftwareEngineer','QaEngineer')),
+                    model TEXT NOT NULL, updated_utc TEXT NOT NULL,
+                    PRIMARY KEY(task_id,agent_id)
+                );
+                INSERT INTO agent_role_models_v2 SELECT * FROM agent_role_models;
+                DROP TABLE agent_role_models;
+                ALTER TABLE agent_role_models_v2 RENAME TO agent_role_models;
+                """);
+            tx.Commit();
+        }
     }
 
     private static void ValidateRole(string role)
@@ -39,7 +59,13 @@ public sealed class AgentRoleModelSettings(TaskStore tasks)
     }
 
     private static string DefaultFor(string role, string inherited) =>
+        role == "LeadSoftwareEngineer" ? PreferredReviewer :
         role is "SoftwareEngineer" or "QaEngineer" ? PreferredCoder : inherited;
+
+    private static string DefaultSource(string role) =>
+        role == "LeadSoftwareEngineer" ? "Provisional reviewer model" :
+        role is "SoftwareEngineer" or "QaEngineer" ?
+            "Preferred coding model" : "Inherited specification model";
 
     public string Resolve(string taskId, string role, string inherited)
     {
@@ -76,8 +102,7 @@ public sealed class AgentRoleModelSettings(TaskStore tasks)
             selections.Add(new(role, selected ?? DefaultFor(role, inherited),
                 selected is not null,
                 selected is not null ? "Owner choice" :
-                    role is "SoftwareEngineer" or "QaEngineer" ?
-                    "Preferred coding model" : "Inherited specification model"));
+                    DefaultSource(role)));
         }
         return selections;
     }
@@ -109,7 +134,6 @@ public sealed class AgentRoleModelSettings(TaskStore tasks)
         return new AgentRoleModelSelection(role,
             model ?? DefaultFor(role, inherited), model is not null,
             model is not null ? "Owner choice" :
-                role is "SoftwareEngineer" or "QaEngineer" ?
-                "Preferred coding model" : "Inherited specification model");
+                DefaultSource(role));
     }
 }

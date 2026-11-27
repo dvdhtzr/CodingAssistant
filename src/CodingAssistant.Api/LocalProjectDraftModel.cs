@@ -175,22 +175,29 @@ public sealed class LocalProjectDraftModel : IStreamingProjectDraftModel
             Content = new StringContent(JsonSerializer.Serialize(requestBody),
                 Encoding.UTF8, "application/json")
         };
+        using var slot=await LocalInferenceScheduler.Shared.AcquireAsync(cancellation);
+        cancellation.ThrowIfCancellationRequested();
+        // ResponseHeadersRead does not cover the entire streaming body with
+        // HttpClient.Timeout. Bound the whole inference, including streaming.
+        using var deadline=CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        deadline.CancelAfter(TimeSpan.FromMinutes(7));
+        var inferenceToken=deadline.Token;
         try
         {
             using var response = await client.SendAsync(
-                request, HttpCompletionOption.ResponseHeadersRead, cancellation);
+                request, HttpCompletionOption.ResponseHeadersRead, inferenceToken);
             if (response.StatusCode == HttpStatusCode.NotFound)
                 throw new StoreFailure("MODEL_NOT_INSTALLED");
             if (!response.IsSuccessStatusCode)
                 throw new StoreFailure("LOCAL_MODEL_UNAVAILABLE");
 
-            await using var network = await response.Content.ReadAsStreamAsync(cancellation);
+            await using var network = await response.Content.ReadAsStreamAsync(inferenceToken);
             using var reader = new StreamReader(network, Encoding.UTF8);
             var content = new StringBuilder();
             var chunks = 0;
             var done = false;
             string? line;
-            while ((line = await reader.ReadLineAsync(cancellation)) is not null)
+            while ((line = await reader.ReadLineAsync(inferenceToken)) is not null)
             {
                 if (line.Length > 20000)
                     throw new StoreFailure("MODEL_OUTPUT_REJECTED");

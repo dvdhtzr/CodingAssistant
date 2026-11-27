@@ -14,13 +14,21 @@ public sealed class RepairCycleCoordinator(
     ImplementationPlanStore plans, EngineeringRunStore engineering,
     RepairCycleStore cycles, IEngineeringTaskModel engineer,
     QaReviewCoordinator qa, QaReviewStore reviews,
-    EngineeringAtlasNotifier atlasNotifier,
+    EngineeringAtlasNotifier atlasNotifier,CollaborationCoordinator collaboration,CollaborationStore collaborationStore,
     IHostApplicationLifetime lifetime)
 {
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
     public RepairCycle Start(string taskId, StartRepairCycleRequest request,
         string? engineerModel = null, string? qaModel = null)
+        => StartCore(taskId,request,engineerModel,qaModel,false);
+
+    internal RepairCycle StartRoutine(string taskId,StartRepairCycleRequest request,
+        string engineerModel,string qaModel,RootCauseRepairTarget? recovery=null)
+        => StartCore(taskId,request,engineerModel,qaModel,true,recovery);
+
+    private RepairCycle StartCore(string taskId,StartRepairCycleRequest request,
+        string? engineerModel,string? qaModel,bool routine,RootCauseRepairTarget? recovery=null)
     {
         var plan = plans.Read(taskId).Plan;
         if (plan is null || !plan.Current || plan.Status != "Approved")
@@ -35,20 +43,22 @@ public sealed class RepairCycleCoordinator(
             architecture.ArchitectureSha256 != plan.ArchitectureSha256)
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
 
-        var admitted = cycles.Start(taskId, request, plan, engineerModel);
+        var admitted = routine ? cycles.StartRoutine(taskId,request,plan,
+            engineerModel ?? throw new StoreFailure("INVALID_MODEL"),recovery) :
+            cycles.Start(taskId, request, plan, engineerModel);
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[admitted.Id] = cancellation;
         var objective = tasks.GetTask(taskId).Task.Objective;
         _ = Task.Run(() => RunAsync(objective, specification.Content,
-            plan, architecture, admitted, qaModel, cancellation));
+            plan, architecture, admitted, qaModel, cancellation,request.ContinueCollaborationId));
         return admitted;
     }
 
     private async Task RunAsync(string objective, string specification,
         ImplementationPlan plan, DraftArchitectureReadiness architecture,
         RepairCycle cycle, string? qaModel,
-        CancellationTokenSource cancellation)
+        CancellationTokenSource cancellation,string? continueCollaborationId)
     {
         try
         {
@@ -58,15 +68,22 @@ public sealed class RepairCycleCoordinator(
             var workItemId = cycles.WorkItemId(taskId, cycle.Id);
             var item = plan.Outline.Tasks.Single(x => x.Id == workItemId);
             var files = engineering.Get(taskId, runId).Files;
-            var allowed = cycle.Findings.Select(f => f.Path)
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var recovery=RootCauseRecoveryStore.ForCandidate(tasks,taskId,runId);
+            var allowed = recovery is null?cycle.Findings.Select(f => f.Path)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():new[]{recovery.TargetPath};
+            var assignedFindings=recovery is null?cycle.Findings:cycle.Findings.Select(f=>f with {
+                Path=recovery.TargetPath,Evidence=recovery.Evidence,
+                Recommendation=recovery.Strategy
+            }).ToArray();
             token.ThrowIfCancellationRequested();
             engineering.StartTask(taskId, runId, workItemId);
+            using var providerScope = EngineeringProviderActivity.Enter(tasks,taskId,
+                "SoftwareEngineer",runId,cycle.BaseSourceSha256);
             var changes = await engineer.ImplementAsync(
                 new EngineeringTaskInput(objective, specification, plan,
                     architecture, item, files,
                     new RepairTaskContext(cycle.ProposalId, cycle.BaseSourceSha256,
-                        cycle.Findings, allowed),
+                        assignedFindings, allowed),
                     observation => engineering.RecordAtlasInspection(
                         taskId, runId, workItemId, observation),
                     rejection => engineering.RecordOutputRejection(
@@ -93,6 +110,19 @@ public sealed class RepairCycleCoordinator(
             token.ThrowIfCancellationRequested();
             engineering.Finish(taskId, runId, true, null);
             cycles.SetState(taskId, cycle.Id, "Generated");
+
+            if(continueCollaborationId is not null)
+            {
+                // The owner selected continuation alongside exact repair
+                // authorization. Rebind the next session to the newly saved
+                // revision, not the previous reviewer approval.
+                var parent=collaborationStore.Get(taskId,continueCollaborationId).Job;
+                var saved=engineering.Get(taskId,runId);
+                await collaboration.StartAsync(taskId,new StartCollaborationRequest(runId,
+                    QaReviewStore.Fingerprint(saved.Files),plan.PlanSha256,parent.PolicyRevision,parent.PolicySha256),
+                    token,cycle.Id);
+                return;
+            }
 
             // Only static source inspection follows automatically. No browser,
             // Docker, shell or arbitrary generated code is ever executed here.
@@ -156,6 +186,12 @@ public sealed class RepairCycleCoordinator(
     public RepairCycleSnapshot Cancel(string taskId, string cycleId)
     {
         var current = cycles.Get(taskId, cycleId);
+        if (cycles.TryInterruptRoutineRepair(taskId,cycleId))
+        {
+            if (_active.TryGetValue(cycleId,out var routineCancellation))
+                try { routineCancellation.Cancel(); } catch (ObjectDisposedException) { }
+            return cycles.Get(taskId,cycleId);
+        }
         if (current.Cycle.State is "Running" or "QaRunning")
         {
             if (_active.TryGetValue(cycleId, out var cancellation))

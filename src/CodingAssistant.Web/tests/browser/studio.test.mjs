@@ -50,7 +50,7 @@ const done = (route, body, status = 200) => route.fulfill({
 });
 
 function mockApi(page, { architectureOutdated = false,
-  specificationStatus = 'Approved', historicalQuality = false, historicalRunning = false } = {}) {
+  specificationStatus = 'Approved', planStatus = 'Approved', activityEvents = [], historicalQuality = false, historicalRunning = false } = {}) {
   const selections = [
     { role: 'ProductOwner', model: 'qwen3-coder:30b',
       overridden: false, source: 'Interview selection' },
@@ -100,6 +100,12 @@ function mockApi(page, { architectureOutdated = false,
       });
     }
     if (method !== 'GET') return done(route, { error: 'UNEXPECTED_MUTATION' }, 405);
+    if (path.endsWith('/engineering-activity')) {
+      const params = new URL(route.request().url()).searchParams;
+      const cursor = Number(params.get('after') ?? 0);
+      return done(route, { taskId:id,lastSequence:activityEvents.at(-1)?.sequence ?? 0,
+        events:activityEvents.filter(event => event.sequence > cursor).slice(0,200) });
+    }
     if (path === '/api/studio/http-activity') return done(route, {
       events: [
         { sequence: 1, recordedUtc: time, method: 'GET',
@@ -110,6 +116,8 @@ function mockApi(page, { architectureOutdated = false,
           statusCode: 200, durationMs: 46 },
       ], lastSequence: 2, truncated: false, capacity: 120,
     });
+    if (path.endsWith('/upfront-team-authorization')) return done(route, { authorization: null });
+    if (path.endsWith('/collaboration/latest')) return done(route, { snapshot: null });
     if (path.endsWith('/agent-models')) return done(route, { agents: selections });
     if (path === '/api/agents/roster') return done(route, { agents });
     if (path.endsWith('/agent-handoffs')) return done(route, { events: [{
@@ -154,7 +162,7 @@ function mockApi(page, { architectureOutdated = false,
       schemaVersion: 1,
       plan: { taskId: id, revision: 1,
         specificationVersion: 1, specificationSha256: spec, architectureSha256: arch,
-        model: 'qwen3-coder:30b', planSha256: sha, status: 'Approved', current: true,
+        model: 'qwen3-coder:30b', planSha256: sha, status: planStatus, current: true,
         effectiveStatus: 'Approved', createdUtc: time, approvedUtc: time,
         outline: { summary: 'Create the historic site',
           tasks: [{ id: 'item1', title: 'Create initial application',
@@ -185,52 +193,6 @@ before(async () => {
 });
 after(async () => { await browser?.close();await vite?.close(); });
 
-test('new generated source takes priority over historical failed repair and QA', async () => {
-  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
-  try {
-    await mockApi(page, { historicalQuality: true });
-    await page.goto(baseUrl + '/tests/browser/studio.html');
-    const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
-    const attention = studio.locator('aside.ca-studio-context');
-    await attention.getByText('New source ready for QA').waitFor();
-    assert.equal(await attention.getByText('Repair cycle 6 stopped').count(), 0);
-    const engineer = studio.locator('[data-agent="SoftwareEngineer"]');
-    assert.match(await engineer.textContent(), /Generated/);
-    assert.doesNotMatch(await engineer.textContent(), /Needs inspection/);
-    await studio.locator('[data-agent="QaEngineer"]').click();
-    const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
-    await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).waitFor();
-    assert.equal(await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).isEnabled(), true);
-    assert.match(await canvas.getByLabel('Current QA source').textContent(), /has not been independently reviewed/);
-    assert.equal(await canvas.locator('.qa-repair-progress').count(), 0);
-    await canvas.getByText('Earlier QA report', { exact: false }).waitFor();
-    assert.equal(await canvas.locator('.qa-repair-history').getAttribute('open'), null);
-  } finally { await page.close(); }
-});
-
-test('new generated source takes priority over historical running repair and QA', async () => {
-  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
-  try {
-    await mockApi(page, { historicalQuality: true, historicalRunning: true });
-    await page.goto(baseUrl + '/tests/browser/studio.html');
-    const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
-    const attention = studio.locator('aside.ca-studio-context');
-    await attention.getByText('New source ready for QA').waitFor();
-    assert.equal(await attention.getByText('Repair cycle 6 stopped').count(), 0);
-    const engineer = studio.locator('[data-agent="SoftwareEngineer"]');
-    assert.match(await engineer.textContent(), /Generated/);
-    assert.doesNotMatch(await engineer.textContent(), /Needs inspection/);
-    await studio.locator('[data-agent="QaEngineer"]').click();
-    const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
-    await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).waitFor();
-    assert.equal(await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).isEnabled(), true);
-    assert.match(await canvas.getByLabel('Current QA source').textContent(), /has not been independently reviewed/);
-    assert.equal(await canvas.locator('.qa-repair-progress').count(), 0);
-    await canvas.getByText('Earlier QA report', { exact: false }).waitFor();
-    assert.equal(await canvas.locator('.qa-repair-history').getAttribute('open'), null);
-  } finally { await page.close(); }
-});
-
 test('studio prioritizes real QA, keeps prior failed repair separate, and exposes source on demand', async () => {
   const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
   page.on('pageerror', error => console.error('Studio desktop page error:', error.stack));
@@ -240,6 +202,7 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
   try {
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
     const team = studio.locator('aside.ca-studio-people');
     const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
@@ -280,7 +243,12 @@ test('studio prioritizes real QA, keeps prior failed repair separate, and expose
     assert.equal(await canvas.locator('#journey-panel-generation').isVisible(), true);
     assert.equal(await canvas.locator('#journey-panel-delivery').isVisible(), false);
     await team.getByRole('button', { name: /QA Engineer/ }).click();
+    // Role selection propagates through the canvas focus request and React
+    // effect. Wait for the actual stage transition rather than sampling an
+    // intermediate render. Keep the visibility and scroll assertions.
+    await canvas.locator('#journey-panel-delivery').waitFor({ state: 'visible' });
     assert.equal(await canvas.locator('#journey-panel-delivery').isVisible(), true);
+    assert.equal(await canvas.locator('#journey-panel-generation').isVisible(), false);
     assert.equal(await page.evaluate(() => document.scrollingElement?.scrollTop ?? 0), 0,
       'role navigation must not scroll the whole document');
   } finally { await page.close(); }
@@ -297,6 +265,7 @@ test('owner can assign independent local models without initiating or modifying 
         writes.push(new URL(request.url()).pathname);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const show = page.getByRole('button', { name: 'Assign team models' });
     await show.click();
     const controls = page.getByRole('region', {
@@ -337,6 +306,7 @@ test('roster exposes model and saved status; agent selection opens actual specia
   try {
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const roster = page.locator('aside.ca-studio-people');
     const engineer = roster.getByRole('button', { name: /Software Engineer/ });
     const qa = roster.getByRole('button', { name: /QA Engineer/ });
@@ -376,6 +346,7 @@ test('activity view shows only actual saved handoffs, source and QA receipts', a
         writes.push(new URL(request.url()).pathname);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     await page.locator('aside.ca-studio-people')
       .getByRole('button', { name: /QA Engineer/ }).waitFor();
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
@@ -408,11 +379,15 @@ test('stale architecture shows a clear recovery action and never enables old cho
           data: request.postDataJSON() });
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const canvas = page.getByRole('region', { name: 'Focused engineering work' });
     await canvas.getByRole('button', { name: /Solution Architecture/ }).first().click();
     await canvas.locator('#journey-panel-architecture').waitFor({ state: 'visible' });
     const recovery = canvas.locator('.architect-recovery');
     await recovery.getByText('2 architecture recommendations need refreshing').waitFor();
+    // The summary can render before the separately loaded archived choices.
+    // Wait for both actual archived controls, then retain the strict counts.
+    await canvas.locator('details.architect-archived').nth(1).waitFor({ state: 'visible' });
     assert.equal(await canvas.locator('fieldset.architect-options').count(), 0,
       'historical options must not look like selectable disabled controls');
     assert.equal(await canvas.locator('input[type="radio"][name^="architecture-"]').count(), 0);
@@ -454,6 +429,7 @@ test('unapproved specification offers enabled recovery navigation, not disabled 
         writes.push(new URL(request.url()).pathname);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const canvas = page.getByRole('region', { name: 'Focused engineering work' });
     await canvas.getByRole('button', { name: /Solution Architecture/ }).first().click();
     const recovery = canvas.locator('.architect-recovery');
@@ -483,6 +459,7 @@ test('live activity separates real HTTP summaries from persisted agent work and 
         writes.push(path);
     });
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     const strip = page.getByRole('region', { name: 'Live Activity' });
     await strip.getByText('Local API', { exact: true }).waitFor();
     assert.match(await strip.textContent(),
@@ -522,6 +499,7 @@ test('narrow Studio has no page-level horizontal scrolling and keeps QA availabl
   try {
     await mockApi(page);
     await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
     await page.getByRole('heading', { name: 'Independent QA & repair' }).waitFor();
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth) <= 400,
       'narrow Studio must not force horizontal page scrolling');
@@ -533,5 +511,636 @@ test('narrow Studio has no page-level horizontal scrolling and keeps QA availabl
     const y1 = await canvas.boundingBox(), y2 = await context.boundingBox();
     assert.ok(y1 && y2 && y2.y >= y1.y + y1.height - 4,
       'mobile places attention after focused work');
+  } finally { await page.close(); }
+});
+
+
+test('live activity replays committed evidence and pauses presentation without project writes', async () => {
+  const page = await browser.newPage({ viewport: { width:1500,height:900 } });
+  const writes = [];
+  const activityEvents = [{
+    sequence:1,taskId:id,category:'Team',kind:'TaskAssignment',
+    label:'Approved assignment dispatched',origin:'HostObservation',
+    agentId:'TechnicalLead',toAgent:'SoftwareEngineer',referenceType:'EngineeringMessage',
+    referenceId:runId,referenceSequence:1,sourceSha256:sha,model:'qwen2.5-coder:14b',
+    createdUtc:time,
+  }];
+  try {
+    await mockApi(page,{ activityEvents });
+    page.on('request',request => {
+      if (request.method()==='POST' && new URL(request.url()).pathname.startsWith('/api/tasks/'))
+        writes.push(new URL(request.url()).pathname);
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
+    const feed = page.getByRole('region',{name:'Live engineering activity'});
+    await feed.getByText('Approved assignment dispatched').waitFor();
+    await page.getByRole('button',{name:'Activity',exact:true}).click();
+    await feed.getByRole('button',{name:'Pause activity feed'}).click();
+    activityEvents.push({ ...activityEvents[0],sequence:2,category:'Diagnostics',
+      kind:'EngineerOutputRejected',label:'Engineer output rejected; source unchanged',
+      agentId:'SoftwareEngineer',toAgent:null,referenceSequence:2 });
+    await feed.getByText(/1 new event/).waitFor();
+    assert.equal(await feed.getByText('Engineer output rejected; source unchanged').count(),0);
+    await feed.getByRole('button',{name:'Resume activity feed'}).click();
+    await feed.getByText('Engineer output rejected; source unchanged').waitFor();
+    await feed.getByRole('combobox',{name:'Activity category'}).selectOption('Diagnostics');
+    assert.equal(await feed.getByText('Approved assignment dispatched').count(),0);
+    assert.equal(await feed.getByText('Engineer output rejected; source unchanged').count(),1);
+    assert.deepEqual(writes,[]);
+  } finally { await page.close(); }
+});
+
+
+test('Technical Lead workstation requires explicit exact-source repair approval and rejects stale scope', async () => {
+  for (const stale of [false, true]) {
+    const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+    const jobId = '2'.repeat(32), proposalId = '3'.repeat(32), issueId = '4'.repeat(64);
+    const policySha256 = '5'.repeat(64), sourceSha256 = '6'.repeat(64);
+    const candidate = { runId, sourceSha256, planSha256: sha, policyRevision: 1, policySha256 };
+    const snapshot = {
+      job: { ...candidate, id: jobId, taskId: id, model: 'qwen3-coder:30b',
+        state: 'AwaitingOwner', reason: 'EXACT_REPAIR_APPROVAL_REQUIRED' },
+      steps: [{ sequence: 1, action: 'RequestOwnerRepair', issueId,
+        referenceId: proposalId, rationale: 'Confirmed missing accessible page heading.',
+        createdUtc: time }],
+    };
+    const finding = { path: 'index.html', index: 0, severity: 'Major',
+      requirement: 'Provide an accessible page heading',
+      evidence: 'The saved source has no heading', recommendation: 'Add a heading' };
+    const proposal = { id: proposalId, taskId: id, engineeringRunId: runId,
+      sourceSha256, planSha256: sha, leadReviewId: reviewId, qaReviewId: null,
+      findings: [finding, { ...finding, index: 1, requirement: 'Unrelated finding' }] };
+    const preview = { planSha256: sha, candidate, snapshot,
+      policy: { revision: 1, policySha256, status: 'Approved', current: true,
+        operations: ['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','SendMessage'] },
+      canStart: false, canResume: false, reason: snapshot.job.reason,
+      capacity: { capacity: 1, active: 0, waiting: 0 } };
+    const writes = [];
+    let sourceChanged = false;
+    let classified = false;
+    try {
+      await mockApi(page);
+      await page.route('**/api/tasks/' + id + '/**', route => {
+        const path = new URL(route.request().url()).pathname;
+        const method = route.request().method();
+        if (method === 'GET') {
+          if (path.endsWith('/collaboration/latest')) return done(route, { snapshot });
+          if (path.endsWith('/collaboration/preview')) return done(route, preview);
+          if (path.endsWith('/repair-proposals/latest')) return done(route, { proposal:
+            sourceChanged ? { ...proposal, sourceSha256: '7'.repeat(64) } : proposal });
+          if (path.endsWith('/engineering-issues')) return done(route, {
+            currentSource: true, issues: [{ id: issueId, state: 'ConfirmedDefect',
+              currentSource: true, latestReview: true,
+              references: [{ reviewId, path: finding.path, findingIndex: finding.index }] }],
+          });
+          if (path.endsWith('/repair-proposals/' + proposalId + '/triage'))
+            return done(route, { decisions: classified ? [
+              { path: finding.path, index: finding.index, classification: 'ImplementationDefect' },
+            ] : [] });
+          return route.fallback();
+        }
+        if (method === 'POST') {
+          writes.push({ path, body: route.request().postDataJSON() });
+          if (path.endsWith('/repair-proposals/' + proposalId + '/triage')) {
+            classified = true;
+            return done(route, { classification: 'ImplementationDefect' });
+          }
+          if (path.endsWith('/repair-cycles')) return done(route, { cycleId: '8'.repeat(32) }, 202);
+        }
+        return route.fallback();
+      });
+      await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
+      await page.locator('aside.ca-studio-people')
+        .getByRole('button', { name: /Technical Lead/ }).click();
+      const panel = page.getByRole('region', { name: 'Exact repair authorization' });
+      const confirm = panel.getByRole('button', { name: 'Confirm exact repair and continue' });
+      await confirm.waitFor();
+      assert.equal(await confirm.isEnabled(), true);
+      assert.match(await panel.textContent(), /Provide an accessible page heading/);
+      assert.match(await panel.textContent(), /No execution permission is granted/);
+      assert.doesNotMatch(await panel.textContent(), /Unrelated finding/);
+      assert.deepEqual(writes, [], 'inspection must never authorize or start repair');
+      sourceChanged = stale;
+      await confirm.click();
+      if (stale) {
+        await panel.getByRole('alert').getByText('Saved repair scope is no longer current.').waitFor();
+        assert.deepEqual(writes, [], 'changed source must block all mutation');
+      } else {
+        await panel.getByRole('button', { name: 'Repair admitted' }).waitFor();
+        assert.deepEqual(writes.map(w => w.path), [
+          '/api/tasks/' + id + '/repair-proposals/' + proposalId + '/triage',
+          '/api/tasks/' + id + '/repair-cycles',
+        ]);
+        assert.equal(writes[0].body.classification, 'ImplementationDefect');
+        assert.deepEqual(writes[1].body, { proposalId, confirmation: 'REPAIR ' + sourceSha256,
+          findings: [{ path: finding.path, index: finding.index }], continueCollaborationId: jobId });
+      }
+    } finally { await page.close(); }
+  }
+});
+
+
+test('linked automatic repair replaces stale approval prompt with actual activity and stop control', async () => {
+  const page=await browser.newPage({viewport:{width:1600,height:900}});
+  const jobId='2'.repeat(32),cycleId='8'.repeat(32),policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:'6'.repeat(64),planSha256:sha,policyRevision:1,policySha256};
+  const snapshot={job:{...candidate,id:jobId,taskId:id,model:'qwen3-coder:30b',
+    state:'AwaitingOwner',reason:'EXACT_REPAIR_APPROVAL_REQUIRED'},steps:[]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:false,canResume:false,
+    reason:'LINKED_REPAIR_PENDING',linkedRepair:{cycleId,state:'Running',errorCode:null},
+    policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:candidate.sourceSha256,
+        paths:['index.html'],maximumRepairs:4}},
+    capacity:{capacity:1,active:1,waiting:0}};
+  const writes=[];
+  try {
+    await mockApi(page);
+    await page.route('**/api/tasks/'+id+'/**',route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(route.request().method()==='GET'){
+        if(path.endsWith('/collaboration/preview'))return done(route,preview);
+        if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      }
+      if(route.request().method()==='POST'){
+        writes.push(path);
+        if(path.endsWith('/repair-cycles/'+cycleId+'/cancel')){
+          preview.linkedRepair={cycleId,state:'Interrupted',errorCode:'OWNER_CANCELLED'};
+          return done(route,{});
+        }
+      }
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
+    await page.locator('aside.ca-studio-people').getByRole('button',{name:/Technical Lead/}).click();
+    const panel=page.getByRole('region',{name:'Team coordination'});
+    await panel.getByText('Repairing saved source',{exact:true}).waitFor();
+    assert.equal(await panel.getByText('Owner decision needed',{exact:true}).count(),0);
+    assert.equal(await page.getByRole('region',{name:'Exact repair authorization'}).count(),0);
+    assert.deepEqual(writes,[]);
+    await panel.getByRole('button',{name:'Stop coordination'}).click();
+    await panel.getByText('Repair Interrupted',{exact:true}).waitFor();
+    assert.deepEqual(writes,['/api/tasks/'+id+'/repair-cycles/'+cycleId+'/cancel']);
+  } finally { await page.close(); }
+});
+
+test('delivery readiness separates saved source from verified and accepted product without writes', async () => {
+  const page=await browser.newPage({viewport:{width:1600,height:900}});
+  const writes=[];
+  try {
+    await mockApi(page);
+    await page.route('**/api/tasks/'+id+'/delivery-evidence', route=>done(route,{
+      runId,sourceSha256:sha,currentSource:true,implementationComplete:true,
+      engineeringComplete:false,productAccepted:false,deliveryAllowed:false,
+      blockers:['QUALIFIED_VERIFICATION_REQUIRED','PRODUCT_ACCEPTANCE_REQUIRED'],
+      work:[],reviews:[],findings:[],repairs:[],
+      smoke:[{id:reviewId,state:'Recorded',status:'SMOKE_PASS_NOT_VERIFIED',current:true}],
+      modelUse:[],decisions:[],requiredVerification:['Independent browser behavior'],
+      plannedRisks:[],approvedSpecification:null,
+      verification:{staticReviewStatus:'INCOMPLETE',buildStatus:'NOT_VERIFIED',functionalStatus:'NOT_VERIFIED',
+        runtimeProfileId:'static-web',runtimeQualificationStatus:'UNQUALIFIED',mandatoryRuntimeChecks:['JavaScript syntax']},artifacts:[],
+    }));
+    page.on('request',r=>{if(r.method()==='POST' && new URL(r.url()).pathname.startsWith('/api/tasks/'))writes.push(r.url());});
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
+    await page.getByRole('button',{name:'Inspect delivery readiness'}).click();
+    const evidence=page.getByRole('region',{name:'Delivery evidence'});
+    await evidence.getByText('Delivery blocked',{exact:true}).waitFor();
+    assert.match(await evidence.textContent(),/Source complete.*Not verified.*Not accepted/s);
+    assert.match(await evidence.textContent(),/Build verificationnot verifiedFunctional verificationnot verified/);
+    await evidence.getByText('Verification evidence (1 smoke records)',{exact:true}).click();
+    assert.equal(await evidence.getByText('SMOKE_PASS_NOT_VERIFIED',{exact:true}).isVisible(),true);
+    assert.match(await evidence.textContent(),/Smoke checks are not qualified functional tests/);
+    await evidence.getByRole('button',{name:'Back to attention'}).click();
+    assert.deepEqual(writes,[]);
+  } finally {await page.close();}
+});
+
+test('guided supervision is the default and exact approval starts coordination without manual handoffs', async () => {
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha='9'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256:policySha};
+  let policy=null, running=false;
+  try {
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname, method=route.request().method();
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+        path.endsWith('/lead-reviews/latest')||path.endsWith('/collaboration/latest'))
+        return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/preview')) return done(route,{
+        planSha256:sha,policy, snapshot:running?{job:{id:'2'.repeat(32),taskId:id,...candidate,
+          model:'qwen3-coder:30b',state:'Running',reason:null},steps:[]}:null,
+        candidate:policy?.status==='Approved'?candidate:null,
+        canStart:policy?.status==='Approved'&&!running,canResume:false,reason:'READY',
+        routineRepairCandidate:{runId,sourceSha256:sha,paths:['index.html']},
+        capacity:{capacity:1,active:0,waiting:0}
+      });
+      // SignalR negotiation is read-only transport, not project authorization.
+      // Keep all other POSTs visible to the no-mutation assertion.
+      if(path.startsWith('/api/progress'))return route.fallback();
+      if(method==='POST'){
+        const body=route.request().postDataJSON();writes.push({path,body});
+        if(path.endsWith('/engineering-delegation/propose')){
+          policy={revision:1,policySha256:policySha,status:'Proposed',current:true,
+            operations:body.operations,routineRepair:body.routineRepair};
+          return done(route,policy);
+        }
+        if(path.endsWith('/engineering-delegation/approve')){
+          policy={...policy,status:'Approved'};return done(route,policy);
+        }
+        if(path.endsWith('/collaboration')){running=true;return done(route,{id:'2'.repeat(32)});}
+      }
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Source saved — coordinate independent review'}).waitFor();
+    assert.equal(await page.getByRole('region',{name:'Focused engineering work'}).count(),0);
+    assert.equal(await page.locator('aside.ca-studio-context').count(),0);
+    assert.equal(writes.length,0);
+    await guided.getByLabel('Let the team repair grounded defects without asking me each time').check();
+    await guided.getByRole('button',{name:'Prepare delegation policy'}).click();
+    await guided.getByRole('button',{name:'Approve exact delegation and start team'}).click();
+    await guided.getByRole('button',{name:'Stop coordination'}).waitFor();
+    assert.equal(writes.length,3);
+    assert.deepEqual(writes[0].body.routineRepair,{baselineRunId:runId,
+      baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:4});
+    assert.equal(writes[1].body.confirmation,'APPROVE '+policySha);
+    assert.deepEqual(writes[2].body,candidate);
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
+    await page.getByRole('region',{name:'Focused engineering work'}).waitFor();
+    await page.getByRole('button',{name:'Back to project overview'}).click();
+    await guided.waitFor();
+    assert.equal(writes.length,3,'inspection never triggers a new run or approval');
+  } finally {await page.close();}
+});
+
+test('guided owner decisions show only the focused form and do not launch work',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  try{
+    await mockApi(page,{specificationStatus:'Draft'});
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/engineering-runs/latest')||path.endsWith('/qa-reviews/latest')||
+         path.endsWith('/repair-cycles/latest')||path.endsWith('/lead-reviews/latest')||
+         path.endsWith('/collaboration/latest'))return done(route,{snapshot:null});
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Review specification v1'}).waitFor();
+    await guided.getByRole('button',{name:'Continue',exact:true}).click();
+    await guided.getByRole('heading',{name:'Specification',exact:true}).waitFor();
+    await guided.getByRole('button',{name:'Approve this specification'}).waitFor();
+    assert.equal(await guided.getByRole('button',{name:'Approve this specification'}).isDisabled(),true);
+    assert.equal(await page.getByRole('region',{name:'Focused engineering work'}).count(),0);
+    assert.equal(await page.getByRole('navigation',{name:'Project work stages'}).count(),0);
+    assert.equal(await page.getByRole('region',{name:'MAF Software Engineer tasks'}).count(),0);
+    assert.deepEqual(writes,[]);
+    await page.getByRole('button',{name:'Back to project overview'}).click();
+    await guided.getByRole('heading',{name:'Review specification v1'}).waitFor();
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+test('guided source generation displays actual assignment progress and stops the exact run',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  let running=true;
+  const runSnapshot=()=>({...engineering,job:{...engineering.job,state:running?'Running':'Interrupted',
+    phase:running?'Implementing':'Interrupted',errorCode:running?null:'OWNER_CANCELLED'},
+    tasks:[...engineering.tasks,{id:'item2',ordinal:1,title:'Implement remaining behavior',
+      state:running?'Running':'Interrupted',summary:null,startedUtc:time,completedUtc:null}]});
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/engineering-runs/latest'))return done(route,{snapshot:runSnapshot()});
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest')||path.endsWith('/collaboration/latest'))
+        return done(route,{snapshot:null});
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress')){
+        writes.push(path);
+        if(path.endsWith('/engineering-runs/'+runId+'/cancel')){
+          running=false;return done(route,runSnapshot());
+        }
+      }
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByText('1 of 2 assignments saved').waitFor();
+    assert.equal(await guided.getByRole('progressbar').getAttribute('value'),'1');
+    assert.deepEqual(writes,[]);
+    await guided.getByRole('button',{name:'Stop engineering',exact:true}).click();
+    await guided.getByRole('heading',{name:'Work stopped — saved source preserved'}).waitFor();
+    assert.deepEqual(writes,['/api/tasks/'+id+'/engineering-runs/'+runId+'/cancel']);
+  }finally{await page.close();}
+});
+
+test('guided supervision fails closed while handoff evidence is unavailable',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  let unavailable='authorization';
+  let previewReads=0;
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/upfront-team-authorization')){
+        if(unavailable==='authorization')return done(route,{error:'UNAVAILABLE'},503);
+        return done(route,{authorization:{state:'Claimed',runId,planRevision:1,
+          planSha256:sha,reason:null,boundPolicySha256:null}});
+      }
+      if(path.endsWith('/collaboration/latest'))return unavailable==='collaboration'?
+        done(route,{error:'UNAVAILABLE'},503):done(route,{snapshot:null});
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/preview'))previewReads++;
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    const unknown=guided.getByRole('heading',{name:'Unable to refresh project status'});
+    await unknown.waitFor();
+    assert.equal(await guided.getByRole('region',{name:'Team coordination'}).count(),0);
+    unavailable=null;
+    const handoff=guided.getByRole('heading',{name:'Starting independent review'});
+    await handoff.waitFor({timeout:15000});
+    await guided.getByRole('button',{name:'Stop team',exact:true}).waitFor();
+    unavailable='collaboration';
+    await unknown.waitFor({timeout:15000});
+    assert.equal(await guided.getByRole('region',{name:'Team coordination'}).count(),0);
+    assert.equal(previewReads,0,'unknown or host-owned handoff must never mount manual coordination');
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+test('guided source-only terminal outcome directs the owner to verification evidence without new approval',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot:{job:{
+        id:'2'.repeat(32),taskId:id,runId,sourceSha256:sha,planSha256:sha,
+        policyRevision:1,policySha256:'9'.repeat(64),model:'qwen3-coder:30b',
+        state:'AwaitingVerification',reason:'QUALIFIED_VERIFICATION_REQUIRED'},steps:[]}});
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Independent verification needed'}).waitFor();
+    await guided.getByText(/functional verification and delivery are not authorized/).waitFor();
+    assert.equal(await guided.getByRole('region',{name:'Team coordination'}).count(),0);
+    assert.equal(await guided.getByText(/authorize review and bounded repairs once/).count(),0);
+    await guided.getByRole('button',{name:'Inspect verification evidence'}).click();
+    await page.getByRole('region',{name:'Focused engineering work'}).waitFor();
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+test('guided team approval explains empty and duplicate repair scope without silently choosing filenames',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  try{
+    await mockApi(page,{planStatus:'Proposed'});
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/engineering-runs/latest')||path.endsWith('/qa-reviews/latest')||
+         path.endsWith('/repair-cycles/latest')||path.endsWith('/lead-reviews/latest')||
+         path.endsWith('/collaboration/latest'))return done(route,{snapshot:null});
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Review implementation plan v1'}).waitFor();
+    await guided.getByRole('button',{name:'Continue',exact:true}).click();
+    const consent=guided.getByLabel(/I have reviewed these tasks and acceptance criteria/);
+    await consent.check();
+    await guided.getByLabel('Generate, independently review and repair within one approved scope').check();
+    const input=guided.getByRole('textbox',{name:/Exact future repair file paths/});
+    const approve=guided.getByRole('button',{name:'Approve plan and start team'});
+    assert.equal(await input.inputValue(),'');
+    assert.equal(await approve.isDisabled(),true);
+    await guided.getByText('Enter at least one exact file path from your plan to enable approval.').waitFor();
+    await input.fill('index.html\\nINDEX.HTML'.replace('\\n','\n'));
+    await guided.getByText('Remove duplicate file paths.').waitFor();
+    assert.equal(await approve.isDisabled(),true);
+    await input.fill('index.html');
+    await guided.getByText('1 explicit repair path(s) selected.').waitFor();
+    assert.equal(await approve.isEnabled(),true);
+    assert.deepEqual(writes,[],'valid scope is not itself authorization');
+  }finally{await page.close();}
+});
+
+test('routine repair dispatch does not present an owner approval before the linked repair exists',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256};
+  const job={...candidate,id:'2'.repeat(32),taskId:id,model:'qwen3-coder:30b',
+    state:'AwaitingOwner',reason:'ROUTINE_REPAIR_DISPATCH_PENDING'};
+  const snapshot={job,steps:[]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:false,canResume:false,
+    reason:'BUILD_BUSY',policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:4}},
+    capacity:{capacity:1,active:1,waiting:0}};
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      if(path.endsWith('/collaboration/preview'))return done(route,preview);
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    const panel=guided.getByRole('region',{name:'Team coordination'});
+    await panel.getByText('Starting authorized repair',{exact:true}).waitFor();
+    assert.equal(await panel.getByRole('button',{name:'Confirm exact repair and continue'}).count(),0);
+    assert.equal(await panel.getByText('Owner decision needed',{exact:true}).count(),0);
+    await panel.getByRole('button',{name:'Stop coordination'}).waitFor();
+    assert.deepEqual(writes,[]);
+    job.state='Escalated';job.reason='REPAIR_SCOPE_VIOLATION';
+    preview.reason='READY';preview.canStart=true;
+    await panel.getByText('Needs inspection',{exact:true}).waitFor({timeout:15000});
+    await panel.getByText('repair scope violation',{exact:true}).waitFor();
+    assert.equal(await panel.getByRole('button',{name:'Confirm exact repair and continue'}).count(),0);
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+test('guided lead escalation explains the actual saved decision and offers a clearly labeled retry',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256};
+  const snapshot={job:{...candidate,id:'2'.repeat(32),taskId:id,model:'qwen3-coder:30b',
+    state:'Escalated',reason:'LEAD_ESCALATION'},steps:[{sequence:1,action:'Escalate',
+    issueId:null,referenceId:null,rationale:'The reviewer has not supplied sufficient evidence.',createdUtc:time}]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:true,canResume:false,reason:'READY',
+    policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:4}},
+    capacity:{capacity:1,active:0,waiting:0}};
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      if(path.endsWith('/collaboration/preview'))return done(route,preview);
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByRole('heading',{name:'Team coordination stopped — source preserved'}).waitFor();
+    await guided.getByText(/The Technical Lead stopped: The reviewer has not supplied sufficient evidence/).waitFor();
+    await guided.getByRole('button',{name:'Retry team coordination'}).waitFor();
+    assert.equal(await guided.getByRole('button',{name:'Start team coordination'}).count(),0);
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+
+test('guided review failure identifies exact reviewer and saved reason before retry',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256};
+  const reviewId='9'.repeat(32);
+  const snapshot={job:{...candidate,id:'2'.repeat(32),taskId:id,model:'qwen3.5:4b',
+    state:'Failed',reason:'INDEPENDENT_REVIEW_STOPPED'},steps:[{sequence:1,action:'ReviewCode',
+    issueId:null,referenceId:reviewId,rationale:'Host-required independent code review of the exact saved source.',createdUtc:time}]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:true,canResume:false,reason:'READY',
+    reviewFailure:{role:'LeadSoftwareEngineer',reviewId,model:'qwen3-coder:30b',state:'Failed',errorCode:'MODEL_OUTPUT_REJECTED'},
+    policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:6}},
+    capacity:{capacity:1,active:0,waiting:0}};
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      if(path.endsWith('/collaboration/preview'))return done(route,preview);
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByText('Lead Software Engineer review stopped',{exact:true}).waitFor();
+    await guided.getByText('MODEL_OUTPUT_REJECTED',{exact:true}).waitFor();
+    await guided.getByText(/qwen3-coder:30b · Failed/).waitFor();
+    await guided.getByRole('button',{name:'Retry team coordination'}).waitFor();
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+
+test('guided deterministic stall shows evidence instead of inviting identical retry',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256};
+  const snapshot={job:{...candidate,id:'2'.repeat(32),taskId:id,model:'qwen3.5:4b',
+    state:'Escalated',reason:'RECURRING_UNRESOLVED_FINDING'},steps:[]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:false,canResume:false,reason:'RECURRING_UNRESOLVED_FINDING',
+    stallEvidence:{reason:'RECURRING_UNRESOLVED_FINDING',attemptCount:2,
+      recentAttempts:[{cycleId:'a'.repeat(32),state:'QaReviewed',originalSourceSha256:sha,candidateSourceSha256:'b'.repeat(64),
+        independentStaticResolution:false,recurringExactFinding:true,origin:'QaEngineer'}],
+      findings:[{id:'finding',origin:'QaEngineer',path:'index.html',requirement:'Persist saved ideas.',
+        evidence:'Saved items disappear after reload.',recommendation:'Restore data during startup.'}]},
+    policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:6}},
+    capacity:{capacity:1,active:0,waiting:0}};
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      if(path.endsWith('/collaboration/preview'))return done(route,preview);
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByText('Different repair strategy needed.',{exact:true}).waitFor();
+    await guided.getByText('Saved items disappear after reload.',{exact:true}).waitFor();
+    assert.equal(await guided.getByRole('button',{name:'Retry team coordination'}).count(),0);
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
+
+test('new generated source takes priority over historical failed repair and QA', async () => {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  try {
+    await mockApi(page, { historicalQuality: true });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
+    const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
+    const attention = studio.locator('aside.ca-studio-context');
+    await attention.getByText('New source ready for QA').waitFor();
+    assert.equal(await attention.getByText('Repair cycle 6 stopped').count(), 0);
+    const engineer = studio.locator('[data-agent="SoftwareEngineer"]');
+    assert.match(await engineer.textContent(), /Generated/);
+    assert.doesNotMatch(await engineer.textContent(), /Needs inspection/);
+    await studio.locator('[data-agent="QaEngineer"]').click();
+    const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
+    await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).waitFor();
+    assert.equal(await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).isEnabled(), true);
+    assert.match(await canvas.getByLabel('Current QA source').textContent(), /has not been independently reviewed/);
+    assert.equal(await canvas.locator('.qa-repair-progress').count(), 0);
+    await canvas.getByText('Earlier QA report', { exact: false }).waitFor();
+    assert.equal(await canvas.locator('.qa-repair-history').getAttribute('open'), null);
+  } finally { await page.close(); }
+});
+
+test('new generated source takes priority over historical running repair and QA', async () => {
+  const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  try {
+    await mockApi(page, { historicalQuality: true, historicalRunning: true });
+    await page.goto(baseUrl + '/tests/browser/studio.html');
+    await page.getByRole('button',{name:'Inspect workspaces'}).click();
+    const studio = page.getByRole('region', { name: 'AI Engineering Studio' });
+    const attention = studio.locator('aside.ca-studio-context');
+    await attention.getByText('New source ready for QA').waitFor();
+    assert.equal(await attention.getByText('Repair cycle 6 stopped').count(), 0);
+    const engineer = studio.locator('[data-agent="SoftwareEngineer"]');
+    assert.match(await engineer.textContent(), /Generated/);
+    assert.doesNotMatch(await engineer.textContent(), /Needs inspection/);
+    await studio.locator('[data-agent="QaEngineer"]').click();
+    const canvas = studio.getByRole('region', { name: 'Focused engineering work' });
+    await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).waitFor();
+    assert.equal(await canvas.getByRole('button', { name: 'Ask QA Engineer to inspect generated source' }).isEnabled(), true);
+    assert.match(await canvas.getByLabel('Current QA source').textContent(), /has not been independently reviewed/);
+    assert.equal(await canvas.locator('.qa-repair-progress').count(), 0);
+    await canvas.getByText('Earlier QA report', { exact: false }).waitFor();
+    assert.equal(await canvas.locator('.qa-repair-history').getAttribute('open'), null);
   } finally { await page.close(); }
 });

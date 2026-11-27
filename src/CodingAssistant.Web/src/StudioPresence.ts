@@ -30,12 +30,12 @@ export interface StudioAgentPresence {
 
 const stageOf: Record<string, JourneyId> = {
   ProductOwner: 'discovery', SolutionArchitect: 'architecture',
-  TechnicalLead: 'plan', SoftwareEngineer: 'generation', QaEngineer: 'delivery',
+  TechnicalLead: 'plan', SoftwareEngineer: 'generation', LeadSoftwareEngineer: 'delivery', QaEngineer: 'delivery',
 };
 const roleName: Record<string, string> = {
   ProductOwner: 'Product Owner', SolutionArchitect: 'Solution Architect',
   TechnicalLead: 'Technical Lead', SoftwareEngineer: 'Software Engineer',
-  QaEngineer: 'QA Engineer', HumanOwner: 'You',
+  LeadSoftwareEngineer: 'Lead Software Engineer', QaEngineer: 'QA Engineer', HumanOwner: 'You',
 };
 
 const namedEvent: Record<string, string> = {
@@ -116,7 +116,8 @@ export function studioAgentPresence(saved: StudioEvidence | null,
       saved.qa?.job.planSha256 === saved.engineering?.job.planSha256 ? saved.qa : null;
     const currentRepair = saved.repair?.cycle.engineeringRunId === saved.engineering?.job.id ? saved.repair : null;
     const job = agent.id === 'SoftwareEngineer' ? saved.engineering?.job :
-      agent.id === 'QaEngineer' ? currentQa?.job : null;
+      agent.id === 'QaEngineer' ? currentQa?.job : agent.id === 'LeadSoftwareEngineer' ? saved.lead?.job :
+      agent.id === 'TechnicalLead' ? saved.collaboration?.job : null;
     const model = models?.find(item => item.role === agent.id)?.model ?? null;
     const stopped = job?.state === 'Failed' || job?.state === 'Interrupted' ||
       agent.id === 'SoftwareEngineer' &&
@@ -130,14 +131,15 @@ export function studioAgentPresence(saved: StudioEvidence | null,
         ' of ' + saved.engineering?.tasks.length + ' assigned task(s) saved' :
         'No source work recorded'
       : agent.id === 'QaEngineer' ? active ?
-        saved.qa?.reports.length + ' file(s) inspected · source-only QA' :
+        currentQa?.reports.length + ' file(s) inspected · source-only QA' :
         job ? currentQa?.reports.length + ' saved file report(s)' :
           'No source review recorded'
+      : agent.id === 'LeadSoftwareEngineer' || agent.id === 'TechnicalLead' ? detail
       : recent ? 'Last recorded: ' + friendlyEvent(recent.kind) :
         'No recorded handoff yet';
     return {
       agent, active, state,
-      status: active ? 'Working' : stopped ? 'Needs inspection' :
+      status: active ? agent.id === 'TechnicalLead' ? 'Coordinating' : 'Working' : stopped ? 'Needs inspection' :
         job ? job.state : recent ? 'Handoff recorded' : 'No work recorded',
       assignment,
       modelForNextRun: model,

@@ -148,6 +148,21 @@ public sealed class TaskStore
               PRIMARY KEY(task_id,version)
             );
             """);
+        EngineeringMessageStore.Initialize(connection);
+        EngineeringDelegationStore.Initialize(connection);
+        UpfrontTeamAuthorizationStore.Initialize(connection);
+        AgentCommunicationStore.Initialize(connection);
+        EngineeringActivityStore.Initialize(connection);
+        LeadReviewStore.Initialize(connection);
+        EngineeringIssueStore.Initialize(connection);
+        IssueVerificationStore.Initialize(connection);
+        AdaptiveWorkPlanStore.Initialize(connection);
+        CollaborationStore.Initialize(connection);
+        InferenceLeaseStore.Initialize(connection);
+        SourceSmokeEvidenceStore.Initialize(connection);
+        EvaluationPlanReviewStore.Initialize(connection);
+        BehavioralContractReviewStore.Initialize(connection);
+        EvaluationExecutionAuthorizationStore.Initialize(connection);
         ValidateDatabasePaths();
     }
 
@@ -178,6 +193,13 @@ public sealed class TaskStore
             db.Dispose();
             throw;
         }
+    }
+
+    internal event Action<string>? EngineeringActivityChanged;
+    internal void SignalEngineeringActivity(string taskId)
+    {
+        try { EngineeringActivityChanged?.Invoke(taskId); }
+        catch (Exception) { /* Best-effort hint; durable history already committed. */ }
     }
 
     internal static SqliteCommand Command(
@@ -302,11 +324,16 @@ public sealed class TaskStore
         using var tx = db.BeginTransaction();
         _ = FindTask(db, tx, id) ?? throw new StoreFailure("NOT_FOUND");
 
+        CollaborationStore.RequireNoActive(db,tx,id);
+        if(Scalar(db,tx,"SELECT 1 FROM engineering_source_smoke WHERE task_id=@id AND state='Running'",("@id",id)) is not null)
+            throw new StoreFailure("BUILD_BUSY");
         var runningDraft = Scalar(db, tx, """
             SELECT 1 FROM project_drafts
             WHERE task_id=@id AND state='Running' LIMIT 1
             """, ("@id", id));
         if (runningDraft is not null)
+            throw new StoreFailure("BUILD_BUSY");
+        if (Scalar(db, tx, "SELECT 1 FROM lead_reviews WHERE task_id=@id AND state='Running' LIMIT 1", ("@id",id)) is not null)
             throw new StoreFailure("BUILD_BUSY");
         var runningQa = Scalar(db, tx, """
             SELECT 1 FROM qa_reviews WHERE task_id=@id AND state='Running'
@@ -350,8 +377,11 @@ public sealed class TaskStore
             "DELETE FROM skill_review_events WHERE task_id=@id",
             "DELETE FROM html_artifacts WHERE task_id=@id",
             "DELETE FROM repair_triage_decisions WHERE proposal_id IN (SELECT id FROM repair_proposals WHERE task_id=@id)",
+            "DELETE FROM engineering_collaboration_repairs WHERE task_id=@id",
             "DELETE FROM repair_cycles WHERE task_id=@id",
             "DELETE FROM repair_proposals WHERE task_id=@id",
+            "DELETE FROM lead_review_files WHERE review_id IN (SELECT id FROM lead_reviews WHERE task_id=@id)",
+            "DELETE FROM lead_reviews WHERE task_id=@id",
             "DELETE FROM qa_static_preflight WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_review_files WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",
             "DELETE FROM qa_review_events WHERE qa_id IN (SELECT id FROM qa_reviews WHERE task_id=@id)",

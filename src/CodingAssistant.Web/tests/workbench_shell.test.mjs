@@ -152,3 +152,12 @@ test('current Mission Control surfaces omit obsolete generation and diagnostics 
   assert.doesNotMatch(timeline, /legacy C# pilot/i);
   assert.doesNotMatch(app, /Legacy diagnostics|Legacy single-file HTML preview/);
 });
+
+test('Command uses the same mounted project supervisor as Work, not another required navigation step',()=>{
+  const app=readFileSync('src/App.tsx','utf8');
+  assert.match(app,/chooseTask\(created\.id, 'command'\)/);
+  assert.match(app,/hidden=\{view !== 'command' && view !== 'work'\}/);
+  assert.equal((app.match(/<EngineeringStudio key=/g)||[]).length,1);
+  assert.match(app,/active=\{view === 'command' \|\| view === 'work'\}/);
+  assert.match(app,/<CommandActivity\s+token=\{token\} task=\{taskView\.task\} supervised/);
+});

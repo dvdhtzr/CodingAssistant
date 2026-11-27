@@ -2,7 +2,8 @@ name: M0 Model-Free Checks
 
 on:
   push:
-    branches: [main, "feature/**"]
+    # Temporary local-first experiment; keep manual, PR and main CI intact.
+    branches: [main, "feature/**", "!feature/autonomous-engineering-team"]
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, closed]
@@ -21,13 +22,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - name: Node.js for pinned gateway plugin syntax checks
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
       - name: Syntax-check M1 Gateway plugins and runner (no execution)
@@ -49,7 +50,7 @@ jobs:
           node --check tools/m4/generated_zip_smoke_guest.mjs
           node --check tools/m4/smoke_generated_zip.mjs
       - name: Execute M1 ACP typed-error classifier security tests (no agent/model)
-        run: node --test tests/test_m1_safe_acp_failure.mjs tests/test_m1_task_contract.mjs tests/test_m4_windows_docker_qualification.mjs tests/test_m4_windows_scoped_workspace.mjs tests/test_m4_windows_calculator_evaluator.mjs tests/test_m4_windows_chromium_sandbox.mjs tests/test_m4_generated_zip_smoke.mjs
+        run: node --test tests/test_m1_safe_acp_failure.mjs tests/test_m1_task_contract.mjs tests/test_m4_windows_docker_qualification.mjs tests/test_m4_windows_scoped_workspace.mjs tests/test_m4_windows_calculator_evaluator.mjs tests/test_m4_windows_chromium_sandbox.mjs tests/test_m4_generated_zip_smoke.mjs tests/test_m4_aet8_trusted_qualification.mjs
       - name: Compile Python tools
         run: python -m compileall -q tools/m0 tools/m1 tools/m2 tools/m3 tools/m4 tools/mvp benchmarks/acceptance tests
       - name: Model-free tests
@@ -84,7 +85,7 @@ jobs:
         shell: pwsh
         run: powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File tests/Verify-WindowsStaticWebDoctor.ps1
       - name: Install .NET 10 SDK for local control-plane checks
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "10.0.x"
       - name: Build and exercise actual M2 HTTP/SQLite API (no model)

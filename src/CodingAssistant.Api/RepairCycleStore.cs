@@ -7,7 +7,7 @@ namespace CodingAssistant.Api;
 public sealed record RepairSelection(string Path, int Index);
 public sealed record StartRepairCycleRequest(
     string? ProposalId, string? Confirmation,
-    IReadOnlyList<RepairSelection>? Findings);
+    IReadOnlyList<RepairSelection>? Findings,string? ContinueCollaborationId=null);
 public sealed record RepairCycle(
     string Id, string TaskId, string ProposalId, string BaseRunId,
     string EngineeringRunId, string? QaReviewId, string BaseSourceSha256,
@@ -220,8 +220,24 @@ public sealed class RepairCycleStore(
         return false;
     }
 
+    // Source-only coordination may inspect a fully preserved failed repair,
+    // never an incomplete initial build. Do not change the recorded state.
+    internal static bool IsCoordinationSource(SqliteConnection db,SqliteTransaction tx,
+        EngineeringRun run,string fingerprint)
+        => run.State=="Generated" ||
+            IsUnchangedFailedRepair(db,tx,run.TaskId,run.Id,fingerprint);
+
     public RepairCycle Start(string taskId, StartRepairCycleRequest request,
         ImplementationPlan plan, string? agentModel = null)
+        => StartCore(taskId,request,plan,agentModel,false);
+
+    // This method is application-internal, never an HTTP request flag.
+    internal RepairCycle StartRoutine(string taskId, StartRepairCycleRequest request,
+        ImplementationPlan plan,string agentModel,RootCauseRepairTarget? recovery=null)
+        => StartCore(taskId,request,plan,agentModel,true,recovery);
+
+    private RepairCycle StartCore(string taskId,StartRepairCycleRequest request,
+        ImplementationPlan plan,string? agentModel,bool routine,RootCauseRepairTarget? recovery=null)
     {
         CheckId(taskId);
         CheckId(request.ProposalId);
@@ -230,7 +246,9 @@ public sealed class RepairCycleStore(
         var proposal = proposals.Latest(taskId);
         if (proposal is null || proposal.Id != request.ProposalId)
             throw new StoreFailure("SOURCE_CHANGED");
-        if (request.Confirmation != "REPAIR " + proposal.SourceSha256 ||
+        if ((!routine && request.Confirmation != "REPAIR " + proposal.SourceSha256) ||
+            (routine && (request.Confirmation is not null || request.ContinueCollaborationId is null ||
+                request.Findings?.Count != 1)) ||
             request.Findings is null || request.Findings.Count is < 1 or > 12)
             throw new StoreFailure("INVALID_INPUT");
 
@@ -247,8 +265,11 @@ public sealed class RepairCycleStore(
             if (finding is null) throw new StoreFailure("INVALID_INPUT");
             selected.Add(finding);
         }
-        var allowedPaths = selected.Select(f => f.Path)
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var allowedPaths = recovery is null?selected.Select(f => f.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():new[]{recovery.TargetPath};
+        if(recovery is not null && (!routine || selected.Count!=1 ||
+            selected[0].Path!=recovery.ObservedPath || selected[0].Index!=recovery.FindingIndex))
+            throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
         // One focused source file per cycle, and all its findings together.
         // More files can be addressed in later, independently reviewed cycles.
         if (allowedPaths.Length != 1)
@@ -258,6 +279,10 @@ public sealed class RepairCycleStore(
         using var tx = db.BeginTransaction();
         if (TaskStore.FindTask(db, tx, taskId) is null)
             throw new StoreFailure("NOT_FOUND");
+        CollaborationStore.RequireNoActive(db,tx,taskId,routine?request.ContinueCollaborationId:null);
+        if(TaskStore.Scalar(db,tx,"""
+            SELECT id FROM repair_proposals WHERE task_id=@task ORDER BY created_utc DESC,id DESC LIMIT 1
+            """,("@task",taskId))!=proposal.Id) throw new StoreFailure("SOURCE_CHANGED");
         var previous = TaskStore.Scalar(db, tx, """
             SELECT id FROM repair_cycles
             WHERE proposal_id=@proposal AND task_id=@task
@@ -278,15 +303,11 @@ public sealed class RepairCycleStore(
         if (TaskStore.Scalar(db, tx, """
             SELECT id FROM engineering_runs WHERE task_id=@task
             ORDER BY created_utc DESC,id DESC LIMIT 1
-            """, ("@task", taskId)) != proposal.EngineeringRunId ||
-            TaskStore.Scalar(db, tx, """
-            SELECT id FROM qa_reviews WHERE task_id=@task
-            ORDER BY created_utc DESC,id DESC LIMIT 1
-            """, ("@task", taskId)) != proposal.QaReviewId ||
-            TaskStore.Scalar(db, tx, """
-            SELECT state FROM qa_reviews WHERE id=@qa AND task_id=@task
-            """, ("@qa", proposal.QaReviewId), ("@task", taskId)) != "Reviewed")
+            """, ("@task", taskId)) != proposal.EngineeringRunId)
             throw new StoreFailure("SOURCE_CHANGED");
+        RepairProposalStore.RequireCurrentReview(db,tx,taskId,
+            proposal.LeadReviewId??proposal.QaReviewId??throw new StoreFailure("INVALID_STATE"),
+            proposal.LeadReviewId is not null);
         if (TaskStore.Scalar(db, tx, """
             SELECT 1 FROM engineering_runs WHERE task_id=@task
             AND state='Running' LIMIT 1
@@ -341,11 +362,49 @@ public sealed class RepairCycleStore(
         // triage decision must explicitly classify it as a code defect.
         foreach (var finding in selected)
         {
-            if (TaskStore.Scalar(db, tx, """
+            if (!routine && TaskStore.Scalar(db, tx, """
                 SELECT classification FROM repair_triage_decisions
                 WHERE proposal_id=@proposal AND path=@path AND finding_index=@index
                 """, ("@proposal", proposal.Id), ("@path", finding.Path),
                 ("@index", finding.Index)) != "ImplementationDefect")
+                throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            var reviewId=proposal.LeadReviewId??proposal.QaReviewId??throw new StoreFailure("INVALID_STATE");
+            var origin=proposal.LeadReviewId is not null?"LeadSoftwareEngineer":"QaEngineer";
+            var issue=EngineeringIssueStore.Read(db,tx,taskId,baseRun.Id).Issues
+                .SingleOrDefault(i=>i.Origin==origin && i.References.Any(f=>f.ReviewId==reviewId &&
+                    f.Path.Equals(finding.Path,StringComparison.OrdinalIgnoreCase) && f.FindingIndex==finding.Index));
+            // The same gate applies to both origins. A current confirmed
+            // decision cannot be bypassed with a competing repair request.
+            if(issue is null || issue.State is "WithdrawnByReviewer" or "StaticResolutionRecorded")
+                throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            var decision=issue.Decisions.LastOrDefault();
+            // Root cause authorization is a separate host-internal gate,
+            // checked with the original review and fresh receipt in BindRepair.
+            if(recovery is not null)
+            {
+                if(!issue.CurrentSource || !issue.LatestReview || issue.Id!=recovery.IssueId ||
+                    issue.RepairCycleId is not null || issue.Challenges.Count>0)
+                    throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+                continue;
+            }
+            if(routine)
+            {
+                var file=files.Single(f=>f.Path==finding.Path);
+                var grounded=origin=="LeadSoftwareEngineer" && issue.Line is >0 &&
+                    file.Content.Split('\n').ElementAtOrDefault(issue.Line.Value-1)?.Contains(issue.Evidence,StringComparison.Ordinal)==true;
+                // QA requires a concrete excerpt and an exact approved
+                // criterion. Missing behavior and ambiguous claims escalate.
+                if(origin=="QaEngineer")
+                    grounded=issue.Evidence.Length>=8 && file.Content.Contains(issue.Evidence,StringComparison.Ordinal) &&
+                        plan.Outline.Tasks.Any(t=>t.AcceptanceCriteria.Contains(issue.Requirement,StringComparer.Ordinal));
+                if(!grounded || issue.State!="ConfirmedDefect" || !issue.LatestReview ||
+                    decision is null || decision.Classification!="ImplementationDefect")
+                    throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            }
+            if((issue.Challenges.Count>0 || decision is not null) &&
+                (decision is null || decision.ReviewId!=reviewId ||
+                 decision.ChallengeMessageId!=issue.Challenges.LastOrDefault()?.MessageId ||
+                 decision.Classification!="ImplementationDefect"))
                 throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
         }
 
@@ -365,6 +424,9 @@ public sealed class RepairCycleStore(
         var cycleId = Guid.NewGuid().ToString("N");
         try
         {
+            if(request.ContinueCollaborationId is not null)
+                CollaborationStore.BindRepair(db,tx,taskId,request.ContinueCollaborationId,cycleId,proposal,selected,
+                    routine ? runId : null,recovery);
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_runs (
                     id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
@@ -381,7 +443,7 @@ public sealed class RepairCycleStore(
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_tasks
                     (run_id,work_item_id,ordinal,title,state)
-                VALUES (@run,@work,0,'Repair confirmed QA findings','Pending')
+                VALUES (@run,@work,0,'Repair confirmed independent findings','Pending')
                 """, ("@run", runId), ("@work", workItem.Id));
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_files
@@ -404,15 +466,19 @@ public sealed class RepairCycleStore(
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_run_events
                     (run_id,sequence,kind,detail,created_utc)
-                VALUES (@run,1,'RepairRunAdmitted',
-                    'Owner-authorized QA repair; source cloned unchanged, not tested',@now)
-                """, ("@run", runId), ("@now", now));
+                VALUES (@run,1,'RepairRunAdmitted',@detail,@now)
+                """, ("@run", runId), ("@now", now), ("@detail", routine ?
+                    "Policy-authorized routine source repair; source cloned unchanged, not tested" :
+                    "Owner-authorized independent finding repair; source cloned unchanged, not tested"));
         }
         catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
         {
             throw new StoreFailure("BUILD_BUSY");
         }
+        EngineeringActivityStore.Record(db,tx,taskId,"RepairRunAdmitted","SoftwareEngineer",
+            "RepairCycle",cycleId,sourceSha256:proposal.SourceSha256);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
         return new RepairCycle(cycleId, taskId, proposal.Id, baseRun.Id,
             runId, null, proposal.SourceSha256, "Running", attempt, null,
             selected.AsReadOnly(), now, now);
@@ -427,6 +493,29 @@ public sealed class RepairCycleStore(
             WHERE id=@id AND task_id=@task
             """, ("@id", cycleId), ("@task", taskId)) ??
             throw new StoreFailure("NOT_FOUND");
+    }
+
+    // Commit the owner stop before signalling cooperative cancellation.
+    // This serializes with actual source writes and terminal generation,
+    // so a late model response cannot persist after a successful stop.
+    internal bool TryInterruptRoutineRepair(string taskId,string cycleId)
+    {
+        CheckId(taskId);CheckId(cycleId);
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var cycle=Find(db,tx,taskId,cycleId)??throw new StoreFailure("NOT_FOUND");
+        if(cycle.State!="Running" ||
+            TaskStore.Scalar(db,tx,"""
+                SELECT 1 FROM engineering_routine_repair_admissions
+                WHERE task_id=@task AND cycle_id=@cycle
+                """,("@task",taskId),("@cycle",cycleId)) is null)
+            return false;
+        EngineeringRunStore.InterruptInTransaction(db,tx,taskId,cycle.EngineeringRunId);
+        TaskStore.Execute(db,tx,"""
+            UPDATE repair_cycles SET state='Interrupted',error_code='OWNER_CANCELLED',updated_utc=@utc
+            WHERE task_id=@task AND id=@cycle AND state='Running'
+            """,("@task",taskId),("@cycle",cycleId),("@utc",DateTimeOffset.UtcNow.ToString("O")));
+        EngineeringActivityStore.Record(db,tx,taskId,"RepairInterrupted","HumanOwner","RepairCycle",cycleId);
+        tx.Commit();tasks.SignalEngineeringActivity(taskId);return true;
     }
 
     public void SetState(string taskId, string cycleId, string state,
@@ -452,7 +541,11 @@ public sealed class RepairCycleStore(
             ("@qa", (object?)qaId ?? DBNull.Value),
             ("@now", DateTimeOffset.UtcNow.ToString("O")),
             ("@id", cycleId), ("@task", taskId));
+        EngineeringActivityStore.Record(db,tx,taskId,"Repair"+state,
+            state is "QaRunning" or "QaReviewed" ? "QaEngineer" : "SoftwareEngineer",
+            "RepairCycle",cycleId);
         tx.Commit();
+        tasks.SignalEngineeringActivity(taskId);
     }
 
     private static void CheckId(string? id)

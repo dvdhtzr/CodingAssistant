@@ -42,6 +42,42 @@ async Task<JsonDocument> Body(HttpResponseMessage response) =>
 async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj) =>
     await client.PostAsJsonAsync(path, obj);
 
+// Exercise actual shared-capacity lease semantics without an installed model.
+{
+    var scheduler=new LocalInferenceScheduler(1,2,TimeSpan.FromSeconds(3));
+    var first=await scheduler.AcquireAsync(CancellationToken.None);
+    using var cancelWait=new CancellationTokenSource();
+    var queued=0;
+    var second=scheduler.AcquireAsync(cancelWait.Token,()=>Interlocked.Increment(ref queued));
+    var third=scheduler.AcquireAsync(CancellationToken.None,()=>Interlocked.Increment(ref queued));
+    Check(scheduler.Snapshot() is {Capacity:1,Active:1,Waiting:2} && queued==2 &&
+        !second.IsCompleted && !third.IsCompleted,"capacity one queues other actual inference leases");
+    try
+    {
+        using var overflow=await scheduler.AcquireAsync(CancellationToken.None);
+        Check(false,"queue overflow must fail safely");
+    }
+    catch(StoreFailure e)when(e.Code=="INFERENCE_QUEUE_FULL"){Check(true,"bounded inference queue rejects overflow");}
+    cancelWait.Cancel();
+    try{using var ignored=await second;Check(false,"cancelled waiter cannot obtain lease");}
+    catch(OperationCanceledException){Check(true,"queued cancellation stops without taking capacity");}
+    first.Dispose();first.Dispose();
+    using(var lease=await third)
+        Check(scheduler.Snapshot() is {Active:1,Waiting:0},"slot transfers without duplicate release");
+    Check(scheduler.Snapshot() is {Active:0,Waiting:0},"lease returns capacity exactly once");
+    var timeoutScheduler=new LocalInferenceScheduler(1,2,TimeSpan.FromMilliseconds(30));
+    using(var held=await timeoutScheduler.AcquireAsync(CancellationToken.None))
+    {
+        try{using var timeout=await timeoutScheduler.AcquireAsync(CancellationToken.None);Check(false,"wait timeout required");}
+        catch(StoreFailure e)when(e.Code=="INFERENCE_QUEUE_TIMEOUT")
+        {Check(timeoutScheduler.Snapshot() is {Active:1,Waiting:0},"timed-out waiter releases queue reservation");}
+    }
+    var parallel=new LocalInferenceScheduler(2);
+    using(var a=await parallel.AcquireAsync(CancellationToken.None))
+    using(var b=await parallel.AcquireAsync(CancellationToken.None))
+        Check(parallel.Snapshot() is {Capacity:2,Active:2,Waiting:0},"explicit capacity two is honored");
+}
+
 // Native MAF skill API compatibility probe. No provider is installed in
 // production; the probe uses only in-memory text and a deterministic client.
 {
@@ -459,15 +495,33 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
 // no rights to use executable tools or load skills merely by naming them.
 {
     var roster = EngineeringAgentRoster.All;
-    Check(roster.Count == 5 &&
-          roster.Select(a => a.Id).Distinct().Count() == 5 &&
+    Check(EngineeringRoleCapabilities.Allows("SoftwareEngineer",
+              EngineeringCapability.WriteSource) &&
+          !EngineeringRoleCapabilities.Allows("LeadSoftwareEngineer",
+              EngineeringCapability.WriteSource) &&
+          !EngineeringRoleCapabilities.Allows("QaEngineer",
+              EngineeringCapability.WriteSource) &&
+          !EngineeringRoleCapabilities.Allows("Unknown",
+              EngineeringCapability.SendMessage),
+        "host capability policy denies reviewer and unknown source writes");
+    try
+    {
+        EngineeringRoleCapabilities.Require("QaEngineer", EngineeringCapability.WriteSource);
+        Check(false, "QA source write must be rejected");
+    }
+    catch (StoreFailure error)
+    {
+        Check(error.Code == "AGENT_CAPABILITY_DENIED", "QA source write denied");
+    }
+    Check(roster.Count == 6 &&
+          roster.Select(a => a.Id).Distinct().Count() == 6 &&
           roster.All(a => a.Goal.Length > 25 &&
               a.Backstory.Length > 25 && !a.CanExecuteCode) &&
           EngineeringAgentRoster.Get("SoftwareEngineer")
               .AllowedSkillScopes.Contains("source-implementation") &&
           EngineeringAgentRoster.Get("QaEngineer")
               .AllowedSkillScopes.Contains("static-code-review"),
-        "five distinct role/goals/backstories and non-executable skill scopes");
+        "six distinct role/goals/backstories and non-executable skill scopes");
 
     var manifest = MafSoftwareEngineer.Parse(
         """{"summary":"Implemented the task with a functional browser entry page.","files":[{"path":"index.html","purpose":"Complete browser interface","content":"<!doctype html><html><body><button id='save'>Save</button></body></html>"}],"verificationNotes":["Click the Save button in a browser"]}""");
@@ -820,6 +874,38 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
               reason.Contains("REPAIR_EDIT_NOT_UNIQUE", StringComparison.Ordinal)),
         "engineer retries stale exact-match target with bounded diagnostic and no source leak");
 
+    // Exercise the alternate editing strategy against the same large
+    // immutable target. The host enables it only after exact-match rejection.
+    string LineRepairJson(string path,string hash,int first,int last,string replacement) =>
+        JsonSerializer.Serialize(new {
+            summary="Correct the selected saved handler by exact original line identity.",
+            baseFileSha256=hash,lineEdits=new[]{new {path,startLine=first,endLine=last,newText=replacement}},
+            verificationNotes=Array.Empty<string>()
+        });
+    var lineRepair=LineRepairJson("app.js",savedRepairFiles[1].Sha256,3,3,correctedHandler);
+    Check(!MafSoftwareEngineer.TryParseRepair(lineRepair,authorizedRepair,savedRepairFiles,out _,out var notAdmittedLine) &&
+        notAdmittedLine.StartsWith("REPAIR_LINE_NOT_ADMITTED:",StringComparison.Ordinal),
+        "line-based recovery cannot be selected before host admission");
+    Check(MafSoftwareEngineer.TryParseRepair(lineRepair,authorizedRepair,savedRepairFiles,out var lineResult,out _,true) &&
+        lineResult!.Files.Single().Content==appliedPatch.Files.Single().Content,
+        "hash-bound original line recovery preserves every unrelated character");
+    foreach(var (raw,expected) in new[]{
+        (LineRepairJson("index.html",savedRepairFiles[1].Sha256,3,3,correctedHandler),"REPAIR_SCOPE"),
+        (LineRepairJson("app.js",new string('0',64),3,3,correctedHandler),"REPAIR_LINE_BINDING"),
+        (LineRepairJson("app.js",savedRepairFiles[1].Sha256,2,2,correctedHandler),"REPAIR_LINE_RANGE"),
+        (LineRepairJson("app.js",savedRepairFiles[1].Sha256,999,999,correctedHandler),"REPAIR_LINE_RANGE")})
+        Check(!MafSoftwareEngineer.TryParseRepair(raw,authorizedRepair,savedRepairFiles,out _,out var lineFailure,true)&&
+            lineFailure.StartsWith(expected+":",StringComparison.Ordinal),"unsafe line edit rejects "+expected);
+    var rangeRecoveryFactory=new Phase4FakeMafFactory();
+    rangeRecoveryFactory.Responses.Enqueue(invalidPatches[0].Raw);
+    rangeRecoveryFactory.Responses.Enqueue(lineRepair);
+    var rangeRecovered=await new MafSoftwareEngineer(rangeRecoveryFactory).ImplementAsync(
+        assignment with {ExistingFiles=savedRepairFiles,Repair=authorizedRepair},CancellationToken.None);
+    Check(rangeRecoveryFactory.Attempts==2&&rangeRecovered.Files.Single().Content==appliedPatch.Files.Single().Content&&
+        rangeRecoveryFactory.UserPrompts.Any(p=>p.Contains("HOST NUMBERED REPAIR TARGET",StringComparison.Ordinal))&&
+        rangeRecoveryFactory.UserPrompts.Any(p=>p.Contains("HOST-ADMITTED RECOVERY FORMAT",StringComparison.Ordinal)),
+        "actual model adapter changes strategy after ambiguous edit rather than requiring owner retry");
+
     // Repair responses must refer to the immutable original, not earlier
     // replacement text. Reject overlapping edits and malformed objects safely.
     var twoEdits = JsonSerializer.Serialize(new {
@@ -1031,6 +1117,68 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var file = new EngineeringSourceFile("index.html", "Offline app entry",
         "<html><body><button>Save</button></body></html>",
         new string('8', 64), "create-ui", "2026-11-21T00:03:00Z");
+    var leadFactory = new Phase5FakeMafFactory();
+    leadFactory.ScriptedReplies.Enqueue("""
+        {"disposition":"ChangesRequested","summary":"Static review found an unwired control.",
+        "findings":[{"severity":"Major","category":"Correctness","path":"index.html",
+        "line":1,"evidence":"<button>Save</button>","impact":"The visible control lacks demonstrated wiring.",
+        "resolution":"Connect the approved save behavior.","verification":"Independently check save and reload."}]}
+        """);
+    var leadReport = await new MafLeadSoftwareEngineer(leadFactory).ReviewAsync(
+        new QaReviewInput("Build notes", "Approved offline notes specification",
+            fakePlan, arch, run, file, [file]), CancellationToken.None);
+    Check(leadFactory.Purposes.SequenceEqual([MafAgentPurpose.LeadSoftwareEngineer]) &&
+        leadFactory.Models.SequenceEqual([AgentRoleModelSettings.PreferredReviewer]) &&
+        leadFactory.NoTools && leadFactory.SourceSeen && leadReport.Findings.Count==1,
+        "sixth genuine MAF role reviews independently with exact source evidence and no tools");
+    try {
+        _ = MafLeadSoftwareEngineer.Parse(JsonSerializer.Serialize(leadReport with {
+            Findings=[leadReport.Findings[0] with {Line=99}]}),file);
+        Check(false,"invented line accepted");
+    } catch (StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED") {
+        Check(true,"reviewer cannot invent source evidence");
+    }
+    var leadRetryInput=new QaReviewInput("Build notes","Approved offline notes specification",
+        fakePlan,arch,run,file,[file]);
+    var leadRetryFactory=new Phase5FakeMafFactory();
+    leadRetryFactory.ScriptedFailures.Enqueue("MODEL_OUTPUT_REJECTED");
+    leadRetryFactory.ScriptedReplies.Enqueue(JsonSerializer.Serialize(leadReport with {
+        Findings=[leadReport.Findings[0] with {Line=99}]}));
+    leadRetryFactory.ScriptedReplies.Enqueue(JsonSerializer.Serialize(leadReport));
+    var leadRecovered=await new MafLeadSoftwareEngineer(leadRetryFactory).ReviewAsync(leadRetryInput,CancellationToken.None);
+    Check(leadRetryFactory.ResponseAttempts==3 && leadRecovered.Findings.Count==1 &&
+        leadRecovered.Findings[0].Evidence==leadReport.Findings[0].Evidence &&
+        leadRetryFactory.LastUserPrompt?.Contains("Final compact review attempt",StringComparison.Ordinal)==true &&
+        leadRetryFactory.LastUserPrompt.Contains("REVIEW_LINE_RANGE",StringComparison.Ordinal),
+        "lead review retries transport and invalid grounded response without relaxing evidence");
+    var numberedLeadFactory=new Phase5FakeMafFactory();
+    var numberedLeadFile=file with {Content="<html>\n<body><button>Save</button></body>\n</html>"};
+    numberedLeadFactory.ScriptedReplies.Enqueue(JsonSerializer.Serialize(leadReport with {
+        Findings=[leadReport.Findings[0] with {Line=2}]}));
+    var numberedLeadResult=await new MafLeadSoftwareEngineer(numberedLeadFactory).ReviewAsync(
+        new QaReviewInput("Build notes","Approved offline notes specification",
+            fakePlan,arch,run,numberedLeadFile,[numberedLeadFile]),CancellationToken.None);
+    Check(numberedLeadFactory.LastUserPrompt?.Contains("2 | <body><button>Save</button></body>",StringComparison.Ordinal)==true &&
+        numberedLeadResult.Findings.Single().Line==2 &&
+        numberedLeadResult.Findings.Single().Evidence=="<button>Save</button>",
+        "lead reviewer sees actual numbered source but stores only exact original evidence");
+    var leadExhaustedFactory=new Phase5FakeMafFactory();
+    foreach(var code in new[]{"MODEL_THINKING_ONLY","MODEL_OUTPUT_TRUNCATED","MODEL_OUTPUT_REJECTED"})
+        leadExhaustedFactory.ScriptedFailures.Enqueue(code);
+    try {
+        _=await new MafLeadSoftwareEngineer(leadExhaustedFactory).ReviewAsync(leadRetryInput,CancellationToken.None);
+        Check(false,"failed review must not be manufactured");
+    } catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED") {
+        Check(leadExhaustedFactory.ResponseAttempts==3,"lead review exhausts bounded response recovery and fails closed");
+    }
+    var leadUnavailableFactory=new Phase5FakeMafFactory();
+    leadUnavailableFactory.ScriptedFailures.Enqueue("LOCAL_MODEL_UNAVAILABLE");
+    try {
+        _=await new MafLeadSoftwareEngineer(leadUnavailableFactory).ReviewAsync(leadRetryInput,CancellationToken.None);
+        Check(false,"unavailable reviewer must not be replaced");
+    } catch(StoreFailure e) when(e.Code=="LOCAL_MODEL_UNAVAILABLE") {
+        Check(leadUnavailableFactory.ResponseAttempts==1,"lead review does not retry unavailable provider or substitute models");
+    }
     var assessment = await new MafQaEngineer(fakeFactory).ReviewAsync(
         new QaReviewInput("Build notes", "Approved offline notes specification",
             fakePlan, arch, run, file, [file]), CancellationToken.None);
@@ -1560,6 +1708,10 @@ var boundModel = new Phase2DraftModel();
 var leadModel = new Phase2TechnicalLeadPlanner();
 var softwareModel = new Phase4EngineeringModel();
 var qaModel = new Phase5QaModel();
+var aetLeadModel = new AetLeadReviewFixture();
+var aetIssueVerifier = new AetIssueVerifierFixture();
+var aetCollaborationLead=new AetCollaborationLeadFixture();
+var aetSmokeRunner=new AetSmokeFixture();
 try
 {
     var tasks = new TaskStore(root);
@@ -1591,7 +1743,8 @@ try
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
-        qaReviewerOverride: qaModel);
+        qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel,
+        issueVerifierOverride: aetIssueVerifier,collaborationLeadOverride:aetCollaborationLead,sourceSmokeOverride:aetSmokeRunner);
     client = await Start(app);
     using (var unauthenticated = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await unauthenticated.GetAsync("/api/runtime-profiles"))
@@ -1785,7 +1938,8 @@ try
         architectureAdvisorOverride: new Phase2Advisor(),
         implementationPlannerOverride: leadModel,
         engineeringModelOverride: softwareModel,
-        qaReviewerOverride: qaModel);
+        qaReviewerOverride: qaModel, leadReviewerOverride: aetLeadModel,
+        issueVerifierOverride: aetIssueVerifier,collaborationLeadOverride:aetCollaborationLead,sourceSmokeOverride:aetSmokeRunner);
     client = await Start(app);
     using (var persisted = await client.GetAsync(path))
     using (var body = await Body(persisted))
@@ -2019,6 +2173,19 @@ try
         Check(wrongConsent.StatusCode == HttpStatusCode.BadRequest,
             "approval requires exact owner-confirmed plan hash");
 
+    // An invalid future-file rule must roll back the plan approval itself.
+    foreach(var invalidUpfront in new[]{
+        new UpfrontRepairAuthorization(["app.js"],0),
+        new UpfrontRepairAuthorization(["app.js","APP.JS"],4),
+        new UpfrontRepairAuthorization([],4)})
+    {
+        using var rejectedUpfront=await Post(client,leadPath+"/approve",approveLead with {TeamRepair=invalidUpfront});
+        Check(rejectedUpfront.StatusCode==HttpStatusCode.BadRequest &&
+            new ImplementationPlanStore(tasks,interviews).Read(taskBound.Id).Plan?.Status=="Proposed" &&
+            new UpfrontTeamAuthorizationStore(tasks).Read(taskBound.Id) is null,
+            "invalid upfront scope cannot approve plan or persist future authority");
+    }
+
     using (var approvedPlan = await Post(client, leadPath + "/approve", approveLead))
     using (var body = await Body(approvedPlan))
         Check(approvedPlan.StatusCode == HttpStatusCode.OK &&
@@ -2086,7 +2253,7 @@ try
     {
         var agents = body.RootElement.GetProperty("agents");
         Check(roster.StatusCode == HttpStatusCode.OK &&
-              agents.GetArrayLength() == 5 &&
+              agents.GetArrayLength() == 6 &&
               agents.EnumerateArray().Any(a =>
                   a.GetProperty("id").GetString() == "SoftwareEngineer" &&
                   !a.GetProperty("canExecuteCode").GetBoolean() &&
@@ -2516,6 +2683,53 @@ try
                 "project deletion clears Product Owner skill audit records");
     }
     var engineeringPath = "/api/tasks/" + taskBound.Id + "/engineering-runs";
+    var messagesPath = "/api/tasks/" + taskBound.Id + "/engineering-messages";
+    var delegationPath = "/api/tasks/" + taskBound.Id + "/engineering-delegation";
+    using (var response = await client.GetAsync(delegationPath))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("policy").ValueKind == JsonValueKind.Null,
+            "delegation defaults to no authority");
+    using (var denied = await Post(client, delegationPath + "/propose",
+        new ProposeDelegationRequest(0, secondPlanHash, ["ExecuteCode"])))
+        Check(denied.StatusCode == HttpStatusCode.BadRequest,
+            "delegation cannot authorize generated code execution");
+    string policySha;
+    using (var aetDelegationProposal = await Post(client, delegationPath + "/propose",
+        new ProposeDelegationRequest(0, secondPlanHash, ["SendMessage","ScheduleWork"])))
+    using (var body = await Body(aetDelegationProposal))
+    {
+        Check(aetDelegationProposal.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("status").GetString() == "Proposed",
+            "delegation proposal grants no authority");
+        policySha = body.RootElement.GetProperty("policySha256").GetString()!;
+    }
+    using (var denied = await Post(client, delegationPath + "/approve",
+        new ApproveDelegationRequest(1, policySha, "APPROVE wrong")))
+        Check(denied.StatusCode == HttpStatusCode.Conflict,
+            "delegation requires exact hash confirmation");
+    using (var approval = await Post(client, delegationPath + "/approve",
+        new ApproveDelegationRequest(1, policySha, "APPROVE " + policySha)))
+        Check(approval.StatusCode == HttpStatusCode.OK,
+            "owner explicitly approves exact delegation policy");
+    using (var revoked = await Post(client, delegationPath + "/revoke",
+        new ApproveDelegationRequest(1, policySha, "REVOKE " + policySha)))
+        Check(revoked.StatusCode == HttpStatusCode.OK &&
+              new EngineeringDelegationStore(tasks).Read(taskBound.Id)?.Status == "Revoked",
+            "owner can revoke persisted delegation policy");
+    using (var denied = await Post(client, delegationPath + "/approve",
+        new ApproveDelegationRequest(1, policySha, "APPROVE " + policySha)))
+        Check(denied.StatusCode == HttpStatusCode.Conflict,
+            "revoked policy cannot be replayed");
+    using (var response = await client.GetAsync(messagesPath))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("messages").GetArrayLength() == 0,
+            "new project has no fabricated engineering messages");
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(messagesPath))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "engineering messages require owner authentication");
     using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
     using (var denied = await anonymous.GetAsync(engineeringPath + "/latest"))
         Check(denied.StatusCode == HttpStatusCode.Unauthorized,
@@ -2597,6 +2811,299 @@ try
           engineeringResult.Events.Any(e => e.Kind == "EngineeringTaskStarted") &&
           engineeringResult.Events.Count(e => e.Kind == "EngineeringTaskCompleted") == 2,
         "each approved engineer task persists source and exact durable event history");
+    var aetReceipts = new EngineeringMessageStore(tasks).List(taskBound.Id);
+    Check(aetReceipts.Count == 4 &&
+          aetReceipts.Select(m => m.Kind).SequenceEqual(
+              ["TaskAssignment","TaskCompleted","TaskAssignment","TaskCompleted"]) &&
+          aetReceipts.All(m => m.RunId == engineeringRunId && m.PlanSha256 == secondPlanHash) &&
+          aetReceipts[0].FromAgent == "TechnicalLead" &&
+          aetReceipts[1].FromAgent == "SoftwareEngineer" &&
+          aetReceipts[3].SourceSha256 == QaReviewStore.Fingerprint(engineeringResult!.Files),
+        "assignment and completion receipts bind actual saved revisions");
+    Check(new EngineeringMessageStore(tasks).List(taskBound.Id, aetReceipts[1].Sequence)
+          .SequenceEqual(aetReceipts.Skip(2)),
+        "durable message cursor replays without duplication");
+    var aetActivityPath = "/api/tasks/" + taskBound.Id + "/engineering-activity";
+    var aetActivity = new EngineeringActivityStore(tasks).Read(taskBound.Id);
+    Check(aetActivity.Events.Select(e => e.Sequence).SequenceEqual(
+              Enumerable.Range(1,aetActivity.Events.Count).Select(i => (long)i)) &&
+          aetActivity.Events.Count(e => e.Kind == "TaskAssignment") == 2 &&
+          aetActivity.Events.Count(e => e.Kind == "TaskCompleted") == 2 &&
+          aetActivity.Events.Last(e => e.Kind == "TaskCompleted").SourceSha256 ==
+              QaReviewStore.Fingerprint(engineeringResult!.Files),
+        "project activity replays contiguous actual assignment and source evidence");
+    var aetFirstPage = new EngineeringActivityStore(tasks).Read(taskBound.Id,0,2);
+    Check(aetFirstPage.Events.Count == 2 &&
+          new EngineeringActivityStore(tasks).Read(taskBound.Id,
+              aetFirstPage.Events[^1].Sequence).Events.First().Sequence == 3,
+        "activity cursor replays a bounded page without gaps");
+    using (var anonymous = new HttpClient { BaseAddress = client.BaseAddress })
+    using (var denied = await anonymous.GetAsync(aetActivityPath))
+        Check(denied.StatusCode == HttpStatusCode.Unauthorized,
+            "engineering activity requires owner authentication");
+    using (var invalidActivity = await client.GetAsync(aetActivityPath + "?after=-1"))
+        Check(invalidActivity.StatusCode == HttpStatusCode.BadRequest,
+            "negative activity cursor fails closed");
+    using (var response = await client.GetAsync(aetActivityPath + "?limit=2"))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("taskId").GetString() == taskBound.Id &&
+              body.RootElement.GetProperty("events").GetArrayLength() == 2,
+            "activity endpoint is scoped to one project and bounded page");
+    // Exercise the same application-only publication boundary future role
+    // invocations use. This is injected test data, not a live model result.
+    var delegationStore = new EngineeringDelegationStore(tasks);
+    var messagePolicy = delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(1, secondPlanHash, ["SendMessage"]));
+    var approvedMessagePolicy = delegationStore.Approve(taskBound.Id,
+        new ApproveDelegationRequest(messagePolicy.Revision,messagePolicy.PolicySha256,
+            "APPROVE " + messagePolicy.PolicySha256));
+    var communicationStore = new AgentCommunicationStore(tasks);
+    var aetMessageContext = new AgentCommunicationContext(taskBound.Id,engineeringRunId,
+        aetReceipts[2].WorkItemId,aetReceipts[2].Sequence,"SoftwareEngineer",
+        aetReceipts[3].SourceSha256,approvedMessagePolicy.Revision,
+        approvedMessagePolicy.PolicySha256,Guid.NewGuid().ToString("N"));
+    var aetMessageDraft = new AgentCommunicationDraft("SolutionArchitect",
+        "ClarificationRequested","Please clarify the approved storage approach.",
+        EvidenceSequence: aetReceipts[3].Sequence);
+    var aetSent = communicationStore.Publish(aetMessageContext,aetMessageDraft);
+    Check(communicationStore.Publish(aetMessageContext,aetMessageDraft) == aetSent &&
+          new AgentCommunicationStore(tasks).List(taskBound.Id,role:"SolutionArchitect",
+              direction:"inbox").Single() == aetSent &&
+          communicationStore.List(taskBound.Id,role:"SoftwareEngineer",
+              direction:"outbox").Single() == aetSent,
+        "durable inbox/outbox deduplicates identical host message and survives reopen");
+    void RejectMessage(Action action, string expected)
+    {
+        try { action(); Check(false,"message should fail closed: " + expected); }
+        catch (StoreFailure error) { Check(error.Code == expected,"message rejected: " + expected); }
+    }
+    RejectMessage(() => communicationStore.Publish(aetMessageContext,aetMessageDraft with { Summary = "Changed" }),
+        "IDEMPOTENCY_CONFLICT");
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
+        MessageId = Guid.NewGuid().ToString("N"), SourceSha256 = new string('0',64)
+    },aetMessageDraft),"STALE_SOURCE_RUN");
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
+        MessageId = Guid.NewGuid().ToString("N"), TaskId = new string('0',32)
+    },aetMessageDraft),"NOT_FOUND");
+    RejectMessage(() => communicationStore.Publish(aetMessageContext,aetMessageDraft with { Kind = "VerificationCompleted" }),
+        "INVALID_AGENT_MESSAGE");
+    var aetReplyContext = aetMessageContext with {
+        FromAgent = "SolutionArchitect", MessageId = Guid.NewGuid().ToString("N")
+    };
+    var aetReply = communicationStore.Publish(aetReplyContext,new AgentCommunicationDraft(
+        "SoftwareEngineer","ClarificationProvided","Follow the approved architecture.",aetSent.Sequence));
+    Check(aetReply.Depth == 1 && aetReply.AssignmentSequence == aetSent.AssignmentSequence,
+        "replies preserve assignment correlation and bounded depth");
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
+        MessageId = Guid.NewGuid().ToString("N")
+    },aetMessageDraft with { EvidenceSequence = long.MaxValue }),"INVALID_AGENT_MESSAGE");
+    var aetLastReply = aetReply;
+    for (var aetDepth = 2; aetDepth <= AgentCommunicationStore.MaxReplyDepth; aetDepth++)
+    {
+        aetLastReply = communicationStore.Publish(aetMessageContext with {
+            FromAgent = aetLastReply.ToAgent, MessageId = Guid.NewGuid().ToString("N")
+        },new AgentCommunicationDraft(aetLastReply.FromAgent,"ClarificationProvided",
+            "Acknowledged the approved architecture.",aetLastReply.Sequence));
+        Check(aetLastReply.Depth == aetDepth,"reply depth is computed by host");
+    }
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
+        FromAgent = aetLastReply.ToAgent, MessageId = Guid.NewGuid().ToString("N")
+    },new AgentCommunicationDraft(aetLastReply.FromAgent,"ClarificationProvided",
+        "Another reply.",aetLastReply.Sequence)),"AGENT_CONVERSATION_LIMIT");
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
+        approvedMessagePolicy.Revision,approvedMessagePolicy.PolicySha256,
+        "REVOKE " + approvedMessagePolicy.PolicySha256));
+    RejectMessage(() => communicationStore.Publish(aetMessageContext with {
+        MessageId = Guid.NewGuid().ToString("N")
+    },aetMessageDraft),"DELEGATION_NOT_AUTHORIZED");
+    using (var response = await client.GetAsync(
+        "/api/tasks/" + taskBound.Id + "/agent-communications?role=SoftwareEngineer&direction=inbox"))
+    using (var body = await Body(response))
+        Check(response.StatusCode == HttpStatusCode.OK &&
+              body.RootElement.GetProperty("messages").GetArrayLength() == 4,
+            "authenticated agent inbox reports actual persisted replies");
+    var aetProposalActivity = new EngineeringActivityStore(tasks).Read(taskBound.Id,
+        aetActivity.LastSequence).Events.Where(e => e.Origin == "AgentProposal").ToArray();
+    Check(aetProposalActivity.Length == 9 &&
+          aetProposalActivity.Count(e => e.ReferenceId == aetSent.MessageId) == 1 &&
+          aetProposalActivity.All(e => !e.Label.Contains("approved storage approach")),
+        "activity distinguishes agent proposals from observations, deduplicates and omits raw text");
+    // Exercise the observation boundary with injected metadata only. CI has no
+    // real Ollama inference and must not claim provider or model qualification.
+    var aetBeforeProvider = new EngineeringActivityStore(tasks).Read(taskBound.Id).LastSequence;
+    Check(EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+        MafAgentPurpose.SoftwareEngineer,CancellationToken.None) is null,
+        "provider telemetry cannot attribute an unscoped request");
+    using (EngineeringProviderActivity.Enter(tasks,taskBound.Id,"SoftwareEngineer",engineeringRunId))
+    {
+        Check(EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+            MafAgentPurpose.QaEngineer,CancellationToken.None) is null,
+            "provider telemetry rejects mismatched role attribution");
+        using (var observed = EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+            MafAgentPurpose.SoftwareEngineer,CancellationToken.None))
+            observed!.Complete();
+        using (var stopped = EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+            MafAgentPurpose.SoftwareEngineer,CancellationToken.None)) { }
+    }
+    var aetProviderEvents = new EngineeringActivityStore(tasks).Read(taskBound.Id,
+        aetBeforeProvider).Events;
+    Check(aetProviderEvents.Select(e => e.Kind).SequenceEqual(
+              ["OllamaRequestStarted","OllamaResponseAccepted",
+               "OllamaRequestStarted","OllamaRequestStopped"]) &&
+          aetProviderEvents.All(e => e.AgentId == "SoftwareEngineer" &&
+              e.Model == "qwen2.5-coder:14b") &&
+          aetProviderEvents[0].ReferenceId == aetProviderEvents[1].ReferenceId,
+        "provider lifecycle metadata correlates start and result without model content");
+    var aetLeaseStore=new InferenceLeaseStore(tasks);
+    var aetLeaseHistory=aetLeaseStore.List(taskBound.Id);
+    Check(aetLeaseHistory.Count==2 && aetLeaseHistory.Any(x=>x.State=="ResponseAccepted") &&
+        aetLeaseHistory.Any(x=>x.State=="Stopped") &&
+        aetLeaseHistory.All(x=>x.FinishedUtc is not null && x.ReferenceId==engineeringRunId),
+        "actual scoped provider lifecycle has durable terminal lease receipts");
+    using(EngineeringProviderActivity.Enter(tasks,taskBound.Id,"SoftwareEngineer",engineeringRunId))
+    using(var abandoned=EngineeringProviderActivity.StartProvider("qwen2.5-coder:14b",
+        MafAgentPurpose.SoftwareEngineer,CancellationToken.None))
+    {
+        var active=aetLeaseStore.List(taskBound.Id).Single(x=>x.State=="Active");
+        new InferenceLeaseStore(tasks).Recover();
+        new InferenceLeaseStore(tasks).Recover();
+        try{abandoned!.Complete();Check(false,"interrupted lease cannot accept late result");}
+        catch(StoreFailure e)when(e.Code=="INFERENCE_LEASE_INTERRUPTED")
+        {Check(true,"late provider result is rejected after recovery");}
+        Check(aetLeaseStore.List(taskBound.Id).Single(x=>x.Id==active.Id).State=="Interrupted",
+            "startup reconciliation is idempotent and does not fabricate completion or replay work");
+    }
+    using(var aetLeaseResponse=await client.GetAsync("/api/tasks/"+taskBound.Id+"/inference-leases"))
+    using(var aetLeaseBody=await Body(aetLeaseResponse))
+        Check(aetLeaseResponse.StatusCode==HttpStatusCode.OK &&
+            aetLeaseBody.RootElement.GetProperty("leases").GetArrayLength()==3,
+            "owner can inspect recovered provider work receipts");
+    // Persist a separate, read-only lead review against the exact generated revision.
+    var aetLeadStore = new LeadReviewStore(tasks);
+    var aetLeadPlan = new ImplementationPlanStore(tasks,interviews).Read(taskBound.Id).Plan!;
+    var aetLeadSnapshot = engineeringStore.Get(taskBound.Id,engineeringRunId);
+    var aetLeadJob = aetLeadStore.Start(taskBound.Id,aetLeadSnapshot,aetLeadPlan,"qwen3.5:4b");
+    foreach(var aetLeadFile in aetLeadSnapshot.Files)
+        aetLeadStore.Save(taskBound.Id,aetLeadJob.Id,aetLeadFile,
+            new LeadFileAssessment("Approved","No static concerns in this injected fixture.",[]));
+    aetLeadStore.Finish(taskBound.Id,aetLeadJob.Id,"Reviewed");
+    var aetLeadSaved = new LeadReviewStore(tasks).Get(taskBound.Id,aetLeadJob.Id);
+    Check(aetLeadSaved.Current && aetLeadSaved.Disposition=="Approved" &&
+        aetLeadSaved.Reports.Count==aetLeadSnapshot.Files.Count &&
+        QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,engineeringRunId).Files)==aetLeadJob.SourceSha256,
+        "independent lead review persists exact revision without altering source");
+    using(var aetLeadResponse=await client.GetAsync("/api/tasks/"+taskBound.Id+"/lead-reviews/latest"))
+    using(var aetLeadBody=await Body(aetLeadResponse))
+        Check(aetLeadResponse.StatusCode==HttpStatusCode.OK &&
+            aetLeadBody.RootElement.GetProperty("snapshot").GetProperty("disposition").GetString()=="Approved",
+            "owner can retrieve durable static lead review");
+    var aetLeadPath = "/api/tasks/"+taskBound.Id+"/lead-reviews";
+    using(var aetMissing=await Post(client,aetLeadPath,new StartQaReviewRequest(engineeringRunId,secondPlanHash)))
+        Check(aetMissing.StatusCode==HttpStatusCode.ServiceUnavailable,
+            "lead review cannot invoke an uninstalled default model");
+    using(var aetSelect=await Post(client,"/api/tasks/"+taskBound.Id+"/agent-models/LeadSoftwareEngineer",
+        new {model="qwen3.5:4b"}))
+        Check(aetSelect.StatusCode==HttpStatusCode.OK,"owner may choose installed independent reviewer model");
+    using(var aetStale=await Post(client,aetLeadPath,new StartQaReviewRequest(engineeringRunId,firstPlanHash)))
+        Check(aetStale.StatusCode==HttpStatusCode.Conflict,"lead review rejects wrong approved plan digest");
+    string aetLiveLeadId;
+    using(var aetAdmitted=await Post(client,aetLeadPath,new StartQaReviewRequest(engineeringRunId,secondPlanHash)))
+    using(var aetBody=await Body(aetAdmitted))
+    {
+        Check(aetAdmitted.StatusCode==HttpStatusCode.Accepted,"owner admits independent lead review through API");
+        aetLiveLeadId=aetBody.RootElement.GetProperty("id").GetString()!;
+    }
+    LeadReviewSnapshot? aetLiveLead=null;
+    for(int aetAttempt=0;aetAttempt<100;aetAttempt++)
+    {
+        aetLiveLead=aetLeadStore.Get(taskBound.Id,aetLiveLeadId);
+        if(aetLiveLead.Job.State!="Running") break;
+        await Task.Delay(50);
+    }
+    Check(aetLiveLead?.Job.State=="Reviewed" && aetLiveLead.Disposition=="ChangesRequested" &&
+        aetLiveLead.Reports.SelectMany(x=>x.Assessment.Findings).Any(x=>x.Severity=="Major") &&
+        QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,engineeringRunId).Files)==aetLeadJob.SourceSha256,
+        "injected reviewer executes actual owner-admitted workflow, saves a concern and leaves source unchanged; state=" + aetLiveLead?.Job.State + ", error=" + aetLiveLead?.Job.ErrorCode);
+    var aetIssues = new EngineeringIssueStore(tasks).Read(taskBound.Id);
+    Check(aetIssues.CurrentSource && aetIssues.Issues.Count==1 &&
+        aetIssues.Issues.Single().Origin=="LeadSoftwareEngineer" &&
+        aetIssues.Issues.Single().State=="NeedsTriage" &&
+        aetIssues.Issues.Single().SourceSha256==aetLeadJob.SourceSha256 &&
+        aetIssues.Issues.Single().References.Single().ReviewId==aetLiveLeadId,
+        "unified issue projection preserves actual independent finding and exact revision");
+    using(var aetAnonymous=new HttpClient {BaseAddress=client.BaseAddress})
+    using(var aetDenied=await aetAnonymous.GetAsync("/api/tasks/"+taskBound.Id+"/engineering-issues"))
+        Check(aetDenied.StatusCode==HttpStatusCode.Unauthorized,"unified findings remain owner-private");
+    var aetIssueId=aetIssues.Issues.Single().Id;
+    var aetChallengePolicy=delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(2,secondPlanHash,["SendMessage","ScheduleWork"]));
+    aetChallengePolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+        aetChallengePolicy.Revision,aetChallengePolicy.PolicySha256,"APPROVE "+aetChallengePolicy.PolicySha256));
+    var aetChallengeContext=aetMessageContext with {
+        PolicyRevision=aetChallengePolicy.Revision,PolicySha256=aetChallengePolicy.PolicySha256,
+        MessageId=Guid.NewGuid().ToString("N") };
+    var aetArchitectureChoice=DraftArchitecturePolicy.Readiness(tasks,interviews,taskBound.Id)
+        .ApprovedChoices.First().ProposalSha256;
+    var aetChallengeDraft=new AgentCommunicationDraft("TechnicalLead","FindingChallenged",
+        "Please reconcile this finding with the approved architecture.",
+        IssueId:aetIssueId,ArchitectureChoiceSha256:aetArchitectureChoice);
+    RejectMessage(()=>communicationStore.Publish(aetChallengeContext,
+        aetChallengeDraft with {IssueId=new string('0',64)}),"INVALID_AGENT_MESSAGE");
+    RejectMessage(()=>communicationStore.Publish(aetChallengeContext,
+        aetChallengeDraft with {ArchitectureChoiceSha256=new string('0',64)}),"INVALID_AGENT_MESSAGE");
+    RejectMessage(()=>communicationStore.Publish(aetChallengeContext with {FromAgent="QaEngineer"},
+        aetChallengeDraft),"INVALID_AGENT_MESSAGE");
+    var aetChallenge=communicationStore.Publish(aetChallengeContext,aetChallengeDraft);
+    Check(communicationStore.Publish(aetChallengeContext,aetChallengeDraft)==aetChallenge,
+        "identical issue challenge is idempotent");
+    var aetChallenged=new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Single();
+    Check(aetChallenged.Id==aetIssueId && aetChallenged.State=="Challenged" &&
+        aetChallenged.Severity=="Major" && aetChallenged.Challenges.Single().MessageId==aetChallenge.MessageId &&
+        aetChallenged.Challenges.Single().ArchitectureChoiceSha256==aetArchitectureChoice,
+        "engineer challenges actual finding against approved evidence without self-dismissal or downgrade");
+    var aetDecisionContext=new IssueDecisionContext(taskBound.Id,engineeringRunId,aetLeadJob.SourceSha256,
+        "TechnicalLead",aetChallengePolicy.Revision,aetChallengePolicy.PolicySha256);
+    var aetDecisionDraft=new IssueDecisionDraft(aetIssueId,0,aetLiveLeadId,"ImplementationDefect",
+        "The approved architecture does not excuse the observed defect.",aetChallenge.MessageId);
+    var aetIssueStore=new EngineeringIssueStore(tasks);
+    RejectMessage(()=>aetIssueStore.Decide(aetDecisionContext with {FromAgent="SoftwareEngineer"},
+        aetDecisionDraft),"AGENT_CAPABILITY_DENIED");
+    RejectMessage(()=>aetIssueStore.Decide(aetDecisionContext,
+        aetDecisionDraft with {Classification="Deferred"}),"INVALID_INPUT");
+    RejectMessage(()=>aetIssueStore.Decide(aetDecisionContext,
+        aetDecisionDraft with {ChallengeMessageId=null}),"SOURCE_CHANGED");
+    var aetDecision=aetIssueStore.Decide(aetDecisionContext,aetDecisionDraft);
+    Check(aetIssueStore.Decide(aetDecisionContext,aetDecisionDraft)==aetDecision &&
+        aetIssueStore.Read(taskBound.Id).Issues.Single() is {State:"ConfirmedDefect",AssignedOwner:"SoftwareEngineer"},
+        "delegated Technical Lead arbitrates exact challenged finding and assigns repair ownership");
+    RejectMessage(()=>aetIssueStore.Decide(aetDecisionContext,
+        aetDecisionDraft with {Rationale="Conflicting decision cannot overwrite history."}),"IDEMPOTENCY_CONFLICT");
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetChallengePolicy.Revision,
+        aetChallengePolicy.PolicySha256,"REVOKE "+aetChallengePolicy.PolicySha256));
+    // Both review origins use the original owner-confirmed repair gate.
+    var aetLeadProposalPath="/api/tasks/"+taskBound.Id+"/repair-proposals";
+    RepairProposal aetLeadProposal;
+    using(var aetProposalResponse=await Post(client,aetLeadProposalPath,
+        new CreateRepairProposalRequest(null,aetLiveLeadId)))
+    using(var aetProposalBody=await Body(aetProposalResponse))
+    {
+        Check(aetProposalResponse.StatusCode==HttpStatusCode.Created &&
+            aetProposalBody.RootElement.GetProperty("qaReviewId").ValueKind==JsonValueKind.Null &&
+            aetProposalBody.RootElement.GetProperty("leadReviewId").GetString()==aetLiveLeadId,
+            "lead repair proposal preserves independent origin without fabricating a QA review");
+        aetLeadProposal=new RepairProposalStore(tasks).Latest(taskBound.Id)!;
+    }
+    using(var aetUntriaged=await Post(client,"/api/tasks/"+taskBound.Id+"/repair-cycles",
+        new StartRepairCycleRequest(aetLeadProposal.Id,"REPAIR "+aetLeadProposal.SourceSha256,
+            [new RepairSelection("app.js",0)])))
+        Check(aetUntriaged.StatusCode==HttpStatusCode.Conflict,
+            "Technical Lead arbitration alone does not bypass existing exact repair admission");
+    using(var aetLeadTriage=await Post(client,aetLeadProposalPath+"/"+aetLeadProposal.Id+"/triage",
+        new ClassifyRepairFindingRequest("app.js",0,"ImplementationDefect",
+            "Owner confirms the independent source concern against approved scope.")))
+        Check(aetLeadTriage.StatusCode==HttpStatusCode.OK,
+            "existing owner triage accepts authentic Lead Software Engineer evidence");
     // Keep the generated source pinned to 14B but change QA alone.
     // A different selected QA model must NOT invalidate source/plan binding.
     using (var assignment = await Post(client,
@@ -2926,6 +3433,20 @@ try
         Check(decisions.StatusCode == HttpStatusCode.OK &&
               body.RootElement.GetProperty("decisions").GetArrayLength() == 1,
             "triage decision is durably readable without source mutation");
+    var aetCombined=new EngineeringIssueStore(tasks).Read(taskBound.Id);
+    var aetCurrentQaIssue=aetCombined.Issues.Single(x=>x.Origin=="QaEngineer" &&
+        x.References.Any(reference=>reference.ReviewId==qaReviewId));
+    var aetHistoricalSkillIssues=aetCombined.Issues.Where(x=>x.Origin=="QaEngineer" &&
+        x.Id!=aetCurrentQaIssue.Id).ToArray();
+    Check(aetCombined.Issues.Count==4 &&
+        aetCurrentQaIssue.Classification=="NeedsVerification" &&
+        aetCurrentQaIssue.TriageHistory.Single().ReviewId==qaReviewId &&
+        aetCurrentQaIssue.LatestReview &&
+        aetCombined.Issues.Single(x=>x.Origin=="LeadSoftwareEngineer").State=="ConfirmedDefect" &&
+        aetHistoricalSkillIssues.Length==2 &&
+        aetHistoricalSkillIssues.All(x=>!x.LatestReview && x.TriageHistory.Count==0 &&
+            x.State=="NeedsTriage"),
+        "unified issue view preserves both reviewer origins, exact owner triage and historical skill findings");
 
     // R2-R5 end-to-end fixture: explicit triage, authorized source-only
     // repair, preservation of original files, and independent QA reassessment.
@@ -2976,6 +3497,10 @@ try
             "Owner explicitly confirms Start handler defect against specification")))
         Check(ownerConfirmed.StatusCode == HttpStatusCode.OK,
             "owner can confirm and classify one source-bound defect");
+    var aetRepeatIssue=new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Single(x=>x.Id==aetCurrentQaIssue.Id);
+    Check(aetRepeatIssue.References.Count==2 && aetRepeatIssue.State=="TriageConflict" &&
+        aetRepeatIssue.TriageHistory.Count==2,
+        "identical repeated findings deduplicate but conflicting decisions remain visible");
 
     var authorized = new StartRepairCycleRequest(selectedRepairProposal.Id,
         "REPAIR " + selectedRepairProposal.SourceSha256,
@@ -3038,6 +3563,114 @@ try
               .Single(f => f.Path == "app.js").Sha256 ==
           engineeringResult!.Files.Single(f => f.Path == "app.js").Sha256,
         "prior engineering run is unchanged after source-only repair");
+    var aetHistoricalIssues=new EngineeringIssueStore(tasks).Read(taskBound.Id,engineeringRunId);
+    var aetRepairedIssue=aetHistoricalIssues.Issues.Single(x=>x.Id==aetRepeatIssue.Id);
+    Check(!aetHistoricalIssues.CurrentSource && aetRepairedIssue.Id==aetRepeatIssue.Id &&
+        aetRepairedIssue.RepairCycleId==cycleId && aetRepairedIssue.RepairAttempt==1 &&
+        aetRepairedIssue.AssignedOwner=="SoftwareEngineer" &&
+        aetRepairedIssue.State=="AwaitingIndependentVerification",
+        "historical issue remains unclosed even after independent static repair review");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id).Issues.Any(x=>x.Origin=="QaEngineer"),
+        "recurring issue remains visible on repaired source");
+    var aetVerificationStore=new IssueVerificationStore(tasks);
+    var aetVerifyRequest=new VerifyEngineeringIssueRequest(engineeringRunId,aetRepairedIssue.Id,
+        repairOutcome!.Engineering.Job.Id,QaReviewStore.Fingerprint(repairOutcome.Engineering.Files));
+    var aetVerifyInput=aetVerificationStore.Prepare(taskBound.Id,aetVerifyRequest);
+    RejectMessage(()=>aetVerificationStore.Record(taskBound.Id,aetVerifyInput,
+        "SoftwareEngineer","qwen3.5:4b",new IssueVerificationAssessment("StillPresent",
+            "This is an unauthorized self-verification attempt.",1,"console.log",null)),
+        "AGENT_CAPABILITY_DENIED");
+    RejectMessage(()=>aetVerificationStore.Record(taskBound.Id,aetVerifyInput,
+        "QaEngineer","qwen3.5:4b",new IssueVerificationAssessment("StillPresent",
+            "This source citation was invented by the fixture.",999,"not present",null)),
+        "MODEL_OUTPUT_REJECTED");
+    var aetStaticResult=aetVerificationStore.Record(taskBound.Id,aetVerifyInput,
+        "QaEngineer","qwen3.5:4b",new IssueVerificationAssessment("ResolvedByStaticEvidence",
+            "Injected source observation does not establish functional behavior.",1,"console.log",null));
+    var aetAfterRecheck=new EngineeringIssueStore(tasks).Read(taskBound.Id,engineeringRunId)
+        .Issues.Single(x=>x.Id==aetRepairedIssue.Id);
+    Check(aetAfterRecheck.State=="AwaitingQualifiedVerification" &&
+        aetAfterRecheck.Verifications.Single().Id==aetStaticResult.Id &&
+        aetAfterRecheck.Verifications.Single().Current,
+        "explicit independent source recheck cannot close a functional concern or fabricate runtime verification");
+    using(var aetVerifyAnonymous=new HttpClient {BaseAddress=client.BaseAddress})
+    using(var aetDeniedVerify=await Post(aetVerifyAnonymous,"/api/tasks/"+taskBound.Id+"/engineering-issues/verify",aetVerifyRequest))
+        Check(aetDeniedVerify.StatusCode==HttpStatusCode.Unauthorized,
+            "independent recheck endpoint requires authenticated owner");
+    using(var aetVerifyResponse=await Post(client,"/api/tasks/"+taskBound.Id+"/engineering-issues/verify",aetVerifyRequest))
+    using(var aetVerifyBody=await Body(aetVerifyResponse))
+        Check(aetVerifyResponse.StatusCode==HttpStatusCode.OK &&
+            aetVerifyBody.RootElement.GetProperty("agentId").GetString()=="QaEngineer" &&
+            aetVerifyBody.RootElement.GetProperty("assessment").GetProperty("outcome").GetString()=="StillPresent",
+            "host selects the originating independent reviewer; injected model recheck is persisted");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,engineeringRunId).Issues
+        .Single(x=>x.Id==aetRepairedIssue.Id) is {State:"StillPresent",Verifications.Count:2},
+        "explicit repeated independent verification retains evidence and reopens the issue");
+
+    // The QA proposal and its populated triage/cycle children must survive
+    // the old mandatory-QA foreign key migration. Work only in a DB copy.
+    var aetMigrationRoot=Path.Combine(root,"aet-legacy-proposals");
+    // Provision the disposable database using the same private storage
+    // creation path as production before SQLite's backup API opens it.
+    // The subsequent backup replaces its contents, not its permissions.
+    _=new TaskStore(aetMigrationRoot);
+    var aetMigrationPath=Path.Combine(aetMigrationRoot,"codingassistant.db");
+    using(var aetOriginalDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+Path.Combine(root,"codingassistant.db")+";Pooling=False"))
+    using(var aetLegacyDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+aetMigrationPath+";Pooling=False"))
+    {
+        aetOriginalDb.Open();aetLegacyDb.Open();
+        aetOriginalDb.BackupDatabase(aetLegacyDb);
+        using(var aetForeignKeys=aetLegacyDb.CreateCommand())
+        {aetForeignKeys.CommandText="PRAGMA foreign_keys=OFF";aetForeignKeys.ExecuteNonQuery();}
+        using var aetLegacyTx=aetLegacyDb.BeginTransaction();
+        using(var aetLegacySchema=aetLegacyDb.CreateCommand())
+        {
+            aetLegacySchema.Transaction=aetLegacyTx;
+            aetLegacySchema.CommandText="""
+                DELETE FROM repair_triage_decisions WHERE proposal_id IN
+                    (SELECT id FROM repair_proposals WHERE lead_review_id IS NOT NULL);
+                DELETE FROM repair_proposals WHERE lead_review_id IS NOT NULL;
+                CREATE TABLE repair_proposals_old_fixture(
+                    id TEXT PRIMARY KEY NOT NULL,task_id TEXT NOT NULL REFERENCES tasks(id),
+                    qa_review_id TEXT NOT NULL UNIQUE REFERENCES qa_reviews(id),
+                    engineering_run_id TEXT NOT NULL REFERENCES engineering_runs(id),
+                    source_sha256 TEXT NOT NULL,plan_revision INTEGER NOT NULL,plan_sha256 TEXT NOT NULL,
+                    spec_version INTEGER NOT NULL,spec_sha256 TEXT NOT NULL,architecture_sha256 TEXT NOT NULL,
+                    state TEXT NOT NULL CHECK(state='NeedsTriage'),findings_json TEXT NOT NULL,created_utc TEXT NOT NULL
+                );
+                INSERT INTO repair_proposals_old_fixture
+                    SELECT id,task_id,qa_review_id,engineering_run_id,source_sha256,plan_revision,plan_sha256,
+                        spec_version,spec_sha256,architecture_sha256,state,findings_json,created_utc FROM repair_proposals;
+                DROP TABLE repair_proposals;
+                ALTER TABLE repair_proposals_old_fixture RENAME TO repair_proposals;
+                CREATE INDEX repair_proposal_by_task ON repair_proposals(task_id,created_utc DESC,id DESC);
+                """;
+            aetLegacySchema.ExecuteNonQuery();
+        }
+        aetLegacyTx.Commit();
+    }
+    var aetMigratedTasks=new TaskStore(aetMigrationRoot);
+    var aetMigratedProposals=new RepairProposalStore(aetMigratedTasks);
+    aetMigratedProposals.Initialize();
+    aetMigratedProposals.Initialize();
+    var aetMigratedProposal=aetMigratedProposals.Latest(taskBound.Id);
+    Check(aetMigratedProposal?.Id==selectedRepairProposal.Id &&
+        aetMigratedProposal.QaReviewId==selectedRepairProposal.QaReviewId &&
+        aetMigratedProposal.LeadReviewId is null &&
+        new RepairTriageStore(aetMigratedTasks).List(taskBound.Id,selectedRepairProposal.Id).Count==1,
+        "populated QA-only proposal migration preserves exact proposal and child triage");
+    using(var aetMigratedDb=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+aetMigrationPath+";Pooling=False"))
+    {
+        aetMigratedDb.Open();
+        using var aetCheck=aetMigratedDb.CreateCommand();
+        aetCheck.CommandText="PRAGMA foreign_key_check";
+        using(var aetRows=aetCheck.ExecuteReader())
+            Check(!aetRows.Read(),"legacy proposal migration preserves foreign key integrity");
+        aetCheck.CommandText="SELECT proposal_id FROM repair_cycles WHERE id=@id";
+        aetCheck.Parameters.AddWithValue("@id",cycleId);
+        Check((string?)aetCheck.ExecuteScalar()==selectedRepairProposal.Id,
+            "legacy proposal migration preserves populated repair cycle reference");
+    }
 
     // A real Windows installation can already contain 1-3 approved repairs.
     // Exercise in-place migration of its populated SQLite CHECK constraint,
@@ -3288,6 +3921,9 @@ try
     var probeLedger = reviewStore.Get(taskBound.Id, probeReview.Id);
     Check(!probeLedger.UnchangedFailedRepair,
         "ordinary incomplete engineering runs never qualify for failed-repair retry");
+    var partialCoordinationPreview=new CollaborationStore(tasks).Preview(taskBound.Id);
+    Check(partialCoordinationPreview.RoutineRepairCandidate is null && !partialCoordinationPreview.CanStart,
+        "ordinary partial build is ineligible for coordinated recovery even when saved files exist");
     Check(probeLedger.Events.Any(e => e.Kind == "QaAtlasInspected" &&
           e.Detail.Contains("atlas.find_symbols", StringComparison.Ordinal) &&
           e.Detail.Contains(probeRevision[..12], StringComparison.Ordinal) &&
@@ -3816,8 +4452,1323 @@ try
         Check(staleResume.StatusCode == HttpStatusCode.Conflict,
             "cannot resume superseded failure checkpoint after a newer run exists");
 
+    // Exercise the same persisted repair workflow for a genuine lead-review
+    // origin without changing the original QA repair acceptance assertions.
+    string aetResumedLeadId;
+    using(var aetAdmittedLead=await Post(client,aetLeadPath,
+        new StartQaReviewRequest(resumedRunId,secondPlanHash)))
+    using(var aetAdmittedBody=await Body(aetAdmittedLead))
+    {
+        Check(aetAdmittedLead.StatusCode==HttpStatusCode.Accepted,"independent lead reviews resumed generated source");
+        aetResumedLeadId=aetAdmittedBody.RootElement.GetProperty("id").GetString()!;
+    }
+    LeadReviewSnapshot? aetResumedLead=null;
+    for(var aetAttempt=0;aetAttempt<160;aetAttempt++)
+    {
+        aetResumedLead=aetLeadStore.Get(taskBound.Id,aetResumedLeadId);
+        if(aetResumedLead.Job.State!="Running") break;
+        await Task.Delay(25);
+    }
+    Check(aetResumedLead?.Disposition=="ChangesRequested","independent lead finding saved on resumed revision");
+    using(var aetLeadProposed=await Post(client,aetLeadProposalPath,new CreateRepairProposalRequest(null,aetResumedLeadId)))
+        Check(aetLeadProposed.StatusCode==HttpStatusCode.Created,"lead-origin repair proposal admitted");
+    var aetResumedProposal=new RepairProposalStore(tasks).Latest(taskBound.Id)!;
+    using(var aetLeadConfirmed=await Post(client,aetLeadProposalPath+"/"+aetResumedProposal.Id+"/triage",
+        new ClassifyRepairFindingRequest("app.js",0,"ImplementationDefect",
+            "Owner confirms the source defect and approves only its existing file scope.")))
+        Check(aetLeadConfirmed.StatusCode==HttpStatusCode.OK,"lead-origin finding independently classified");
+    string aetLeadCycleId;
+    using(var aetLeadRepair=await Post(client,latestRepairPath,new StartRepairCycleRequest(aetResumedProposal.Id,
+        "REPAIR "+aetResumedProposal.SourceSha256,[new RepairSelection("app.js",0)])))
+    using(var aetRepairBody=await Body(aetLeadRepair))
+    {
+        Check(aetLeadRepair.StatusCode==HttpStatusCode.Accepted,"lead-origin finding enters existing exact-scope source writer");
+        aetLeadCycleId=aetRepairBody.RootElement.GetProperty("id").GetString()!;
+    }
+    RepairCycleSnapshot? aetLeadRepairResult=null;
+    var aetUnifiedCycles=new RepairCycleStore(tasks,engineeringStore,reviewStore,repairProposal);
+    for(var aetAttempt=0;aetAttempt<240;aetAttempt++)
+    {
+        aetLeadRepairResult=aetUnifiedCycles.Get(taskBound.Id,aetLeadCycleId);
+        if(aetLeadRepairResult.Cycle.State is not ("Running" or "Generated" or "QaRunning"))break;
+        await Task.Delay(25);
+    }
+    Check(aetLeadRepairResult?.Cycle.State=="QaReviewed" &&
+        aetLeadRepairResult.Engineering.Files.Single(f=>f.Path=="index.html").Sha256==
+            resumedDone!.Files.Single(f=>f.Path=="index.html").Sha256 &&
+        aetLeadRepairResult.Engineering.Files.Single(f=>f.Path=="app.js").Sha256!=
+            resumedDone!.Files.Single(f=>f.Path=="app.js").Sha256 &&
+        aetLeadRepairResult.StaticPreflight.VerificationStatus=="GENERATED_NOT_TESTED",
+        "lead-origin repair uses existing scope enforcement, immutable revision and independent static QA");
+    var aetLeadRepairedIssue=new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId)
+        .Issues.Single(x=>x.Origin=="LeadSoftwareEngineer");
+    Check(aetLeadRepairedIssue.RepairCycleId==aetLeadCycleId &&
+        aetLeadRepairedIssue.State=="AwaitingIndependentVerification",
+        "lead-origin issue remains linked to actual repair evidence without false closure");
+    var aetLeadVerifyRequest=new VerifyEngineeringIssueRequest(resumedRunId,aetLeadRepairedIssue.Id,
+        aetLeadRepairResult!.Engineering.Job.Id,QaReviewStore.Fingerprint(aetLeadRepairResult.Engineering.Files));
+    using(var aetLeadVerified=await Post(client,"/api/tasks/"+taskBound.Id+"/engineering-issues/verify",aetLeadVerifyRequest))
+    using(var aetLeadVerifiedBody=await Body(aetLeadVerified))
+        Check(aetLeadVerified.StatusCode==HttpStatusCode.OK &&
+            aetLeadVerifiedBody.RootElement.GetProperty("agentId").GetString()=="LeadSoftwareEngineer",
+            "originating lead reviewer independently rechecks repaired source");
+    var aetMafVerifierFactory=new Phase5FakeMafFactory();
+    aetMafVerifierFactory.ScriptedReplies.Enqueue("""
+        {"outcome":"ResolvedByStaticEvidence","rationale":"Invented evidence is not accepted.","line":999,"evidence":"missing","architectureChoiceSha256":null}
+        """);
+    aetMafVerifierFactory.ScriptedReplies.Enqueue("""
+        {"outcome":"StillPresent","rationale":"The candidate has the exact saved logging construct.","line":1,"evidence":"console.log","architectureChoiceSha256":null}
+        """);
+    var aetMafAssessment=await new MafEngineeringIssueVerifier(aetMafVerifierFactory).VerifyAsync(
+        aetVerificationStore.Prepare(taskBound.Id,aetLeadVerifyRequest),"qwen3.5:4b",CancellationToken.None);
+    Check(aetMafAssessment.Outcome=="StillPresent" &&
+        aetMafVerifierFactory.Purposes.SequenceEqual([MafAgentPurpose.LeadSoftwareEngineer]) &&
+        aetMafVerifierFactory.Models.SequenceEqual(["qwen3.5:4b"]) &&
+        aetMafVerifierFactory.NoTools && aetMafVerifierFactory.ScriptedReplies.Count==0,
+        "real MAF verification adapter rejects invented evidence, retries once and exposes no write or execution tools");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId).Issues
+        .Single(x=>x.Id==aetLeadRepairedIssue.Id).State=="AwaitingQualifiedVerification" &&
+        qaModel.ReviewedFiles.Count==10,
+        "lead static correctness assessment cannot claim functional verification; actual QA reviewed two more files");
+
+    // Adaptive scheduling preserves the exact approved scope and required
+    // dependencies, while allowing safe priority and suspension decisions.
+    var aetAdaptivePolicy=delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(3,secondPlanHash,["ScheduleWork"]));
+    aetAdaptivePolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+        aetAdaptivePolicy.Revision,aetAdaptivePolicy.PolicySha256,"APPROVE "+aetAdaptivePolicy.PolicySha256));
+    var aetAdaptiveContext=new AdaptivePlanContext(taskBound.Id,"TechnicalLead",
+        aetAdaptivePolicy.Revision,aetAdaptivePolicy.PolicySha256,secondPlanHash,
+        aetLeadRepairResult!.Engineering.Job.Id,QaReviewStore.Fingerprint(aetLeadRepairResult.Engineering.Files));
+    var aetWorkPlanStore=new AdaptiveWorkPlanStore(tasks);
+    var aetSchedule=new WorkPackageSchedule[] {
+        new("timer-interface",[],5,false,"Medium",["index.html"]),
+        new("timer-state",["timer-interface"],90,false,"High",["app.js"])
+    };
+    var aetPlanDraft=new ReviseAdaptivePlanDraft(0,null,aetSchedule,"Prioritize state only after the required interface dependency.");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext with {FromAgent="SoftwareEngineer"},
+        aetPlanDraft),"AGENT_CAPABILITY_DENIED");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext,
+        aetPlanDraft with {Packages=[aetSchedule[0],aetSchedule[1] with {DependsOn=[]}]}),"INVALID_WORK_PLAN");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext,
+        aetPlanDraft with {Packages=[aetSchedule[0] with {DependsOn=["timer-state"]},aetSchedule[1]]}),"WORK_DEPENDENCY_CYCLE");
+    var aetOperationalPlan=aetWorkPlanStore.Revise(aetAdaptiveContext,aetPlanDraft);
+    var aetEmptyStates=new Dictionary<string,string>();
+    Check(AdaptiveWorkPlanStore.Next(aetOperationalPlan.Packages,aetEmptyStates)=="timer-interface" &&
+        AdaptiveWorkPlanStore.Evaluate(aetOperationalPlan.Packages,aetEmptyStates)
+            .Single(x=>x.Id=="timer-state").State=="WaitingForDependency" &&
+        aetOperationalPlan.Packages.All(x=>x.ArchitectureSha256==architectureSha),
+        "adaptive priority cannot bypass mandatory dependency or approved architecture");
+    var aetIndependentPackage=aetOperationalPlan.Packages[0] with {
+        Id="independent-docs",Priority=99,DependsOn=[] };
+    Check(AdaptiveWorkPlanStore.Next([..aetOperationalPlan.Packages,aetIndependentPackage],aetEmptyStates)
+        =="independent-docs","independent ready work can be reprioritized without bypassing dependency constraints");
+    var aetWriterStates=new Dictionary<string,string>{{"timer-interface","Running"}};
+    Check(AdaptiveWorkPlanStore.Next(aetOperationalPlan.Packages,aetWriterStates) is null,
+        "adaptive readiness never dispatches another writer while one is running");
+    var aetSuspendDraft=new ReviseAdaptivePlanDraft(1,aetOperationalPlan.WorkPlanSha256,
+        [aetSchedule[0] with {Suspended=true},aetSchedule[1]],"Suspend pending work while a dependency is investigated.");
+    var aetSuspendedPlan=aetWorkPlanStore.Revise(aetAdaptiveContext,aetSuspendDraft);
+    Check(AdaptiveWorkPlanStore.Next(aetSuspendedPlan.Packages,aetEmptyStates) is null &&
+        aetWorkPlanStore.Read(taskBound.Id).History.Count==2,
+        "revisioned suspension blocks dependent work and preserves history");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext,
+        new ReviseAdaptivePlanDraft(2,aetSuspendedPlan.WorkPlanSha256,
+            [aetSchedule[0] with {AllowedPaths=null},aetSchedule[1]],"Attempt to widen an already narrowed source scope.")),
+        "WORK_SCOPE_EXPANSION");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetAdaptiveContext,aetPlanDraft),"STALE_WORK_PLAN");
+    using(var aetReadPlan=await client.GetAsync("/api/tasks/"+taskBound.Id+"/adaptive-work-plan"))
+    using(var aetReadBody=await Body(aetReadPlan))
+        Check(aetReadPlan.StatusCode==HttpStatusCode.OK &&
+            aetReadBody.RootElement.GetProperty("plan").GetProperty("workPlanSha256").GetString()==aetSuspendedPlan.WorkPlanSha256,
+            "owner can inspect the durable operational work plan");
+    // Exercise the actual scheduler and source transaction, not just a graph preview.
+    var aetAdaptiveRun=engineeringStore.Start(taskBound.Id,approvedEngineerPlan,"qwen2.5-coder:14b",
+        new AdaptivePlanSelection(aetSuspendedPlan.Revision,aetSuspendedPlan.WorkPlanSha256));
+    RejectMessage(()=>engineeringStore.StartTask(taskBound.Id,aetAdaptiveRun.Id,"timer-state"),"WORK_NOT_READY");
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetAdaptiveRun.Id) is null,
+        "suspended work prevents actual host dispatch");
+    var aetActiveContext=aetAdaptiveContext with {ExpectedRunId=aetAdaptiveRun.Id,
+        ExpectedSourceSha256=Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Array.Empty<byte>())).ToLowerInvariant()};
+    var aetActivePlan=aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(2,
+        aetSuspendedPlan.WorkPlanSha256,aetSchedule,"Resume the investigated dependency with unchanged approved scope."));
+    var aetFirstDispatch=engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetAdaptiveRun.Id);
+    Check(aetFirstDispatch?.Id=="timer-interface","host dispatch follows current work plan revision");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(3,
+        aetActivePlan.WorkPlanSha256,aetSchedule,"Unsafe revision while a source writer is active.")),"BUILD_BUSY");
+    RejectMessage(()=>engineeringStore.CompleteTask(taskBound.Id,aetAdaptiveRun.Id,"timer-interface",
+        new EngineeringChangeSet("This attempts a replacement outside the narrowed scope.",
+            [new EngineeringFileChange("app.js","Out of scope source","console.log('invalid');")],
+            ["Inspect source later."])),"WORK_SCOPE_VIOLATION");
+    Check(engineeringStore.Get(taskBound.Id,aetAdaptiveRun.Id).Files.Count==0,
+        "transactional source scope rejection leaves no persisted source");
+    engineeringStore.CompleteTask(taskBound.Id,aetAdaptiveRun.Id,"timer-interface",
+        new EngineeringChangeSet("Saved the approved browser interface source.",
+            [new EngineeringFileChange("index.html","Browser interface","<!doctype html><html><body>Timer</body></html>")],
+            ["Independently verify browser behavior."]));
+    var aetAfterFirst=engineeringStore.Get(taskBound.Id,aetAdaptiveRun.Id);
+    aetActiveContext=aetActiveContext with {ExpectedSourceSha256=QaReviewStore.Fingerprint(aetAfterFirst.Files)};
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(3,
+        aetActivePlan.WorkPlanSha256,[aetSchedule[0] with {Priority=99},aetSchedule[1]],
+        "Attempt to rewrite a completed package scheduling record.")),"WORK_ALREADY_COMPLETED");
+    var aetReprioritized=aetWorkPlanStore.Revise(aetActiveContext,new ReviseAdaptivePlanDraft(3,
+        aetActivePlan.WorkPlanSha256,[aetSchedule[0],aetSchedule[1] with {Priority=100}],
+        "Reprioritize only the pending package at the safe assignment boundary."));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetAdaptiveRun.Id)?.Id=="timer-state",
+        "revised pending package dispatches after completed dependency");
+    engineeringStore.CompleteTask(taskBound.Id,aetAdaptiveRun.Id,"timer-state",
+        new EngineeringChangeSet("Saved the approved timer behavior source.",
+            [new EngineeringFileChange("app.js","Timer behavior","console.log('start');")],
+            ["Independently verify timer functionality."]));
+    engineeringStore.Finish(taskBound.Id,aetAdaptiveRun.Id,true,null);
+    var aetAdaptiveView=aetWorkPlanStore.Read(taskBound.Id);
+    Check(aetAdaptiveView.BoundRunId==aetAdaptiveRun.Id &&
+        aetAdaptiveView.Assignments is {Count:2} &&
+        aetAdaptiveView.Assignments[0].WorkPlanSha256==aetActivePlan.WorkPlanSha256 &&
+        aetAdaptiveView.Assignments[1].WorkPlanSha256==aetReprioritized.WorkPlanSha256 &&
+        aetAdaptiveView.Assignments[1].SourceBeforeSha256==aetAdaptiveView.Assignments[0].SourceAfterSha256 &&
+        aetAdaptiveView.Readiness.All(x=>x.State=="Completed"),
+        "actual assignments and source checkpoints bind their respective immutable scheduling revisions");
+    var aetNextContext=aetAdaptiveContext with {ExpectedRunId=aetAdaptiveRun.Id,
+        ExpectedSourceSha256=QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,aetAdaptiveRun.Id).Files)};
+    var aetNextPlan=aetWorkPlanStore.Revise(aetNextContext,new ReviseAdaptivePlanDraft(4,
+        aetReprioritized.WorkPlanSha256,aetSchedule,"Bind a fresh owner-admitted source run to the validated work graph."));
+    using(var aetWrongSchedule=await Post(client,engineeringPath,
+        new StartEngineeringRunRequest(2,secondPlanHash,WorkPlan:new AdaptivePlanSelection(4,aetReprioritized.WorkPlanSha256))))
+        Check(aetWrongSchedule.StatusCode==HttpStatusCode.Conflict,"stale work plan cannot admit an engineering run");
+    string aetCoordinatorRunId;
+    using(var aetAdmittedAdaptive=await Post(client,engineeringPath,
+        new StartEngineeringRunRequest(2,secondPlanHash,WorkPlan:new AdaptivePlanSelection(5,aetNextPlan.WorkPlanSha256))))
+    using(var aetAdmittedAdaptiveBody=await Body(aetAdmittedAdaptive))
+    {
+        Check(aetAdmittedAdaptive.StatusCode==HttpStatusCode.Accepted,"owner selects exact adaptive plan through existing engineering API");
+        aetCoordinatorRunId=aetAdmittedAdaptiveBody.RootElement.GetProperty("id").GetString()!;
+    }
+    EngineeringRunSnapshot? aetCoordinatorDone=null;
+    for(var aetAttempt=0;aetAttempt<160;aetAttempt++)
+    {
+        aetCoordinatorDone=engineeringStore.Get(taskBound.Id,aetCoordinatorRunId);
+        if(aetCoordinatorDone.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    Check(aetCoordinatorDone?.Job.State=="Generated" &&
+        aetWorkPlanStore.Read(taskBound.Id).Assignments is {Count:2} &&
+        aetCoordinatorDone.Files.Count==2,
+        "existing engineering coordinator dispatches real bound packages and persists actual source");
+    var aetResumeContext=aetAdaptiveContext with {ExpectedRunId=aetCoordinatorRunId,
+        ExpectedSourceSha256=QaReviewStore.Fingerprint(aetCoordinatorDone!.Files)};
+    var aetResumePlan=aetWorkPlanStore.Revise(aetResumeContext,new ReviseAdaptivePlanDraft(5,
+        aetNextPlan.WorkPlanSha256,aetSchedule,"Use the same approved scope to exercise recovery after partial work."));
+    var aetFailedAdaptive=engineeringStore.Start(taskBound.Id,approvedEngineerPlan,"qwen2.5-coder:14b",
+        new AdaptivePlanSelection(6,aetResumePlan.WorkPlanSha256));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetFailedAdaptive.Id)?.Id=="timer-interface",
+        "adaptive run admits initial dependency");
+    engineeringStore.CompleteTask(taskBound.Id,aetFailedAdaptive.Id,"timer-interface",
+        new EngineeringChangeSet("Saved approved interface before interruption.",
+            [new EngineeringFileChange("index.html","Browser interface","<!doctype html><html><body>Timer</body></html>")],
+            ["Independently verify browser behavior."]));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetFailedAdaptive.Id)?.Id=="timer-state",
+        "adaptive run admits next dependency before failure");
+    engineeringStore.Finish(taskBound.Id,aetFailedAdaptive.Id,false,"MODEL_OUTPUT_REJECTED");
+    var aetAdaptiveCheckpoint=engineeringStore.Get(taskBound.Id,aetFailedAdaptive.Id);
+    var aetCallsBeforeResume=softwareModel.AssignedIds.Count;
+    string aetAdaptiveResumeId;
+    using(var aetResumeResponse=await Post(client,engineeringPath,
+        new StartEngineeringRunRequest(2,secondPlanHash,aetFailedAdaptive.Id)))
+    using(var aetResumeBody=await Body(aetResumeResponse))
+    {
+        Check(aetResumeResponse.StatusCode==HttpStatusCode.Accepted,
+            "owner can explicitly resume exact adaptive source checkpoint");
+        aetAdaptiveResumeId=aetResumeBody.RootElement.GetProperty("id").GetString()!;
+    }
+    EngineeringRunSnapshot? aetAdaptiveResumed=null;
+    for(var aetAttempt=0;aetAttempt<160;aetAttempt++)
+    {
+        aetAdaptiveResumed=engineeringStore.Get(taskBound.Id,aetAdaptiveResumeId);
+        if(aetAdaptiveResumed.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    Check(aetAdaptiveResumed?.Job.State=="Generated" &&
+        softwareModel.AssignedIds.Skip(aetCallsBeforeResume).SequenceEqual(["timer-state"]) &&
+        aetAdaptiveResumed.Files.Single(f=>f.Path=="index.html").Sha256==aetAdaptiveCheckpoint.Files.Single().Sha256 &&
+        aetWorkPlanStore.Read(taskBound.Id).Assignments is {Count:1},
+        "adaptive resume preserves completed source and invokes only remaining package");
+    // Decompose a parent without adding requirements or widening approved file scope.
+    var aetStepCriteria=Enumerable.Range(0,approvedEngineerPlan.Outline.Tasks.Single(x=>x.Id=="timer-state").AcceptanceCriteria.Count).ToArray();
+    var aetChildren=new WorkSubpackageSchedule[]{
+        new("state-setup","Establish the timer state within approved behavior.",aetStepCriteria,["app.js"]),
+        new("state-wiring","Complete the approved timer control interaction.",aetStepCriteria,["app.js"])
+    };
+    var aetChildContext=aetAdaptiveContext with {ExpectedRunId=aetAdaptiveResumeId,
+        ExpectedSourceSha256=QaReviewStore.Fingerprint(aetAdaptiveResumed!.Files)};
+    var aetChildDraft=new ReviseAdaptivePlanDraft(6,aetResumePlan.WorkPlanSha256,
+        [aetSchedule[0],aetSchedule[1] with {Subpackages=aetChildren}],
+        "Decompose the approved timer state item into bounded child source assignments.");
+    RejectMessage(()=>aetWorkPlanStore.Revise(aetChildContext,aetChildDraft with {
+        Packages=[aetSchedule[0],aetSchedule[1] with {Subpackages=[aetChildren[0],aetChildren[1] with {AllowedPaths=["index.html"]}]}]
+    }),"WORK_SCOPE_EXPANSION");
+    var aetChildPlan=aetWorkPlanStore.Revise(aetChildContext,aetChildDraft);
+    var aetChildRun=engineeringStore.Start(taskBound.Id,approvedEngineerPlan,"qwen2.5-coder:14b",
+        new AdaptivePlanSelection(7,aetChildPlan.WorkPlanSha256));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetChildRun.Id)?.Id=="timer-interface",
+        "parent dependencies remain enforced for decomposed work");
+    engineeringStore.CompleteTask(taskBound.Id,aetChildRun.Id,"timer-interface",
+        new EngineeringChangeSet("Saved approved interface for child work.",
+            [new EngineeringFileChange("index.html","Browser interface","<!doctype html><html><body>Timer</body></html>")],
+            ["Independently verify browser behavior."]));
+    Check(engineeringStore.StartNextAdaptiveTask(taskBound.Id,aetChildRun.Id)?.Id=="timer-state" &&
+        engineeringStore.StartNextSubpackage(taskBound.Id,aetChildRun.Id,"timer-state")?.Id=="state-setup",
+        "host dispatches first bounded child only after parent dependency");
+    var aetChildChange=new EngineeringChangeSet("Saved initial timer state before wiring.",
+        [new EngineeringFileChange("app.js","Initial timer state","let timerState = 0;")],
+        ["Independently verify timer interaction."]);
+    RejectMessage(()=>engineeringStore.CompleteTask(taskBound.Id,aetChildRun.Id,"timer-state",aetChildChange),"WORK_NOT_READY");
+    engineeringStore.CompleteTask(taskBound.Id,aetChildRun.Id,"timer-state",aetChildChange,"state-setup");
+    var aetChildCheckpoint=engineeringStore.Get(taskBound.Id,aetChildRun.Id);
+    Check(aetChildCheckpoint.Tasks.Single(x=>x.Id=="timer-state").State=="Running" &&
+        aetWorkPlanStore.Read(taskBound.Id).SubpackageReceipts is {Count:1},
+        "child source is persisted without prematurely completing parent");
+    Check(engineeringStore.StartNextSubpackage(taskBound.Id,aetChildRun.Id,"timer-state")?.Id=="state-wiring",
+        "next child waits for first committed source");
+    engineeringStore.Finish(taskBound.Id,aetChildRun.Id,false,"MODEL_OUTPUT_REJECTED");
+    var aetChildCalls=softwareModel.AssignedIds.Count;
+    string aetChildResumeId;
+    using(var aetChildResume=await Post(client,engineeringPath,new StartEngineeringRunRequest(2,secondPlanHash,aetChildRun.Id)))
+    using(var aetChildResumeBody=await Body(aetChildResume))
+    {
+        Check(aetChildResume.StatusCode==HttpStatusCode.Accepted,"explicit resume carries completed child source checkpoint");
+        aetChildResumeId=aetChildResumeBody.RootElement.GetProperty("id").GetString()!;
+    }
+    EngineeringRunSnapshot? aetChildDone=null;
+    for(var aetAttempt=0;aetAttempt<160;aetAttempt++)
+    {
+        aetChildDone=engineeringStore.Get(taskBound.Id,aetChildResumeId);
+        if(aetChildDone.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    var aetChildView=aetWorkPlanStore.Read(taskBound.Id);
+    Check(aetChildDone?.Job.State=="Generated" &&
+        softwareModel.AssignedIds.Skip(aetChildCalls).SequenceEqual(["timer-state"]) &&
+        aetChildView.SubpackageReceipts is {Count:2} &&
+        aetChildView.SubpackageReceipts[0].CarriedFromRunId==aetChildRun.Id &&
+        aetChildView.SubpackageReceipts[1].SubpackageId=="state-wiring" &&
+        aetChildView.SubpackageReceipts[0].SourceAfterSha256==aetChildView.SubpackageReceipts[1].SourceBeforeSha256,
+        "resume invokes only incomplete child and retains exact checkpoint provenance");
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetAdaptivePolicy.Revision,
+        aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
+
+    // Root-cause output can identify a different existing file, but can
+    // neither invent source evidence nor grant write authority.
+    var rootCauseFixtureFiles=aetChildDone!.Files;
+    var rootCauseFixtureJob=new CollaborationRun("fixture",taskBound.Id,aetChildResumeId,
+        QaReviewStore.Fingerprint(rootCauseFixtureFiles),secondPlanHash,1,new string('a',64),
+        "qwen3.5:4b","Running",null,"","");
+    var rootCauseFixture=new RootCauseInput(rootCauseFixtureJob,"Investigate timer","Approved timer behavior",
+        approvedEngineerPlan,rootCauseFixtureFiles,[new CollaborationStallFinding("fixture-issue","QaEngineer",
+            "index.html","Timer starts","No HTML handler","Change HTML")],[],["index.html"],new string('b',64));
+    var rootCauseTarget=rootCauseFixtureFiles.Single(f=>f.Path=="app.js");
+    var rootCauseLine=rootCauseTarget.Content.Split('\n')[0].Trim();
+    var rootCauseProposal=new RootCauseAssessment([new RootCauseFinding("fixture-issue","CandidateCause",
+        "app.js",1,rootCauseLine[..Math.Min(rootCauseLine.Length,100)],"The behavior belongs in the linked script.",
+        "Investigate the script handler rather than change HTML again.")]);
+    Check(MafRootCauseInvestigator.Parse(JsonSerializer.Serialize(rootCauseProposal),rootCauseFixture)
+        .Findings.Single().CausePath=="app.js" && !rootCauseFixture.ApprovedPaths.Contains("app.js"),
+        "root cause proposal can identify a different file without granting write authority");
+    foreach(var invalidRootCause in new[]{
+        rootCauseProposal with {Findings=[rootCauseProposal.Findings[0] with {Evidence="fabricated source text"}]},
+        rootCauseProposal with {Findings=[rootCauseProposal.Findings[0] with {CausePath="../app.js"}]},
+        rootCauseProposal with {Findings=[rootCauseProposal.Findings[0] with {IssueId="unknown"}]},
+        rootCauseProposal with {Findings=[]}})
+    {
+        try{
+            _=MafRootCauseInvestigator.Parse(JsonSerializer.Serialize(invalidRootCause),rootCauseFixture);
+            Check(false,"invalid root cause accepted");
+        }catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED"){Check(true,"root cause requires exact source and issue coverage");}
+    }
+
+    var rootCauseIndependent=new RootCauseReviewAssessment([new RootCauseReviewFinding(
+        "fixture-issue","Supported","app.js",1,rootCauseProposal.Findings[0].Evidence,
+        "The source contains the script responsible for this behavior.")]);
+    Check(MafRootCauseReviewer.Parse(JsonSerializer.Serialize(rootCauseIndependent),rootCauseFixture,rootCauseProposal)
+        .Findings.Single().Outcome=="Supported","independent reviewer supports an exact grounded diagnosis, not repair approval");
+    foreach(var invalidReview in new[]{
+        rootCauseIndependent with {Findings=[rootCauseIndependent.Findings[0] with {Evidence="fabricated evidence"}]},
+        rootCauseIndependent with {Findings=[rootCauseIndependent.Findings[0] with {Path="index.html"}]},
+        rootCauseIndependent with {Findings=[]}})
+    {
+        try{
+            _=MafRootCauseReviewer.Parse(JsonSerializer.Serialize(invalidReview),rootCauseFixture,rootCauseProposal);
+            Check(false,"invalid independent assessment accepted");
+        }catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED"){Check(true,"independent root cause review cannot invent source or omit an issue");}
+    }
+
+    var rootCauseReceiptFixture=new RootCauseReceipt("receipt",rootCauseFixture.Job.RunId,
+        rootCauseFixture.Job.SourceSha256,rootCauseFixture.Job.PlanSha256,1,rootCauseFixture.Job.PolicySha256,
+        rootCauseFixture.Job.Model,rootCauseFixture.HistorySha256,"Recorded",null,rootCauseProposal,
+        new RootCauseReviewReceipt("qwen3.5:4b","Recorded",null,rootCauseIndependent));
+    Check(!RootCauseInvestigationStore.NeedsRefinement(rootCauseReceiptFixture),
+        "supported diagnosis does not automatically trigger another investigation");
+    var rootCauseDisputedFixture=rootCauseReceiptFixture with {IndependentReview=
+        rootCauseReceiptFixture.IndependentReview! with {Assessment=new RootCauseReviewAssessment(
+            [rootCauseIndependent.Findings[0] with {Outcome="Disputed"}])}};
+    Check(RootCauseInvestigationStore.NeedsRefinement(rootCauseDisputedFixture),
+        "independent disagreement allows a bounded revision");
+    Check(!RootCauseInvestigationStore.NeedsRefinement(rootCauseDisputedFixture with {
+        Refinement=new RootCauseRefinementReceipt("qwen3.5:4b","qwen3.5:4b","Failed","MODEL_OUTPUT_REJECTED",null,null)}),
+        "failed revision does not silently replay on the same snapshot");
+
+    // Alternative target eligibility is deliberately separate from a
+    // model's claim of support. No synthetic findings or path expansion.
+    var recoverySelectionType=typeof(RootCauseInvestigationStore).Assembly
+        .GetType("CodingAssistant.Api.RootCauseRecoveryStore")!;
+    var supportedAlternatives=recoverySelectionType.GetMethod("SupportedAlternatives",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
+    var groundedRecoveryInput=rootCauseFixture with {ApprovedPaths=["index.html","app.js"]};
+    var eligibleRecovery=(IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseReceiptFixture,groundedRecoveryInput])!;
+    Check(eligibleRecovery.Count==1 && eligibleRecovery[0].CausePath=="app.js",
+        "supported alternative retains the original finding but identifies a different approved file");
+    Check(((IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseReceiptFixture,rootCauseFixture])!).Count==0,
+        "independent support cannot expand approved write paths");
+    Check(((IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseDisputedFixture,groundedRecoveryInput])!).Count==0,
+        "disputed proposals require refinement before repair admission");
+
+    var alreadyAttemptedRecovery=groundedRecoveryInput with {Attempts=[
+        new RepairProgressAttempt("old","before","after","before-hash","after-hash","QaReviewed",
+            [new RepairFindingReference("app.js",0,"Major","Timer starts","old evidence","old repair","ImplementationDefect")],
+            "QaEngineer",false,true)]};
+    Check(((IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseReceiptFixture,alreadyAttemptedRecovery])!).Count==0,
+        "alternative repair must target a different file from the unsuccessful strategy");
+    Check(((IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseReceiptFixture,groundedRecoveryInput with {HistorySha256=new string('c',64)}])!).Count==0,
+        "changed repair history invalidates recovery evidence");
+
+    var rejectedRootRevision=rootCauseDisputedFixture with {
+        Refinement=new RootCauseRefinementReceipt("qwen3.5:4b","qwen3.5:4b","Failed","MODEL_OUTPUT_REJECTED",null,null)};
+    Check(RootCauseInvestigationStore.CanRetryRejectedRefinement(rejectedRootRevision,false) &&
+        !RootCauseInvestigationStore.CanRetryRejectedRefinement(rejectedRootRevision,true),
+        "one explicit retry of rejected diagnosis preserves bounded strategy attempts");
+    Check(!RootCauseInvestigationStore.CanRetryRejectedRefinement(rejectedRootRevision with {
+        Refinement=rejectedRootRevision.Refinement! with {Assessment=rootCauseProposal}},false),
+        "a saved revised diagnosis cannot be replaced by rejected-response retry");
+    Check(!RootCauseInvestigationStore.CanRetryRejectedRefinement(rejectedRootRevision with {
+        Refinement=rejectedRootRevision.Refinement! with {State="Interrupted",ErrorCode="OWNER_CANCELLED"}},false),
+        "owner cancellation is not a malformed-response retry");
+
+    // Recovery is driven by evidence, not a lifetime three-repair cap.
+    var aetProgressAttempts=Enumerable.Range(0,5).Select(i=>new RepairProgressAttempt(
+        "fixture-"+i,"run-"+i,"run-"+(i+1),"hash-"+i,"hash-"+(i+1),"QaReviewed",
+        [],"QaEngineer",true,false)).ToArray();
+    Check(!RepairProgressStore.Evaluate("run-5",aetProgressAttempts,[]).StrategyChangeRequired,
+        "five independently productive repair attempts do not exhaust a project-wide cap");
+    Check(RepairProgressStore.Evaluate("run-5",[..aetProgressAttempts,
+        aetProgressAttempts[^1] with {OriginalSourceSha256="hash-5",CandidateSourceSha256="hash-2"}],[])
+        .Reason=="REPEATED_SOURCE_SNAPSHOT","oscillating source snapshots require strategy change");
+    Check(RepairProgressStore.Evaluate("run-2",aetProgressAttempts.Take(2).Select(x=>x with {
+        IndependentStaticResolution=false,RecurringExactFinding=true}).ToArray(),["fixture-issue"])
+        .Reason=="RECURRING_UNRESOLVED_FINDING","consecutive identical unresolved concern requires changed strategy");
+    var aetActualProgress=new RepairProgressStore(tasks).Read(taskBound.Id,aetLeadRepairResult!.Engineering.Job.Id);
+    Check(aetActualProgress.Attempts.Count==1 && aetActualProgress.Attempts[0].CycleId==aetLeadCycleId &&
+        aetActualProgress.Attempts[0].OriginalRunId==resumedRunId,
+        "repair progress uses actual immutable source ancestry rather than project-wide count");
+
+    var aetCollabPolicy=delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(4,secondPlanHash,["ScheduleWork","ReviewCode","ReviewAcceptance","RequestRepair","SendMessage"]));
+    aetCollabPolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
+        aetCollabPolicy.PolicySha256,"APPROVE "+aetCollabPolicy.PolicySha256));
+    var aetCollabRequest=new StartCollaborationRequest(aetChildResumeId,QaReviewStore.Fingerprint(aetChildDone!.Files),
+        secondPlanHash,aetCollabPolicy.Revision,aetCollabPolicy.PolicySha256);
+    var aetCollabPath="/api/tasks/"+taskBound.Id+"/collaboration";
+    using(var aetBadCollab=await Post(client,aetCollabPath,aetCollabRequest with {PolicySha256=new string('0',64)}))
+        Check(aetBadCollab.StatusCode==HttpStatusCode.Conflict,"stale delegation cannot start autonomous coordination");
+    using(var aetAnonymousCollab=new HttpClient{BaseAddress=client.BaseAddress})
+    using(var aetDeniedCollab=await Post(aetAnonymousCollab,aetCollabPath,aetCollabRequest))
+        Check(aetDeniedCollab.StatusCode==HttpStatusCode.Unauthorized,"collaboration admission remains owner-private");
+    var aetCollabStore=new CollaborationStore(tasks);
+    // The original stopped review remains linked and inspectable, even if
+    // older independent QA exists. Explicit retry must gather new evidence.
+    var stoppedReviewSession=aetCollabStore.Start(taskBound.Id,aetCollabRequest,"qwen3.5:4b");
+    var stoppedReviewStep=aetCollabStore.Record(taskBound.Id,stoppedReviewSession.Id,
+        new CollaborationDecision("ReviewCode","Gather exact source review before simulated model rejection."));
+    var stoppedLeadStore=new LeadReviewStore(tasks);
+    var stoppedLeadReview=stoppedLeadStore.Start(taskBound.Id,aetChildDone!,approvedEngineerPlan,
+        "qwen3.5:4b",new CollaborationAdmission(stoppedReviewSession.Id,stoppedReviewStep.Sequence));
+    stoppedLeadStore.Finish(taskBound.Id,stoppedLeadReview.Id,"Failed","MODEL_OUTPUT_REJECTED");
+    Check(!aetCollabStore.Prepare(taskBound.Id,stoppedReviewSession.Id).AllowedActions.Contains("ReviewCode"),
+        "failed review cannot cause an automatic repeat within the same session");
+    aetCollabStore.Finish(taskBound.Id,stoppedReviewSession.Id,"Failed","INDEPENDENT_REVIEW_STOPPED");
+    var stoppedReviewPreview=aetCollabStore.Preview(taskBound.Id);
+    Check(stoppedReviewPreview.CanStart && stoppedReviewPreview.ReviewFailure is
+        {Role:"LeadSoftwareEngineer",Model:"qwen3.5:4b",State:"Failed",ErrorCode:"MODEL_OUTPUT_REJECTED"} receipt &&
+        receipt.ReviewId==stoppedLeadReview.Id && stoppedReviewPreview.Policy?.Status=="Approved",
+        "stopped collaboration exposes the exact linked reviewer failure and preserves approval");
+    // Crash after persisting an intent but before any independent review is
+    // admitted. Its unlinked intent must survive, not be treated as work done.
+    var aetInterruptedCollab=aetCollabStore.Start(taskBound.Id,aetCollabRequest,"qwen3.5:4b");
+    var aetInterruptedStep=aetCollabStore.Record(taskBound.Id,aetInterruptedCollab.Id,
+        new CollaborationDecision("ReviewCode","Request review before simulated process interruption."));
+    aetCollabStore.Recover();aetCollabStore.Recover();
+    Check(aetCollabStore.Get(taskBound.Id,aetInterruptedCollab.Id).Job.State=="Interrupted" &&
+        aetInterruptedStep.ReferenceId is null,"interrupted coordination retains unexecuted intent");
+    using(var aetStaleResume=await Post(client,aetCollabPath+"/"+aetInterruptedCollab.Id+"/resume",
+        aetCollabRequest with {SourceSha256=new string('0',64)}))
+        Check(aetStaleResume.StatusCode==HttpStatusCode.Conflict,"stale source cannot resume collaboration");
+    string aetCollabId;
+    using(var aetCollabStarted=await Post(client,aetCollabPath+"/"+aetInterruptedCollab.Id+"/resume",aetCollabRequest))
+    using(var aetCollabBody=await Body(aetCollabStarted))
+    {
+        Check(aetCollabStarted.StatusCode==HttpStatusCode.Accepted,"owner resumes exact interrupted collaboration session");
+        aetCollabId=aetCollabBody.RootElement.GetProperty("id").GetString()!;
+    }
+    CollaborationSnapshot? aetCollabResult=null;
+    for(var aetAttempt=0;aetAttempt<240;aetAttempt++)
+    {
+        aetCollabResult=aetCollabStore.Get(taskBound.Id,aetCollabId);
+        if(aetCollabResult.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    Check(aetCollabResult?.Job.State=="AwaitingOwner" &&
+        aetCollabResult.Job.Reason=="EXACT_REPAIR_APPROVAL_REQUIRED" &&
+        aetCollabId==aetInterruptedCollab.Id &&
+        aetCollabResult.Steps.Select(x=>x.Action).SequenceEqual(["ReviewCode","ResumeInterrupted","ReviewCode","ClassifyIssue","RequestOwnerRepair"]) &&
+        aetCollabResult.Steps[0].ReferenceId is null &&
+        aetCollabResult.Steps.Skip(1).All(x=>x.ReferenceId is not null) &&
+        aetCollaborationLead.Calls==2 &&
+        aetCollabResult.Steps[2].Rationale.StartsWith("Host-required independent code review",StringComparison.Ordinal),
+        "actual lead decision loop independently reviews, classifies and requests exact repair without bypassing owner gate");
+    Check(engineeringStore.Latest(taskBound.Id)!.Job.Id==aetChildResumeId &&
+        qaModel.ReviewedFiles.Count==10,
+        "blocking lead finding prevents premature QA, source mutation and functional claims");
+    var aetCollabProposal=new RepairProposalStore(tasks).Latest(taskBound.Id)!;
+    Check(aetCollabProposal.Id==aetCollabResult!.Steps.Last().ReferenceId &&
+        aetCollabProposal.LeadReviewId==aetCollabResult.Steps[2].ReferenceId,
+        "actual independent review and repair proposal references are durable");
+    Check(new AgentCommunicationStore(tasks).List(taskBound.Id,role:"SoftwareEngineer",direction:"inbox")
+        .Any(x=>x.RunId==aetChildResumeId && x.FromAgent=="TechnicalLead" && x.Kind=="RepairRequested"),
+        "actual Technical Lead repair request appears in engineer durable inbox");
+    // The owner still approves exact repair scope; collaboration continuation
+    // starts on the new immutable source and independently re-reviews it.
+    using(var aetCollabTriage=await Post(client,aetLeadProposalPath+"/"+aetCollabProposal.Id+"/triage",
+        new ClassifyRepairFindingRequest("app.js",0,"ImplementationDefect",
+            "Owner confirms the identified defect and authorizes only this file.")))
+        Check(aetCollabTriage.StatusCode==HttpStatusCode.OK,"owner records exact repair triage");
+    using(var aetBadContinuation=await Post(client,latestRepairPath,
+        new StartRepairCycleRequest(aetCollabProposal.Id,"REPAIR "+aetCollabProposal.SourceSha256,
+            [new RepairSelection("app.js",0)],Guid.NewGuid().ToString("N"))))
+        Check(aetBadContinuation.StatusCode==HttpStatusCode.NotFound,"unknown collaboration cannot attach repair continuation");
+    string aetCollabCycleId;
+    using(var aetCollabRepair=await Post(client,latestRepairPath,
+        new StartRepairCycleRequest(aetCollabProposal.Id,"REPAIR "+aetCollabProposal.SourceSha256,
+            [new RepairSelection("app.js",0)],aetCollabId)))
+    using(var aetCollabRepairBody=await Body(aetCollabRepair))
+    {
+        Check(aetCollabRepair.StatusCode==HttpStatusCode.Accepted,"exact owner repair also opts into delegated follow-up");
+        aetCollabCycleId=aetCollabRepairBody.RootElement.GetProperty("id").GetString()!;
+    }
+    CollaborationSnapshot? aetContinued=null;
+    for(var aetAttempt=0;aetAttempt<320;aetAttempt++)
+    {
+        aetContinued=aetCollabStore.Latest(taskBound.Id);
+        if(aetContinued?.Job.Id!=aetCollabId && aetContinued?.Job.State!="Running")break;
+        await Task.Delay(25);
+    }
+    var aetContinuedCycle=new RepairCycleStore(tasks,engineeringStore,reviewStore,repairProposal).Get(taskBound.Id,aetCollabCycleId);
+    Check(aetContinued?.Job.State=="AwaitingOwner" && aetContinued.Job.Id!=aetCollabId &&
+        aetContinued.Job.RunId==aetContinuedCycle.Engineering.Job.Id &&
+        aetContinued.Job.SourceSha256!=aetCollabRequest.SourceSha256 &&
+        aetContinued.Steps.Select(s=>s.Action).SequenceEqual(["ReviewCode","RecheckIssue","ClassifyIssue","RequestOwnerRepair"]) &&
+        aetContinuedCycle.Cycle.State=="Generated" &&
+        qaModel.ReviewedFiles.Count==10,
+        "owner-approved repair automatically returns to independent lead review and specific recheck of new source; blocking finding prevents QA");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,aetChildResumeId).Issues
+        .Single(i=>i.Origin=="LeadSoftwareEngineer").Verifications.Single().Id==aetContinued!.Steps[1].ReferenceId,
+        "original finding retains actual independent recheck evidence from automatic collaboration");
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetCollabPolicy.Revision,
+        aetCollabPolicy.PolicySha256,"REVOKE "+aetCollabPolicy.PolicySha256));
+
+    // AET-210 negative acceptance scenarios use separate immutable source
+    // roots. The fixture models do not represent qualified runtime evidence.
+    string[] routineOps = ["SendMessage","ScheduleWork","ReviewCode","ReviewAcceptance","RequestRepair","WriteSource"];
+    var routineRevision=5;
+    softwareModel.RoutineMode=true;
+    aetLeadModel.RoutineMode=true;
+    aetIssueVerifier.RoutineMode=true;
+    qaModel.RoutineMode=true;
+    var negativeRepairStore=new RepairCycleStore(tasks,engineeringStore,reviewStore,repairProposal);
+    foreach(var scenario in new[]{"budget","regression","revoke","cancel"})
+    {
+        var negativeRoot=engineeringStore.Start(taskBound.Id,approvedEngineerPlan);
+        engineeringStore.StartTask(taskBound.Id,negativeRoot.Id,"timer-interface");
+        engineeringStore.CompleteTask(taskBound.Id,negativeRoot.Id,"timer-interface",
+            new EngineeringChangeSet("Saved exact local fixture entry.",
+                [new EngineeringFileChange("index.html","Entry","<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
+                ["Independently verify browser interaction."]));
+        engineeringStore.StartTask(taskBound.Id,negativeRoot.Id,"timer-state");
+        engineeringStore.CompleteTask(taskBound.Id,negativeRoot.Id,"timer-state",
+            new EngineeringChangeSet("Saved exact two-defect fixture.",
+                [new EngineeringFileChange("app.js","Timer behavior","document.getElementById('start').addEventListener('click',()=>{console.log('routine-one');console.log('routine-two');});")],
+                ["Independently verify timer behavior."]));
+        engineeringStore.Finish(taskBound.Id,negativeRoot.Id,true,null);
+        var rootFiles=engineeringStore.Get(taskBound.Id,negativeRoot.Id).Files;
+        var rootHash=QaReviewStore.Fingerprint(rootFiles);
+        var negativePolicy=delegationStore.Propose(taskBound.Id,
+            new ProposeDelegationRequest(routineRevision,secondPlanHash,routineOps,
+                new RoutineRepairScope(negativeRoot.Id,rootHash,["app.js"],scenario=="budget"?1:4)));
+        negativePolicy=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+            negativePolicy.Revision,negativePolicy.PolicySha256,"APPROVE "+negativePolicy.PolicySha256));
+        routineRevision=negativePolicy.Revision;
+        softwareModel.IntroduceRoutineRegression=scenario=="regression";
+        softwareModel.RoutineGate=scenario is "revoke" or "cancel"?
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously):null;
+        softwareModel.RoutineEntered=new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var request=new StartCollaborationRequest(negativeRoot.Id,rootHash,secondPlanHash,negativePolicy.Revision,negativePolicy.PolicySha256);
+        using(var started=await Post(client,aetCollabPath,request))
+            Check(started.StatusCode==HttpStatusCode.Accepted,"negative fixture collaboration admitted once: "+scenario);
+        if(scenario is "revoke" or "cancel")
+        {
+            await softwareModel.RoutineEntered.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            var pending=negativeRepairStore.Latest(taskBound.Id)!;
+            Check(pending.Cycle.State=="Running" && pending.Cycle.BaseRunId==negativeRoot.Id &&
+                QaReviewStore.Fingerprint(pending.Engineering.Files)==rootHash,
+                "paused candidate is an unchanged clone before "+scenario);
+            if(scenario=="revoke")
+            {
+                delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(negativePolicy.Revision,
+                    negativePolicy.PolicySha256,"REVOKE "+negativePolicy.PolicySha256));
+                // Exercise the actual transaction guard, not only the
+                // coordinator's cooperative cancellation behavior.
+                try
+                {
+                    engineeringStore.CompleteTask(taskBound.Id,pending.Engineering.Job.Id,"timer-state",
+                        new EngineeringChangeSet("Attempt to save after revocation.",
+                            [new EngineeringFileChange("app.js","Timer behavior","console.log('forbidden late write');")],
+                            ["Independent verification required."]));
+                    Check(false,"revoked routine candidate must not persist source");
+                }
+                catch(StoreFailure e) when(e.Code=="DELEGATION_NOT_AUTHORIZED")
+                {Check(true,"transaction rejects revoked routine write");}
+            }
+            else
+            {
+                using var stopped=await Post(client,"/api/tasks/"+taskBound.Id+"/repair-cycles/"+pending.Cycle.Id+"/cancel",new {});
+                Check(stopped.StatusCode==HttpStatusCode.OK,"owner can stop active delegated repair");
+                using var stoppedBody=await Body(stopped);
+                Check(stoppedBody.RootElement.GetProperty("cycle").GetProperty("state").GetString()=="Interrupted",
+                    "stop response acknowledges durable interruption, not merely a cancellation request");
+                try
+                {
+                    engineeringStore.CompleteTask(taskBound.Id,pending.Engineering.Job.Id,"timer-state",
+                        new EngineeringChangeSet("Attempt to save after cancellation.",
+                            [new EngineeringFileChange("app.js","Timer behavior","console.log('forbidden after stop');")],
+                            ["Independent verification required."]));
+                    Check(false,"stopped routine candidate must not persist source");
+                }
+                catch(StoreFailure e) when(e.Code=="INVALID_STATE")
+                {Check(true,"transaction rejects late write after owner stop");}
+            }
+            softwareModel.RoutineGate!.TrySetResult(true);
+            RepairCycleSnapshot? terminal=null;
+            for(var i=0;i<600;i++)
+            {
+                terminal=negativeRepairStore.Get(taskBound.Id,pending.Cycle.Id);
+                if(terminal.Cycle.State is "Failed" or "Interrupted")break;
+                await Task.Delay(25);
+            }
+            Check(terminal?.Cycle.State==(scenario=="revoke"?"Failed":"Interrupted") &&
+                terminal.Cycle.ErrorCode==(scenario=="revoke"?"DELEGATION_NOT_AUTHORIZED":"OWNER_CANCELLED") &&
+                QaReviewStore.Fingerprint(terminal.Engineering.Files)==rootHash,
+                "stopped routine repair cannot persist candidate source: "+scenario);
+        }
+        else
+        {
+            CollaborationSnapshot? result=null;
+            for(var i=0;i<600;i++)
+            {
+                result=aetCollabStore.Latest(taskBound.Id);
+                if(result?.Job.State is "Escalated" or "Failed" or "AwaitingVerification")break;
+                await Task.Delay(25);
+            }
+            var expected=scenario=="budget"?"ROUTINE_REPAIR_BUDGET_EXHAUSTED":"POTENTIAL_CANDIDATE_REGRESSION";
+            Check(result?.Job.State=="Escalated" && result.Job.Reason==expected,
+                "autonomy stops on concrete boundary: "+scenario+" ("+result?.Job.Reason+")");
+            var candidate=engineeringStore.Latest(taskBound.Id)!;
+            var progress=new RepairProgressStore(tasks).Read(taskBound.Id,candidate.Job.Id);
+            Check(progress.Attempts.Count==1 &&
+                progress.Attempts[0].OriginalRunId==negativeRoot.Id &&
+                (scenario!="regression" || progress.PotentialRegressionIssueIds is {Count:>0}),
+                "no second candidate is admitted after "+scenario);
+            if(scenario=="regression")
+            {
+                var evidence=new DeliveryEvidenceStore(tasks).Read(taskBound.Id);
+                Check(evidence.RoutineCandidate is {Disposition:"REJECTED_POTENTIAL_REGRESSION"} &&
+                    evidence.RoutineCandidate.RunId==candidate.Job.Id &&
+                    evidence.RoutineCandidate.BaseRunId==negativeRoot.Id &&
+                    evidence.RoutineCandidate.BaseSourceSha256==rootHash &&
+                    evidence.Blockers.Contains("POTENTIAL_CANDIDATE_REGRESSION") &&
+                    !evidence.DeliveryAllowed && !evidence.EngineeringComplete,
+                    "rejected candidate is explicitly distinct from preserved predecessor and cannot claim delivery");
+            }
+        }
+        Check(QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,negativeRoot.Id).Files)==rootHash,
+            "original snapshot remains immutable after "+scenario);
+        if(scenario!="revoke")
+            delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(negativePolicy.Revision,
+                negativePolicy.PolicySha256,"REVOKE "+negativePolicy.PolicySha256));
+        softwareModel.RoutineGate=null;
+        softwareModel.IntroduceRoutineRegression=false;
+    }
+
+    // Recover the exact stopped clone from the cancellation scenario.
+    // The old policy is revoked; a new bounded owner approval is mandatory.
+    var recoveryClone=engineeringStore.Latest(taskBound.Id)!;
+    var recoveryHash=QaReviewStore.Fingerprint(recoveryClone.Files);
+    var recoveryPreview=aetCollabStore.Preview(taskBound.Id);
+    Check(recoveryClone.Job.State=="Interrupted" &&
+        recoveryPreview.RoutineRepairCandidate?.RunId==recoveryClone.Job.Id &&
+        recoveryPreview.RoutineRepairCandidate.SourceSha256==recoveryHash &&
+        !recoveryPreview.CanStart,
+        "preserved stopped clone offers recovery scope but no implicit authorization");
+    Check(new RepairProgressStore(tasks).Read(taskBound.Id,recoveryClone.Job.Id).StrategyChangeRequired,
+        "historical unchanged attempt remains a recorded stall before explicit recovery");
+    var recoveryDelegation=delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(routineRevision,secondPlanHash,routineOps,
+            new RoutineRepairScope(recoveryClone.Job.Id,recoveryHash,["app.js"],4)));
+    recoveryDelegation=delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+        recoveryDelegation.Revision,recoveryDelegation.PolicySha256,"APPROVE "+recoveryDelegation.PolicySha256));
+    routineRevision=recoveryDelegation.Revision;
+    var recoveryAdmission=aetCollabStore.Preview(taskBound.Id);
+    Check(recoveryAdmission.CanStart && recoveryAdmission.Candidate?.RunId==recoveryClone.Job.Id,
+        "fresh exact delegation admits coordination of preserved source, not regeneration");
+    using(var recoveryStart=await Post(client,aetCollabPath,recoveryAdmission.Candidate!))
+        Check(recoveryStart.StatusCode==HttpStatusCode.Accepted,"start recovery with one explicit owner approval");
+    CollaborationSnapshot? recoveryTeamResult=null;
+    for(var recoveryPoll=0;recoveryPoll<800;recoveryPoll++)
+    {
+        recoveryTeamResult=aetCollabStore.Latest(taskBound.Id);
+        if(recoveryTeamResult?.Job.State is "AwaitingVerification" or "Failed" or "Escalated")break;
+        await Task.Delay(25);
+    }
+    var recoveryFinal=engineeringStore.Latest(taskBound.Id)!;
+    var recoveryHistory=new RepairProgressStore(tasks).Read(taskBound.Id,recoveryFinal.Job.Id);
+    Check(recoveryTeamResult?.Job.State=="AwaitingVerification" &&
+        recoveryFinal.Job.State=="Generated" &&
+        recoveryHistory.Attempts.Count==3 &&
+        recoveryHistory.Attempts[0].CandidateRunId==recoveryClone.Job.Id &&
+        recoveryHistory.Attempts.Skip(1).All(a=>a.IndependentStaticResolution) &&
+        engineeringStore.Get(taskBound.Id,recoveryClone.Job.Id).Job.State=="Interrupted" &&
+        QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,recoveryClone.Job.Id).Files)==recoveryHash,
+        "recovered coordination completes two repairs while preserving failed history and original source: "+recoveryTeamResult?.Job.Reason);
+    delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(recoveryDelegation.Revision,
+        recoveryDelegation.PolicySha256,"REVOKE "+recoveryDelegation.PolicySha256));
+
+    // Smoke evidence must stay distinct from qualified runtime verification.
+    var aetSmokeRun=engineeringStore.Start(taskBound.Id,approvedEngineerPlan);
+    engineeringStore.StartTask(taskBound.Id,aetSmokeRun.Id,"timer-interface");
+    engineeringStore.CompleteTask(taskBound.Id,aetSmokeRun.Id,"timer-interface",
+        new EngineeringChangeSet("Saved complete local browser entry.",
+            [new EngineeringFileChange("index.html","Entry","<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
+            ["Independently verify browser interaction."]));
+    engineeringStore.StartTask(taskBound.Id,aetSmokeRun.Id,"timer-state");
+    engineeringStore.CompleteTask(taskBound.Id,aetSmokeRun.Id,"timer-state",
+        new EngineeringChangeSet("Saved linked local JavaScript behavior.",
+            [new EngineeringFileChange("app.js","Timer behavior","document.getElementById('start').addEventListener('click',()=>{console.log('routine-one');console.log('routine-two');});")],
+            ["Independently verify timer behavior."]));
+    engineeringStore.Finish(taskBound.Id,aetSmokeRun.Id,true,null);
+    var aetScopeRoot=engineeringPath+"/"+aetSmokeRun.Id;
+    string aetSmokeScope;
+    using(var aetScopeResponse=await client.GetAsync(aetScopeRoot+"/verification-scope"))
+    using(var aetScopeBody=await Body(aetScopeResponse))
+    {
+        Check(aetScopeResponse.StatusCode==HttpStatusCode.OK &&
+            aetScopeBody.RootElement.GetProperty("status").GetString()=="SCOPE_CANDIDATE",
+            "existing exact smoke scope can be admitted without runtime qualification");
+        aetSmokeScope=aetScopeBody.RootElement.GetProperty("scopeSha256").GetString()!;
+    }
+    // The internal planning ledger consumes host-produced admission
+    // previews; the fixture is synthetic and grants no runtime permission.
+    var evaluationReviewStore=new EvaluationPlanReviewStore(tasks);
+    var evaluationInput=evaluationReviewStore.Capture(taskBound.Id,aetSmokeRun.Id);
+    Check(evaluationInput.Scope.ScopeSha256==aetSmokeScope &&
+        evaluationInput.Archive.SequenceEqual(evaluationReviewStore.Capture(taskBound.Id,aetSmokeRun.Id).Archive),
+        "verification archive and scope are deterministic for exact saved source");
+    // Synthetic structural-coverage fixture, deliberately not a semantic
+    // mapping for this timer application and never runtime evidence.
+    var evaluationCases=new[]{"mouse_2_plus_3_equals_5","keyboard_12_5_divided_by_2",
+        "decimal_0_1_plus_0_2","backspace_and_divide_by_zero","back_and_history_recall",
+        "history_survives_page_reload","history_survives_browser_restart"};
+    JsonElement EvaluationPreview(string admission,string archiveHash,string[]? cases=null)
+        =>JsonSerializer.SerializeToElement(new {
+            schemaVersion=1,status="ADMISSION_PREVIEW_ONLY",executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false,
+            taskId=taskBound.Id,runId=aetSmokeRun.Id,planSha256=evaluationInput.Scope.PlanSha256,
+            specificationSha256=evaluationInput.Scope.SpecificationSha256,architectureSha256=evaluationInput.Scope.ArchitectureSha256,
+            sourceFingerprint=evaluationInput.Scope.SourceFingerprint,scopeSha256=evaluationInput.Scope.ScopeSha256,
+            archiveSha256=archiveHash,model=evaluationInput.Scope.Model,contractId="calculation-journal-v1",
+            admissionSha256=admission,candidateSha256=new string('a',64),evaluatorSha256=new string('b',64),
+            qualification=new {hostProvenanceEstablished=false,runtimeQualified=false,executionEnabled=false,
+                receiptSha256=new string('c',64),evaluatorSha256=new string('b',64),
+                imageId="sha256:"+new string('a',64),registryDigest="mcr.microsoft.com/playwright@sha256:"+new string('a',64),
+                seccompSha256=new string('c',64),fixturePidLimit=256},
+            mappings=evaluationInput.Criteria.Select(c=>new {criterionId=c.Id,criterionText=c.Text,cases=cases??evaluationCases})
+        });
+    var behavioralStore=new BehavioralContractReviewStore(tasks);
+    var behavioralSelection=JsonSerializer.SerializeToElement(new {
+        contractId="calculation-journal-v1",planSha256=evaluationInput.Scope.PlanSha256,
+        specificationSha256=evaluationInput.Scope.SpecificationSha256,architectureSha256=evaluationInput.Scope.ArchitectureSha256,
+        mappings=evaluationInput.Criteria.Select(c=>new {criterionId=c.Id,criterionText=c.Text,cases=evaluationCases})
+    });
+    var behavioral=behavioralStore.Propose(taskBound.Id,aetSmokeRun.Id,behavioralSelection,new string('b',64));
+    Check(behavioral is {State:"Proposed",ExecutionEnabled:false} &&
+        behavioralStore.Propose(taskBound.Id,aetSmokeRun.Id,behavioralSelection,new string('b',64)).Id==behavioral.Id,
+        "semantic contract proposal is durable and idempotent");
+    try
+    {
+        behavioralStore.Review(taskBound.Id,aetSmokeRun.Id,behavioral.Id,"EXECUTE "+behavioral.ContractSha256);
+        Check(false,"semantic review is not execution authorization");
+    }
+    catch(StoreFailure ex)when(ex.Code=="BEHAVIORAL_CONTRACT_CONFIRMATION_REQUIRED")
+    {Check(true,"semantic review requires exact separate acknowledgement");}
+    var evaluationHash=new string('d',64);
+    var evaluationPreview=EvaluationPreview(evaluationHash,evaluationInput.ArchiveSha256);
+    try
+    {
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id);
+        Check(false,"unreviewed contract must not stage admission");
+    }
+    catch(StoreFailure ex)when(ex.Code=="BEHAVIORAL_CONTRACT_REVIEW_REQUIRED")
+    {Check(true,"unreviewed contract cannot stage admission");}
+    Check(behavioralStore.Review(taskBound.Id,aetSmokeRun.Id,behavioral.Id,"REVIEW BEHAVIOR "+behavioral.ContractSha256)
+        is {State:"Reviewed",ExecutionEnabled:false},"exact semantic review remains non-executable");
+    foreach(var invalid in new[]{
+        (Cases:new[]{"fixture-only"},Code:"EVALUATION_CONTRACT_COVERAGE_INVALID"),
+        (Cases:evaluationCases.Take(6).ToArray(),Code:"EVALUATION_MANDATORY_CASE_MISSING"),
+        (Cases:new[]{evaluationCases[0],evaluationCases[0]},Code:"EVALUATION_CONTRACT_COVERAGE_INVALID"),
+        (Cases:Array.Empty<string>(),Code:"EVALUATION_CONTRACT_COVERAGE_INVALID")})
+    {
+        try
+        {
+            evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,
+                EvaluationPreview(new string('f',64),evaluationInput.ArchiveSha256,invalid.Cases),behavioral.Id);
+            Check(false,"invalid evaluation coverage cannot be persisted");
+        }
+        catch(StoreFailure ex)when(ex.Code==invalid.Code)
+        {Check(true,"planning ledger rejects "+invalid.Code);}
+    }
+    var evaluationStaged=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id);
+    var executionProposalStore=new EvaluationExecutionAuthorizationStore(tasks);
+    try
+    {
+        executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id);
+        Check(false,"unreviewed evaluation cannot propose execution");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_PLAN_REVIEW_REQUIRED")
+    {Check(true,"execution proposal requires reviewed candidate plan");}
+    Check(evaluationStaged is {State:"Previewed",Current:true,ExecutionEnabled:false,Verified:false} &&
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id).Id==evaluationStaged.Id,
+        "exact planning preview is durable and idempotent without execution authority");
+    try
+    {
+        evaluationReviewStore.Review(taskBound.Id,evaluationStaged.Id,evaluationHash,"EXECUTE "+evaluationHash);
+        Check(false,"planning review must reject executable confirmation");
+    }
+    catch(StoreFailure ex){Check(ex.Code=="EVALUATION_PLAN_CONFIRMATION_REQUIRED","planning review rejects execution consent");}
+    var evaluationReviewed=evaluationReviewStore.Review(taskBound.Id,evaluationStaged.Id,evaluationHash,"REVIEW EVALUATION "+evaluationHash);
+    Check(evaluationReviewed is {State:"Reviewed",ExecutionEnabled:false,Verified:false} &&
+        new EvaluationPlanReviewStore(tasks).Get(taskBound.Id,evaluationReviewed.Id).State=="Reviewed",
+        "owner planning acknowledgement persists and is not executable");
+    try
+    {
+        evaluationReviewStore.Review(taskBound.Id,evaluationStaged.Id,evaluationHash,"REVIEW EVALUATION "+evaluationHash);
+        Check(false,"planning acknowledgement may not be replayed");
+    }
+    catch(StoreFailure ex){Check(ex.Code=="EVALUATION_PLAN_CONFIRMATION_REQUIRED","review is single-use");}
+    var executionProposal=executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id);
+    Check(executionProposal is {State:"Proposed",Current:true,ExecutionEnabled:false,RuntimeQualified:false} &&
+        executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id).Id==executionProposal.Id,
+        "execution proposal persists exact candidate and profile without a grant");
+    foreach(var attempt in new[]{
+        (Confirmation:"REVIEW EVALUATION "+evaluationHash,Code:"EVALUATION_EXECUTION_CONFIRMATION_REQUIRED"),
+        (Confirmation:"AUTHORIZE EVALUATION "+executionProposal.AuthorizationSha256,Code:"EVALUATION_RUNTIME_UNQUALIFIED")})
+    {
+        try
+        {
+            executionProposalStore.Authorize(taskBound.Id,executionProposal.Id,attempt.Confirmation);
+            Check(false,"unqualified execution must remain blocked");
+        }
+        catch(StoreFailure ex)when(ex.Code==attempt.Code)
+        {Check(true,"execution authorization rejects "+attempt.Code);}
+    }
+    Check(executionProposalStore.Get(taskBound.Id,executionProposal.Id) is {State:"Proposed",ExecutionEnabled:false},
+        "blocked authorization cannot change durable execution state");
+    // Synthetic structural test only: no real calculator, host trust or
+    // generated-source execution. Production path reads private host pins.
+    var pilotPolicyFixture=JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,policyId="static-web-calculation-journal-windows-qualification-v1",
+        contractId="calculation-journal-v1",imageId="sha256:"+new string('a',64),
+        registryDigest="mcr.microsoft.com/playwright@sha256:"+new string('a',64),
+        adapterSha256=new string('d',64),evaluatorSha256=new string('b',64),seccompSha256=new string('c',64),
+        environmentSha256=new string('e',64),pidLimit=256,memoryBytes=2147483648L,nanoCpus=2000000000L,
+        shmBytes=268435456,scratchBytes=268435456,guestDeadlineSeconds=145,hostDeadlineSeconds=180,
+        user="1000:1000",network="none",ipc="private",rootReadOnly=true,capabilities="none",
+        noNewPrivileges=true,init=true,autoRemove=false,hostMounts=0,entrypoint="node",entryFlag="--run-fixed-candidate-fixture"
+    });
+    string PilotHash(string raw)=>Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw)));
+    var pilotPolicyHash=PilotHash(pilotPolicyFixture.GetRawText());
+    var pilotEvidence=JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,status="PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND",engineId="structural-fixture",
+        policySha256=pilotPolicyHash,policy=pilotPolicyFixture,
+        attempts=new[]{"working","broken","spoof","cancel","crash"}.Select((name,i)=>new {name,
+            attempt=new {attemptId=new string((char)('1'+i),32),archiveSha256=new string('a',64),receiptSha256=new string('b',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt),
+        evidenceSha256=new string('c',64),hostProvenanceEstablished=false,runtimeQualified=false,executionEnabled=false,
+        generatedArtifactVerified=false,boundary=new {attemptId=new string('6',32),archiveSha256=new string('d',64),
+            receiptSha256=new string('e',64),policySha256=new string('f',64),adapterSha256=new string('f',64)},
+        completeEvidenceSha256=new string('a',64)
+    });
+    var pilotReceipts=Enumerable.Range(1,4).Select(i=>"windows-static-web-"+new string((char)('0'+i),12)+".json").ToArray();
+    var pilotBinding=PilotProposalBinding.Create(pilotEvidence,new string('a',64),pilotReceipts);
+    var pilotBoundExecutionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,pilotBinding);
+    Check(pilotBoundExecutionProposal is {Current:true,ExecutionEnabled:false,RuntimeQualified:false,PilotBindingSha256:not null}&&
+        pilotBoundExecutionProposal.AuthorizationSha256!=executionProposal.AuthorizationSha256&&
+        executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,pilotBinding).Id==pilotBoundExecutionProposal.Id,
+        "pilot evidence creates a distinct exact non-executable proposal");
+    var capturedPilotTransport=executionProposalStore.CaptureBoundTransport(taskBound.Id,pilotBoundExecutionProposal.Id);
+    Check(capturedPilotTransport.Proposal.AuthorizationSha256==pilotBoundExecutionProposal.AuthorizationSha256&&
+        capturedPilotTransport.Input.ArchiveSha256==evaluationInput.ArchiveSha256&&
+        capturedPilotTransport.Contract.GetProperty("contractId").GetString()=="calculation-journal-v1",
+        "transport snapshot is reconstructed from exact bound proposal and current reviewed source");
+    try
+    {
+        executionProposalStore.CaptureBoundTransport(taskBound.Id,executionProposal.Id);
+        Check(false,"unbound proposal cannot prepare transport");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_EXECUTION_BINDING_CHANGED")
+    {Check(true,"transport capture requires pilot evidence binding");}
+    // Change the structurally valid policy and recompute its own hash:
+    // the candidate admission must still reject the mismatched evaluator.
+    var changedPolicy=System.Text.Json.Nodes.JsonNode.Parse(pilotPolicyFixture.GetRawText())!.AsObject();
+    changedPolicy["evaluatorSha256"]=new string('9',64);
+    var changedEvidence=System.Text.Json.Nodes.JsonNode.Parse(pilotEvidence.GetRawText())!.AsObject();
+    changedEvidence["policy"]=changedPolicy;
+    changedEvidence["policySha256"]=PilotHash(changedPolicy.ToJsonString());
+    using(var changedDocument=JsonDocument.Parse(changedEvidence.ToJsonString()))
+    {
+        var wrongBinding=PilotProposalBinding.Create(changedDocument.RootElement,new string('a',64),pilotReceipts);
+        try
+        {
+            executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,wrongBinding);
+            Check(false,"mismatched evaluator cannot bind pilot proposal");
+        }
+        catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_POLICY_MISMATCH")
+        {Check(true,"pilot evidence must match reviewed evaluator identity");}
+    }
+    // Fourteen-attempt structural fixture. Still no runtime grant.
+    var admissionPolicy=System.Text.Json.Nodes.JsonNode.Parse(pilotPolicyFixture.GetRawText())!.AsObject();
+    admissionPolicy["adapterSha256"]=new string('9',64);
+    var admissionPolicyHash=PilotHash(admissionPolicy.ToJsonString());
+    var admissionEvidence=System.Text.Json.Nodes.JsonNode.Parse(pilotEvidence.GetRawText())!.AsObject();
+    admissionEvidence["status"]="PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND";
+    admissionEvidence["qualifiedEvidenceSha256"]=new string('8',64);
+    var admissionBuildFixture=JsonSerializer.SerializeToElement(new {
+        policySha256=admissionPolicyHash,policy=JsonSerializer.Deserialize<JsonElement>(admissionPolicy.ToJsonString()),
+        buildSha256=new string('7',64),receiptSha256=new string('6',64),
+        attempts=new[]{"build-working","build-broken","build-spoof","build-missing-asset","build-invalid-syntax"}
+            .Select((name,i)=>new {name,attempt=new {attemptId=(i+7).ToString("x32"),archiveSha256=new string('1',64),receiptSha256=new string('2',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt)
+    });
+    admissionEvidence["buildQualification"]=System.Text.Json.Nodes.JsonNode.Parse(admissionBuildFixture.GetRawText());
+    var buildOnlyReceipts=pilotReceipts.Append("windows-static-web-555555555555.json").ToArray();
+    var buildOnlyBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),buildOnlyReceipts);
+    var buildOnlyProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,buildOnlyBinding);
+    admissionEvidence["status"]="PILOT_PINNED_DISPATCH_EVIDENCE_BOUND";
+    admissionEvidence["dispatchEvidenceSha256"]=new string('4',64);
+    var admissionDispatchFixture=JsonSerializer.SerializeToElement(new {
+        policySha256=admissionPolicyHash,adapterSha256=new string('9',64),nodeSha256=new string('a',64),
+        dockerSha256=new string('b',64),moduleClosureSha256=new string('c',64),interruptionReceiptSha256=new string('d',64),
+        attempts=new[]{"working","cancel","crash"}.Select((name,i)=>new {name,attempt=new {
+            attemptId=(i+12).ToString("x32"),archiveSha256=new string('1',64),receiptSha256=new string('2',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt)
+    });
+    admissionEvidence["dispatchQualification"]=System.Text.Json.Nodes.JsonNode.Parse(admissionDispatchFixture.GetRawText());
+    var admissionReceipts=buildOnlyReceipts.Concat(new[]{"windows-static-web-666666666666.json","windows-static-web-777777777777.json"}).ToArray();
+    var admissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),admissionReceipts);
+    var admissionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,admissionBinding);
+    JsonElement AdmissionTransport(string attemptId,string transportHash)=>JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,status="CANDIDATE_TRANSPORT_PREPARED_ONLY",attemptId,candidateSha256=new string('a',64),
+        archiveSha256=evaluationInput.ArchiveSha256,evaluatorSha256=new string('b',64),adapterSha256=new string('9',64),
+        policySha256=admissionPolicyHash,admissionSha256=evaluationHash,completeEvidenceSha256=new string('4',64),
+        engineId="structural-fixture",sourceFingerprint=evaluationInput.Scope.SourceFingerprint,
+        assetCount=evaluationInput.Scope.Files.Count,payloadSha256=new string('3',64),transportSha256=transportHash,
+        transportBytes=2000,executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false
+    });
+    var admissionStore=new PilotExecutionAdmissionStore(tasks);
+    var admissionTransport=AdmissionTransport(new string('e',32),new string('4',64));
+    try
+    {
+        admissionStore.Stage(taskBound.Id,buildOnlyProposal.Id,admissionTransport);
+        Check(false,"build evidence alone cannot reserve an admission");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_DISPATCH_EVIDENCE_REQUIRED")
+    {Check(true,"admission requires complete pinned dispatch evidence");}
+    try
+    {
+        admissionStore.Stage(taskBound.Id,admissionProposal.Id,AdmissionTransport((12).ToString("x32"),new string('4',64)));
+        Check(false,"dispatcher qualification attempt cannot be reused");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ATTEMPT_REUSED")
+    {Check(true,"admission excludes pinned qualification attempt IDs");}
+    var preparedAdmission=admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport);
+    Check(preparedAdmission is {State:"Prepared",Current:true,ExecutionEnabled:false}&&
+        admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport).Id==preparedAdmission.Id,
+        "single attempt preparation is durable and idempotent");
+    Check(admissionStore.FindForProposal(taskBound.Id,admissionProposal.Id)?.AttemptId==preparedAdmission.AttemptId,
+        "transport preparation retry must reuse the original attempt");
+    try
+    {
+        admissionStore.Stage(taskBound.Id,admissionProposal.Id,AdmissionTransport(preparedAdmission.AttemptId,new string('9',64)));
+        Check(false,"changed transport cannot replace reserved attempt");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ALREADY_RESERVED")
+    {Check(true,"transport digest immutable across reservation retries");}
+    try
+    {
+        admissionStore.Stage(taskBound.Id,admissionProposal.Id,AdmissionTransport(new string('f',32),new string('5',64)));
+        Check(false,"second attempt cannot reserve same proposal");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ALREADY_RESERVED")
+    {Check(true,"single proposal cannot reserve second attempt");}
+    try
+    {
+        admissionStore.Authorize(taskBound.Id,preparedAdmission.Id,"AUTHORIZE EVALUATION "+admissionProposal.AuthorizationSha256);
+        Check(false,"proposal acknowledgement is not attempt consent");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_CONFIRMATION_REQUIRED")
+    {Check(true,"exact attempt consent challenge required");}
+    try
+    {
+        admissionStore.Authorize(taskBound.Id,preparedAdmission.Id,"AUTHORIZE PILOT "+preparedAdmission.ConsentSha256);
+        Check(false,"unqualified runtime must not authorize");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
+    {Check(true,"exact attempt consent still cannot bypass runtime gate");}
+    try
+    {
+        admissionStore.Consume(taskBound.Id,preparedAdmission.Id,admissionTransport);
+        Check(false,"prepared attempt cannot consume execution");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED")
+    {Check(true,"prepared attempt cannot consume execution");}
+    Check(admissionStore.Get(taskBound.Id,preparedAdmission.Id) is {State:"Prepared",Current:true,ExecutionEnabled:false},
+        "blocked authorization and consumption leave preparation unchanged");
+    var secondAdmissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('b',64),admissionReceipts);
+    var secondAdmissionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,secondAdmissionBinding);
+    try
+    {
+        admissionStore.Stage(taskBound.Id,secondAdmissionProposal.Id,admissionTransport);
+        Check(false,"attempt cannot be reused across proposals");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ATTEMPT_REUSED")
+    {Check(true,"attempt globally unique across proposals");}
+    var secondAdmission=admissionStore.Stage(taskBound.Id,secondAdmissionProposal.Id,AdmissionTransport(new string('f',32),new string('5',64)));
+    executionProposalStore.Revoke(taskBound.Id,secondAdmissionProposal.Id);
+    Check(admissionStore.Get(taskBound.Id,secondAdmission.Id) is {State:"Revoked",Current:false},
+        "parent proposal revocation atomically revokes prepared admission");
+    // Synthetic consumed rows in the disposable smoke DB ONLY. No
+    // production authorization bypass, no model or guest execution.
+    var resultFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('c',64),admissionReceipts);
+    var resultFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,resultFixtureBinding);
+    var resultFixtureTransport=AdmissionTransport(new string('a',32),new string('5',64));
+    var resultFixtureAdmission=admissionStore.Stage(taskBound.Id,resultFixtureProposal.Id,resultFixtureTransport);
+    JsonElement ResultFixture(string attemptId,string transportHash,bool failed=false,bool missing=false,bool debt=false)
+    {
+        var security=new[]{"nonroot_seccomp_no_caps","no_host_mounts_or_socket","credentials_denied","system_write_denied",
+            "symlink_write_denied","traversal_write_denied","outbound_and_host_service_denied","child_network_denied","child_system_write_denied","git_remote_denied"}
+            .ToDictionary(k=>k,k=>true);
+        var cases=new[]{"mouse_2_plus_3_equals_5","keyboard_12_5_divided_by_2","decimal_0_1_plus_0_2","backspace_and_divide_by_zero",
+            "back_and_history_recall","history_survives_page_reload","history_survives_browser_restart"}
+            .Select((k,i)=>new {k,v=missing?(bool?)null:!(failed&&i==0)}).ToDictionary(x=>x.k,x=>x.v);
+        var status=debt?"VERIFICATION_BLOCKED":missing?"BUILD_FAILED":failed?"TESTS_FAILED":"CHECKS_PASSED_NOT_VERIFIED";
+        var observations=JsonSerializer.SerializeToElement(new {status,passed=missing?0:failed?6:7,completed=missing?0:7,required=7,
+            cases,security,build=new {exact_source_hashes=true,javascript_syntax=true,local_assets_linked=!missing,source_integrity_unchanged=true},
+            infrastructure=new[]{"browser_sandbox_confirmed","independent_driver_confirmed","browser_closed","asset_server_closed"}
+                .ToDictionary(k=>k,k=>missing?(bool?)null:true),executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false});
+        return JsonSerializer.SerializeToElement(new {schemaVersion=1,stage="AET-8-candidate-dispatch-lifecycle",status,
+            attemptId,engineId="structural-fixture",policySha256=admissionPolicyHash,transportSha256=transportHash,
+            configurationAudited=true,attachClosed=!debt,containerRemoved=!debt,cleanupDebt=debt,
+            archiveSha256=debt?null:new string('a',64),observations=debt?(JsonElement?)null:observations,
+            reason=debt?"CANDIDATE_DISPATCH_ATTACH_UNCONFIRMED":null,executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false});
+    }
+    var resultFixtureReceipt=ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256,failed:true);
+    try
+    {
+        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
+        Check(false,"unconsumed admission cannot record results");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_NOT_CONSUMED")
+    {Check(true,"unconsumed admission cannot record results");}
+    Check(PilotExecutionAdmissionStore.ValidateResult(resultFixtureAdmission,resultFixtureTransport,
+        ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256)).Status=="CHECKS_PASSED_NOT_VERIFIED",
+        "complete checks cannot promote generated artifact to VERIFIED");
+    Check(PilotExecutionAdmissionStore.ValidateResult(resultFixtureAdmission,resultFixtureTransport,
+        ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256,missing:true)) is {Status:"BUILD_FAILED",Completed:0,CleanupConfirmed:true},
+        "build failure has no functional observations");
+    Check(PilotExecutionAdmissionStore.ValidateResult(resultFixtureAdmission,resultFixtureTransport,
+        ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256,debt:true)) is {Status:"VERIFICATION_BLOCKED",CleanupConfirmed:false,Passed:null},
+        "uncertain cleanup blocks functional verdict");
+    var forgedResultFixture=System.Text.Json.Nodes.JsonNode.Parse(resultFixtureReceipt.GetRawText())!.AsObject();
+    forgedResultFixture["observations"]!.AsObject()["passed"]=7;
+    try
+    {
+        PilotExecutionAdmissionStore.ValidateResult(resultFixtureAdmission,resultFixtureTransport,
+            JsonSerializer.Deserialize<JsonElement>(forgedResultFixture.ToJsonString()));
+        Check(false,"false counts cannot override Boolean cases");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_INVALID")
+    {Check(true,"result classification recomputes case counts");}
+    using(var fixtureDb=tasks.Open())
+        TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",resultFixtureAdmission.Id));
+    var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
+    Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
+        admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
+        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt)==storedFixtureResult,
+        "consumed attempt records exactly one durable idempotent result");
+    try
+    {
+        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256));
+        Check(false,"recorded test failure cannot be overwritten");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_ALREADY_RECORDED")
+    {Check(true,"result is immutable after recording");}
+    var unfinishedFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('d',64),admissionReceipts);
+    var unfinishedFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,unfinishedFixtureBinding);
+    var unfinishedFixtureAdmission=admissionStore.Stage(taskBound.Id,unfinishedFixtureProposal.Id,AdmissionTransport(new string('b',32),new string('6',64)));
+    using(var fixtureDb=tasks.Open())
+        TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",unfinishedFixtureAdmission.Id));
+    var revokedFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('e',64),admissionReceipts);
+    var revokedFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,revokedFixtureBinding);
+    var revokedFixtureAdmission=admissionStore.Stage(taskBound.Id,revokedFixtureProposal.Id,AdmissionTransport(new string('d',32),new string('7',64)));
+    using(var fixtureDb=tasks.Open())
+        TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",revokedFixtureAdmission.Id));
+    admissionStore.Revoke(taskBound.Id,revokedFixtureAdmission.Id);
+    Check(admissionStore.GetResult(taskBound.Id,revokedFixtureAdmission.Id) is {Status:"VERIFICATION_BLOCKED",Reason:"PILOT_RESULT_REVOKED",CleanupConfirmed:false,Current:false},
+        "revoking consumed attempt prevents late result without claiming cleanup");
+    try
+    {
+        admissionStore.RecordResult(taskBound.Id,revokedFixtureAdmission.Id,ResultFixture(revokedFixtureAdmission.AttemptId,revokedFixtureAdmission.TransportSha256));
+        Check(false,"revoked consumed attempt cannot publish late success");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_ALREADY_RECORDED")
+    {Check(true,"revoked consumed attempt cannot publish late success");}
+    var differentPins=PilotProposalBinding.Create(pilotEvidence,new string('b',64),pilotReceipts);
+    var differentProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,differentPins);
+    Check(differentProposal.AuthorizationSha256!=pilotBoundExecutionProposal.AuthorizationSha256,
+        "changed host configuration changes exact authorization identity");
+    try
+    {
+        executionProposalStore.Authorize(taskBound.Id,pilotBoundExecutionProposal.Id,"AUTHORIZE EVALUATION "+pilotBoundExecutionProposal.AuthorizationSha256);
+        Check(false,"historical qualification is not executable authorization");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
+    {Check(true,"bound proposal still fails closed at runtime gate");}
+    Check(executionProposalStore.Revoke(taskBound.Id,differentProposal.Id).State=="Revoked"&&
+        executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,differentPins).State=="Revoked",
+        "evidence-bound revoked proposal cannot replay");
+    executionProposalStore.Recover();
+    Check(admissionStore.GetResult(taskBound.Id,unfinishedFixtureAdmission.Id) is {Status:"VERIFICATION_BLOCKED",Reason:"PILOT_RESULT_INTERRUPTED",CleanupConfirmed:false,Current:false},
+        "startup interruption records missing result without claiming cleanup");
+    Check(admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id) is {Status:"TESTS_FAILED",Current:false},
+        "startup retains completed historical result but retires currentness");
+    Check(admissionStore.Get(taskBound.Id,preparedAdmission.Id) is {State:"Interrupted",Current:false},
+        "restart interrupts unconsumed admission without replay");
+    Check(executionProposalStore.Get(taskBound.Id,pilotBoundExecutionProposal.Id) is {State:"Interrupted",Current:false},
+        "restart interrupts evidence-bound proposal");
+    try
+    {
+        executionProposalStore.CaptureBoundTransport(taskBound.Id,pilotBoundExecutionProposal.Id);
+        Check(false,"interrupted proposal cannot capture transport");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_EXECUTION_BINDING_CHANGED")
+    {Check(true,"interrupted proposal cannot capture transport");}
+    Check(executionProposalStore.Get(taskBound.Id,executionProposal.Id) is {State:"Interrupted",Current:false} &&
+        executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id) is {State:"Interrupted",Current:false},
+        "restart interrupts exact proposal and replay cannot reactivate");
+    var alternatePreview=EvaluationPreview(new string('1',64),evaluationInput.ArchiveSha256);
+    var alternatePlan=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,alternatePreview,behavioral.Id);
+    evaluationReviewStore.Review(taskBound.Id,alternatePlan.Id,alternatePlan.AdmissionSha256,"REVIEW EVALUATION "+alternatePlan.AdmissionSha256);
+    var alternateProposal=executionProposalStore.Propose(taskBound.Id,alternatePlan.Id);
+    Check(executionProposalStore.Revoke(taskBound.Id,alternateProposal.Id) is {State:"Revoked",Current:false} &&
+        executionProposalStore.Propose(taskBound.Id,alternatePlan.Id) is {State:"Revoked",Current:false},
+        "revoked execution proposal cannot be reactivated by replay");
+    var stalePreview=EvaluationPreview(new string('2',64),evaluationInput.ArchiveSha256);
+    var stalePlan=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,stalePreview,behavioral.Id);
+    evaluationReviewStore.Review(taskBound.Id,stalePlan.Id,stalePlan.AdmissionSha256,"REVIEW EVALUATION "+stalePlan.AdmissionSha256);
+    var staleEvaluationExecutionProposal=executionProposalStore.Propose(taskBound.Id,stalePlan.Id);
+    evaluationReviewStore.Cancel(taskBound.Id,stalePlan.Id);
+    Check(!executionProposalStore.Get(taskBound.Id,staleEvaluationExecutionProposal.Id).Current,
+        "cancelled evaluation plan invalidates its execution proposal");
+    try
+    {
+        executionProposalStore.Authorize(taskBound.Id,staleEvaluationExecutionProposal.Id,"AUTHORIZE EVALUATION "+staleEvaluationExecutionProposal.AuthorizationSha256);
+        Check(false,"stale proposal cannot authorize");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_EXECUTION_PROPOSAL_NOT_CURRENT")
+    {Check(true,"stale candidate authorization fails closed");}
+    Check(evaluationReviewStore.Cancel(taskBound.Id,evaluationStaged.Id).State=="Cancelled" &&
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id).State=="Cancelled",
+        "cancelled exact descriptor cannot be restaged by replay");
+    try
+    {
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,EvaluationPreview(new string('e',64),new string('0',64)),behavioral.Id);
+        Check(false,"stale archive must be rejected");
+    }
+    catch(StoreFailure ex){Check(ex.Code=="EVALUATION_DESCRIPTOR_NOT_CURRENT","planning stage rejects changed archive identity");}
+    var pendingEvaluation=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,
+        EvaluationPreview(new string('e',64),evaluationInput.ArchiveSha256),behavioral.Id);
+    evaluationReviewStore.Recover();
+    Check(evaluationReviewStore.Get(taskBound.Id,pendingEvaluation.Id).State=="Interrupted",
+        "startup interrupts unreviewed evaluation planning receipt without replay");
+    Check(behavioralStore.Revoke(taskBound.Id,behavioral.Id).State=="Revoked" &&
+        !evaluationReviewStore.Get(taskBound.Id,evaluationStaged.Id).Current,
+        "revoking semantic review invalidates linked admission");
+    try
+    {
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id);
+        Check(false,"revoked contract cannot stage admission");
+    }
+    catch(StoreFailure ex)when(ex.Code=="BEHAVIORAL_CONTRACT_REVIEW_REQUIRED")
+    {Check(true,"revoked contract cannot be reused by replay");}
+
+    using(var aetNoConsent=await Post(client,aetScopeRoot+"/source-smoke",new StartSourceSmokeRequest(aetSmokeScope,false)))
+        Check(aetNoConsent.StatusCode==HttpStatusCode.Conflict && aetSmokeRunner.Calls==0,
+            "durable smoke ledger does not bypass explicit isolation acknowledgement");
+    string aetSmokeEvidenceId;
+    using(var aetSmoke=await Post(client,aetScopeRoot+"/source-smoke",new StartSourceSmokeRequest(aetSmokeScope,true)))
+    using(var aetSmokeBody=await Body(aetSmoke))
+    {
+        Check(aetSmoke.StatusCode==HttpStatusCode.OK && !aetSmokeBody.RootElement.GetProperty("verified").GetBoolean() &&
+            aetSmokeBody.RootElement.GetProperty("current").GetBoolean() && aetSmokeRunner.Calls==1,
+            "authenticated injected smoke result remains explicitly not verified");
+        aetSmokeEvidenceId=aetSmokeBody.RootElement.GetProperty("evidenceId").GetString()!;
+    }
+    var aetSmokeStore=new SourceSmokeEvidenceStore(tasks);
+    Check(aetSmokeStore.List(taskBound.Id,aetSmokeRun.Id).Single() is
+        {State:"Recorded",Current:true,Verified:false,Report.Status:"SMOKE_PASS_NOT_VERIFIED"} aetSavedSmoke &&
+        aetSavedSmoke.Id==aetSmokeEvidenceId,"actual smoke result survives reread and preserves exact source scope");
+
+    // AET-10: the actual persisted smoke pass is not delivery evidence.
+    var deliveryPath="/api/tasks/"+taskBound.Id+"/delivery-evidence";
+    using(var deliveryAnonymous=new HttpClient {BaseAddress=client.BaseAddress})
+    using(var deliveryDenied=await deliveryAnonymous.GetAsync(deliveryPath))
+        Check(deliveryDenied.StatusCode==HttpStatusCode.Unauthorized,"delivery evidence is owner private");
+    using(var deliveryResponse=await client.GetAsync(deliveryPath))
+    using(var deliveryBody=await Body(deliveryResponse))
+    {
+        var evidence=deliveryBody.RootElement;
+        Check(deliveryResponse.StatusCode==HttpStatusCode.OK &&
+            evidence.GetProperty("runId").GetString()==aetSmokeRun.Id &&
+            evidence.GetProperty("implementationComplete").GetBoolean() &&
+            !evidence.GetProperty("engineeringComplete").GetBoolean() &&
+            !evidence.GetProperty("productAccepted").GetBoolean() &&
+            !evidence.GetProperty("deliveryAllowed").GetBoolean(),
+            "saved source completion is distinct from engineering and product completion");
+        Check(evidence.GetProperty("smoke").EnumerateArray().Single().GetProperty("status").GetString()=="SMOKE_PASS_NOT_VERIFIED" &&
+            evidence.GetProperty("blockers").EnumerateArray().Any(x=>x.GetString()=="QUALIFIED_VERIFICATION_REQUIRED") &&
+            evidence.GetProperty("work").GetArrayLength()==2 &&
+            evidence.GetProperty("artifacts").GetArrayLength()==2 &&
+            evidence.GetProperty("verification").GetProperty("buildStatus").GetString()=="NOT_VERIFIED" &&
+            evidence.GetProperty("verification").GetProperty("functionalStatus").GetString()=="NOT_VERIFIED" &&
+            evidence.GetProperty("verification").GetProperty("runtimeQualificationStatus").GetString()=="UNQUALIFIED",
+            "retrospective reports actual smoke evidence and approved work without treating smoke as verification");
+    }
+
     // Changing a decision after job admission invalidates file writes and
     // terminal success *inside the same database transaction*.
+    // AET-210: scope is optional, exact, bounded and included in the
+    // approved policy digest. A proposal alone is never a repair admission.
+    var routineScope = new RoutineRepairScope(aetSmokeRun.Id,
+        QaReviewStore.Fingerprint(engineeringStore.Get(taskBound.Id,aetSmokeRun.Id).Files),
+        ["index.html","app.js"], 4);
+    foreach (var invalidScope in new[] {
+        routineScope with { MaximumRepairs = 0 },
+        routineScope with { MaximumRepairs = 9 },
+        routineScope with { Paths = ["app.js","APP.js"] },
+        routineScope with { Paths = ["missing.js"] },
+        routineScope with { BaselineSourceSha256 = new string('0',64) }
+    })
+    {
+        try
+        {
+            delegationStore.Propose(taskBound.Id,new ProposeDelegationRequest(routineRevision,secondPlanHash,routineOps,invalidScope));
+            Check(false,"invalid routine repair scope cannot be proposed");
+        }
+        catch(StoreFailure e) when(e.Code is "INVALID_INPUT" or "REPAIR_SCOPE_VIOLATION" or "SOURCE_CHANGED")
+        { Check(true,"invalid routine repair scope rejected"); }
+    }
+    try
+    {
+        delegationStore.Propose(taskBound.Id,new ProposeDelegationRequest(routineRevision,secondPlanHash,["SendMessage"],routineScope));
+        Check(false,"routine scope without required role permissions cannot be proposed");
+    }
+    catch(StoreFailure e) when(e.Code=="INVALID_INPUT")
+    { Check(true,"routine scope requires explicit source and independent review operations"); }
+    var stalePolicy = delegationStore.Propose(taskBound.Id,
+        new ProposeDelegationRequest(routineRevision,secondPlanHash,routineOps,routineScope));
+    Check(stalePolicy.RoutineRepair is { MaximumRepairs:4 } &&
+        stalePolicy.RoutineRepair.Paths.SequenceEqual(["app.js","index.html"]) &&
+        delegationStore.Read(taskBound.Id)?.RoutineRepair?.BaselineRunId==aetSmokeRun.Id &&
+        stalePolicy.Status=="Proposed","routine repair scope is canonical, durable and initially unapproved");
+    stalePolicy = delegationStore.Approve(taskBound.Id,new ApproveDelegationRequest(
+        stalePolicy.Revision,stalePolicy.PolicySha256,"APPROVE " + stalePolicy.PolicySha256));
+    Check(stalePolicy.Current && stalePolicy.EffectiveStatus == "Approved" &&
+          stalePolicy.RoutineRepair?.MaximumRepairs == 4,
+        "delegation explicitly active before architecture revision");
+    // Two actual bounded delegated source repairs, no owner triage or
+    // per-finding repair POST. A lead finding and then an exact QA criterion
+    // drive the same persisted candidate/recheck workflow.
+    softwareModel.RoutineMode=true;
+    aetLeadModel.RoutineMode=true;
+    aetIssueVerifier.RoutineMode=true;
+    qaModel.RoutineMode=true;
+    var routineRequest=new StartCollaborationRequest(aetSmokeRun.Id,
+        routineScope.BaselineSourceSha256,secondPlanHash,stalePolicy.Revision,stalePolicy.PolicySha256);
+    string routineCollabId;
+    using(var admittedRoutine=await Post(client,aetCollabPath,routineRequest))
+    using(var routineBody=await Body(admittedRoutine))
+    {
+        Check(admittedRoutine.StatusCode==HttpStatusCode.Accepted,"owner starts exact delegated coordination once");
+        routineCollabId=routineBody.RootElement.GetProperty("id").GetString()!;
+    }
+    CollaborationSnapshot? routineResult=null;
+    for(var i=0;i<600;i++)
+    {
+        routineResult=aetCollabStore.Latest(taskBound.Id);
+        if(routineResult?.Job.State is "AwaitingVerification" or "Escalated" or "Failed") break;
+        await Task.Delay(25);
+    }
+    Check(routineResult?.Job.State=="AwaitingVerification" &&
+        routineResult.Job.Id!=routineCollabId &&
+        routineResult.Job.Reason=="QUALIFIED_VERIFICATION_REQUIRED",
+        "two scoped routine repairs independently rechecked and stop at functional verification gate");
+    Check(aetCollabStore.Get(taskBound.Id,routineCollabId).Job.Reason=="ROUTINE_REPAIR_DISPATCH_PENDING",
+        "routine dispatch is recorded separately from exact manual owner approval");
+    var routineFinal=engineeringStore.Latest(taskBound.Id)!;
+    var routineProgress=new RepairProgressStore(tasks).Read(taskBound.Id,routineFinal.Job.Id);
+    Check(routineProgress.Attempts.Count==2 &&
+        routineProgress.Attempts.All(a=>a.IndependentStaticResolution) &&
+        routineProgress.Attempts[0].OriginalRunId==aetSmokeRun.Id &&
+        routineProgress.Attempts[0].Origin=="LeadSoftwareEngineer" &&
+        routineProgress.Attempts[1].Origin=="QaEngineer" &&
+        routineFinal.Files.Single(f=>f.Path=="app.js").Content.Contains("routine-fixed-one") &&
+        routineFinal.Files.Single(f=>f.Path=="app.js").Content.Contains("routine-fixed-two"),
+        "two distinct independent findings are repaired and rechecked in a single owner-delegated lineage");
+    var originalRoutineSource=engineeringStore.Get(taskBound.Id,aetSmokeRun.Id);
+    Check(QaReviewStore.Fingerprint(originalRoutineSource.Files)==routineScope.BaselineSourceSha256 &&
+        routineProgress.Attempts.All(a=>new EngineeringIssueStore(tasks).Read(taskBound.Id,a.OriginalRunId).Issues
+            .Where(issue=>issue.RepairCycleId==a.CycleId).All(issue=>issue.TriageHistory.Count==0)),
+        "routine repair retains immutable original source and does not fabricate owner triage");
+    var routineQaCount=qaModel.ReviewedFiles.Count;
     var boundStore = new ProjectDraftStore(tasks);
     var changedJob = boundStore.Start(taskBound.Id,
         specBound.Version, specBound.Sha256, specBound.Model, architectureSha);
@@ -3845,6 +5796,28 @@ try
           boundStore.Get(taskBound.Id, changedJob.Id).Job.ErrorCode ==
             "ARCHITECTURE_CONFLICT",
         "stale decision cannot be reported as generated successfully");
+    using(var staleDelivery=await client.GetAsync(deliveryPath))
+    using(var staleDeliveryBody=await Body(staleDelivery))
+    {
+        var evidence=staleDeliveryBody.RootElement;
+        Check(staleDelivery.StatusCode==HttpStatusCode.OK &&
+            !evidence.GetProperty("currentSource").GetBoolean() &&
+            !evidence.GetProperty("implementationComplete").GetBoolean() &&
+            !evidence.GetProperty("deliveryAllowed").GetBoolean() &&
+            !evidence.GetProperty("smoke").EnumerateArray().Single().GetProperty("current").GetBoolean(),
+            "architecture revision invalidates delivery and marks prior smoke evidence historical");
+    }
+    var effectivePolicy = delegationStore.Read(taskBound.Id);
+    Check(effectivePolicy?.Status == "Approved" && !effectivePolicy.Current &&
+          effectivePolicy.EffectiveStatus == "STALE_APPROVALS",
+        "architecture revision invalidates effective delegated authority");
+    Check(delegationStore.History(taskBound.Id).Count == routineRevision+1 &&
+          delegationStore.History(taskBound.Id).Take(routineRevision).All(p => p.Status == "Revoked"),
+        "delegation retains prior owner decisions");
+    Check(delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(
+        stalePolicy.Revision,stalePolicy.PolicySha256,
+        "REVOKE " + stalePolicy.PolicySha256)).Status == "Revoked",
+        "owner may revoke stale delegation without reapproving architecture");
     using (var unready = await client.GetAsync(architecturePath))
     using (var body = await Body(unready))
         Check(body.RootElement.GetProperty("status").GetString() == "INCOMPLETE",
@@ -3863,8 +5836,190 @@ try
     using (var blockedQa = await Post(client, qaPath,
         new StartQaReviewRequest(engineeringRunId, secondPlanHash)))
         Check(blockedQa.StatusCode == HttpStatusCode.Conflict &&
-              qaModel.ReviewedFiles.Count == 8,
+              qaModel.ReviewedFiles.Count == routineQaCount,
             "stale architecture cannot initiate new QA review of old source");
+    Check(new EngineeringIssueStore(tasks).Read(taskBound.Id,resumedRunId).Issues
+        .Single(x=>x.Id==aetLeadRepairedIssue.Id).Verifications.All(x=>!x.Current),
+        "architecture revision invalidates previously recorded issue verification");
+    Check(aetSmokeStore.List(taskBound.Id,aetSmokeRun.Id).Single() is {Current:false,Verified:false},
+        "architecture revision makes historical smoke evidence stale without deleting it");
+
+    // Independent projects exercise continuous owner-approved generation and
+    // host-owned handoff, with no UI/browser orchestrating the transitions.
+    async Task<(string TaskId,ImplementationPlan Plan)> PrepareUpfrontProject(string title)
+    {
+        var fixtureTask=tasks.CreateTask(new CreateTaskRequest(title,
+            "Create an offline static web timer with mouse and keyboard controls",Guid.NewGuid().ToString("N")));
+        // Fresh projects do not inherit the role selections of taskBound.
+        // Exercise the real owner selection API using only catalogued fixture
+        // models; keep the production missing-model admission gate intact.
+        foreach(var (role,model) in new[]{
+            ("SoftwareEngineer",AgentRoleModelSettings.PreferredCoder),
+            ("LeadSoftwareEngineer","qwen3.5:4b"),
+            ("QaEngineer","qwen3.5:4b")})
+        {
+            using var selection=await Post(client,"/api/tasks/"+fixtureTask.Id+"/agent-models/"+role,
+                new SetAgentRoleModelRequest(model));
+            Check(selection.StatusCode==HttpStatusCode.OK,
+                "upfront fixture owner selects an installed model: "+role);
+        }
+        var fixtureFirst=interviews.CommitTurn(fixtureTask.Id,new InterviewTurnRequest(0,null,"qwen3.5:4b"),
+            new InterviewReply("What are the timer controls?",false));
+        var fixtureAnswer=interviews.CommitTurn(fixtureTask.Id,new InterviewTurnRequest(fixtureFirst.LastSequence,
+            "Start, stop and reset. No server or packages.","qwen3.5:4b"),
+            new InterviewReply("Should the timer work offline?",true));
+        var fixtureDraft=interviews.CommitSpecification(fixtureTask.Id,fixtureAnswer.LastSequence,specBound.Content);
+        var fixtureSpec=interviews.Approve(fixtureTask.Id,new ApproveSpecificationRequest(
+            fixtureDraft.Specification!.Version,fixtureDraft.Specification.Sha256)).Specification!;
+        var newStack=decisionStore.Propose(fixtureTask.Id,new ProposeArchitectureDecisionRequest(
+            1,fixtureSpec.Version,fixtureSpec.Sha256,"technology-stack","static","Choose offline files with no package manager.",[
+                new("static","Static HTML and JavaScript","Offline, no installation","Manual DOM interaction","static-web"),
+                new("react","React and TypeScript","Reusable UI","Requires a build system",null)],0));
+        decisionStore.Review(fixtureTask.Id,"technology-stack",new ReviewArchitectureDecisionRequest(
+            1,1,newStack.ProposalSha256,"Approve","static","APPROVE "+newStack.ProposalSha256));
+        var newStyle=decisionStore.Propose(fixtureTask.Id,new ProposeArchitectureDecisionRequest(
+            1,fixtureSpec.Version,fixtureSpec.Sha256,"architecture-style","modular","Simple component boundaries for a small timer.",[
+                new("modular","Small event modules","Low complexity","Manual module boundaries",null),
+                new("layers","Full layered architecture","Explicit dependencies","Extra boilerplate",null)],0));
+        decisionStore.Review(fixtureTask.Id,"architecture-style",new ReviewArchitectureDecisionRequest(
+            1,1,newStyle.ProposalSha256,"Approve","modular","APPROVE "+newStyle.ProposalSha256));
+        using var fixtureReadiness=await client.GetAsync("/api/tasks/"+fixtureTask.Id+"/draft-build/architecture");
+        using var fixtureReadinessBody=await Body(fixtureReadiness);
+        var fixtureArchitecture=fixtureReadinessBody.RootElement.GetProperty("architectureSha256").GetString()!;
+        var fixtureProposed=new ImplementationPlanStore(tasks,interviews).Propose(fixtureTask.Id,
+            new GenerateImplementationPlanRequest(1,fixtureSpec.Version,fixtureSpec.Sha256,fixtureArchitecture,0),
+            "qwen3.5:4b",approvedEngineerPlan.Outline);
+        return (fixtureTask.Id,fixtureProposed);
+    }
+    // A missing independent reviewer must not leave a partially admitted
+    // plan, source run or future repair authorization.
+    var (missingReviewerTask,missingReviewerPlan)=await PrepareUpfrontProject("Missing reviewer preflight fixture");
+    var missingReviewerPath="/api/tasks/"+missingReviewerTask;
+    using(var resetReviewer=await Post(client,missingReviewerPath+"/agent-models/LeadSoftwareEngineer",
+        new SetAgentRoleModelRequest(null)))
+        Check(resetReviewer.StatusCode==HttpStatusCode.OK,"reset reviewer to uninstalled default");
+    var missingReviewerRequest=new ApproveImplementationPlanRequest(1,missingReviewerPlan.Revision,
+        missingReviewerPlan.PlanSha256,"APPROVE "+missingReviewerPlan.PlanSha256,
+        new UpfrontRepairAuthorization(["app.js"],4));
+    using(var invalidWithMissingReviewer=await Post(client,missingReviewerPath+"/implementation-plan/approve",
+        missingReviewerRequest with {TeamRepair=new UpfrontRepairAuthorization(["app.js"],0)}))
+    using(var invalidBody=await Body(invalidWithMissingReviewer))
+        Check(invalidWithMissingReviewer.StatusCode==HttpStatusCode.BadRequest &&
+            invalidBody.RootElement.GetProperty("error").GetString()=="INVALID_INPUT" &&
+            new ImplementationPlanStore(tasks,interviews).Read(missingReviewerTask).Plan?.Status=="Proposed" &&
+            engineeringStore.Latest(missingReviewerTask) is null &&
+            new UpfrontTeamAuthorizationStore(tasks).Read(missingReviewerTask) is null,
+            "invalid authority takes precedence over missing models without admitting any work");
+    using(var missingReviewerResponse=await Post(client,missingReviewerPath+"/implementation-plan/approve",missingReviewerRequest))
+    using(var rejection=await Body(missingReviewerResponse))
+    {
+        Check(missingReviewerResponse.StatusCode==HttpStatusCode.ServiceUnavailable &&
+            rejection.RootElement.GetProperty("error").GetString()=="MODEL_NOT_INSTALLED" &&
+            rejection.RootElement.GetProperty("missingRoles").EnumerateArray().Select(x=>x.GetString())
+                .SequenceEqual(new[]{"LeadSoftwareEngineer"}),
+            "combined approval preflight reports exact missing reviewer role");
+    }
+    Check(new ImplementationPlanStore(tasks,interviews).Read(missingReviewerTask).Plan?.Status=="Proposed" &&
+        engineeringStore.Latest(missingReviewerTask) is null &&
+        new UpfrontTeamAuthorizationStore(tasks).Read(missingReviewerTask) is null,
+        "missing reviewer cannot admit combined approval or launch source generation");
+    using(var ordinary=await Post(client,missingReviewerPath+"/implementation-plan/approve",
+        missingReviewerRequest with {TeamRepair=null}))
+        Check(ordinary.StatusCode==HttpStatusCode.OK,"ordinary plan-only approval does not require reviewer models");
+    softwareModel.RoutineMode=true;
+    softwareModel.RoutineInitialSource=true;
+    softwareModel.RoutineGate=null;
+    softwareModel.IntroduceRoutineRegression=false;
+    var upfrontStore=new UpfrontTeamAuthorizationStore(tasks);
+    foreach(var scenario in new[]{"continuous","missing-path","out-of-scope"})
+    {
+        var (upfrontTask,upfrontPlan)=await PrepareUpfrontProject("Upfront fixture "+scenario);
+        var upfrontPath="/api/tasks/"+upfrontTask;
+        var upfrontRequest=new ApproveImplementationPlanRequest(1,upfrontPlan.Revision,upfrontPlan.PlanSha256,
+            "APPROVE "+upfrontPlan.PlanSha256,new UpfrontRepairAuthorization(
+                scenario=="continuous"?["app.js"]:scenario=="out-of-scope"?["index.html"]:["missing.js"],4));
+        using(var accepted=await Post(client,upfrontPath+"/implementation-plan/approve",upfrontRequest))
+            Check(accepted.StatusCode==HttpStatusCode.OK,"one explicit plan and future repair approval: "+scenario);
+        using(var replay=await Post(client,upfrontPath+"/implementation-plan/approve",upfrontRequest))
+            Check(replay.StatusCode==HttpStatusCode.Conflict,"combined owner approval cannot be replayed: "+scenario);
+        UpfrontTeamAuthorization? intent=null;
+        CollaborationSnapshot? team=null;
+        for(var poll=0;poll<800;poll++)
+        {
+            intent=upfrontStore.Read(upfrontTask);
+            team=aetCollabStore.Latest(upfrontTask);
+            if(intent?.State=="Stopped"||team?.Job.State is "AwaitingVerification" or "Escalated" or "Failed")break;
+            await Task.Delay(25);
+        }
+        var current=engineeringStore.Latest(upfrontTask)!;
+        if(scenario=="continuous")
+        {
+            var policy=new EngineeringDelegationStore(tasks).Read(upfrontTask);
+            var progress=new RepairProgressStore(tasks).Read(upfrontTask,current.Job.Id);
+            Check(intent is {State:"Bound"}&&team?.Job.State=="AwaitingVerification"&&
+                policy?.RoutineRepair is { } routineRepair &&
+                routineRepair.BaselineRunId==intent.RunId &&
+                routineRepair.Paths.SequenceEqual(new[]{"app.js"}) &&
+                routineRepair.MaximumRepairs==4 &&
+                progress.Attempts.Count==2&&progress.Attempts.All(a=>a.IndependentStaticResolution),
+                "single approval completes generation plus two independently reassessed delegated repairs: "+team?.Job.Reason);
+            var delivery=new DeliveryEvidenceStore(tasks).Read(upfrontTask);
+            Check(!delivery.DeliveryAllowed,"continuous source-only team cannot authorize functional delivery");
+        }
+        else if(scenario=="out-of-scope")
+            Check(intent is {State:"Bound"} && team?.Job.State=="Escalated" &&
+                team.Job.Reason=="REPAIR_SCOPE_VIOLATION" && current.Job.Id==intent.RunId &&
+                current.Job.State=="Generated" && new RepairProgressStore(tasks).Read(upfrontTask,current.Job.Id).Attempts.Count==0,
+                "out-of-scope routine repair escalates once without exposing manual repair approval or writing candidate source");
+        else
+            Check(intent is {State:"Stopped",Reason:"REPAIR_SCOPE_VIOLATION"} &&
+                current.Job.State=="Generated"&&team is null&&new EngineeringDelegationStore(tasks).Read(upfrontTask) is null,
+                "missing future path stops handoff without granting broader authority or discarding generated source");
+        var reread=new UpfrontTeamAuthorizationStore(new TaskStore(root)).Read(upfrontTask);
+        Check(reread?.State==intent?.State&&reread?.RunId==intent?.RunId,
+            "upfront authority is durable across store reconstruction: "+scenario);
+    }
+
+    // Simulate interrupted host-owned admission and a crash between binding
+    // and collaboration dispatch without invoking a model or resetting DB state.
+    foreach(var handoffScenario in new[]{"cancel","restart-claimed","restart-bound"})
+    {
+        var (handoffTask,handoffPlan)=await PrepareUpfrontProject("Upfront stop fixture "+handoffScenario);
+        var approvedHandoff=new ImplementationPlanStore(tasks,interviews).Approve(handoffTask,
+            new ApproveImplementationPlanRequest(1,handoffPlan.Revision,handoffPlan.PlanSha256,
+                "APPROVE "+handoffPlan.PlanSha256,new UpfrontRepairAuthorization(["app.js"],4)));
+        var handoffRun=engineeringStore.Start(handoffTask,approvedHandoff,useApprovedTeamAuthorization:true);
+        Check(upfrontStore.Read(handoffTask) is {State:"Claimed"} claimedHandoff && claimedHandoff.RunId==handoffRun.Id,
+            "future authority is consumed by exactly one run before model invocation");
+        if(handoffScenario=="restart-bound")
+        {
+            engineeringStore.StartTask(handoffTask,handoffRun.Id,"timer-interface");
+            engineeringStore.CompleteTask(handoffTask,handoffRun.Id,"timer-interface",new EngineeringChangeSet(
+                "Save complete fixture entry.",[new EngineeringFileChange("index.html","Entry",
+                    "<!doctype html><html><body><button id='start'>Start</button><script src='app.js'></script></body></html>")],
+                ["Independently verify behavior."]));
+            engineeringStore.StartTask(handoffTask,handoffRun.Id,"timer-state");
+            engineeringStore.CompleteTask(handoffTask,handoffRun.Id,"timer-state",new EngineeringChangeSet(
+                "Save exact fixture behavior.",[new EngineeringFileChange("app.js","Behavior","console.log('routine-one');console.log('routine-two');")],
+                ["Independently verify behavior."]));
+            engineeringStore.Finish(handoffTask,handoffRun.Id,true,null);
+            // Exercise the exact production binding without dispatch.
+            var binder=typeof(EngineeringDelegationStore).GetMethod("BindUpfront",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!;
+            var boundRequest=(StartCollaborationRequest?)binder.Invoke(new EngineeringDelegationStore(tasks),[handoffTask,handoffRun.Id]);
+            Check(boundRequest is not null&&upfrontStore.Read(handoffTask)?.State=="Bound",
+                "fixture simulates a completed source and bound policy before dispatch");
+        }
+        if(handoffScenario=="cancel")
+            engineeringStore.Interrupt(handoffTask,handoffRun.Id);
+        else
+            upfrontStore.Recover();
+        Check(upfrontStore.Read(handoffTask) is {State:"Stopped"} stoppedHandoff &&
+            stoppedHandoff.Reason==(handoffScenario=="cancel"?"OWNER_CANCELLED":"PROCESS_INTERRUPTED")&&
+            aetCollabStore.Latest(handoffTask) is null &&
+            new EngineeringDelegationStore(tasks).Read(handoffTask)?.Status!="Approved",
+            "stop/restart cannot leave an orphan active future-file grant: "+handoffScenario);
+        if(handoffScenario=="restart-claimed")engineeringStore.Interrupt(handoffTask,handoffRun.Id);
+    }
 
     Console.WriteLine($"PHASE 2 MODEL-FREE ACCEPTANCE: PASS {checks} checks");
 }
@@ -4128,6 +6283,17 @@ sealed class Phase2TechnicalLeadPlanner : IImplementationPlanner
 
 sealed class Phase4EngineeringModel : IEngineeringTaskModel
 {
+    public bool RoutineMode { get; set; }
+    public bool IntroduceRoutineRegression { get; set; }
+    public bool RoutineInitialSource { get; set; }
+    public TaskCompletionSource<bool>? RoutineGate { get; set; }
+    public TaskCompletionSource<bool>? RoutineEntered { get; set; }
+    private async Task<EngineeringChangeSet> WaitForRoutineGate(EngineeringChangeSet changes,CancellationToken token)
+    {
+        RoutineEntered?.TrySetResult(true);
+        if(RoutineGate is not null)await RoutineGate.Task.WaitAsync(token);
+        return changes;
+    }
     public List<string> AssignedIds { get; } = [];
     public int PreviousFileCountOnSecondTask { get; private set; } = -1;
 
@@ -4152,10 +6318,16 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
             // replacement through the existing SQLite/QA coordinator.
             var source = input.ExistingFiles.Single(f => f.Path == "app.js");
             var before = source.Content.TrimEnd('\r', '\n');
-            var after = before.Replace("console.log('start')",
-                "console.log('repaired start')", StringComparison.Ordinal);
+            var after = RoutineMode
+                ? repair.Findings.Single().Evidence.Contains("routine-one",StringComparison.Ordinal)
+                    ? before.Replace("routine-one","routine-fixed-one",StringComparison.Ordinal)
+                    : before.Replace("routine-two","routine-fixed-two",StringComparison.Ordinal)
+                : before.Replace("console.log('start')",
+                    "console.log('repaired start')", StringComparison.Ordinal);
             if (after == before)
                 throw new Exception("Fixture repair did not find exact source");
+            if(RoutineMode && IntroduceRoutineRegression)
+                after+="\nconsole.log('routine-introduced-regression');";
             var edits = JsonSerializer.Serialize(new {
                 summary = "Repaired the approved Start handler without modifying browser entry.",
                 edits = new[] { new {
@@ -4163,8 +6335,8 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
                 } },
                 verificationNotes = new[] { "Independently check Start button behavior" }
             });
-            return Task.FromResult(MafSoftwareEngineer.ApplyRepairEdits(
-                edits, repair, input.ExistingFiles));
+            var changes=MafSoftwareEngineer.ApplyRepairEdits(edits, repair, input.ExistingFiles);
+            return RoutineMode?WaitForRoutineGate(changes,cancellation):Task.FromResult(changes);
         }
         if (input.WorkItem.Id == "timer-interface")
             return Task.FromResult(new EngineeringChangeSet(
@@ -4178,7 +6350,9 @@ sealed class Phase4EngineeringModel : IEngineeringTaskModel
             return Task.FromResult(new EngineeringChangeSet(
                 "Connected timer state to the Start button and reset behavior.",
                 [new EngineeringFileChange("app.js", "Complete timer interactions",
-                    "document.getElementById('start').addEventListener('click', () => { console.log('start'); });")],
+                    RoutineInitialSource
+                        ? "document.getElementById('start').addEventListener('click',()=>{console.log('routine-one');console.log('routine-two');});"
+                        : "document.getElementById('start').addEventListener('click', () => { console.log('start'); });")],
                 ["Verify timer movement and reset without model claims"]));
         }
         throw new Exception("Unapproved task sent to engineer");
@@ -4252,6 +6426,7 @@ sealed class Phase4FakeMafFactory : IMafChatClientFactory
 
 sealed class Phase5QaModel : IQaSourceReviewer
 {
+    public bool RoutineMode { get; set; }
     public List<string> ReviewedFiles { get; } = [];
     public List<string> ReviewedSourceStates { get; } = [];
     public List<string> RepairFocusPaths { get; } = [];
@@ -4280,6 +6455,13 @@ sealed class Phase5QaModel : IQaSourceReviewer
                 throw new Exception("Repair QA got foreign file scope or unconfirmed finding");
             RepairFocusPaths.Add(input.File.Path);
         }
+        if(RoutineMode)
+            return Task.FromResult(new QaFileAssessment("Independent static routine fixture review.",
+                input.File.Path=="app.js" && input.File.Content.Contains("routine-two",StringComparison.Ordinal)
+                    ? [new QaFinding("Major","Start advances the displayed timer",
+                        "console.log('routine-two')","Replace the second fixture defect in the exact source.")]
+                    : [],
+                ["Check timer behavior in a separately authorized runtime test."]));
         return Task.FromResult(input.File.Path == "app.js"
             ? new QaFileAssessment(
                 "The timer code registers a button listener but lacks a persistent timer.",
@@ -4330,6 +6512,8 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
     public bool HostObservationSeen { get; private set; }
     public Queue<string> ScriptedReplies { get; } = new();
     public Queue<string> ScriptedFailures { get; } = new();
+    public int ResponseAttempts { get; private set; }
+    public string? LastUserPrompt { get; private set; }
 
     public IChatClient Create(string model, MafAgentPurpose purpose)
     {
@@ -4345,6 +6529,8 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
             CancellationToken cancellationToken = default)
         {
             var history = messages.ToArray();
+            parent.ResponseAttempts++;
+            parent.LastUserPrompt=history.LastOrDefault(m=>m.Role==ChatRole.User)?.Text;
             parent.QaRoleSeen =
                 (options?.Instructions?.Contains("Professional backstory:",
                     StringComparison.Ordinal) ?? false) &&
@@ -4398,5 +6584,112 @@ sealed class Phase5FakeMafFactory : IMafChatClientFactory
             throw new NotSupportedException("QA only allows bounded nonstreaming turns.");
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
         public void Dispose() { }
+    }
+}
+
+sealed class AetLeadReviewFixture : ILeadSourceReviewer
+{
+    public bool RoutineMode { get; set; }
+    public Task<LeadFileAssessment> ReviewAsync(QaReviewInput input,CancellationToken cancellation)
+    {
+        cancellation.ThrowIfCancellationRequested();
+        if(input.AgentModel!="qwen3.5:4b" || input.SourceRun.PlanSha256!=input.Plan.PlanSha256)
+            throw new Exception("Unexpected independent review scope");
+        if(RoutineMode && input.File.Path=="app.js" &&
+            input.File.Content.Contains("routine-introduced-regression",StringComparison.Ordinal))
+            return Task.FromResult(new LeadFileAssessment("ChangesRequested","New blocking fixture regression in candidate.",
+                [new LeadFinding("Major","Correctness","app.js",2,"console.log('routine-introduced-regression')",
+                    "Candidate introduced a new blocking marker.","Preserve predecessor and escalate the candidate.",
+                    "Independently verify before accepting any candidate.")]));
+        if(RoutineMode)
+            return Task.FromResult(input.File.Path=="app.js" && input.File.Content.Contains("routine-one",StringComparison.Ordinal)
+                ? new LeadFileAssessment("ChangesRequested","First exact routine fixture concern.",
+                    [new LeadFinding("Major","Correctness","app.js",1,"console.log('routine-one')",
+                        "First fixture marker requires correction.","Replace the first fixture marker.",
+                        "Independently recheck the exact changed source.")])
+                : new LeadFileAssessment("Approved","No remaining lead fixture concern.",[]));
+        if(input.File.Path!="app.js")
+            return Task.FromResult(new LeadFileAssessment("Approved","No static concern in this fixture file.",[]));
+        var lines=input.File.Content.Split('\n');
+        var line=Array.FindIndex(lines,l=>!string.IsNullOrWhiteSpace(l));
+        var evidence=lines[line].Trim();
+        if(evidence.Length>100)evidence=evidence[..100];
+        return Task.FromResult(new LeadFileAssessment("ChangesRequested","Injected static architectural review concern.",
+            [new LeadFinding("Major","Correctness",input.File.Path,line+1,evidence,
+            "The timer fixture requires independent behavior verification.",
+            "Inspect and correct the timer implementation.","Verify the timer updates in an independent check.")]));
+    }
+}
+
+sealed class AetIssueVerifierFixture : IEngineeringIssueVerifier
+{
+    public bool RoutineMode { get; set; }
+    public Task<IssueVerificationAssessment> VerifyAsync(IssueVerificationInput input,string model,CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        if(RoutineMode)
+        {
+            var excerpt=input.Issue.Origin=="QaEngineer"?"console.log('routine-fixed-two')":"console.log('routine-fixed-one')";
+            if(model!="qwen3.5:4b" || input.Before.Sha256==input.After.Sha256 ||
+                !input.After.Content.Contains(excerpt,StringComparison.Ordinal))
+                throw new Exception("Routine fixture recheck did not receive expected candidate");
+            return Task.FromResult(new IssueVerificationAssessment("ResolvedByStaticEvidence",
+                "Exact fixture marker changed; runtime verification is still required.",1,excerpt,null));
+        }
+        if(model!="qwen3.5:4b" || input.Before.Sha256==input.After.Sha256 ||
+            !input.After.Content.Contains("console.log('repaired start')",StringComparison.Ordinal))
+            throw new Exception("Fixture verifier received wrong role model or source revision");
+        return Task.FromResult(new IssueVerificationAssessment(
+            input.Issue.Origin=="QaEngineer"?"StillPresent":"ResolvedByStaticEvidence",
+            "Injected source recheck records the exact changed construct; functionality remains untested.",
+            1,"console.log('repaired start')",null));
+    }
+}
+
+sealed class AetCollaborationLeadFixture:ICollaborationLead
+{
+    public int Calls{get;private set;}
+    public Task<CollaborationDecision> DecideAsync(CollaborationInput input,CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();Calls++;
+        // A model that prematurely escalates when asked whether to gather
+        // mandatory evidence reproduces the reported live failure.
+        if(input.AllowedActions.Count==2 && input.AllowedActions.Contains("Escalate") &&
+            (input.AllowedActions.Contains("ReviewCode")||input.AllowedActions.Contains("ReviewAcceptance")))
+            return Task.FromResult(new CollaborationDecision("Escalate","Fixture model prematurely escalates instead of requesting evidence."));
+        var decision=input.AllowedActions.Contains("ReviewCode")?
+            new CollaborationDecision("ReviewCode","Request independent review of the exact generated source."):
+            input.AllowedActions.Contains("RecheckIssue")?
+            new("RecheckIssue","Independently recheck the original finding against the repaired source.",
+                input.RecheckCandidates!.Single().Id):
+            input.AllowedActions.Contains("ClassifyIssue")?
+            new("ClassifyIssue","The actual source concern needs a scoped correction.",
+                input.Issues.Single(x=>x.State=="NeedsTriage").Id,"ImplementationDefect"):
+            input.AllowedActions.Contains("RequestOwnerRepair")?
+            new("RequestOwnerRepair","Request exact scoped repair for the confirmed finding.",
+                input.Issues.Single(x=>x.State=="ConfirmedDefect").Id):
+            input.AllowedActions.Contains("ReviewAcceptance")?
+            new("ReviewAcceptance","Request independent acceptance review of this revision."):
+            input.AllowedActions.Contains("AwaitQualifiedVerification")?
+            new("AwaitQualifiedVerification","Independent runtime evidence remains required."):
+            new("Escalate","No safe further source correction is currently admitted.");
+        return Task.FromResult(decision);
+    }
+}
+
+sealed class AetSmokeFixture:ILocalSourceSmokeRunner
+{
+    public int Calls{get;private set;}
+    public Task<LocalSourceSmokeResult> RunAsync(byte[] sourceZip,CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();Calls++;
+        using var zip=new ZipArchive(new MemoryStream(sourceZip),ZipArchiveMode.Read);
+        if(zip.Entries.Select(e=>e.FullName).Order().SequenceEqual(new[]{"app.js","index.html"})==false)
+            throw new Exception("Smoke received incorrect source archive");
+        var checks=new[]{"exact_source_hashes","non_root","no_host_mounts","root_write_denied","network_denied",
+            "javascript_syntax","local_assets_linked","browser_rendered","source_integrity_unchanged"}
+            .ToDictionary(x=>x,_=>true);
+        return Task.FromResult(new LocalSourceSmokeResult("SMOKE_PASS_NOT_VERIFIED",9,9,true,
+            "DISABLED_CONTAINER_ONLY",null,checks));
     }
 }

@@ -20,7 +20,7 @@ public sealed class QaReviewCoordinator(
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _active = new();
 
     public QaReviewRun Start(string taskId, StartQaReviewRequest request,
-        string? agentModel = null)
+        string? agentModel = null,CollaborationAdmission? admission=null)
     {
         if (string.IsNullOrWhiteSpace(request.EngineeringRunId) ||
             string.IsNullOrWhiteSpace(request.PlanSha256))
@@ -50,7 +50,7 @@ public sealed class QaReviewCoordinator(
                 choice.RuntimeProfileId == "static-web"))
             throw new StoreFailure("SKILL_SCOPE_DENIED");
         var job = reviews.StartBound(taskId, source, plan, agentModel, request.Skill,
-            out var skillContext);
+            out var skillContext, admission);
         var token = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
         _active[job.Id] = token;
@@ -104,6 +104,8 @@ public sealed class QaReviewCoordinator(
                     previousFindings.Where(f => f.Path.Equals(file.Path,
                         StringComparison.OrdinalIgnoreCase)).ToArray(),
                     AgentModel: review.Model, StaticPreflight: staticPreflight);
+                using var providerScope = EngineeringProviderActivity.Enter(tasks,review.TaskId,
+                    "QaEngineer",review.Id,review.SourceSha256);
                 var report = skillContext is null
                     ? await reviewer.ReviewAsync(input, token)
                     : await ((MafQaEngineer)reviewer).ReviewWithSkillAsync(input, skillContext, token);

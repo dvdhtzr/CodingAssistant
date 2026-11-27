@@ -577,6 +577,46 @@
   .ca-studio .architect-recovery button { width:100%; }
 }
 
+/* AET-2: compact committed activity tail. No animations or simulated progress. */
+.ca-engineering-live-activity { min-width:0; margin:0 0 .9rem; padding:.65rem .55rem;
+  border:1px solid var(--studio-line); border-radius:.5rem; background:#101d28; }
+.ca-live-heading { display:flex; align-items:center; justify-content:space-between;
+  gap:.35rem; font-size:.78rem; }
+.ca-live-status { font-size:.62rem; color:#b4c8d0; white-space:nowrap; }
+.ca-live-status[data-state="live"] { color:#7ed7bc; }
+.ca-live-status[data-state="recovering"] { color:#efc390; }
+.ca-live-controls { display:flex; flex-wrap:wrap; align-items:center; gap:.3rem;
+  margin:.45rem 0; }
+.ca-live-controls button { font-size:.65rem; }
+.ca-live-controls select { min-width:0; max-width:100%; font-size:.68rem;
+  background:#172c39; color:#e0edf2; border:1px solid var(--studio-line); padding:.25rem; }
+.ca-live-paused,.ca-live-note { font-size:.65rem; line-height:1.4; color:#b4c8d0;
+  margin:.35rem 0; }
+.ca-live-rows { max-height:15rem; overflow:auto; list-style:none; padding:0; margin:0;
+  display:grid; gap:.25rem; font-family:ui-monospace,Consolas,monospace; }
+.ca-engineering-live-activity.is-compact .ca-live-rows { max-height:6.5rem; }
+.ca-live-rows li { border-left:2px solid #488b98; padding:.25rem .35rem;
+  background:#142634; display:grid; gap:.15rem; min-width:0; overflow-wrap:anywhere;
+  font-size:.65rem; color:#d3e5ea; line-height:1.35; }
+.ca-live-rows li[data-category="Diagnostics"] { border-left-color:#d6aa71; }
+.ca-live-rows li[data-category="Team"] { border-left-color:#81c8b2; }
+.ca-live-row-meta { display:flex; justify-content:space-between; gap:.25rem;
+  color:#a9c1ca; font-size:.59rem; }
+.ca-live-rows small { font-size:.61rem; color:#a9c1ca; }
+.ca-live-rows:focus-visible,.ca-live-controls select:focus-visible {
+  outline:2px solid #7ed7bc; outline-offset:2px; }
+
+.ca-coordination { border-top:1px solid var(--studio-line); padding:.65rem 0; display:grid;gap:.55rem;min-width:0; }
+.ca-coordination h3 {font-size:.85rem;margin:0;}
+.ca-coordination p,.ca-coordination li,.ca-coordination summary {font-size:.72rem;line-height:1.45;overflow-wrap:anywhere;}
+.ca-coordination p {margin:0;color:var(--studio-muted);}
+.ca-coordination button {width:100%;font-size:.72rem;white-space:normal;text-align:center;}
+.ca-coordination details {min-width:0;}
+.ca-coordination code {overflow-wrap:anywhere;font-size:.65rem;}
+.ca-coordination ol {margin:.4rem 0;padding-left:1.2rem;display:grid;gap:.4rem;}
+.ca-coordination-state {display:flex;justify-content:space-between;gap:.4rem;align-items:baseline;}
+.ca-coordination-state strong {font-size:.75rem;}
+
 /* Real local request activity: tiny non-animated status strip, bounded opt-in
    feed. Animations never imply an agent is working. */
 .ca-live-activity {
@@ -677,3 +717,30 @@
   .ca-live-activity-route { flex-basis:55%; }
   .ca-live-activity-metric { margin-left:auto; }
 }
+
+/* Owner supervision is the default; the detailed workstations are opt-in. */
+.ca-guided-studio {display:flex;flex-direction:column;min-height:0;}
+.ca-guided-main {overflow:auto;min-height:0;flex:1;padding:clamp(1rem,3vw,2.5rem);}
+.ca-guided-content {max-width:860px;margin:0 auto;display:grid;gap:1.4rem;}
+.ca-guided-roster {display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:.65rem;}
+.ca-guided-role {display:flex;flex-direction:column;align-items:center;gap:.4rem;text-align:center;padding:.8rem .25rem;min-width:0;}
+.ca-guided-role strong {font-size:.78rem;overflow-wrap:anywhere;}
+.ca-guided-role small {font-size:.7rem;color:var(--studio-muted);}
+.ca-guided-role[data-active=true] .ca-studio-avatar {background:#245d52;border:2px solid #78d6ba;}
+.ca-guided-next {padding:clamp(1rem,3vw,1.8rem);border:1px solid var(--studio-line);border-radius:12px;background:#14232e;display:grid;gap:.75rem;}
+.ca-guided-next h2 {font-size:clamp(1.1rem,2vw,1.45rem);margin:0;line-height:1.3;}
+.ca-guided-next p,.ca-guided-last p {color:var(--studio-muted);margin:0;font-size:.9rem;line-height:1.5;}
+.ca-guided-next>.primary,.ca-guided-next>.outline {justify-self:start;}
+.ca-guided-next .ca-coordination {padding:1rem 0 0;gap:.75rem;}
+.ca-guided-next .ca-coordination h3 {font-size:1rem;}
+.ca-guided-next .ca-coordination p,.ca-guided-next .ca-coordination li,.ca-guided-next .ca-coordination summary {font-size:.83rem;}
+.ca-guided-next .ca-coordination button {width:auto;justify-self:start;font-size:.85rem;}
+.ca-guided-next .ca-coordination fieldset {min-width:0;display:grid;gap:.65rem;}
+.ca-guided-last {display:grid;gap:.4rem;padding:0 .4rem;}
+.ca-guided-last details {font-size:.8rem;color:var(--studio-muted);}
+.ca-guided-last summary {cursor:pointer;}
+@media(max-width:640px){.ca-guided-studio .ca-studio-header{align-items:flex-start;flex-direction:column;}.ca-guided-roster{grid-template-columns:repeat(3,minmax(0,1fr));}.ca-guided-main{padding:.9rem;}}
+
+.ca-guided-progress {display:flex;flex-direction:column;gap:.45rem;color:var(--studio-muted);font-size:.8rem;}
+.ca-guided-progress progress {width:100%;height:8px;accent-color:#78d6ba;}
+.ca-guided-decision .ca-studio-journey {min-width:0;max-width:100%;}

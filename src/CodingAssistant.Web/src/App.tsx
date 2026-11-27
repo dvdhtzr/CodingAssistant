@@ -491,7 +491,7 @@ export default function App() {
             });
             setNewTitle(''); setNewObjective('');
             await fetchTasks();
-            chooseTask(created.id, 'work');
+            chooseTask(created.id, 'command');
           }); }}>
             <label htmlFor="project-objective">What do you want to build?
               <textarea id="project-objective" value={newObjective} maxLength={4000}
@@ -517,12 +517,12 @@ export default function App() {
           <h2>Opening your project…</h2>
           <p className="hint">Loading the selected project's saved Product Owner conversation and history.</p>
         </section>}
-        {view === 'command' && taskView && <CommandActivity
-          token={token} task={taskView.task} onNavigate={setView} />}
-        {taskView && <div hidden={view !== 'work'}>
+        {taskView && <div hidden={view !== 'command' && view !== 'work'}>
           <EngineeringStudio key={taskView.task.id} token={token} task={taskView.task}
-            active={view === 'work'} onTeam={() => setView('team')}/>
+            active={view === 'command' || view === 'work'} onTeam={() => setView('team')}/>
         </div>}
+        {view === 'command' && taskView && <CommandActivity
+          token={token} task={taskView.task} supervised onNavigate={setView} />}
         {taskView && view === 'team' && <TeamDestination token={token} taskId={taskId}
           onWork={() => setView('work')} />}
         {taskView && view === 'quality' && <QualityDestination token={token}

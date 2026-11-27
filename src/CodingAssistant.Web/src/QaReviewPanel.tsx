@@ -68,7 +68,7 @@ interface RepairFindingReference {
   evidence: string; recommendation: string; classification: string;
 }
 interface RepairProposal {
-  id: string; taskId: string; qaReviewId: string; engineeringRunId: string;
+  id: string; taskId: string; qaReviewId: string | null; leadReviewId?: string | null; engineeringRunId: string;
   sourceSha256: string; findings: RepairFindingReference[];
 }
 interface RepairCycleView {
