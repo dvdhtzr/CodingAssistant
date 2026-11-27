@@ -53,22 +53,16 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         var evidence=historical.RootElement;
         if(!evidence.TryGetProperty("buildQualification",out var build))
             throw new StoreFailure("PILOT_BUILD_EVIDENCE_REQUIRED");
-        if(!evidence.TryGetProperty("dispatchQualification",out var dispatch))
+        if(!evidence.TryGetProperty("dispatchQualification",out _))
             throw new StoreFailure("PILOT_DISPATCH_EVIDENCE_REQUIRED");
-        if(!evidence.TryGetProperty("jobQualification",out var job)||
-            !evidence.TryGetProperty("jobIoQualification",out var io))
+        if(!evidence.TryGetProperty("jobQualification",out _)||
+            !evidence.TryGetProperty("jobIoQualification",out _))
             throw new StoreFailure("PILOT_JOB_IO_EVIDENCE_REQUIRED");
         try
         {
             var attempt=transport.GetProperty("attemptId").GetString()??"";
             ExecutionStore.CheckId(attempt);
-            var used=evidence.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString())
-                .Append(evidence.GetProperty("boundary").GetProperty("attemptId").GetString())
-                .Concat(build.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()))
-                .Concat(dispatch.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()))
-                .Concat(job.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()))
-                .Concat(io.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()));
-            if(used.Contains(attempt,StringComparer.Ordinal))throw new StoreFailure("PILOT_ADMISSION_ATTEMPT_REUSED");
+            RequireFreshHistoricalAttempt(evidence,attempt);
             var selection=JsonSerializer.SerializeToElement(new {
                 attemptId=attempt,admissionSha256=captured.Descriptor.GetProperty("admissionSha256").GetString(),
                 candidateSha256=captured.Descriptor.GetProperty("candidateSha256").GetString(),
@@ -87,6 +81,21 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         }
         catch(Exception e)when(e is InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)
         {throw new StoreFailure("PILOT_TRANSPORT_RESPONSE_INVALID");}
+    }
+    internal static void RequireFreshHistoricalAttempt(JsonElement evidence,string attempt)
+    {
+        ExecutionStore.CheckId(attempt);
+        if(!evidence.TryGetProperty("jobQualification",out _)||
+            !evidence.TryGetProperty("jobIoQualification",out _))
+            throw new StoreFailure("PILOT_JOB_IO_EVIDENCE_REQUIRED");
+        var used=evidence.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString())
+            .Append(evidence.GetProperty("boundary").GetProperty("attemptId").GetString())
+            .Concat(new[]{"buildQualification","dispatchQualification","jobQualification","jobIoQualification"}
+                .SelectMany(k=>evidence.GetProperty(k).GetProperty("attempts").EnumerateObject()
+                    .Select(x=>x.Value.GetProperty("attemptId").GetString()))).ToArray();
+        if(used.Length!=23||used.Distinct(StringComparer.Ordinal).Count()!=23)
+            throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+        if(used.Contains(attempt,StringComparer.Ordinal))throw new StoreFailure("PILOT_ADMISSION_ATTEMPT_REUSED");
     }
     internal PilotExecutionAdmission Stage(string taskId,string proposalId,JsonElement transport)
     {
