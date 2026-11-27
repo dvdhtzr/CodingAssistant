@@ -17,6 +17,17 @@ using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.Data.Sqlite;
 
+if (args.Length == 1 && args[0] == "--pilot-job-ownership")
+{
+    Environment.ExitCode=await PilotWindowsJobSmoke.Run();
+    return;
+}
+if (args.Length == 2 && args[0] == "--pilot-job-owner")
+{
+    Environment.ExitCode=PilotWindowsJobSmoke.Owner(args[1]);
+    return;
+}
+
 const string OwnerToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 var checks = 0;
 

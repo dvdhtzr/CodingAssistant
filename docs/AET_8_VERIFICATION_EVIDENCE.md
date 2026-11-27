@@ -868,3 +868,42 @@ The result parser validates structure, not subprocess provenance, and
 does not grant VERIFIED or trigger repairs. Binding the new lifecycle
 receipt and qualifying production Windows process-tree ownership remain
 outstanding. The executable gate is still closed.
+
+
+### Result ledger PASS and Windows job ownership
+
+At `b7a233e` the owner reported Phase 2 model-free acceptance PASS
+736 checks. The next ownership primitive creates a non-inheritable
+Windows Job Object with KILL_ON_JOB_CLOSE, no breakaway, and uses
+STARTUPINFOEX JOB_LIST to assign the fixed Node process at creation.
+There is no start-then-assign window. The job contains the inherited
+Docker child tree. The fixed-control qualification runs the actual
+shared dispatcher normally, then observes the actual Node and Docker
+processes in a new job, retains their kernel process handles, closes
+the observer job query handles, kills only the owner, and checks that
+the sampled processes exit. Cleanup-only recovery requires the exact
+build-working interrupted journal, pinned policy and engine, and
+confirms removal and archival. The normal job must be empty at exit.
+
+The .NET job launcher currently uses an explicit allowlist of fixed
+control and recovery entrypoints, no generated source. It does not
+yet provide redirected production stdin/stdout, a consumed grant or
+proof against same-account interference. The diagnostic uses current
+checkout hashes rather than production enrollment. Failed probes
+must retain uncertain cleanup debt; do not infer cleanup from owner
+termination alone. The older qualification closure is unchanged.
+
+Run the opt-in Windows API smoke mode using the already selected
+CA_PILOT_* executable pins and CODINGASSISTANT_TEST_NODE_EXE:
+~~~powershell
+dotnet run --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.csproj -- --pilot-job-ownership
+~~~
+Expected AET-8 WINDOWS_PILOT_JOB_OWNERSHIP_PASS. This is a new actual
+process ownership control, not generated execution authorization.
+
+The qualification also queries the pinned Docker engine for the exact
+running container before killing the owner and records a private receipt
+binding the actual normal and recovery receipt bytes, current executable
+and module hashes, and observed process exit checks. This is sampled
+process-handle evidence plus OS job semantics, not an exhaustive list of
+all historical descendants or a generated execution grant.
