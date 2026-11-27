@@ -1836,6 +1836,22 @@ test('native I/O evidence binds five new exact archived attempts without grantin
     assert.equal(value.runtimeQualified,false);assert.equal(value.generatedArtifactVerified,false);
   });
 });
+test('native I/O evidence accepts exact historical C# property casing and binds original bytes',async()=>{
+  await withDispatchJournal(async root=>{
+    const {bind,fixed,interrupt}=await jobIoEvidenceFixture(root);
+    const historical=({nodeSha256,dockerSha256,...rest})=>({...rest,NodeSha256:nodeSha256,DockerSha256:dockerSha256});
+    const f=historical(fixed),i=historical(interrupt),result=bind(f,i);
+    assert.equal(result.status,'PILOT_JOB_IO_EVIDENCE_BOUND');
+    assert.equal(result.jobIoQualification.fixedReceiptSha256,createHash('sha256').update(JSON.stringify(f)).digest('hex'));
+    assert.equal(result.jobIoQualification.interruptionReceiptSha256,createHash('sha256').update(JSON.stringify(i)).digest('hex'));
+    assert.equal(result.executionEnabled,false);
+    assert.throws(()=>bind({...f,nodeSha256:fixed.nodeSha256},i),/PILOT_JOB_IO_RECEIPT_INVALID/);
+    const mixed={...i,dockerSha256:i.DockerSha256};delete mixed.DockerSha256;
+    assert.throws(()=>bind(f,mixed),/PILOT_JOB_IO_RECEIPT_INVALID/);
+    assert.throws(()=>bind({...f,NodeSha256:'0'.repeat(64)},i),/PILOT_JOB_IO_BINDING_CHANGED/);
+    assert.throws(()=>bind({...f,unexpected:true},i),/PILOT_JOB_IO_RECEIPT_INVALID/);
+  });
+});
 test('native I/O evidence rejects drift, incomplete controls, replay and changed recovery bytes',async()=>{
   await withDispatchJournal(async root=>{
     const {bind,fixed,interrupt,job,recovery}=await jobIoEvidenceFixture(root);
