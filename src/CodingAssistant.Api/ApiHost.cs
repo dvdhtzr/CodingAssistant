@@ -80,6 +80,7 @@ public static class ApiHost
         _=LocalInferenceScheduler.Shared;
         new InferenceLeaseStore(store).Recover();
         new SourceSmokeEvidenceStore(store).Recover();
+        new EvaluationPlanReviewStore(store).Recover();
         var roleModels = new AgentRoleModelSettings(store);
         roleModels.Initialize();
         var runs = new RunStore(store);

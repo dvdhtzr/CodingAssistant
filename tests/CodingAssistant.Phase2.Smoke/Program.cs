@@ -5187,6 +5187,62 @@ try
             "existing exact smoke scope can be admitted without runtime qualification");
         aetSmokeScope=aetScopeBody.RootElement.GetProperty("scopeSha256").GetString()!;
     }
+    // The internal planning ledger consumes host-produced admission
+    // previews; the fixture is synthetic and grants no runtime permission.
+    var evaluationReviewStore=new EvaluationPlanReviewStore(tasks);
+    var evaluationInput=evaluationReviewStore.Capture(taskBound.Id,aetSmokeRun.Id);
+    Check(evaluationInput.Scope.ScopeSha256==aetSmokeScope &&
+        evaluationInput.Archive.SequenceEqual(evaluationReviewStore.Capture(taskBound.Id,aetSmokeRun.Id).Archive),
+        "verification archive and scope are deterministic for exact saved source");
+    JsonElement EvaluationPreview(string admission,string archiveHash)
+        =>JsonSerializer.SerializeToElement(new {
+            schemaVersion=1,status="ADMISSION_PREVIEW_ONLY",executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false,
+            taskId=taskBound.Id,runId=aetSmokeRun.Id,planSha256=evaluationInput.Scope.PlanSha256,
+            specificationSha256=evaluationInput.Scope.SpecificationSha256,architectureSha256=evaluationInput.Scope.ArchitectureSha256,
+            sourceFingerprint=evaluationInput.Scope.SourceFingerprint,scopeSha256=evaluationInput.Scope.ScopeSha256,
+            archiveSha256=archiveHash,model=evaluationInput.Scope.Model,contractId="calculation-journal-v1",
+            admissionSha256=admission,candidateSha256=new string('a',64),evaluatorSha256=new string('b',64),
+            qualification=new {hostProvenanceEstablished=false,runtimeQualified=false,executionEnabled=false,
+                receiptSha256=new string('c',64),evaluatorSha256=new string('b',64)},
+            mappings=evaluationInput.Criteria.Select(c=>new {criterionId=c.Id,criterionText=c.Text,cases=new[]{"fixture-only"}})
+        });
+    var evaluationHash=new string('d',64);
+    var evaluationPreview=EvaluationPreview(evaluationHash,evaluationInput.ArchiveSha256);
+    var evaluationStaged=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview);
+    Check(evaluationStaged is {State:"Previewed",Current:true,ExecutionEnabled:false,Verified:false} &&
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview).Id==evaluationStaged.Id,
+        "exact planning preview is durable and idempotent without execution authority");
+    try
+    {
+        evaluationReviewStore.Review(taskBound.Id,evaluationStaged.Id,evaluationHash,"EXECUTE "+evaluationHash);
+        Check(false,"planning review must reject executable confirmation");
+    }
+    catch(StoreFailure ex){Check(ex.Code=="EVALUATION_PLAN_CONFIRMATION_REQUIRED","planning review rejects execution consent");}
+    var evaluationReviewed=evaluationReviewStore.Review(taskBound.Id,evaluationStaged.Id,evaluationHash,"REVIEW EVALUATION "+evaluationHash);
+    Check(evaluationReviewed is {State:"Reviewed",ExecutionEnabled:false,Verified:false} &&
+        new EvaluationPlanReviewStore(tasks).Get(taskBound.Id,evaluationReviewed.Id).State=="Reviewed",
+        "owner planning acknowledgement persists and is not executable");
+    try
+    {
+        evaluationReviewStore.Review(taskBound.Id,evaluationStaged.Id,evaluationHash,"REVIEW EVALUATION "+evaluationHash);
+        Check(false,"planning acknowledgement may not be replayed");
+    }
+    catch(StoreFailure ex){Check(ex.Code=="EVALUATION_PLAN_CONFIRMATION_REQUIRED","review is single-use");}
+    Check(evaluationReviewStore.Cancel(taskBound.Id,evaluationStaged.Id).State=="Cancelled" &&
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview).State=="Cancelled",
+        "cancelled exact descriptor cannot be restaged by replay");
+    try
+    {
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,EvaluationPreview(new string('e',64),new string('0',64)));
+        Check(false,"stale archive must be rejected");
+    }
+    catch(StoreFailure ex){Check(ex.Code=="EVALUATION_DESCRIPTOR_NOT_CURRENT","planning stage rejects changed archive identity");}
+    var pendingEvaluation=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,
+        EvaluationPreview(new string('e',64),evaluationInput.ArchiveSha256));
+    evaluationReviewStore.Recover();
+    Check(evaluationReviewStore.Get(taskBound.Id,pendingEvaluation.Id).State=="Interrupted",
+        "startup interrupts unreviewed evaluation planning receipt without replay");
+
     using(var aetNoConsent=await Post(client,aetScopeRoot+"/source-smoke",new StartSourceSmokeRequest(aetSmokeScope,false)))
         Check(aetNoConsent.StatusCode==HttpStatusCode.Conflict && aetSmokeRunner.Calls==0,
             "durable smoke ledger does not bypass explicit isolation acknowledgement");

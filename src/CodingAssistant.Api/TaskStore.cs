@@ -160,6 +160,7 @@ public sealed class TaskStore
         CollaborationStore.Initialize(connection);
         InferenceLeaseStore.Initialize(connection);
         SourceSmokeEvidenceStore.Initialize(connection);
+        EvaluationPlanReviewStore.Initialize(connection);
         ValidateDatabasePaths();
     }
 

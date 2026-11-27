@@ -107,3 +107,23 @@ No new route, runtime capability, process invocation or registry promotion
 is introduced. Model-free tests cover incomplete/stale/contradictory
 qualification, changed image identity, incomplete contract mapping and
 stale/forged acknowledgement, not actual candidate execution.
+
+## Durable non-executable evaluation plan review
+
+The host-only `EvaluationPlanReviewStore` captures the latest exact
+approved source and all plan acceptance criteria transactionally. Its
+separate evaluation ZIP uses ordinal paths, fixed timestamps and no
+compression, so the archive digest does not change merely because a
+preview is regenerated later. Ordinary source export is unchanged.
+The store is a persistence seam for trusted Node binder output, not an
+HTTP route accepting model or owner-provided descriptors. It rechecks the
+current task/plan/specification/architecture/scope/archive binding and
+criterion identities, retains the exact preview JSON and its own digest,
+records one exact planning acknowledgement, cancellation, and interrupted
+unreviewed proposals on startup. Identical replay cannot reactivate a
+cancelled or interrupted receipt. It does not independently authenticate
+the Node qualification receipt or prove semantic test coverage; that is
+still the trusted binder/host integration's responsibility. No executable
+authorization, worker dispatch, candidate-runtime or container cleanup
+lifecycle is implemented by this storage increment. Model-free smoke tests
+use synthetic preview descriptors, not real runtime evidence.
