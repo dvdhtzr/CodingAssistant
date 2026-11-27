@@ -393,10 +393,11 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
         var buildSelected=receiptCount==5;
         var dispatchSelected=receiptCount==7;
         var jobSelected=receiptCount==8;
-        Check(result.GetProperty("status").GetString()==(jobSelected?"PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND":dispatchSelected?"PILOT_PINNED_DISPATCH_EVIDENCE_BOUND":
+        var ioSelected=receiptCount==10;
+        Check(result.GetProperty("status").GetString()==(ioSelected?"PILOT_JOB_IO_EVIDENCE_BOUND":jobSelected?"PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND":dispatchSelected?"PILOT_PINNED_DISPATCH_EVIDENCE_BOUND":
             buildSelected?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")&&
             !result.GetProperty("executionEnabled").GetBoolean(),"real pinned .NET pilot evidence inspection is non-executable");
-        Console.WriteLine(jobSelected?"PILOT_JOB_EVIDENCE_INSPECTION_PASS":dispatchSelected?"PILOT_PINNED_DISPATCH_EVIDENCE_INSPECTION_PASS":
+        Console.WriteLine(ioSelected?"PILOT_JOB_IO_EVIDENCE_INSPECTION_PASS":jobSelected?"PILOT_JOB_EVIDENCE_INSPECTION_PASS":dispatchSelected?"PILOT_PINNED_DISPATCH_EVIDENCE_INSPECTION_PASS":
             buildSelected?"PILOT_PINNED_BUILD_EVIDENCE_INSPECTION_PASS":"PILOT_PINNED_HOST_INSPECTION_PASS");
     }
 }
