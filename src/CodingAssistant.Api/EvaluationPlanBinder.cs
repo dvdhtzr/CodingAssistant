@@ -125,6 +125,7 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
             throw new StoreFailure("EVALUATION_CONTRACT_NOT_CURRENT");
         var store=new EvaluationPlanReviewStore(tasks);
         var input=store.Capture(taskId,runId);
+        var expectedCoverage=EvaluationContractCoverage.ValidateSelection(reviewedContract,input);
         var payload=JsonSerializer.Serialize(new {
             operation="prepare-admission",receiptName,currentScope=input.Scope,
             criteria=input.Criteria,reviewedContract,archiveBase64=Convert.ToBase64String(input.Archive)
@@ -155,6 +156,9 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
         start.ArgumentList.Add(script);start.ArgumentList.Add("--stdin");
         var descriptor=await InvokePlanningProcessAsync(start,payload,TimeSpan.FromSeconds(45),token);
         token.ThrowIfCancellationRequested();
+        if(!descriptor.TryGetProperty("mappings",out var returnedMappings)||
+            EvaluationContractCoverage.Validate(returnedMappings,input.Criteria)!=expectedCoverage)
+            throw new StoreFailure("EVALUATION_CONTRACT_MAPPING_CHANGED");
         // Stage re-captures source/plan/criteria/archive inside its own
         // transaction. A changed snapshot while Node ran is rejected.
         return store.Stage(taskId,runId,descriptor);

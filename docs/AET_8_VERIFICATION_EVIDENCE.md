@@ -217,3 +217,15 @@ actual UTF-8 JSON pipes, malformed responses, output limits, timeout,
 caller cancellation and the real binder's missing-provenance rejection.
 See `docs/LOCAL_VALIDATION.md`. This tests transport, not actual
 owner-enrolled project admission or runtime qualification.
+
+### Exact behavioral case coverage across the bridge
+
+The C# planning binder validates the selected fixed contract and exact
+current approved criterion text before starting Node. It checks that the
+returned mapping is identical after ordinal normalization. The durable
+ledger independently refuses unknown, duplicate, missing, empty or extra
+behavioral cases and mismatched criterion IDs/text. Its structural
+coverage fixture is not a reviewed semantic mapping for the timer task.
+The seven existing Calculation Journal cases are unchanged, and there is
+no default contract for unrelated projects. Human semantic review and
+owner-local admission remain necessary; no execution authority is added.

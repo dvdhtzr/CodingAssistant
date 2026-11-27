@@ -5194,7 +5194,12 @@ try
     Check(evaluationInput.Scope.ScopeSha256==aetSmokeScope &&
         evaluationInput.Archive.SequenceEqual(evaluationReviewStore.Capture(taskBound.Id,aetSmokeRun.Id).Archive),
         "verification archive and scope are deterministic for exact saved source");
-    JsonElement EvaluationPreview(string admission,string archiveHash)
+    // Synthetic structural-coverage fixture, deliberately not a semantic
+    // mapping for this timer application and never runtime evidence.
+    var evaluationCases=new[]{"mouse_2_plus_3_equals_5","keyboard_12_5_divided_by_2",
+        "decimal_0_1_plus_0_2","backspace_and_divide_by_zero","back_and_history_recall",
+        "history_survives_page_reload","history_survives_browser_restart"};
+    JsonElement EvaluationPreview(string admission,string archiveHash,string[]? cases=null)
         =>JsonSerializer.SerializeToElement(new {
             schemaVersion=1,status="ADMISSION_PREVIEW_ONLY",executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false,
             taskId=taskBound.Id,runId=aetSmokeRun.Id,planSha256=evaluationInput.Scope.PlanSha256,
@@ -5204,10 +5209,25 @@ try
             admissionSha256=admission,candidateSha256=new string('a',64),evaluatorSha256=new string('b',64),
             qualification=new {hostProvenanceEstablished=false,runtimeQualified=false,executionEnabled=false,
                 receiptSha256=new string('c',64),evaluatorSha256=new string('b',64)},
-            mappings=evaluationInput.Criteria.Select(c=>new {criterionId=c.Id,criterionText=c.Text,cases=new[]{"fixture-only"}})
+            mappings=evaluationInput.Criteria.Select(c=>new {criterionId=c.Id,criterionText=c.Text,cases=cases??evaluationCases})
         });
     var evaluationHash=new string('d',64);
     var evaluationPreview=EvaluationPreview(evaluationHash,evaluationInput.ArchiveSha256);
+    foreach(var invalid in new[]{
+        (Cases:new[]{"fixture-only"},Code:"EVALUATION_CONTRACT_COVERAGE_INVALID"),
+        (Cases:evaluationCases.Take(6).ToArray(),Code:"EVALUATION_MANDATORY_CASE_MISSING"),
+        (Cases:new[]{evaluationCases[0],evaluationCases[0]},Code:"EVALUATION_CONTRACT_COVERAGE_INVALID"),
+        (Cases:Array.Empty<string>(),Code:"EVALUATION_CONTRACT_COVERAGE_INVALID")})
+    {
+        try
+        {
+            evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,
+                EvaluationPreview(new string('f',64),evaluationInput.ArchiveSha256,invalid.Cases));
+            Check(false,"invalid evaluation coverage cannot be persisted");
+        }
+        catch(StoreFailure ex)when(ex.Code==invalid.Code)
+        {Check(true,"planning ledger rejects "+invalid.Code);}
+    }
     var evaluationStaged=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview);
     Check(evaluationStaged is {State:"Previewed",Current:true,ExecutionEnabled:false,Verified:false} &&
         evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview).Id==evaluationStaged.Id,

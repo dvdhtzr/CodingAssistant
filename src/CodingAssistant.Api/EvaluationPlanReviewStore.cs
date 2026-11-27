@@ -124,7 +124,7 @@ public sealed class EvaluationPlanReviewStore(TaskStore tasks)
                 Str("architectureSha256")!=scope.ArchitectureSha256 ||
                 Str("sourceFingerprint")!=scope.SourceFingerprint || Str("scopeSha256")!=scope.ScopeSha256 ||
                 Str("archiveSha256")!=input.ArchiveSha256 || Str("model")!=scope.Model ||
-                Str("contractId")!="calculation-journal-v1" ||
+                Str("contractId")!=EvaluationContractCoverage.CalculationJournal ||
                 !Digest.IsMatch(Str("admissionSha256")) || !Digest.IsMatch(Str("candidateSha256")) ||
                 !Digest.IsMatch(Str("evaluatorSha256")))
                 throw new StoreFailure("EVALUATION_DESCRIPTOR_NOT_CURRENT");
@@ -135,11 +135,7 @@ public sealed class EvaluationPlanReviewStore(TaskStore tasks)
                 !Digest.IsMatch(qualification.GetProperty("receiptSha256").GetString()??"") ||
                 qualification.GetProperty("evaluatorSha256").GetString()!=Str("evaluatorSha256"))
                 throw new StoreFailure("EVALUATION_DESCRIPTOR_NOT_CURRENT");
-            var mapped=d.GetProperty("mappings").EnumerateArray().Select(m=>new EvaluationCriterion(
-                m.GetProperty("criterionId").GetString()??"",m.GetProperty("criterionText").GetString()??""))
-                .OrderBy(c=>c.Id,StringComparer.Ordinal).ToArray();
-            if(!mapped.SequenceEqual(input.Criteria))
-                throw new StoreFailure("EVALUATION_DESCRIPTOR_NOT_CURRENT");
+            _=EvaluationContractCoverage.Validate(d.GetProperty("mappings"),input.Criteria);
             return Str("admissionSha256");
         }
         catch(Exception e) when(e is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
