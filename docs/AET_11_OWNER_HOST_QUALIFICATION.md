@@ -118,3 +118,15 @@ or delivery claim follows from fixed compatibility.
 ## Trusted integrated evaluator — next owner-host command
 
 After the exact branch revision passes CI, run `node tools/m4/windows_aet8_trusted_qualification.mjs --run`. The expected positive report is ten security checks, five integrated fixture checks, working 7/7, broken 0/7, spoof 0/7, container removed true. This is not another standalone compatibility probe: it tests independent functional observations and negative controls under the same approved trusted guest policy. Retain the private JSON. Generated execution is not authorized by this run.
+
+## November 27 trusted integrated result
+
+The owner has now reported the expected Windows trusted integrated PASS:
+10/10 security, 5/5 fixture checks, working 7/7, broken and spoof 0/7
+(each seven cases completed), COMPLETE and container removed true.
+Private report: `windows-static-web-653ce5730b28.json`. No repeat of
+unchanged trusted fixture is needed just to establish this milestone.
+Raw report and exact digests remain on the owner host. Generated-source
+execution and the Static Web runtime registry remain NOT_AUTHORIZED /
+UNQUALIFIED. This supersedes the earlier pending trusted Windows fixture
+checkpoint only, not the separate executable-admission and acceptance gates.

@@ -60,3 +60,25 @@ deadlines, container limits and sandbox restrictions remain unchanged.
 This change is restricted to the isolated AET branch. It is a candidate
 repair for renderer lifecycle instability, not proof of qualification;
 real Linux regression and owner Windows evidence remain required.
+
+## Owner Windows trusted integrated milestone — November 27, 2026
+
+Owner reported `AET-8 WINDOWS_TRUSTED_INTEGRATED_EVALUATOR_PASS` on the
+checkout following the 5ff5503 local full regression. Security 10/10,
+integrated fixture 5/5, working 7/7, broken 0/7, forged-success 0/7;
+all seven observations completed for every control, last guest stage
+COMPLETE, container removal confirmed. Owner-local report filename:
+`windows-static-web-653ce5730b28.json`. The raw report, exact host/image
+identity and digest have not been independently retrieved. This records
+owner-observed trusted-fixture success, not a reusable execution grant.
+
+The next increment is the non-executing exact evaluation/admission
+contract: current specification, architecture, plan, source manifest,
+archive digest, evaluator identity and independently reviewed test
+contract, plus host/image/driver qualification identity and explicit
+owner consent. Preserve single-use admission, cancellation, crash
+reconciliation and cleanup. Keep the existing container-only smoke lane
+separate. A fixed Calculation Journal evaluator cannot verify Idea Vault
+or arbitrary tasks; contract selection and independent acceptance must
+match the approved objective. No generated-source execution until the
+remaining #76/#92/#111 security and exact approval gates are satisfied.
