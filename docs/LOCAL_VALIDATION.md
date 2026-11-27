@@ -3,12 +3,17 @@
 Use from a clean checkout of the repository, with the running development
 server stopped (the build may replace its output files). The checks use
 trusted repository fixtures, not the owner's projects, live Ollama or arbitrary
-generated code. Install Node 22, Python 3.13 and .NET 10 SDK beforehand.
-The script checks these versions against CI. npm/NuGet restore, npm audit and
-first-time Chromium installation may require network access.
+generated code. Node 22, Python 3.13 and .NET 10 SDK match CI and are recommended.
+Installed tools with different versions are allowed by default, with an explicit
+warning and actual versions recorded in the JSON report. Use -StrictVersions
+to require matching CI versions. Passing local tests with different versions
+does not establish CI-version parity. Missing tools and actual test failures
+still fail validation. npm/NuGet restore, npm audit and first-time Chromium
+installation may require network access.
 
 ```powershell
 .\Test-CodingAssistant.ps1 -Full
+.\Test-CodingAssistant.ps1 -Full -StrictVersions
 .\Test-CodingAssistant.ps1 -Quick
 .\Test-CodingAssistant.ps1 -Changed
 .\Test-CodingAssistant.ps1 -Changed -Base origin/main

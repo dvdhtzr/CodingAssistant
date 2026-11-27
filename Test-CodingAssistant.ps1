@@ -5,7 +5,8 @@ param(
     [Parameter(ParameterSetName='Full')][switch]$Full,
     [Parameter(ParameterSetName='Quick', Mandatory=$true)][switch]$Quick,
     [Parameter(ParameterSetName='Changed', Mandatory=$true)][switch]$Changed,
-    [Parameter(ParameterSetName='Changed')][string]$Base = 'HEAD^'
+    [Parameter(ParameterSetName='Changed')][string]$Base = 'HEAD^',
+    [switch]$StrictVersions
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,10 @@ $commit = $null
 $endCommit = $null
 $clean = $false
 $unchanged = $false
+$ciVersionsMatch = $null
+$nodeVersion = $null
+$pythonVersion = $null
+$dotnetVersion = $null
 $oldLocation = Get-Location
 
 function Invoke-Native {
@@ -90,9 +95,12 @@ try {
     $dotnetVersion = (& dotnet.exe --version)
     if ($LASTEXITCODE -ne 0) { throw 'Unable to read .NET SDK version.' }
     Write-Host "$nodeVersion | $pythonVersion | .NET SDK $dotnetVersion"
-    if ($nodeVersion -notmatch '^v22\.' -or $pythonVersion -notmatch '^Python 3\.13\.' -or
-        $dotnetVersion -notmatch '^10\.0\.') {
-        throw 'CI-matching prerequisites required: Node 22, Python 3.13 and .NET SDK 10.0.'
+    $ciVersionsMatch = ($nodeVersion -match '^v22\.' -and $pythonVersion -match '^Python 3\.13\.' -and
+        $dotnetVersion -match '^10\.0\.')
+    if (!$ciVersionsMatch) {
+        $message = 'Tool versions differ from CI (Node 22, Python 3.13, .NET SDK 10.0).'
+        if ($StrictVersions) { throw $message }
+        Write-Warning "$message Continuing with installed versions; results are local compatibility evidence, not CI-version parity."
     }
 
     if ($effective -ne 'Web') {
@@ -234,6 +242,8 @@ try {
         $summary = [pscustomobject]@{
             Mode=$mode; EffectiveSuite=$effective; Commit=$commit; EndCommit=$endCommit
             CleanCommitEvidence=$unchanged; Outcome=$outcome; StartedUtc=$start.ToString('O')
+            CIVersionsMatch=$ciVersionsMatch; StrictVersions=[bool]$StrictVersions
+            ToolVersions=[pscustomobject]@{Node=$nodeVersion; Python=$pythonVersion; DotNet=$dotnetVersion}
             Seconds=[Math]::Round(([DateTimeOffset]::UtcNow-$start).TotalSeconds,2)
             Checks=@($results | Select-Object Name,Status,Seconds,Error)
         }
