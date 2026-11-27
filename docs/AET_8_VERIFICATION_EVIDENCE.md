@@ -205,3 +205,15 @@ arbitrary current files as a trust shortcut. This configuration is still
 not executable authorization or current host attestation. Actual owner
 enrollment and C# to Node process integration remain separate validation
 steps.
+
+
+### Real subprocess transport probe
+
+The shared internal C# planning transport now requests process-tree
+termination on timeout, caller cancellation or pipe overflow while
+preserving the distinct failure reason. A local opt-in smoke probe uses
+an explicitly selected Node executable and trusted fixtures to exercise
+actual UTF-8 JSON pipes, malformed responses, output limits, timeout,
+caller cancellation and the real binder's missing-provenance rejection.
+See `docs/LOCAL_VALIDATION.md`. This tests transport, not actual
+owner-enrolled project admission or runtime qualification.

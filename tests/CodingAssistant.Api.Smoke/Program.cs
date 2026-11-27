@@ -254,6 +254,74 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     {Check(overflow==0,"cancelled planning pipe does not report overflow");}
 }
 
+// Opt-in real Node transport probe. The executable is explicitly selected
+// by the local test operator. Only trusted inline fixtures and the real
+// non-executing bridge's missing-provenance case run; never generated source.
+{
+    var testNode=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_NODE_EXE");
+    if(!string.IsNullOrEmpty(testNode))
+    {
+        Check(Path.IsPathFullyQualified(testNode)&&File.Exists(testNode),
+            "explicit Node test executable exists");
+        System.Diagnostics.ProcessStartInfo Node(params string[] arguments)
+        {
+            var info=new System.Diagnostics.ProcessStartInfo(testNode){
+                UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,
+                RedirectStandardOutput=true,RedirectStandardError=true,
+                StandardInputEncoding=new System.Text.UTF8Encoding(false),
+                StandardOutputEncoding=System.Text.Encoding.UTF8};
+            EvaluationPlanBinder.RemoveNodeEnvironmentOverrides(info);
+            info.Environment.Remove("CA_EVALUATION_DOCKER_EXE");
+            info.Environment.Remove("CA_EVALUATION_DOCKER_SHA256");
+            foreach(var arg in arguments)info.ArgumentList.Add(arg);
+            return info;
+        }
+        var payload=JsonSerializer.Serialize(new {operation="transport-fixture",text="café",executionEnabled=false},
+            new JsonSerializerOptions{Encoder=System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping});
+        var echoed=await EvaluationPlanBinder.InvokePlanningProcessAsync(
+            Node("-e","const x=JSON.parse(require('node:fs').readFileSync(0,'utf8')); console.log(JSON.stringify(x));"),
+            payload,TimeSpan.FromSeconds(10),CancellationToken.None);
+        Check(echoed.GetProperty("text").GetString()=="café" &&
+            !echoed.GetProperty("executionEnabled").GetBoolean(),"real Node UTF-8 stdin/stdout round trip");
+        async Task RejectProcess(System.Diagnostics.ProcessStartInfo start,string input,string code,int milliseconds=10000)
+        {
+            try
+            {
+                _=await EvaluationPlanBinder.InvokePlanningProcessAsync(start,input,
+                    TimeSpan.FromMilliseconds(milliseconds),CancellationToken.None);
+                Check(false,"Node process must reject "+code);
+            }
+            catch(StoreFailure e)when(e.Code==code){Check(true,"real Node process rejects "+code);}
+        }
+        await RejectProcess(Node("-e","require('node:fs').readFileSync(0); console.log('[]');"),
+            "{}","EVALUATION_BINDER_RESPONSE_INVALID");
+        await RejectProcess(Node("-e","require('node:fs').readFileSync(0); process.stderr.write('x'.repeat(8193));"),
+            "{}","EVALUATION_BINDER_RESPONSE_INVALID");
+        await RejectProcess(Node("-e","require('node:fs').readFileSync(0); process.stdout.write('x'.repeat(90001));"),
+            "{}","EVALUATION_BINDER_RESPONSE_INVALID");
+        await RejectProcess(Node("-e","setInterval(()=>{},1000);"),"{}","EVALUATION_BINDER_TIMEOUT",500);
+        using(var stop=new CancellationTokenSource())
+        {
+            stop.CancelAfter(TimeSpan.FromMilliseconds(500));
+            try
+            {
+                _=await EvaluationPlanBinder.InvokePlanningProcessAsync(Node("-e","setInterval(()=>{},1000);"),
+                    "{}",TimeSpan.FromSeconds(10),stop.Token);
+                Check(false,"real Node caller cancellation must not return a descriptor");
+            }
+            catch(OperationCanceledException)when(stop.IsCancellationRequested)
+            {Check(true,"real Node caller cancellation stops the planning transport");}
+        }
+        var realBridge=Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(),"tools","m4",
+            "static_web_evaluation_host_bridge.mjs"));
+        Check(File.Exists(realBridge),"real bridge fixture is available from repository root");
+        await RejectProcess(Node(realBridge,"--stdin"),
+            "{\"operation\":\"inspect-receipt\",\"receiptName\":\"windows-static-web-012345abcdef.json\"}",
+            "EVALUATION_DOCKER_PROVENANCE_REQUIRED");
+        Console.WriteLine("EVALUATION_PLANNING_NODE_TRANSPORT_PASS");
+    }
+}
+
 // Private directory and existing database checks must fail BEFORE SQLite opens.
 {
     var folder = Path.Combine(Path.GetTempPath(), "ca-privacy-" + Guid.NewGuid().ToString("N"));

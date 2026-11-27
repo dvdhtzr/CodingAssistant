@@ -153,9 +153,27 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
         start.Environment["CA_EVALUATION_DOCKER_EXE"]=docker;
         start.Environment["CA_EVALUATION_DOCKER_SHA256"]=dockerSha256!;
         start.ArgumentList.Add(script);start.ArgumentList.Add("--stdin");
+        var descriptor=await InvokePlanningProcessAsync(start,payload,TimeSpan.FromSeconds(45),token);
+        token.ThrowIfCancellationRequested();
+        // Stage re-captures source/plan/criteria/archive inside its own
+        // transaction. A changed snapshot while Node ran is rejected.
+        return store.Stage(taskId,runId,descriptor);
+    }
+
+    // Host-only subprocess transport. Production constructs the start info
+    // exclusively from the verified paths above. No request can set it.
+    internal static async Task<JsonElement> InvokePlanningProcessAsync(
+        ProcessStartInfo start,string payload,TimeSpan deadline,CancellationToken token)
+    {
         using var process=new Process{StartInfo=start};
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        timeout.CancelAfter(deadline);
+        void StopProcess()
+        {
+            try{if(!process.HasExited)process.Kill(entireProcessTree:true);}
+            catch(InvalidOperationException){}
+            catch(System.ComponentModel.Win32Exception){}
+        }
         var outputOverflow=0;
         void Overflow()
         {
@@ -166,11 +184,13 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
         {
             token.ThrowIfCancellationRequested();
             if(!process.Start())throw new StoreFailure("EVALUATION_BINDER_UNAVAILABLE");
+            using var cancellation=timeout.Token.Register(StopProcess);
             var stdout=ReadBoundedAsync(process.StandardOutput,90000,Overflow,timeout.Token);
             var stderr=ReadBoundedAsync(process.StandardError,8192,Overflow,timeout.Token);
             var write=WriteRequestAsync(process,payload,timeout.Token);
             var exit=process.WaitForExitAsync(timeout.Token);
             await Task.WhenAll(stdout,stderr,write,exit);
+            timeout.Token.ThrowIfCancellationRequested();
             var result=await stdout;
             if(result.Length<2)throw new StoreFailure("EVALUATION_BINDER_RESPONSE_INVALID");
             using var document=JsonDocument.Parse(result);
@@ -185,23 +205,18 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
                     reason:"EVALUATION_BINDER_BLOCKED");
             }
             token.ThrowIfCancellationRequested();
-            // Stage re-captures source/plan/criteria/archive inside its own
-            // transaction. A changed snapshot while Node ran is rejected.
-            return store.Stage(taskId,runId,descriptor);
+            return descriptor.Clone();
         }
-        catch(OperationCanceledException) when(!token.IsCancellationRequested)
-        {throw new StoreFailure(Volatile.Read(ref outputOverflow)!=0?
-            "EVALUATION_BINDER_RESPONSE_INVALID":"EVALUATION_BINDER_TIMEOUT");}
+        catch(Exception) when(token.IsCancellationRequested)
+        {token.ThrowIfCancellationRequested();throw;}
+        catch(Exception) when(Volatile.Read(ref outputOverflow)!=0)
+        {throw new StoreFailure("EVALUATION_BINDER_RESPONSE_INVALID");}
+        catch(Exception) when(timeout.IsCancellationRequested)
+        {throw new StoreFailure("EVALUATION_BINDER_TIMEOUT");}
         catch(IOException)
-        {throw new StoreFailure(Volatile.Read(ref outputOverflow)!=0?
-            "EVALUATION_BINDER_RESPONSE_INVALID":"EVALUATION_BINDER_UNAVAILABLE");}
+        {throw new StoreFailure("EVALUATION_BINDER_UNAVAILABLE");}
         catch(JsonException){throw new StoreFailure("EVALUATION_BINDER_RESPONSE_INVALID");}
         catch(System.ComponentModel.Win32Exception){throw new StoreFailure("EVALUATION_BINDER_UNAVAILABLE");}
-        finally
-        {
-            try{if(!process.HasExited)process.Kill(entireProcessTree:true);}
-            catch(InvalidOperationException){}
-            catch(System.ComponentModel.Win32Exception){}
-        }
+        finally{StopProcess();}
     }
 }

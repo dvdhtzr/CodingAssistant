@@ -58,3 +58,20 @@ Run it at milestones and before any merge. Required PR checks and Linux
 acceptance are not waived by a local Windows pass. Restore automatic pushes
 by reverting the standalone workflow-trigger commit (do not revert the
 local script), or remove its single negative branch filter.
+
+
+## Optional real planning transport probe
+
+From the repository root, with the development server stopped:
+
+~~~powershell
+$env:CODINGASSISTANT_TEST_NODE_EXE = (Get-Command node.exe -ErrorAction Stop).Source
+dotnet run --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.csproj
+Remove-Item Env:CODINGASSISTANT_TEST_NODE_EXE
+~~~
+
+Expect `EVALUATION_PLANNING_NODE_TRANSPORT_PASS` and the normal M2 smoke
+pass. The opt-in tests execute only trusted inline Node transport fixtures
+and the real bridge's missing-provenance rejection; no Docker metadata
+query, browser, generated code, host enrollment or execution permission
+is involved. The test variable is not production configuration.
