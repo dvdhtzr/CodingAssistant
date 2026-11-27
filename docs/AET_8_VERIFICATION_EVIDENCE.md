@@ -245,3 +245,20 @@ source-only repairs with unchanged approved requirements and evaluator;
 changed requirements require a new review. Interrupted and revoked exact
 reviews cannot silently reactivate. No HTTP/model route or automatic
 semantic approval is added. Tests use synthetic coverage only.
+
+### Exact execution authorization proposal (not a grant)
+
+The internal execution authorization ledger reconstructs a reviewed current
+candidate, checks its descriptor and linked reviewed behavioral contract,
+and records a digest binding task/run, source/scope/archive, exact plan
+review, evaluator and historical fixture receipt, and the current
+static-web registry profile. Proposed records are durable, revocable and
+interrupted on restart; identical replay cannot reactivate them. Changed
+or cancelled candidate planning evidence makes a proposal non-current.
+Planning confirmation is not execution confirmation. Even a matching
+execution confirmation is refused while the runtime is unqualified.
+The schema deliberately has no Authorized or Consumed state yet and
+there is no worker, public route, runtime grant or generated execution.
+Current host/adapter qualification, exact executable policy binding,
+single-use transactional consumption and cleanup remain required. Do not
+ask the owner for executable consent at this stage.

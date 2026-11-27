@@ -162,6 +162,7 @@ public sealed class TaskStore
         SourceSmokeEvidenceStore.Initialize(connection);
         EvaluationPlanReviewStore.Initialize(connection);
         BehavioralContractReviewStore.Initialize(connection);
+        EvaluationExecutionAuthorizationStore.Initialize(connection);
         ValidateDatabasePaths();
     }
 

@@ -229,6 +229,30 @@ public sealed class EvaluationPlanReviewStore(TaskStore tasks)
         tx.Commit();return item with {State="Reviewed",UpdatedUtc=now,Current=true};
     }
 
+    // Future execution admission must reconstruct the exact current reviewed
+    // plan and linked semantic contract in its own transaction.
+    internal static (EvaluationPlanReview Plan,JsonElement Descriptor,string ContractReviewId)
+        RequireReviewedAdmission(SqliteConnection db,SqliteTransaction tx,string taskId,string id)
+    {
+        ExecutionStore.CheckId(taskId);ExecutionStore.CheckId(id);
+        var item=Find(db,tx,taskId,id);
+        if(item.State!="Reviewed")throw new StoreFailure("EVALUATION_PLAN_REVIEW_REQUIRED");
+        var input=Capture(db,tx,taskId,item.RunId);
+        var raw=TaskStore.Scalar(db,tx,"SELECT descriptor_json FROM engineering_evaluation_plan_reviews WHERE id=@id",
+            ("@id",id))??throw new StoreFailure("NOT_FOUND");
+        if(Sha(raw)!=item.DescriptorSha256||input.Scope.SourceFingerprint!=item.SourceSha256||
+            input.Scope.ScopeSha256!=item.ScopeSha256||input.ArchiveSha256!=item.ArchiveSha256)
+            throw new StoreFailure("SOURCE_SCOPE_CHANGED");
+        using var document=JsonDocument.Parse(raw);
+        var descriptor=document.RootElement;
+        if(ValidateDescriptor(descriptor,input)!=item.AdmissionSha256)
+            throw new StoreFailure("EVALUATION_DESCRIPTOR_NOT_CURRENT");
+        var contractId=TaskStore.Scalar(db,tx,"SELECT contract_review_id FROM evaluation_plan_contract_links WHERE plan_review_id=@id",
+            ("@id",id))??throw new StoreFailure("BEHAVIORAL_CONTRACT_REVIEW_REQUIRED");
+        BehavioralContractReviewStore.RequireDescriptor(db,tx,input,contractId,descriptor);
+        return (item with {Current=true},descriptor.Clone(),contractId);
+    }
+
     public EvaluationPlanReview Cancel(string taskId,string id)
     {
         ExecutionStore.CheckId(taskId);ExecutionStore.CheckId(id);

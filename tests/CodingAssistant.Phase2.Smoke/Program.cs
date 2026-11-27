@@ -5255,6 +5255,14 @@ try
         {Check(true,"planning ledger rejects "+invalid.Code);}
     }
     var evaluationStaged=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id);
+    var executionProposalStore=new EvaluationExecutionAuthorizationStore(tasks);
+    try
+    {
+        executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id);
+        Check(false,"unreviewed evaluation cannot propose execution");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_PLAN_REVIEW_REQUIRED")
+    {Check(true,"execution proposal requires reviewed candidate plan");}
     Check(evaluationStaged is {State:"Previewed",Current:true,ExecutionEnabled:false,Verified:false} &&
         evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id).Id==evaluationStaged.Id,
         "exact planning preview is durable and idempotent without execution authority");
@@ -5274,6 +5282,49 @@ try
         Check(false,"planning acknowledgement may not be replayed");
     }
     catch(StoreFailure ex){Check(ex.Code=="EVALUATION_PLAN_CONFIRMATION_REQUIRED","review is single-use");}
+    var executionProposal=executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id);
+    Check(executionProposal is {State:"Proposed",Current:true,ExecutionEnabled:false,RuntimeQualified:false} &&
+        executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id).Id==executionProposal.Id,
+        "execution proposal persists exact candidate and profile without a grant");
+    foreach(var attempt in new[]{
+        (Confirmation:"REVIEW EVALUATION "+evaluationHash,Code:"EVALUATION_EXECUTION_CONFIRMATION_REQUIRED"),
+        (Confirmation:"AUTHORIZE EVALUATION "+executionProposal.AuthorizationSha256,Code:"EVALUATION_RUNTIME_UNQUALIFIED")})
+    {
+        try
+        {
+            executionProposalStore.Authorize(taskBound.Id,executionProposal.Id,attempt.Confirmation);
+            Check(false,"unqualified execution must remain blocked");
+        }
+        catch(StoreFailure ex)when(ex.Code==attempt.Code)
+        {Check(true,"execution authorization rejects "+attempt.Code);}
+    }
+    Check(executionProposalStore.Get(taskBound.Id,executionProposal.Id) is {State:"Proposed",ExecutionEnabled:false},
+        "blocked authorization cannot change durable execution state");
+    executionProposalStore.Recover();
+    Check(executionProposalStore.Get(taskBound.Id,executionProposal.Id) is {State:"Interrupted",Current:false} &&
+        executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id) is {State:"Interrupted",Current:false},
+        "restart interrupts exact proposal and replay cannot reactivate");
+    var alternatePreview=EvaluationPreview(new string('1',64),evaluationInput.ArchiveSha256);
+    var alternatePlan=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,alternatePreview,behavioral.Id);
+    evaluationReviewStore.Review(taskBound.Id,alternatePlan.Id,alternatePlan.AdmissionSha256,"REVIEW EVALUATION "+alternatePlan.AdmissionSha256);
+    var alternateProposal=executionProposalStore.Propose(taskBound.Id,alternatePlan.Id);
+    Check(executionProposalStore.Revoke(taskBound.Id,alternateProposal.Id) is {State:"Revoked",Current:false} &&
+        executionProposalStore.Propose(taskBound.Id,alternatePlan.Id) is {State:"Revoked",Current:false},
+        "revoked execution proposal cannot be reactivated by replay");
+    var stalePreview=EvaluationPreview(new string('2',64),evaluationInput.ArchiveSha256);
+    var stalePlan=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,stalePreview,behavioral.Id);
+    evaluationReviewStore.Review(taskBound.Id,stalePlan.Id,stalePlan.AdmissionSha256,"REVIEW EVALUATION "+stalePlan.AdmissionSha256);
+    var staleProposal=executionProposalStore.Propose(taskBound.Id,stalePlan.Id);
+    evaluationReviewStore.Cancel(taskBound.Id,stalePlan.Id);
+    Check(!executionProposalStore.Get(taskBound.Id,staleProposal.Id).Current,
+        "cancelled evaluation plan invalidates its execution proposal");
+    try
+    {
+        executionProposalStore.Authorize(taskBound.Id,staleProposal.Id,"AUTHORIZE EVALUATION "+staleProposal.AuthorizationSha256);
+        Check(false,"stale proposal cannot authorize");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_EXECUTION_PROPOSAL_NOT_CURRENT")
+    {Check(true,"stale candidate authorization fails closed");}
     Check(evaluationReviewStore.Cancel(taskBound.Id,evaluationStaged.Id).State=="Cancelled" &&
         evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id).State=="Cancelled",
         "cancelled exact descriptor cannot be restaged by replay");
