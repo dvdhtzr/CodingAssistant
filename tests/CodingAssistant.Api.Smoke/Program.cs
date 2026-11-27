@@ -65,6 +65,38 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     };
 }
 
+// Planning bridge pipe limits: no model, Docker, generated code or host
+// command execution. Verify exact-boundary reads and the fail-closed signal.
+{
+    var overflow=0;
+    var atLimit=new string('x',90000);
+    using var valid=new StringReader(atLimit);
+    var result=await EvaluationPlanBinder.ReadBoundedAsync(valid,90000,()=>overflow++,CancellationToken.None);
+    Check(result==atLimit && overflow==0,"planning response at exact limit is retained");
+    foreach(var limit in new[]{90000,8192})
+    {
+        using var oversized=new StringReader(new string('x',limit+1));
+        var signalled=false;
+        try
+        {
+            _=await EvaluationPlanBinder.ReadBoundedAsync(oversized,limit,()=>signalled=true,CancellationToken.None);
+            Check(false,"oversized planning pipe must be rejected");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_RESPONSE_INVALID")
+        {Check(signalled,"oversized planning pipe signals cancellation before rejection");}
+    }
+    using var cancelled=new CancellationTokenSource();
+    cancelled.Cancel();
+    using var unread=new StringReader("not read");
+    try
+    {
+        _=await EvaluationPlanBinder.ReadBoundedAsync(unread,8192,()=>overflow++,cancelled.Token);
+        Check(false,"cancelled planning pipe must not succeed");
+    }
+    catch(OperationCanceledException)
+    {Check(overflow==0,"cancelled planning pipe does not report overflow");}
+}
+
 // Private directory and existing database checks must fail BEFORE SQLite opens.
 {
     var folder = Path.Combine(Path.GetTempPath(), "ca-privacy-" + Guid.NewGuid().ToString("N"));

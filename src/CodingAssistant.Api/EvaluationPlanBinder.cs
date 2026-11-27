@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -25,6 +26,34 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
             }
         }
         return null;
+    }
+
+    // Count decoded characters while reading; never buffer an unbounded stream.
+    // The overflow callback cancels the sibling pipe operations and exit wait.
+    internal static async Task<string> ReadBoundedAsync(TextReader reader,int limit,
+        Action overflow,CancellationToken token)
+    {
+        var result=new StringBuilder(Math.Min(limit,4096));
+        var buffer=new char[4096];
+        while(true)
+        {
+            token.ThrowIfCancellationRequested();
+            var count=await reader.ReadAsync(buffer.AsMemory(),token);
+            if(count==0)return result.ToString();
+            if(count>limit-result.Length)
+            {
+                overflow();
+                throw new StoreFailure("EVALUATION_BINDER_RESPONSE_INVALID");
+            }
+            result.Append(buffer,0,count);
+        }
+    }
+
+    private static async Task WriteRequestAsync(Process process,string payload,CancellationToken token)
+    {
+        await process.StandardInput.WriteAsync(payload.AsMemory(),token);
+        await process.StandardInput.FlushAsync(token);
+        process.StandardInput.Close();
     }
 
     public async Task<EvaluationPlanReview> StageAsync(string taskId,string runId,
@@ -54,19 +83,27 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
         using var process=new Process{StartInfo=start};
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        var outputOverflow=0;
+        void Overflow()
+        {
+            Interlocked.Exchange(ref outputOverflow,1);
+            timeout.Cancel();
+        }
         try
         {
             token.ThrowIfCancellationRequested();
             if(!process.Start())throw new StoreFailure("EVALUATION_BINDER_UNAVAILABLE");
-            var stdout=process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var stderr=process.StandardError.ReadToEndAsync(timeout.Token);
-            await process.StandardInput.WriteAsync(payload.AsMemory(),timeout.Token);
-            process.StandardInput.Close();
-            await process.WaitForExitAsync(timeout.Token);
-            var result=await stdout;_ = await stderr;
-            if(result.Length is <2 or >90000)throw new StoreFailure("EVALUATION_BINDER_RESPONSE_INVALID");
+            var stdout=ReadBoundedAsync(process.StandardOutput,90000,Overflow,timeout.Token);
+            var stderr=ReadBoundedAsync(process.StandardError,8192,Overflow,timeout.Token);
+            var write=WriteRequestAsync(process,payload,timeout.Token);
+            var exit=process.WaitForExitAsync(timeout.Token);
+            await Task.WhenAll(stdout,stderr,write,exit);
+            var result=await stdout;
+            if(result.Length<2)throw new StoreFailure("EVALUATION_BINDER_RESPONSE_INVALID");
             using var document=JsonDocument.Parse(result);
             var descriptor=document.RootElement;
+            if(descriptor.ValueKind!=JsonValueKind.Object)
+                throw new StoreFailure("EVALUATION_BINDER_RESPONSE_INVALID");
             if(process.ExitCode!=0)
             {
                 var reason=descriptor.TryGetProperty("reason",out var code)&&code.ValueKind==JsonValueKind.String?
@@ -80,7 +117,11 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
             return store.Stage(taskId,runId,descriptor);
         }
         catch(OperationCanceledException) when(!token.IsCancellationRequested)
-        {throw new StoreFailure("EVALUATION_BINDER_TIMEOUT");}
+        {throw new StoreFailure(Volatile.Read(ref outputOverflow)!=0?
+            "EVALUATION_BINDER_RESPONSE_INVALID":"EVALUATION_BINDER_TIMEOUT");}
+        catch(IOException)
+        {throw new StoreFailure(Volatile.Read(ref outputOverflow)!=0?
+            "EVALUATION_BINDER_RESPONSE_INVALID":"EVALUATION_BINDER_UNAVAILABLE");}
         catch(JsonException){throw new StoreFailure("EVALUATION_BINDER_RESPONSE_INVALID");}
         catch(System.ComponentModel.Win32Exception){throw new StoreFailure("EVALUATION_BINDER_UNAVAILABLE");}
         finally
