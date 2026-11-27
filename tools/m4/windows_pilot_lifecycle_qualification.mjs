@@ -8,6 +8,7 @@ import {shellDocker,writePrivateEvidence,validateDockerContext} from './windows_
 import {readLocalImage} from './static_web_evaluation_host_bridge.mjs';
 import {fixedCandidateBundle,fixedCandidateFixture,parseFixedCandidateStream} from './windows_candidate_fixture_qualification.mjs';
 import {preparePilotPolicy} from './static_web_pilot_policy.mjs';
+import {BUILD_CONTROLS,buildQualifiedCandidateBundle,buildQualificationFixture,buildControlMatches} from './static_web_build_qualification.mjs';
 import {fixedBrowserBoundaryBundle,fixedBrowserBoundaryFixture,parseBrowserBoundaryReport} from './static_web_pilot_browser_boundary.mjs';
 import {reservePilotAttempt,readPilotAttempt,recoverPilotAttempt} from './static_web_pilot_attempt_journal.mjs';
 
@@ -83,16 +84,18 @@ export function qualifyPilotLifecycle({platform=process.platform,env=process.env
   root,attemptId=randomBytes(16).toString('hex'),control='working'}={}){
   const report=reportBase();
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT){report.reason='PILOT_LOCAL_WINDOWS_ONLY';return report;}
-  if(!['working','broken','spoof','browser-boundary'].includes(control)){report.reason='PILOT_FIXED_CONTROL_REQUIRED';return report;}
+  if(!['working','broken','spoof','browser-boundary',...BUILD_CONTROLS].includes(control)){report.reason='PILOT_FIXED_CONTROL_REQUIRED';return report;}
   let journal,host,ambiguousCreate=false;
   try{
     root??=pilotLocalRoot(env);host=pilotHostTools(docker);
     if(readPilotAttempt(root))fail('PILOT_PRIOR_CLEANUP_REQUIRED');
     const engineId=host.engine(),image=readLocalImage({platform,env,docker});
     const boundary=control==='browser-boundary';
-    const bundle=boundary?fixedBrowserBoundaryBundle():fixedCandidateBundle();
+    const buildControl=BUILD_CONTROLS.includes(control);
+    const bundle=boundary?fixedBrowserBoundaryBundle():buildControl?buildQualifiedCandidateBundle():fixedCandidateBundle();
     const policy=preparePilotPolicy(image,bundle.adapterSha256,bundle.evaluatorSha256);
     const fixture=boundary?fixedBrowserBoundaryFixture(bundle,policy.policySha256,attemptId):
+      buildControl?buildQualificationFixture(control,bundle,policy.policySha256,attemptId):
       fixedCandidateFixture(control,bundle,policy.policySha256,attemptId);
     const identity={...policy.identity(attemptId),engineId,
       candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256};
@@ -122,7 +125,8 @@ export function qualifyPilotLifecycle({platform=process.platform,env=process.env
     }else{
       const parsed=parseFixedCandidateStream(result.stdout??'',fixture.expected);
       report.observations=parsed.observations;
-      if(parsed.observations?.status!==(control==='working'?'CHECKS_PASSED_NOT_VERIFIED':'TESTS_FAILED')||
+      if(buildControl?!buildControlMatches(control,parsed.observations):
+        parsed.observations?.status!==(control==='working'?'CHECKS_PASSED_NOT_VERIFIED':'TESTS_FAILED')||
         parsed.observations.completed!==7||parsed.observations.passed!==(control==='working'?7:0))
         fail('PILOT_FIXED_CONTROL_FAILED');
     }
@@ -143,7 +147,8 @@ export function qualifyPilotLifecycle({platform=process.platform,env=process.env
     }
   }
   if(report.reason===null&&report.configurationAudited&&report.containerRemoved&&report.observations)
-    report.status=control==='browser-boundary'?'PILOT_BROWSER_BOUNDARY_PASS':'PILOT_DURABLE_FIXED_CONTROL_PASS';
+    report.status=control==='browser-boundary'?'PILOT_BROWSER_BOUNDARY_PASS':BUILD_CONTROLS.includes(control)?
+      'PILOT_BUILD_CONTROL_PASS':'PILOT_DURABLE_FIXED_CONTROL_PASS';
   return report;
 }
 export function reconcilePilotLifecycle({platform=process.platform,env=process.env,docker=shellDocker,root,isAlive}={}){
@@ -166,8 +171,27 @@ export function reconcilePilotLifecycle({platform=process.platform,env=process.e
 }
 export function main(argv=process.argv.slice(2)){
   if(argv.length===0){console.log('AET-8 PILOT_DURABLE_LIFECYCLE: NOT_RUN');return 0;}
-  if(argv.length!==1||!['--run','--run-negative-controls','--run-browser-boundary','--recover'].includes(argv[0])){
-    console.error('Only --run, --run-negative-controls, --run-browser-boundary or --recover supported');return 2;
+  if(argv.length!==1||!['--run','--run-negative-controls','--run-browser-boundary','--run-build-controls','--recover'].includes(argv[0])){
+    console.error('Only --run, --run-negative-controls, --run-browser-boundary, --run-build-controls or --recover supported');return 2;
+  }
+  if(argv[0]==='--run-build-controls'){
+    const report={schemaVersion:1,stage:'AET-8-pilot-build-controls',status:'BLOCKED',
+      recordedAtUtc:new Date().toISOString(),controls:{},generatedSourceExecuted:false,
+      generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false};
+    for(const control of BUILD_CONTROLS){
+      const result=qualifyPilotLifecycle({control});report.controls[control]=result;
+      console.log('  '+control+': '+(result.observations?.status??'NOT_COMPLETE')+
+        '; cases: '+(result.observations?.passed??0)+'/'+(result.observations?.completed??0)+'; removed: '+result.containerRemoved);
+      if(result.status!=='PILOT_BUILD_CONTROL_PASS'){console.log('  blocker: '+result.reason);break;}
+    }
+    const values=Object.values(report.controls);
+    if(values.length===BUILD_CONTROLS.length&&values.every(v=>v.status==='PILOT_BUILD_CONTROL_PASS'&&
+      v.containerRemoved&&!v.cleanupDebt&&v.policySha256===values[0].policySha256&&v.engineId===values[0].engineId))
+      report.status='PILOT_BUILD_CONTROLS_PASS';
+    console.log('AET-8 WINDOWS_'+report.status);
+    console.log('  generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED');
+    console.log('Evidence: '+writePrivateEvidence(report));
+    return report.status==='PILOT_BUILD_CONTROLS_PASS'?0:2;
   }
   if(argv[0]==='--run-negative-controls'){
     const negative={schemaVersion:1,stage:'AET-8-pilot-negative-controls',status:'BLOCKED',

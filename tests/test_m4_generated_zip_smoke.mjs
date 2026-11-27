@@ -1317,3 +1317,60 @@ test('read-only transport bridge reconstructs exact data using only metadata com
   assert.ok(!Object.hasOwn(result,'source')&&!Object.hasOwn(result,'payloadJson'));
   assert.ok(calls.every(args=>['context','info','image','ps'].includes(args[0])));
 }));
+
+
+import {inspectCandidateBuild} from '../tools/m4/static_web_candidate_build.mjs';
+import {BUILD_CONTROLS,buildQualifiedCandidateBundle,buildQualificationFixture,buildControlMatches}
+  from '../tools/m4/static_web_build_qualification.mjs';
+function inspectBuildFixture(name){
+  const bundle=buildQualifiedCandidateBundle(),fixture=buildQualificationFixture(name,bundle,'a'.repeat(64),'b'.repeat(32));
+  const encoded=fixture.source.match(/const INPUT='([^']+)'/)[1];
+  const data=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+  return {assets:createCandidateAssets(data.payloadJson,data.binding),files:data.binding.files,fixture,bundle};
+}
+test('restricted build accepts working and spoof control markup, blocks broken and missing assets before browser',()=>{
+  for(const name of BUILD_CONTROLS){
+    const {assets,files}=inspectBuildFixture(name);
+    const result=inspectCandidateBuild(assets,files,content=>content!=='return 1;');
+    assert.deepEqual(result,{javascript_syntax:name!=='build-invalid-syntax',
+      local_assets_linked:['build-working','build-spoof','build-invalid-syntax'].includes(name)},name);
+  }
+});
+test('restricted build rejects unsupported tags, duplicate attributes, ambiguous references and inline scripts',()=>{
+  const html=src=>'<!doctype html><html><head><title>Test</title></head><body>'+src+'</body></html>';
+  const inspect=(markup,more=[])=>{
+    const files=[['index.html',markup],['app.js','const n=1;'],...more];
+    const assets={resolve:(method,target)=>({status:200,body:files.find(([name])=>'/'+name===target)[1]})};
+    return inspectCandidateBuild(assets,files.map(([path])=>({path})),()=>true);
+  };
+  const script='<script src="./app.js" defer></script>';
+  assert.equal(inspect(html(script)).local_assets_linked,true);
+  for(const body of ['<iframe></iframe>','<script>alert(1)</script>','<script src=app.js></script>',
+    '<script src="app.js" SRC="other.js"></script>','<script src="app.js?x=1"></script>',
+    '<script src="%61pp.js"></script>','<script type="module" src="app.js"></script>',
+    '<div onclick="x()"></div>'+script,'<div id="x"></div><span id="x"></span>'+script,
+    '<base href="/">'+script,'<style>@import "other.css";</style>'+script])
+    assert.equal(inspect(html(body)).local_assets_linked,false,body);
+  assert.equal(inspect(html(script),[['extra.js','const m=2;']]).local_assets_linked,false);
+  assert.equal(inspect(html(script),[['styles.css','body{}']]).local_assets_linked,false);
+  assert.equal(inspect(html(script),[['data.json','invalid']]).local_assets_linked,false);
+  assert.equal(inspect(html('<link rel="stylesheet" href="./styles.css">'+script),[['styles.css','body{}']]).local_assets_linked,true);
+});
+test('build qualification has distinct adapter digest and checks exact expected observations',()=>{
+  const {bundle}=inspectBuildFixture('build-working');
+  assert.notEqual(bundle.adapterSha256,fixedCandidateBundle().adapterSha256);
+  assert.equal(bundle.evaluatorSha256,fixedCandidateBundle().evaluatorSha256);
+  const {report,expected}=candidateObservationFixture();
+  assert.equal(buildControlMatches('build-working',parseCandidateObservations(JSON.stringify(report),expected)),true);
+  for(const name of ['build-broken','build-missing-asset','build-invalid-syntax']){
+    const failed=structuredClone(report);
+    failed.build.javascript_syntax=name!=='build-invalid-syntax';
+    failed.build.local_assets_linked=name==='build-invalid-syntax';
+    failed.infrastructure=allCases(Object.keys(failed.infrastructure),null);
+    failed.cases=allCases(CALCULATION_CASES,null);
+    const o=parseCandidateObservations(JSON.stringify(failed),expected);
+    assert.equal(buildControlMatches(name,o),true);
+    assert.equal(buildControlMatches(name,{...o,completed:1}),false);
+    assert.equal(buildControlMatches(name,{...o,infrastructure:{...o.infrastructure,browser_closed:true}}),false);
+  }
+});

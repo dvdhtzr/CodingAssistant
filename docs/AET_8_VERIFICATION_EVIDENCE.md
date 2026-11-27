@@ -619,3 +619,43 @@ The previous guest adapter/policy and historical receipt identities
 remain unchanged. No production host pin enrollment or execution
 dispatch is introduced. The host-only planner's real integration is
 not yet exercised against a live project and private configuration.
+
+
+### Phase 2 transport PASS and separate restricted build adapter
+
+At `6eb35f2` the owner reported Phase 2 PASS 712 checks (the preceding
+conditional Node test gate reached Phase 2). The candidate transport
+preview remains non-executable.
+
+A new, deliberately narrow build adapter accepts one HTML entry
+document with explicit balanced supported tags, quoted attributes,
+local classic external JavaScript and linked local CSS (simple inline
+style blocks are also supported), and optional parseable JSON data.
+It rejects unsupported markup, inline scripts/handlers, missing and
+unlinked script/style assets, ambiguous resource paths and invalid
+classic script syntax. This is a conservative subset recognizer,
+not an HTML standards parser or JavaScript safety analysis. Dynamic
+behavior still requires the isolated browser and independent tests.
+No candidate source is syntax-checked by a host process. The guest
+runs a constant Node vm.Script parse-only subprocess in the existing
+container limits, never running the compiled script. The invalid syntax
+control uses a top-level return (accepted by CommonJS, invalid as a
+browser classic script).
+Unsupported markup/asset grammar is classified under the existing
+local_assets_linked build Boolean; the original fixture evaluator and
+historical evidence remain unchanged.
+
+The new adapter has a distinct digest. Real qualification runs five
+frozen controls under the unchanged isolation configuration:
+working 7/7, spoof 0/7 with seven completed, and broken/missing asset/
+invalid syntax each BUILD_FAILED with no browser observations.
+The real runner is still fixed-source-only and no generated transport
+uses the new adapter until the new evidence and consent are bound.
+
+~~~powershell
+node tools/m4/windows_pilot_lifecycle_qualification.mjs --run-build-controls
+~~~
+
+Expected `AET-8 WINDOWS_PILOT_BUILD_CONTROLS_PASS`, all five removed.
+The new adapter needs this distinct qualification; it does not inherit
+the prior fixture-only adapter PASS. No runtime promotion or grant.

@@ -42,6 +42,8 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
         "tools/m4/static_web_candidate_payload.mjs",
         "tools/m4/static_web_candidate_transport.mjs",
         "tools/m4/static_web_candidate_transport_bridge.mjs",
+        "tools/m4/static_web_candidate_build.mjs",
+        "tools/m4/static_web_build_qualification.mjs",
         "tools/m4/windows_pilot_browser_boundary_guest.mjs",
         "tools/m4/profiles/playwright-chromium-seccomp.json",
         "tools/m4/profiles/m47-fixed-chromium-chroot-seccomp.json",
