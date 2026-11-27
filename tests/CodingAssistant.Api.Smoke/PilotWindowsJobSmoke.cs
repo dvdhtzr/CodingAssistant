@@ -81,14 +81,14 @@ internal static class PilotWindowsJobSmoke
         Fixed(job,Script("static_web_candidate_dispatch.mjs"),"--run-job-crash-control");
         return 0;
     }
-    private static Process StartOwner(string name)
+    private static Process StartOwner(string name,bool redirected=false)
     {
         var executable=Environment.ProcessPath??throw new Exception("No current executable");
         var start=new ProcessStartInfo(executable){UseShellExecute=false,CreateNoWindow=true,
             WorkingDirectory=Directory.GetCurrentDirectory()};
         if(string.Equals(Path.GetFileNameWithoutExtension(executable),"dotnet",StringComparison.OrdinalIgnoreCase))
             start.ArgumentList.Add(typeof(PilotWindowsJobSmoke).Assembly.Location);
-        start.ArgumentList.Add("--pilot-job-owner");start.ArgumentList.Add(name);
+        start.ArgumentList.Add(redirected?"--pilot-job-io-owner":"--pilot-job-owner");start.ArgumentList.Add(name);
         return Process.Start(start)??throw new Exception("Owner start failed");
     }
     internal static async Task<int> Run()
@@ -214,5 +214,164 @@ internal static class PilotWindowsJobSmoke
             if(Directory.Exists(Path.Combine(Root(),"active")))
                 Console.Error.WriteLine("  active pilot journal retained; cleanup must be reconciled before another run");
         }
+    }
+
+    // The existing fixed held-stdin crash control is deliberately unable to
+    // complete. The only accepted outcome is observed interruption + recovery.
+    private const string InterruptRequest="{\"operation\":\"fixed-interruption\"}";
+    private static (EvaluationPlanningHostConfiguration Config,string BridgeHash) IoConfig()
+    {
+        var root=Directory.GetCurrentDirectory();
+        var pins=PilotQualificationInspector.FileNames.ToDictionary(p=>p,p=>Hash(Path.GetFullPath(p)),StringComparer.Ordinal);
+        return (new EvaluationPlanningHostConfiguration(root,Required("CODINGASSISTANT_TEST_NODE_EXE"),
+            Required("CA_PILOT_NODE_SHA256"),Hash(Path.Combine(root,PilotQualificationInspector.ScriptPath)),
+            pins,Required("CA_PILOT_DOCKER_EXE"),Required("CA_PILOT_DOCKER_SHA256")),
+            Hash(Script("windows_job_fixed_io.mjs")));
+    }
+    internal static async Task<int> IoOwner(string name)
+    {
+        var (config,bridge)=IoConfig();
+        using var job=PilotWindowsJob.Create(name);
+        await job.InvokeFixedIoAsync(config,bridge,InterruptRequest,TimeSpan.FromMinutes(4),CancellationToken.None);
+        // Uninterrupted exit is never a qualification pass.
+        return 2;
+    }
+    private static async Task<JsonElement> ObserveIo(string name,List<Process> observed,Func<bool> ended)
+    {
+        var watch=Stopwatch.StartNew();
+        while(watch.Elapsed<TimeSpan.FromSeconds(120)&&!ended())
+        {
+            var pending=Starting();
+            if(pending is null){await Task.Delay(100);continue;}
+            var batch=new List<Process>();
+            try
+            {
+                var members=PilotWindowsJob.Inspect(name);
+                if(!members.Contains(pending.Value.Owner)){await Task.Delay(100);continue;}
+                foreach(var pid in members)
+                {
+                    var p=Process.GetProcessById(pid);batch.Add(p);_=p.Handle;
+                }
+                bool Image(Process p,string key)=>string.Equals(p.MainModule?.FileName,
+                    Path.GetFullPath(Required(key)),StringComparison.OrdinalIgnoreCase);
+                if(!batch.Any(p=>p.Id==pending.Value.Owner&&Image(p,"CODINGASSISTANT_TEST_NODE_EXE"))||
+                    !batch.Any(p=>Image(p,"CA_PILOT_DOCKER_EXE"))||
+                    batch.Any(p=>p.HasExited||!PilotWindowsJob.ConfirmMember(name,p)))
+                {await Task.Delay(100);continue;}
+                var live=await Observe();
+                if(!live.GetProperty("running").GetBoolean()||
+                    live.GetProperty("attemptId").GetString()!=pending.Value.Attempt||
+                    live.GetProperty("ownerPid").GetInt32()!=pending.Value.Owner||
+                    Starting()!=pending||!PilotWindowsJob.Inspect(name).Order().SequenceEqual(members.Order())||
+                    batch.Any(p=>p.HasExited||!PilotWindowsJob.ConfirmMember(name,p))||ended())
+                {await Task.Delay(100);continue;}
+                observed.AddRange(batch);batch.Clear();return live;
+            }
+            catch(ArgumentException){}
+            catch(InvalidOperationException){}
+            catch(System.ComponentModel.Win32Exception){}
+            catch(StoreFailure){}
+            finally{foreach(var p in batch)p.Dispose();}
+            await Task.Delay(100);
+        }
+        throw new Exception("Actual redirected Node/Docker job and running container not observed");
+    }
+    private static async Task ConfirmIoExits(List<Process> observed)
+    {
+        Check(observed.Count>=2,"Missing retained process handles");
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await Task.WhenAll(observed.Select(p=>p.WaitForExitAsync(deadline.Token)));
+        Check(observed.All(p=>p.HasExited),"Redirected job member exit unconfirmed");
+    }
+    private static object RecoverIo(JsonElement live,int observedCount,string mode)
+    {
+        var attempt=live.GetProperty("attemptId").GetString();
+        Check(Starting()?.Attempt==attempt,"Interrupted exact attempt not retained");
+        var before=Receipts();
+        using(var recovery=PilotWindowsJob.Create(JobName()))
+            Fixed(recovery,Script("windows_job_recovery_control.mjs"),"--recover-fixed");
+        var receipt=NewReceipt(before,"PILOT_JOB_FIXED_RECOVERY_PASS");
+        Check(receipt.Value.GetProperty("attemptId").GetString()==attempt&&
+            receipt.Value.GetProperty("containerRemoved").GetBoolean()&&
+            !receipt.Value.GetProperty("cleanupDebt").GetBoolean()&&
+            !Directory.Exists(Path.Combine(Root(),"active")),"Redirected recovery unconfirmed");
+        Console.WriteLine("  "+mode+": "+observedCount+" observed processes exited; exact container recovered");
+        return new {mode,runningContainer=live,observedProcessCount=observedCount,observedProcessesExited=true,
+            jobClosedConfirmed=true,recoveryReceiptName=receipt.Name,recoveryReceiptSha256=receipt.Hash,
+            containerRemoved=true,cleanupDebt=false,resultPublished=false};
+    }
+    internal static async Task<int> RunIoInterruptions()
+    {
+        Check(OperatingSystem.IsWindows(),"Windows required");
+        Check(!Directory.Exists(Path.Combine(Root(),"active")),"Prior cleanup required");
+        var (config,bridge)=IoConfig();
+        var observed=new List<Process>();
+        object cancelled,crashed;
+        var cancelName=JobName();
+        using(var job=PilotWindowsJob.Create(cancelName))
+        using(var cancel=new CancellationTokenSource())
+        {
+            var invocation=job.InvokeFixedIoAsync(config,bridge,InterruptRequest,TimeSpan.FromMinutes(4),cancel.Token);
+            try
+            {
+                var live=await ObserveIo(cancelName,observed,()=>invocation.IsCompleted);
+                cancel.Cancel();
+                try{await invocation;throw new Exception("Cancelled invocation published a response");}
+                catch(OperationCanceledException) when(cancel.IsCancellationRequested){}
+                job.ConfirmEmpty();
+                await ConfirmIoExits(observed);
+                // Close the sole owning job handle before recording recovery.
+                job.Dispose();
+                Check(!PilotWindowsJob.Exists(cancelName),"Cancelled job still exists");
+                cancelled=RecoverIo(live,observed.Count,"running cancellation");
+            }
+            finally
+            {
+                cancel.Cancel();
+                try{await invocation;}catch{}
+                foreach(var p in observed)p.Dispose();observed.Clear();
+            }
+        }
+        var crashName=JobName();
+        using(var owner=StartOwner(crashName,redirected:true))
+        {
+            try
+            {
+                var live=await ObserveIo(crashName,observed,()=>owner.HasExited);
+                Check(!owner.HasExited,"Redirected owner exited prematurely");
+                owner.Kill(); // owner only; kernel job must terminate descendants
+                using(var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+                    await owner.WaitForExitAsync(deadline.Token);
+                Check(owner.ExitCode!=0,"Owner exit was not abrupt");
+                await ConfirmIoExits(observed);
+                Check(!PilotWindowsJob.Exists(crashName),"Redirected crash job still exists");
+                crashed=RecoverIo(live,observed.Count,"owner crash");
+            }
+            finally
+            {
+                if(!owner.HasExited){owner.Kill();owner.WaitForExit(15000);}
+                foreach(var p in observed)p.Dispose();
+            }
+        }
+        PilotQualificationInspector.RequirePinnedFiles(config.RepositoryRoot,config.ModulePins);
+        EvaluationPlanBinder.RequirePinnedFile(Script("windows_job_fixed_io.mjs"),bridge);
+        EvaluationPlanBinder.RequirePinnedFile(Path.Combine(config.RepositoryRoot,PilotQualificationInspector.ScriptPath),config.BinderSha256);
+        EvaluationPlanBinder.RequirePinnedFile(config.NodeExecutable,config.NodeSha256);
+        EvaluationPlanBinder.RequirePinnedFile(config.DockerExecutable,config.DockerSha256);
+        var evidence=new {schemaVersion=1,stage="AET-8-windows-job-io-interruptions",status="PILOT_JOB_IO_INTERRUPTION_PASS",
+            recordedAtUtc=DateTimeOffset.UtcNow.ToString("O"),bridgeSha256=bridge,config.NodeSha256,config.DockerSha256,
+            currentModulePins=config.ModulePins,inspectorSha256=config.BinderSha256,
+            ownerAssemblySha256=Hash(typeof(PilotWindowsJob).Assembly.Location),
+            harnessAssemblySha256=Hash(typeof(PilotWindowsJobSmoke).Assembly.Location),
+            cancellation=cancelled,crash=crashed,generatedSourceExecuted=false,generatedCodeExecutionEnabled=false,
+            runtimeQualified=false,generatedArtifactVerified=false};
+        PrivateDataDirectory.Ensure(EvidenceRoot());
+        var file=Path.Combine(EvidenceRoot(),"windows-static-web-"+Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(6))+".json");
+        using(var stream=new FileStream(file,FileMode.CreateNew,FileAccess.Write,FileShare.None))
+        {JsonSerializer.Serialize(stream,evidence);stream.Flush(flushToDisk:true);}
+        PrivateDataDirectory.ValidateFile(file);
+        Console.WriteLine("AET-8 WINDOWS_PILOT_JOB_IO_INTERRUPTION_PASS");
+        Console.WriteLine("Evidence: "+file);
+        return 0;
     }
 }

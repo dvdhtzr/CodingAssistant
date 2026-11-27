@@ -982,3 +982,26 @@ dotnet run --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.c
 
 Expected AET-8 WINDOWS_PILOT_JOB_FIXED_IO_PASS, using existing
 CA_PILOT_* and CODINGASSISTANT_TEST_NODE_EXE pins.
+
+### Owner-reported fixed I/O PASS; redirected interruption qualification
+
+At `89a9a44` the owner reported all 92 JavaScript regressions passing and
+AET-8 WINDOWS_PILOT_JOB_FIXED_IO_PASS, private receipt
+`windows-static-web-566202aab34a.json`. The new bridge accepts only an
+additional exact one-field fixed-interruption request, reusing the frozen
+held-stdin control without altering the historical dispatcher closure.
+The actual qualification observes the exact running container and retained
+Node/Docker process handles, then exercises native cancellation and abrupt
+owner loss separately. Each requires job/process termination and exact
+cleanup-only recovery before a pass. No generated input or grant route.
+The changed bridge must pass normal fixed I/O again before the new control.
+
+~~~powershell
+node --test tests/test_m4_generated_zip_smoke.mjs
+if ($LASTEXITCODE -eq 0) { dotnet run --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.csproj -- --pilot-job-fixed-io }
+if ($LASTEXITCODE -eq 0) { dotnet run --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.csproj -- --pilot-job-io-interruptions }
+~~~
+
+Expected AET-8 WINDOWS_PILOT_JOB_IO_INTERRUPTION_PASS. Stop on a failed
+control or active journal; never manually delete the journal. This is a
+qualification-only increment, not evidence binding or executable consent.

@@ -22,6 +22,16 @@ if (args.Length == 1 && args[0] == "--pilot-job-fixed-io")
     Environment.ExitCode=await PilotWindowsIoSmoke.Run();
     return;
 }
+if (args.Length == 1 && args[0] == "--pilot-job-io-interruptions")
+{
+    Environment.ExitCode=await PilotWindowsJobSmoke.RunIoInterruptions();
+    return;
+}
+if (args.Length == 2 && args[0] == "--pilot-job-io-owner")
+{
+    Environment.ExitCode=await PilotWindowsJobSmoke.IoOwner(args[1]);
+    return;
+}
 if (args.Length == 1 && args[0] == "--pilot-job-ownership")
 {
     Environment.ExitCode=await PilotWindowsJobSmoke.Run();

@@ -3,12 +3,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {qualifyCandidateDispatchControl} from './static_web_candidate_dispatch.mjs';
+import {qualifyCandidateDispatchControl,main as dispatchMain} from './static_web_candidate_dispatch.mjs';
 const controls=['build-working','build-spoof','build-missing-asset'];
 const fail=code=>{throw Error(code);};
 export function parseFixedIoRequest(raw){
   if(typeof raw!=='string'||Buffer.byteLength(raw)>4096)fail('PILOT_JOB_REQUEST_INVALID');
   const value=JSON.parse(raw);
+  // Exactly one fixed interruption request; no caller-selected identity or input.
+  if(value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).length===1&&
+    value.operation==='fixed-interruption')return Object.freeze({operation:value.operation});
   if(!value||typeof value!=='object'||Array.isArray(value)||
     Object.keys(value).length!==3||value.operation!=='fixed-control'||
     !controls.includes(value.control)||typeof value.attemptId!=='string'||
@@ -26,6 +29,12 @@ export async function main(args=process.argv.slice(2)){
     while(size<bytes.length){const n=fs.readSync(0,bytes,size,bytes.length-size,null);if(!n)break;size+=n;}
     if(size>4096)fail('PILOT_JOB_REQUEST_INVALID');
     const request=parseFixedIoRequest(new TextDecoder('utf-8',{fatal:true}).decode(bytes.subarray(0,size)));
+    if(request.operation==='fixed-interruption'){
+      // Reuse the historical frozen held-stdin control, without changing its pinned closure.
+      // A normal return is always blocked; the observer must interrupt this process.
+      await dispatchMain(['--run-job-crash-control']);
+      fail('PILOT_JOB_OWNER_NOT_INTERRUPTED');
+    }
     const result=await qualifyCandidateDispatchControl({control:request.control,attemptId:request.attemptId});
     console.log(JSON.stringify(result));
     return result.qualificationPassed?0:2;

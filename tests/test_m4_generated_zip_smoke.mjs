@@ -1749,6 +1749,9 @@ import {parseFixedIoRequest} from '../tools/m4/windows_job_fixed_io.mjs';
 test('job-owned stdin accepts only exact fixed-control identity',()=>{
   const valid={operation:'fixed-control',control:'build-working',attemptId:'a'.repeat(32)};
   assert.deepEqual(parseFixedIoRequest(JSON.stringify(valid)),valid);
+  assert.deepEqual(parseFixedIoRequest('{"operation":"fixed-interruption"}'),{operation:'fixed-interruption'});
+  for(const extra of [{attemptId:'a'.repeat(32)},{control:'build-working'},{source:'untrusted'},{command:'docker'}])
+    assert.throws(()=>parseFixedIoRequest(JSON.stringify({operation:'fixed-interruption',...extra})));
   for(const bad of [{...valid,source:'untrusted'}, {...valid,operation:'generated-source'},
     {...valid,control:'custom'}, {...valid,attemptId:'../other'},null,[]]){
     assert.throws(()=>parseFixedIoRequest(JSON.stringify(bad)));
