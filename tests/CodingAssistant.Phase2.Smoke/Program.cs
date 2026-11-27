@@ -5289,10 +5289,10 @@ try
     var missingReviewerRequest=new ApproveImplementationPlanRequest(1,missingReviewerPlan.Revision,
         missingReviewerPlan.PlanSha256,"APPROVE "+missingReviewerPlan.PlanSha256,
         new UpfrontRepairAuthorization(["app.js"],4));
-    using(var rejected=await Post(client,missingReviewerPath+"/implementation-plan/approve",missingReviewerRequest))
-    using(var rejection=await Body(rejected))
+    using(var missingReviewerResponse=await Post(client,missingReviewerPath+"/implementation-plan/approve",missingReviewerRequest))
+    using(var rejection=await Body(missingReviewerResponse))
     {
-        Check(rejected.StatusCode==HttpStatusCode.ServiceUnavailable &&
+        Check(missingReviewerResponse.StatusCode==HttpStatusCode.ServiceUnavailable &&
             rejection.RootElement.GetProperty("error").GetString()=="MODEL_NOT_INSTALLED" &&
             rejection.RootElement.GetProperty("missingRoles").EnumerateArray().Select(x=>x.GetString())
                 .SequenceEqual(new[]{"LeadSoftwareEngineer"}),
