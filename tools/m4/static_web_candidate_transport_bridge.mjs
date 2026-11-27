@@ -17,8 +17,8 @@ export function previewLocalCandidateTransport(request,{platform=process.platfor
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT)fail('PILOT_LOCAL_WINDOWS_ONLY');
   if(!exact(request,['operation','trustedReceiptName','receiptNames','currentScope','criteria','reviewedContract','archiveBase64','selection'])||
     request.operation!=='prepare-candidate-transport'||typeof request.trustedReceiptName!=='string'||!receipt.test(request.trustedReceiptName)||
-    !Array.isArray(request.receiptNames)||request.receiptNames.length!==4||
-    new Set([request.trustedReceiptName,...request.receiptNames]).size!==5||
+    !Array.isArray(request.receiptNames)||![4,5].includes(request.receiptNames.length)||
+    new Set([request.trustedReceiptName,...request.receiptNames]).size!==request.receiptNames.length+1||
     !request.receiptNames.every(x=>typeof x==='string'&&receipt.test(x))||
     typeof request.archiveBase64!=='string'||request.archiveBase64.length>2800000||
     !/^[A-Za-z0-9+/]+={0,2}$/.test(request.archiveBase64))
@@ -31,12 +31,12 @@ export function previewLocalCandidateTransport(request,{platform=process.platfor
   if(readPilotAttempt(root)!==null||host.list('label=codingassistant.static-web-pilot-qualification')!=='')
     fail('PILOT_PRIOR_CLEANUP_REQUIRED');
   const engineId=host.engine(),imageMetadata=readLocalImage({platform,env,docker});
-  const [working,negatives,interruptions,boundary]=request.receiptNames.map(name=>readReceipt(name,env));
+  const [working,negatives,interruptions,boundary,build]=request.receiptNames.map(name=>readReceipt(name,env));
   const inputs={currentScope:request.currentScope,selection:request.currentScope,archive,criteria:request.criteria,
     reviewedContract:request.reviewedContract,qualificationReport:readReceipt(request.trustedReceiptName,env),
     currentImageMetadata:imageMetadata};
   const {descriptor}=prepareReviewedCandidateTransport(inputs,
-    {working,negatives,interruptions,boundary,imageMetadata,engineId,root},request.selection);
+    {working,negatives,interruptions,boundary,build,imageMetadata,engineId,root},request.selection);
   if(host.engine()!==engineId||host.list('label=codingassistant.static-web-pilot-qualification')!==''||readPilotAttempt(root)!==null)
     fail('PILOT_HOST_CHANGED');
   return descriptor;

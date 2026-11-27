@@ -6,7 +6,8 @@ import {createHash} from 'node:crypto';
 import {prepareEvaluationAdmission} from './static_web_evaluation_admission.mjs';
 import {prepareCandidatePayload} from './static_web_candidate_payload.mjs';
 import {fixedCandidateBundle} from './windows_candidate_fixture_qualification.mjs';
-import {bindCompletePilotEvidence} from './static_web_pilot_evidence.mjs';
+import {bindCompletePilotEvidence,bindBuildQualifiedPilotEvidence} from './static_web_pilot_evidence.mjs';
+import {buildQualifiedCandidateBundle} from './static_web_build_qualification.mjs';
 import {preparePilotPolicy} from './static_web_pilot_policy.mjs';
 import {createCandidateAssets} from './static_web_candidate_assets.mjs';
 
@@ -24,13 +25,16 @@ export function prepareReviewedCandidateTransport(inputs,pilotInputs,selection){
     fail('CANDIDATE_TRANSPORT_SELECTION_INVALID');
   // Both sides are reconstructed from actual inputs, never a caller-supplied
   // pass descriptor. No permission is inferred from the selection hashes.
-  const historical=bindCompletePilotEvidence(pilotInputs);
+  const upgraded=Object.hasOwn(pilotInputs,'build')&&pilotInputs.build!==undefined;
+  const historical=upgraded?bindBuildQualifiedPilotEvidence(pilotInputs):bindCompletePilotEvidence(pilotInputs);
+  const evidenceHash=upgraded?historical.qualifiedEvidenceSha256:historical.completeEvidenceSha256;
+  const selectedPolicy=upgraded?historical.buildQualification:historical;
   const admission=prepareEvaluationAdmission(inputs);
-  const bundle=fixedCandidateBundle();
+  const bundle=upgraded?buildQualifiedCandidateBundle():fixedCandidateBundle();
   const policy=preparePilotPolicy(pilotInputs.imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
   const fixture=admission.qualification;
-  if(historical.completeEvidenceSha256!==selection.completeEvidenceSha256||
-    historical.policySha256!==policy.policySha256||policy.policySha256!==selection.policySha256||
+  if(evidenceHash!==selection.completeEvidenceSha256||
+    selectedPolicy.policySha256!==policy.policySha256||policy.policySha256!==selection.policySha256||
     bundle.adapterSha256!==selection.adapterSha256||
     admission.admissionSha256!==selection.admissionSha256||
     admission.candidateSha256!==selection.candidateSha256||admission.archiveSha256!==selection.archiveSha256||
@@ -38,7 +42,8 @@ export function prepareReviewedCandidateTransport(inputs,pilotInputs,selection){
     fixture.imageId!==policy.descriptor.imageId||fixture.registryDigest!==policy.descriptor.registryDigest||
     fixture.seccompSha256!==policy.descriptor.seccompSha256||fixture.fixturePidLimit!==policy.descriptor.pidLimit)
     fail('CANDIDATE_TRANSPORT_BINDING_CHANGED');
-  if([...Object.values(historical.attempts).map(x=>x.attemptId),historical.boundary.attemptId].includes(selection.attemptId))
+  if([...Object.values(historical.attempts).map(x=>x.attemptId),historical.boundary.attemptId,
+    ...Object.values(historical.buildQualification?.attempts??{}).map(x=>x.attemptId)].includes(selection.attemptId))
     fail('CANDIDATE_TRANSPORT_ATTEMPT_REUSED');
   const staged=prepareCandidatePayload(inputs,selection.admissionSha256);
   createCandidateAssets(staged.payloadJson,staged.binding);
@@ -56,11 +61,11 @@ export function prepareReviewedCandidateTransport(inputs,pilotInputs,selection){
     fail('CANDIDATE_TRANSPORT_TEMPLATE_INVALID');
   const descriptor=Object.freeze({schemaVersion:1,status:'CANDIDATE_TRANSPORT_PREPARED_ONLY',
     ...expected,admissionSha256:admission.admissionSha256,
-    completeEvidenceSha256:historical.completeEvidenceSha256,engineId:historical.engineId,
+    completeEvidenceSha256:evidenceHash,engineId:historical.engineId,
     sourceFingerprint:staged.binding.sourceFingerprint,assetCount:staged.binding.files.length,
     payloadSha256:sha(request),transportSha256:sha(source),transportBytes:Buffer.byteLength(source),
     executionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false});
-  // No caller in the application can dispatch this. The template's build
-  // probe is fixture-oriented and does not yet qualify general HTML/JS.
+  // No caller can dispatch this. The older fixture-only preparation is
+  // retained for diagnostics; only upgraded evidence selects the new build gate.
   return Object.freeze({descriptor,source,expected});
 }

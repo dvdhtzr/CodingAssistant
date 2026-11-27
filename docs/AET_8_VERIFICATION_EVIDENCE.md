@@ -659,3 +659,29 @@ node tools/m4/windows_pilot_lifecycle_qualification.mjs --run-build-controls
 Expected `AET-8 WINDOWS_PILOT_BUILD_CONTROLS_PASS`, all five removed.
 The new adapter needs this distinct qualification; it does not inherit
 the prior fixture-only adapter PASS. No runtime promotion or grant.
+
+
+### Owner-reported restricted build PASS and eleven-attempt evidence binding
+
+At `8e3a82c` the owner reported AET-8 WINDOWS_PILOT_BUILD_CONTROLS_PASS.
+The individual new receipt basename was not supplied. The previous
+conditional model-free command reached the build qualifier if run as
+documented. Do not repeat unchanged controls merely to obtain the name.
+
+The inspector accepts a fifth receipt, validates the five distinct
+new archived attempts and recomputes the observation classifications,
+and retains both original evidence digests. The new policy must differ
+only by the build adapter digest. The .NET inspector checks the exact
+additional identities, policy invariants and eleven unique attempts.
+The bound host proposal includes the complete upgraded evidence; the
+host transport planner now requires the upgraded evidence and selects
+the exact new adapter and policy. Older diagnostic previews remain
+non-executable and cannot substitute for this new binding.
+
+The existing opt-in .NET smoke accepts five receipt basenames separated
+by semicolons in CODINGASSISTANT_TEST_PILOT_RECEIPTS and emits
+PILOT_PINNED_BUILD_EVIDENCE_INSPECTION_PASS. No containers are started.
+The real report is historical evidence, not runtime promotion,
+retrospective host attestation or executable consent. Actual one-use
+admission, pinned execution ownership and a distinct owner authorization
+remain outstanding.

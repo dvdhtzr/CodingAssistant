@@ -363,9 +363,10 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
         var configuration=new EvaluationPlanningHostConfiguration(pilotRepositoryRoot,node,Hash(node),
             Hash(Path.Combine(pilotRepositoryRoot,PilotQualificationInspector.ScriptPath)),pins,docker,Hash(docker));
         var result=await new PilotQualificationInspector(configuration).InspectAsync(selected.Split(';'),CancellationToken.None);
-        Check(result.GetProperty("status").GetString()=="PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND"&&
+        var buildSelected=selected.Split(';').Length==5;
+        Check(result.GetProperty("status").GetString()==(buildSelected?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")&&
             !result.GetProperty("executionEnabled").GetBoolean(),"real pinned .NET pilot evidence inspection is non-executable");
-        Console.WriteLine("PILOT_PINNED_HOST_INSPECTION_PASS");
+        Console.WriteLine(buildSelected?"PILOT_PINNED_BUILD_EVIDENCE_INSPECTION_PASS":"PILOT_PINNED_HOST_INSPECTION_PASS");
     }
 }
 

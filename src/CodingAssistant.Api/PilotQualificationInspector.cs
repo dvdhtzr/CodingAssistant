@@ -68,7 +68,7 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
     private static readonly Regex Digest=new("^[0-9a-f]{64}\\z",RegexOptions.CultureInvariant);
     internal async Task<JsonElement> InspectAsync(IReadOnlyList<string> receipts,CancellationToken token)
     {
-        if(receipts.Count!=4||receipts.Distinct(StringComparer.Ordinal).Count()!=4||
+        if(receipts.Count is not (4 or 5)||receipts.Distinct(StringComparer.Ordinal).Count()!=receipts.Count||
             receipts.Any(x=>x is null||!x.StartsWith("windows-static-web-",StringComparison.Ordinal)||!Receipt.IsMatch(x)))
             throw new StoreFailure("PILOT_RECEIPT_SELECTION_INVALID");
         if(!OperatingSystem.IsWindows())throw new StoreFailure("PILOT_LOCAL_WINDOWS_ONLY");
@@ -92,6 +92,8 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
         var payload=JsonSerializer.Serialize(new {operation="inspect-complete-pilot",receiptNames=receipts});
         var value=await EvaluationPlanBinder.InvokePlanningProcessAsync(start,payload,TimeSpan.FromSeconds(60),token);
         Validate(value);
+        if((receipts.Count==5)!=value.TryGetProperty("buildQualification",out _))
+            throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
         // Recheck every current executable and trusted data input after
         // the read-only operation. This still does not close same-account races.
         RequirePinnedFiles(root,configuration.ModulePins);
@@ -109,9 +111,14 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
         bool Hash(JsonElement item,string key)=>item.TryGetProperty(key,out var x)&&x.ValueKind==JsonValueKind.String&&Digest.IsMatch(x.GetString()!);
         try
         {
-            if(!Exact(value,"schemaVersion","status","engineId","policySha256","policy","attempts","evidenceSha256",
-                "hostProvenanceEstablished","runtimeQualified","executionEnabled","generatedArtifactVerified","boundary","completeEvidenceSha256")||
-                value.GetProperty("schemaVersion").GetInt32()!=1||value.GetProperty("status").GetString()!="PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND"||
+            var upgraded=value.TryGetProperty("buildQualification",out var build);
+            var fields=new[]{"schemaVersion","status","engineId","policySha256","policy","attempts","evidenceSha256",
+                "hostProvenanceEstablished","runtimeQualified","executionEnabled","generatedArtifactVerified","boundary","completeEvidenceSha256"};
+            if(upgraded)fields=[..fields,"buildQualification","qualifiedEvidenceSha256"];
+            if(!Exact(value,fields)||
+                value.GetProperty("schemaVersion").GetInt32()!=1||
+                value.GetProperty("status").GetString()!=(upgraded?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")||
+                (upgraded&&!Hash(value,"qualifiedEvidenceSha256"))||
                 !Hash(value,"policySha256")||!Hash(value,"evidenceSha256")||!Hash(value,"completeEvidenceSha256")||
                 value.GetProperty("engineId").ValueKind!=JsonValueKind.String||
                 string.IsNullOrWhiteSpace(value.GetProperty("engineId").GetString())||
@@ -122,9 +129,9 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
             var ids=new HashSet<string>(StringComparer.Ordinal);
             void Attempt(JsonElement item,bool boundary=false)
             {
-                var fields=boundary?new[]{"attemptId","archiveSha256","receiptSha256","policySha256","adapterSha256"}:
+                var attemptFields=boundary?new[]{"attemptId","archiveSha256","receiptSha256","policySha256","adapterSha256"}:
                     new[]{"attemptId","archiveSha256","receiptSha256"};
-                if(!Exact(item,fields)||!Hash(item,"archiveSha256")||!Hash(item,"receiptSha256")||
+                if(!Exact(item,attemptFields)||!Hash(item,"archiveSha256")||!Hash(item,"receiptSha256")||
                     (boundary&&(!Hash(item,"policySha256")||!Hash(item,"adapterSha256")))||
                     item.GetProperty("attemptId").ValueKind!=JsonValueKind.String||
                     !Regex.IsMatch(item.GetProperty("attemptId").GetString()!,"^[0-9a-f]{32}\\z")||
@@ -135,14 +142,15 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
                 throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
             foreach(var property in attempts.EnumerateObject())Attempt(property.Value);
             Attempt(value.GetProperty("boundary"),true);
-            var policy=value.GetProperty("policy");
+            void ValidatePolicy(JsonElement policy,string policyHash)
+            {
             if(!Exact(policy,"schemaVersion","policyId","contractId","imageId","registryDigest","adapterSha256",
                 "evaluatorSha256","seccompSha256","environmentSha256","pidLimit","memoryBytes","nanoCpus",
                 "shmBytes","scratchBytes","guestDeadlineSeconds","hostDeadlineSeconds","user","network","ipc",
                 "rootReadOnly","capabilities","noNewPrivileges","init","autoRemove","hostMounts","entrypoint","entryFlag")||
                 !new[]{"adapterSha256","evaluatorSha256","seccompSha256","environmentSha256"}.All(k=>Hash(policy,k))||
                 Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(policy.GetRawText())))!=
-                    value.GetProperty("policySha256").GetString()||
+                    policyHash||
                 policy.GetProperty("schemaVersion").GetInt32()!=1||
                 policy.GetProperty("policyId").GetString()!="static-web-calculation-journal-windows-qualification-v1"||
                 policy.GetProperty("contractId").GetString()!="calculation-journal-v1"||
@@ -157,6 +165,26 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
                 !policy.GetProperty("rootReadOnly").GetBoolean()||!policy.GetProperty("noNewPrivileges").GetBoolean()||
                 !policy.GetProperty("init").GetBoolean()||policy.GetProperty("autoRemove").GetBoolean())
                 throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+            }
+            var original=value.GetProperty("policy");
+            ValidatePolicy(original,value.GetProperty("policySha256").GetString()!);
+            if(upgraded)
+            {
+                if(!Exact(build,"policySha256","policy","buildSha256","attempts","receiptSha256")||
+                    !new[]{"policySha256","buildSha256","receiptSha256"}.All(k=>Hash(build,k))||
+                    build.GetProperty("policySha256").GetString()==value.GetProperty("policySha256").GetString())
+                    throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+                var newPolicy=build.GetProperty("policy");
+                ValidatePolicy(newPolicy,build.GetProperty("policySha256").GetString()!);
+                if(newPolicy.GetProperty("adapterSha256").GetString()==original.GetProperty("adapterSha256").GetString()||
+                    original.EnumerateObject().Any(p=>p.Name!="adapterSha256"&&
+                        p.Value.GetRawText()!=newPolicy.GetProperty(p.Name).GetRawText()))
+                    throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+                var buildAttempts=build.GetProperty("attempts");
+                if(!Exact(buildAttempts,"build-working","build-broken","build-spoof","build-missing-asset","build-invalid-syntax"))
+                    throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+                foreach(var property in buildAttempts.EnumerateObject())Attempt(property.Value);
+            }
         }
         catch(Exception e)when(e is InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)
         {throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");}

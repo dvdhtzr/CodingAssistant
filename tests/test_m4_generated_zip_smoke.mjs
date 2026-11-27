@@ -1374,3 +1374,65 @@ test('build qualification has distinct adapter digest and checks exact expected 
     assert.equal(buildControlMatches(name,{...o,infrastructure:{...o.infrastructure,browser_closed:true}}),false);
   }
 });
+
+
+import {bindBuildQualifiedPilotEvidence} from '../tools/m4/static_web_pilot_evidence.mjs';
+function buildEvidenceFixture(root){
+  const input=completePilotEvidenceFixture(root),bundle=buildQualifiedCandidateBundle();
+  const policy=preparePilotPolicy(input.imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  const controls={};
+  for(const [i,name] of BUILD_CONTROLS.entries()){
+    const attemptId=String(i+7).padStart(2,'0').repeat(16),fixture=buildQualificationFixture(name,bundle,policy.policySha256,attemptId);
+    const j=reservePilotAttempt(root,{...policy.identity(attemptId),engineId:input.engineId,
+      candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256});
+    j.advance('Creating');j.advance('Created',attemptId.repeat(2));j.advance('Audited');j.advance('Starting');
+    j.advance('Exited');j.advance('CleanupPending');j.advance('Cleaned');j.archive();
+    const {report}=candidateObservationFixture();Object.assign(report,fixture.expected);
+    if(name==='build-spoof')report.cases=allCases(CALCULATION_CASES,false);
+    if(!['build-working','build-spoof'].includes(name)){
+      report.build.javascript_syntax=name!=='build-invalid-syntax';
+      report.build.local_assets_linked=name==='build-invalid-syntax';
+      report.infrastructure=allCases(Object.keys(report.infrastructure),null);
+      report.cases=allCases(CALCULATION_CASES,null);
+    }
+    controls[name]={...input.working,status:'PILOT_BUILD_CONTROL_PASS',attemptId,policySha256:policy.policySha256,
+      observations:parseCandidateObservations(JSON.stringify(report),fixture.expected)};
+  }
+  input.build={...input.negatives,stage:'AET-8-pilot-build-controls',status:'PILOT_BUILD_CONTROLS_PASS',controls};
+  return input;
+}
+test('build-qualified evidence binds eleven distinct attempts and preserves historical digests',()=>withPilotJournal(root=>{
+  const input=buildEvidenceFixture(root),prior=bindCompletePilotEvidence(input),upgraded=bindBuildQualifiedPilotEvidence(input);
+  assert.equal(upgraded.status,'PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND');
+  assert.equal(upgraded.completeEvidenceSha256,prior.completeEvidenceSha256);
+  assert.notEqual(upgraded.buildQualification.policySha256,prior.policySha256);
+  assert.equal(Object.keys(upgraded.buildQualification.attempts).length,5);
+  assert.match(upgraded.qualifiedEvidenceSha256,/^[a-f0-9]{64}$/);
+  assert.equal(upgraded.executionEnabled,false);assert.equal(upgraded.runtimeQualified,false);
+}));
+test('build evidence rejects replay, missing controls, wrong policy and forged outcomes',()=>withPilotJournal(root=>{
+  const input=buildEvidenceFixture(root);
+  for(const change of [
+    x=>{delete x.build.controls['build-broken'];},
+    x=>{x.build.controls['build-working'].attemptId=x.working.attemptId;},
+    x=>{x.build.controls['build-spoof'].policySha256=x.working.policySha256;},
+    x=>{x.build.controls['build-invalid-syntax'].observations.build.javascript_syntax=true;},
+    x=>{x.build.controls['build-missing-asset'].observations.infrastructure.browser_closed=true;},
+    x=>{x.build.controls['build-working'].cleanupDebt=true;}]){
+    const changed=structuredClone(input);change(changed);assert.throws(()=>bindBuildQualifiedPilotEvidence(changed));
+  }
+}));
+test('upgraded transport binds exact new build adapter and rejects old policy or evidence substitution',()=>withPilotJournal(root=>{
+  const pilot=buildEvidenceFixture(root),inputs=admissionFixture(),admission=prepareEvaluationAdmission(inputs);
+  const evidence=bindBuildQualifiedPilotEvidence(pilot),bundle=buildQualifiedCandidateBundle();
+  const selection={attemptId:'e'.repeat(32),admissionSha256:admission.admissionSha256,candidateSha256:admission.candidateSha256,
+    archiveSha256:admission.archiveSha256,completeEvidenceSha256:evidence.qualifiedEvidenceSha256,
+    policySha256:evidence.buildQualification.policySha256,adapterSha256:bundle.adapterSha256};
+  const result=prepareReviewedCandidateTransport(inputs,pilot,selection);
+  const encoded=result.source.match(/const INPUT='([^']+)'/)[1];
+  assert.equal(result.source.replace(encoded,'__CA_FIXED_CANDIDATE_INPUT__'),bundle.source);
+  assert.equal(result.descriptor.executionEnabled,false);
+  assert.throws(()=>prepareReviewedCandidateTransport(inputs,pilot,{...selection,policySha256:evidence.policySha256}),/BINDING_CHANGED/);
+  assert.throws(()=>prepareReviewedCandidateTransport(inputs,pilot,{...selection,completeEvidenceSha256:evidence.completeEvidenceSha256}),/BINDING_CHANGED/);
+  assert.throws(()=>prepareReviewedCandidateTransport(inputs,pilot,{...selection,attemptId:pilot.build.controls['build-working'].attemptId}),/ATTEMPT_REUSED/);
+}));

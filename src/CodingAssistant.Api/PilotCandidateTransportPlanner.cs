@@ -26,14 +26,18 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
             throw new StoreFailure("PILOT_HOST_CONFIGURATION_CHANGED");
         using var historical=JsonDocument.Parse(captured.Binding.GetProperty("evidenceJson").GetString()!);
         var evidence=historical.RootElement;
+        // The old fixture-only preview remains diagnostic. This host
+        // path now requires the separately build-qualified adapter.
+        if(!evidence.TryGetProperty("buildQualification",out var build))
+            throw new StoreFailure("PILOT_BUILD_EVIDENCE_REQUIRED");
         var selection=JsonSerializer.SerializeToElement(new {
             attemptId=Guid.NewGuid().ToString("N"),
             admissionSha256=captured.Descriptor.GetProperty("admissionSha256").GetString(),
             candidateSha256=captured.Descriptor.GetProperty("candidateSha256").GetString(),
             archiveSha256=captured.Input.ArchiveSha256,
-            completeEvidenceSha256=evidence.GetProperty("completeEvidenceSha256").GetString(),
-            policySha256=evidence.GetProperty("policySha256").GetString(),
-            adapterSha256=evidence.GetProperty("policy").GetProperty("adapterSha256").GetString()
+            completeEvidenceSha256=evidence.GetProperty("qualifiedEvidenceSha256").GetString(),
+            policySha256=build.GetProperty("policySha256").GetString(),
+            adapterSha256=build.GetProperty("policy").GetProperty("adapterSha256").GetString()
         });
         var request=JsonSerializer.Serialize(new {
             operation="prepare-candidate-transport",trustedReceiptName,

@@ -9,6 +9,7 @@ import {readLocalReceipt,readLocalImage,pinnedMetadataDocker} from './static_web
 import {fixedCandidateBundle,fixedCandidateFixture} from './windows_candidate_fixture_qualification.mjs';
 import {fixedBrowserBoundaryBundle,fixedBrowserBoundaryFixture,parseBrowserBoundaryReport} from './static_web_pilot_browser_boundary.mjs';
 import {preparePilotPolicy} from './static_web_pilot_policy.mjs';
+import {BUILD_CONTROLS,buildQualifiedCandidateBundle,buildQualificationFixture,buildControlMatches} from './static_web_build_qualification.mjs';
 import {readArchivedPilotAttempt,readPilotAttempt} from './static_web_pilot_attempt_journal.mjs';
 import {parseCandidateObservations} from './static_web_candidate_observations.mjs';
 import {pilotHostTools,pilotLocalRoot} from './windows_pilot_lifecycle_qualification.mjs';
@@ -110,15 +111,59 @@ export function bindCompletePilotEvidence(input){
     boundary:boundaryBinding,completeEvidenceSha256:sha({priorEvidenceSha256:prior.evidenceSha256,boundary:boundaryBinding})});
 }
 
+// Bind the five new fixed build controls in addition to the original
+// six attempts. The old evidence digests and policy are retained verbatim.
+export function bindBuildQualifiedPilotEvidence(input){
+  const prior=bindCompletePilotEvidence(input);
+  const {build,imageMetadata,engineId,root}=input;
+  const bundle=buildQualifiedCandidateBundle();
+  const policy=preparePilotPolicy(imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  if(!header(build,['controls'],'AET-8-pilot-build-controls','PILOT_BUILD_CONTROLS_PASS')||
+    !exact(build.controls,BUILD_CONTROLS)||policy.policySha256===prior.policySha256)
+    fail('PILOT_BUILD_EVIDENCE_INVALID');
+  // The only permitted policy difference is the new adapter identity.
+  if(json({...policy.descriptor,adapterSha256:prior.policy.adapterSha256})!==json(prior.policy))
+    fail('PILOT_BUILD_POLICY_CHANGED');
+  const used=new Set([...Object.values(prior.attempts).map(x=>x.attemptId),prior.boundary.attemptId]);
+  const attempts={};
+  for(const name of BUILD_CONTROLS){
+    const report=build.controls[name];
+    if(!header(report,['attemptId','policySha256','engineId','configurationAudited','observations','containerRemoved','cleanupDebt','reason'],
+      'AET-8-pilot-durable-lifecycle','PILOT_BUILD_CONTROL_PASS')||
+      report.policySha256!==policy.policySha256||report.engineId!==engineId||
+      report.configurationAudited!==true||report.containerRemoved!==true||report.cleanupDebt!==false||
+      report.reason!==null||used.has(report.attemptId))
+      fail('PILOT_BUILD_CONTROL_INVALID');
+    const archive=readArchivedPilotAttempt(root,report.attemptId);
+    const fixture=buildQualificationFixture(name,bundle,policy.policySha256,report.attemptId);
+    const expected={...policy.identity(report.attemptId),engineId,
+      candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256};
+    if(json(archive.identity)!==json(expected)||json(archive.events.map(e=>e.stage))!==json(goodStages)||archive.recoveryClaimed)
+      fail('PILOT_BUILD_ARCHIVE_CHANGED');
+    const o=report.observations;
+    if(!o)fail('PILOT_BUILD_CONTROL_INVALID');
+    const observed=parseCandidateObservations(JSON.stringify({schemaVersion:1,...fixture.expected,
+      security:o.security,build:o.build,infrastructure:o.infrastructure,cases:o.cases}),fixture.expected);
+    if(json(observed)!==json(o)||!buildControlMatches(name,observed))
+      fail('PILOT_BUILD_CONTROL_INVALID');
+    used.add(report.attemptId);
+    attempts[name]={attemptId:report.attemptId,archiveSha256:sha(archive),receiptSha256:sha(report)};
+  }
+  const buildQualification=Object.freeze({policySha256:policy.policySha256,policy:policy.descriptor,
+    buildSha256:bundle.buildSha256,attempts,receiptSha256:sha(build)});
+  return Object.freeze({...prior,status:'PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND',buildQualification,
+    qualifiedEvidenceSha256:sha({priorEvidenceSha256:prior.completeEvidenceSha256,buildQualification})});
+}
+
 export function inspectPilotEvidence(names,{platform=process.platform,env=process.env,docker=shellDocker}={}){
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT)fail('PILOT_LOCAL_WINDOWS_ONLY');
-  if(!Array.isArray(names)||![3,4].includes(names.length)||new Set(names).size!==names.length)fail('PILOT_RECEIPT_SELECTION_INVALID');
-  const [working,negatives,interruptions,boundary]=names.map(name=>readLocalReceipt(name,env));
+  if(!Array.isArray(names)||![3,4,5].includes(names.length)||new Set(names).size!==names.length)fail('PILOT_RECEIPT_SELECTION_INVALID');
+  const [working,negatives,interruptions,boundary,build]=names.map(name=>readLocalReceipt(name,env));
   const root=pilotLocalRoot(env),host=pilotHostTools(docker);
   const engineId=host.engine(),imageMetadata=readLocalImage({platform,env,docker});
   if(host.list('label=codingassistant.static-web-pilot-qualification')!=='')fail('PILOT_PRIOR_CLEANUP_REQUIRED');
-  const input={working,negatives,interruptions,boundary,imageMetadata,engineId,root};
-  const bound=names.length===4?bindCompletePilotEvidence(input):bindPilotEvidence(input);
+  const input={working,negatives,interruptions,boundary,build,imageMetadata,engineId,root};
+  const bound=names.length===5?bindBuildQualifiedPilotEvidence(input):names.length===4?bindCompletePilotEvidence(input):bindPilotEvidence(input);
   if(host.engine()!==engineId||host.list('label=codingassistant.static-web-pilot-qualification')!==''||readPilotAttempt(root)!==null)
     fail('PILOT_HOST_CHANGED');
   return bound;
@@ -133,9 +178,9 @@ export function main(argv=process.argv.slice(2)){
       if(size>4096)fail('PILOT_RECEIPT_SELECTION_INVALID');
       const input=JSON.parse(buffer.subarray(0,size).toString('utf8'));
       if(!exact(input,['operation','receiptNames'])||input.operation!=='inspect-complete-pilot'||
-        !Array.isArray(input.receiptNames)||input.receiptNames.length!==4)fail('PILOT_RECEIPT_SELECTION_INVALID');
+        !Array.isArray(input.receiptNames)||![4,5].includes(input.receiptNames.length))fail('PILOT_RECEIPT_SELECTION_INVALID');
       names=input.receiptNames;options={docker:pinnedMetadataDocker()};
-    }else if([4,5].includes(argv.length)&&argv[0]==='--inspect')names=argv.slice(1);
+    }else if([4,5,6].includes(argv.length)&&argv[0]==='--inspect')names=argv.slice(1);
     else fail('PILOT_RECEIPT_SELECTION_INVALID');
     console.log(JSON.stringify(inspectPilotEvidence(names,options)));return 0;
   }catch(e){
