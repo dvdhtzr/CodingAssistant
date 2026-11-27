@@ -472,3 +472,66 @@ test('stdin metadata Docker requires an explicit local executable and digest',()
   assert.throws(()=>pinnedMetadataDocker({CA_EVALUATION_DOCKER_EXE:'C:/Docker/docker.exe',
     CA_EVALUATION_DOCKER_SHA256:'a'.repeat(64)},'linux'),/EVALUATION_DOCKER_PROVENANCE_REQUIRED/);
 });
+
+import {prepareCandidatePayload} from '../tools/m4/static_web_candidate_payload.mjs';
+import {createCandidateAssets} from '../tools/m4/static_web_candidate_assets.mjs';
+import {parseCandidateObservations} from '../tools/m4/static_web_candidate_observations.mjs';
+test('candidate payload binds reviewed admission and serves only exact in-memory assets',()=>{
+  const input=admissionFixture(),admission=prepareEvaluationAdmission(input);
+  const staged=prepareCandidatePayload(input,admission.admissionSha256);
+  assert.equal(staged.status,'CANDIDATE_PAYLOAD_ONLY');
+  assert.equal(staged.executionEnabled,false);
+  const assets=createCandidateAssets(staged.payloadJson,staged.binding);
+  assert.equal(assets.entryPath,'/index.html');
+  assert.equal(assets.resolve('GET','/index.html').body,working[0][1]);
+  assert.equal(assets.resolve('GET','/app.js').contentType,'application/javascript; charset=utf-8');
+  for(const target of ['/','/INDEX.html','/../index.html','/%69ndex.html','/index.html?x=1','/app.js#x','/etc/passwd','/missing.js'])
+    assert.equal(assets.resolve('GET',target).status,404,target);
+  assert.equal(assets.resolve('POST','/index.html').status,404);
+  assert.ok(Object.isFrozen(assets.resolve('GET','/index.html')));
+});
+test('candidate payload rejects changed approval, tampered bytes, omitted assets and extra fields',()=>{
+  const input=admissionFixture(),admission=prepareEvaluationAdmission(input);
+  assert.throws(()=>prepareCandidatePayload(input,'0'.repeat(64)),/ADMISSION_CHANGED/);
+  const staged=prepareCandidatePayload(input,admission.admissionSha256);
+  const payload=JSON.parse(staged.payloadJson);
+  for(const mutate of [
+    p=>p.files[0].content+='changed',p=>p.files.pop(),p=>p.files.push(p.files[0]),
+    p=>p.files[0].path='../index.html',p=>p.files[0].executionEnabled=true,
+    p=>p.candidateSha256='0'.repeat(64),p=>p.executionEnabled=true]){
+    const copy=structuredClone(payload);mutate(copy);
+    assert.throws(()=>createCandidateAssets(JSON.stringify(copy),staged.binding));
+  }
+});
+function candidateObservationFixture(){
+  const expected={attemptId:'1'.repeat(32),candidateSha256:'2'.repeat(64),archiveSha256:'3'.repeat(64),
+    evaluatorSha256:'4'.repeat(64),adapterSha256:'5'.repeat(64),policySha256:'6'.repeat(64)};
+  const report={schemaVersion:1,...expected,security:allCases(SECURITY_CASES,true),
+    build:allCases(['exact_source_hashes','javascript_syntax','local_assets_linked','source_integrity_unchanged'],true),
+    infrastructure:allCases(['browser_sandbox_confirmed','independent_driver_confirmed','browser_closed'],true),
+    cases:allCases(CALCULATION_CASES,true)};
+  return {expected,report};
+}
+test('candidate observations distinguish complete functional failures from infrastructure blockers',()=>{
+  const {expected,report}=candidateObservationFixture();
+  const read=r=>parseCandidateObservations(JSON.stringify(r),expected);
+  assert.equal(read(report).status,'CHECKS_PASSED_NOT_VERIFIED');
+  assert.equal(read(report).generatedArtifactVerified,false);
+  const failed={...report,cases:{...report.cases,[CALCULATION_CASES[2]]:false}};
+  assert.equal(read(failed).status,'TESTS_FAILED');
+  assert.equal(read(failed).passed,6);
+  assert.equal(read({...failed,infrastructure:{...report.infrastructure,browser_closed:false}}).status,'VERIFICATION_BLOCKED');
+  assert.equal(read({...failed,cases:{...failed.cases,[CALCULATION_CASES[0]]:null}}).status,'VERIFICATION_BLOCKED');
+  assert.equal(read({...report,build:{...report.build,javascript_syntax:false},cases:allCases(CALCULATION_CASES,null)}).status,'BUILD_FAILED');
+});
+test('candidate observations reject forged success, stale identity and contradictory security/build results',()=>{
+  const {expected,report}=candidateObservationFixture();
+  for(const bad of [
+    {...report,status:'VERIFIED'},{...report,attemptId:'0'.repeat(32)},
+    {...report,policySha256:'0'.repeat(64)},{...report,generatedArtifactVerified:true},
+    {...report,security:{...report.security,[SECURITY_CASES[0]]:false}},
+    {...report,build:{...report.build,javascript_syntax:false}},
+    {...report,cases:{...report.cases,unknown:true}},
+    {...report,cases:{...report.cases,[CALCULATION_CASES[0]]:'true'}}])
+    assert.throws(()=>parseCandidateObservations(JSON.stringify(bad),expected),/OBSERVATIONS_INVALID/);
+});

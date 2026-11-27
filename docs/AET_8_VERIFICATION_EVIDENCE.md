@@ -262,3 +262,24 @@ there is no worker, public route, runtime grant or generated execution.
 Current host/adapter qualification, exact executable policy binding,
 single-use transactional consumption and cleanup remain required. Do not
 ask the owner for executable consent at this stage.
+
+
+### Candidate-shaped staging and observation contract
+
+The separate candidate payload builder recomputes the exact current
+admission and creates a bounded JSON asset payload. Its pure in-memory
+asset resolver independently rechecks every file hash, size, manifest
+order, source fingerprint and admission binding; only exact GET paths
+from the manifest are served (no normalization, host filesystem fallback
+or dynamic route). It starts no server or process.
+
+The candidate observation parser requires the host's exact attempt,
+candidate, archive, evaluator, adapter and policy identities and complete
+known security/build/driver/case keys. It distinguishes functional failure
+from incomplete driver observations and blocks contradictory results.
+Even all true yields CHECKS_PASSED_NOT_VERIFIED. Neither parser nor
+payload builder qualifies a runtime, authenticates a guest, grants
+execution or proves process cleanup. The trusted fixed fixture runner,
+its hashes and policy are unchanged. Before any generated source can
+execute, a real independent candidate adapter must be qualified and its
+exact executable policy separately authorized.
