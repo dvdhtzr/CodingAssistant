@@ -56,7 +56,7 @@ internal static class PilotWindowsIoSmoke
             catch(OperationCanceledException){Check(!Directory.Exists(active),"Pre-cancel left journal");}
         }
         var evidence=new {schemaVersion=1,stage="AET-8-windows-job-fixed-io",status="PILOT_JOB_FIXED_IO_PASS",
-            recordedAtUtc=DateTimeOffset.UtcNow.ToString("O"),bridgeSha256=bridgeHash,config.NodeSha256,config.DockerSha256,
+            recordedAtUtc=DateTimeOffset.UtcNow.ToString("O"),bridgeSha256=bridgeHash,nodeSha256=config.NodeSha256,dockerSha256=config.DockerSha256,
             currentModulePins=pins,inspectorSha256=config.BinderSha256,ownerAssemblySha256=Hash(typeof(PilotWindowsJob).Assembly.Location),
             harnessAssemblySha256=Hash(typeof(PilotWindowsIoSmoke).Assembly.Location),controls=results,
             invalidRequestRejected=true,preCancelledRequestRejected=true,jobEmptyConfirmed=true,
