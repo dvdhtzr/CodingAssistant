@@ -347,3 +347,21 @@ Expected FIXED_CANDIDATE_ADAPTER_PASS, working 7/7, broken and spoof 0/7
 (all cases completed), every container removed. This is a new trusted
 fixture compatibility check, NOT qualification for generated source.
 No policy expansion, executable grant, or runtime registry promotion.
+
+
+### Owner-reported real candidate-shaped adapter PASS
+
+On November 27, 2026 at `575efd5`, the owner reported 36/36 JavaScript
+regressions and `AET-8 WINDOWS_FIXED_CANDIDATE_ADAPTER_PASS`.
+Actual Chromium observations: working 7/7, broken 0/7, spoof 0/7;
+all 21 cases completed, all stages COMPLETE, all three containers removed.
+Private owner-local evidence: `windows-static-web-15a56d32786a.json`.
+This is owner-reported evidence; the raw receipt and digests have not
+been independently retrieved here. The unchanged fixed candidate
+adapter need not be re-run merely to demonstrate the same compatibility.
+
+Generated source remains NOT_AUTHORIZED and Static Web UNQUALIFIED.
+The prior fixture-only seccomp and PID-256 exception cannot be inherited
+as executable generated-source authority. The current exact execution
+proposal ledger does not grant execution. See the next policy decision
+in `docs/AET_11_OWNER_HOST_QUALIFICATION.md`.

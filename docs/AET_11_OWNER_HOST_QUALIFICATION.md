@@ -130,3 +130,61 @@ Raw report and exact digests remain on the owner host. Generated-source
 execution and the Static Web runtime registry remain NOT_AUTHORIZED /
 UNQUALIFIED. This supersedes the earlier pending trusted Windows fixture
 checkpoint only, not the separate executable-admission and acceptance gates.
+
+
+## November 27 candidate-shaped adapter result and next policy gate
+
+At `575efd5` the owner reported 36/36 model-free JavaScript regressions
+and the real Windows Docker `FIXED_CANDIDATE_ADAPTER_PASS`. Working
+7/7; broken 0/7; spoof 0/7; all 21 cases complete; all three containers
+removed. The owner-local receipt is
+`windows-static-web-15a56d32786a.json`. This is reported evidence,
+not independently retrieved or attested evidence. Do not repeat the
+unchanged fixture qualification unless a relevant binding changes.
+
+### Proposed next increment — separate generated-source qualification
+
+This is a proposal requiring owner review, not a policy activation.
+The current default-deny derived seccomp policy (including the fixed
+fixture chroot exception) and PID ceiling of 256 were approved for
+trusted fixtures only. Extending that policy to untrusted HTML/CSS/JS
+is a material security decision. Existing owner source-only repair
+delegation is not consent to this extension.
+
+Proposed scope:
+
+- A separate opt-in local Windows Docker qualification/adapter for the
+  Calculation Journal contract only, exact approved source and manifest,
+  bounded HTML/CSS/JS/JSON asset payload; no general shell or task runtime.
+- Retain the pinned image and full Chromium renderer sandbox, private
+  debugging pipe, default-deny seccomp with no additional syscall
+  exceptions beyond the existing fixture profile, PID ceiling at most
+  256, existing memory/CPU/time limits, nonroot, no new privileges, no
+  capabilities, read-only root, private IPC, bounded ephemeral scratch,
+  no outbound network, host mounts, repo/home, credentials, Docker
+  socket, package installation or arbitrary host commands.
+- Owner-reviewed candidate-specific adversarial qualification with exact
+  host/image/adapter/evaluator/policy identities and positive/negative
+  security evidence, not a copy of the fixed fixture receipt. Include
+  independent verification of process and container cleanup, cancellation,
+  interruption, recovery, replay/revocation and a fail-closed uncertain
+  cleanup state. Preserve #76/#92/#111 gates. No registry promotion
+  before successful required qualification.
+- Only after separate owner approval of the exact executable policy and
+  actual qualification: exact task/source/plan/contract-bound execution
+  consent, transactional single-use admission, independent results
+  and at most two scoped runtime repair/recheck attempts as in #111.
+  No blanket generated-code execution or deployment. Any change in
+  approved source, evaluator, policy or scope must be re-bound; existing
+  source-only delegation must never silently become executable consent.
+- First live project is a disposable Calculation Journal; Idea Vault
+  remains preserved and requires its own behavioral contract and
+  applicable reviewed verification scope. No main merge.
+
+The next owner decision is whether to permit implementation and
+qualification of this narrow proposed policy for candidate source,
+including evaluating the previously fixture-only seccomp/PID parameters
+for that scope. This is not an authorization to launch generated source.
+Any need for additional privileges or weakened isolation must return
+to the owner. Until approval and required qualification, generated
+execution remains blocked. Source-only development remains permitted.
