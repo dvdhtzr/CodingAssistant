@@ -172,3 +172,16 @@ Establishing a trusted host-owned configuration source and validating the
 full process/dependency provenance remain prerequisites before any
 executable admission. The C# binder must not be enabled by deriving pins
 from unreviewed files at request time.
+
+### Planning dependency and Docker metadata identities
+
+The C# planning lane additionally requires an exact host-owned pin set for
+the twelve executable local imports of the binder, and an absolute local
+Docker CLI path and SHA-256. It rejects absent, extra, or modified module
+pins before starting Node. The stdin lane verifies the Docker executable
+again before each fixed metadata query and never looks it up through PATH.
+The direct owner receipt-inspection CLI is unchanged and is not an
+attestation mechanism. This still requires independently established,
+trusted configuration and owner-local end-to-end validation; pins cannot
+establish host integrity or eliminate same-account file replacement races.
+No execution authority or Docker run path was added.

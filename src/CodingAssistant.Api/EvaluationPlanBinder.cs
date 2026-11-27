@@ -10,7 +10,9 @@ namespace CodingAssistant.Api;
 // invokes only the reviewed non-executing Node planning binder. The owner
 // must still independently review semantic test coverage. No runtime grant.
 public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=null,
-    string? nodeExecutable=null,string? nodeSha256=null,string? binderSha256=null)
+    string? nodeExecutable=null,string? nodeSha256=null,string? binderSha256=null,
+    IReadOnlyDictionary<string,string>? modulePins=null,
+    string? dockerExecutable=null,string? dockerSha256=null)
 {
     private static readonly Regex Receipt=new("^windows-static-web-[0-9a-f]{12}\\.json\\z",
         RegexOptions.CultureInvariant);
@@ -45,6 +47,32 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
         catch(UnauthorizedAccessException){throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");}
         catch(ArgumentException){throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");}
         catch(NotSupportedException){throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");}
+    }
+
+    // Exact executable import closure of the reviewed planning binder.
+    // Non-executable fixture and policy inputs are separately checked by admission.
+    private static readonly string[] RequiredModules=[
+        "calculation_journal_contract.mjs",
+        "smoke_generated_zip.mjs",
+        "static_web_evaluation_admission.mjs",
+        "static_web_evaluation_candidate.mjs",
+        "windows_aet8_trusted_guest.mjs",
+        "windows_aet8_trusted_qualification.mjs",
+        "windows_calculator_evaluator_guest.mjs",
+        "windows_calculator_evaluator_qualification.mjs",
+        "windows_chromium_sandbox_guest.mjs",
+        "windows_chromium_sandbox_qualification.mjs",
+        "windows_docker_guest.mjs",
+        "windows_docker_qualification.mjs"
+    ];
+
+    internal static void RequirePinnedModules(string directory,IReadOnlyDictionary<string,string>? pins)
+    {
+        if(pins is null||pins.Count!=RequiredModules.Length||
+            !pins.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(RequiredModules))
+            throw new StoreFailure("EVALUATION_BINDER_MODULE_PINS_REQUIRED");
+        foreach(var name in RequiredModules)
+            RequirePinnedFile(Path.Combine(directory,name),pins[name]);
     }
 
     internal static void RemoveNodeEnvironmentOverrides(ProcessStartInfo start)
@@ -107,6 +135,10 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
         var executable=RequirePinnedFile(nodeExecutable,nodeSha256);
         if(!string.Equals(Path.GetFileName(executable),"node.exe",StringComparison.OrdinalIgnoreCase))
             throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
+        RequirePinnedModules(Path.GetDirectoryName(script)!,modulePins);
+        var docker=RequirePinnedFile(dockerExecutable,dockerSha256);
+        if(!string.Equals(Path.GetFileName(docker),"docker.exe",StringComparison.OrdinalIgnoreCase))
+            throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
         var start=new ProcessStartInfo(executable){
             WorkingDirectory=Path.GetDirectoryName(script)!,
             UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,
@@ -115,6 +147,8 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
             StandardOutputEncoding=System.Text.Encoding.UTF8
         };
         RemoveNodeEnvironmentOverrides(start);
+        start.Environment["CA_EVALUATION_DOCKER_EXE"]=docker;
+        start.Environment["CA_EVALUATION_DOCKER_SHA256"]=dockerSha256!;
         start.ArgumentList.Add(script);start.ArgumentList.Add("--stdin");
         using var process=new Process{StartInfo=start};
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(token);

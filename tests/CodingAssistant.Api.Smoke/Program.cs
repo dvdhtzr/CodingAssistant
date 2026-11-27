@@ -97,6 +97,53 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
         }
         catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_PROVENANCE_INVALID")
         {Check(true,"changed file invalidates planning provenance");}
+        var names=new[]{
+            "calculation_journal_contract.mjs",
+            "smoke_generated_zip.mjs",
+            "static_web_evaluation_admission.mjs",
+            "static_web_evaluation_candidate.mjs",
+            "windows_aet8_trusted_guest.mjs",
+            "windows_aet8_trusted_qualification.mjs",
+            "windows_calculator_evaluator_guest.mjs",
+            "windows_calculator_evaluator_qualification.mjs",
+            "windows_chromium_sandbox_guest.mjs",
+            "windows_chromium_sandbox_qualification.mjs",
+            "windows_docker_guest.mjs",
+            "windows_docker_qualification.mjs"
+        };
+        var pins=new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach(var name in names)
+        {
+            File.WriteAllText(Path.Combine(folder,name),"reviewed fixture");
+            pins.Add(name,digest);
+        }
+        EvaluationPlanBinder.RequirePinnedModules(folder,pins);
+        Check(true,"all reviewed planning modules match their exact pins");
+        pins.Remove(names[0]);
+        try
+        {
+            EvaluationPlanBinder.RequirePinnedModules(folder,pins);
+            Check(false,"missing module pin must be blocked");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_MODULE_PINS_REQUIRED")
+        {Check(true,"missing module pin fails closed");}
+        pins.Add("unexpected.mjs",digest);
+        try
+        {
+            EvaluationPlanBinder.RequirePinnedModules(folder,pins);
+            Check(false,"substituted module pin must be blocked");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_MODULE_PINS_REQUIRED")
+        {Check(true,"unexpected module cannot substitute for required module");}
+        pins.Remove("unexpected.mjs");pins.Add(names[0],digest);
+        File.AppendAllText(Path.Combine(folder,names[0]),"changed");
+        try
+        {
+            EvaluationPlanBinder.RequirePinnedModules(folder,pins);
+            Check(false,"changed dependency must be blocked");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_PROVENANCE_INVALID")
+        {Check(true,"changed imported module invalidates binder provenance");}
         var start=new System.Diagnostics.ProcessStartInfo();
         start.Environment["NODE_OPTIONS"]="--require unreviewed";
         start.Environment["NODE_PATH"]="unreviewed";

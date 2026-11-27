@@ -2,6 +2,8 @@
 // extracted, executed, served, or mounted. Docker commands are metadata
 // queries only. The local qualification file is evidence, not attestation.
 import fs from 'node:fs';
+import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {prepareEvaluationAdmission,bindTrustedFixtureReceipt} from './static_web_evaluation_admission.mjs';
@@ -102,13 +104,41 @@ function readStdin(){
   try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}
   catch{fail('EVALUATION_HOST_REQUEST_INVALID');}
 }
+// The C# stdin lane must never discover Docker through PATH. The direct
+// owner inspection CLI remains a historical receipt check only.
+export function pinnedMetadataDocker(env=process.env,platform=process.platform){
+  const exe=env.CA_EVALUATION_DOCKER_EXE;
+  const digest=env.CA_EVALUATION_DOCKER_SHA256;
+  if(platform!=='win32'||typeof exe!=='string'||! /^[A-Za-z]:[\\/]/.test(exe)||
+    path.win32.basename(exe).toLowerCase()!=='docker.exe'||
+    typeof digest!=='string'||!/^[a-f0-9]{64}$/.test(digest))
+    fail('EVALUATION_DOCKER_PROVENANCE_REQUIRED');
+  const check=()=>{
+    try{
+      if(!fs.lstatSync(exe).isFile()||
+        path.resolve(fs.realpathSync(exe)).toLowerCase()!==path.resolve(exe).toLowerCase()||
+        createHash('sha256').update(fs.readFileSync(exe)).digest('hex')!==digest)
+        fail('EVALUATION_DOCKER_PROVENANCE_INVALID');
+    }catch{fail('EVALUATION_DOCKER_PROVENANCE_INVALID');}
+  };
+  check();
+  return (args,timeout)=>{
+    // The only caller is the fixed metadata query sequence in readLocalImage.
+    check();
+    const result=spawnSync(exe,args,{encoding:'utf8',timeout,maxBuffer:64*1024,
+      windowsHide:true,shell:false});
+    return {status:result.status,stdout:result.stdout||'',stderr:result.stderr||'',
+      timedOut:result.error?.code==='ETIMEDOUT'};
+  };
+}
 export function main(argv=process.argv.slice(2)){
   if(argv.length===0){console.log('EVALUATION_HOST_BRIDGE NOT_RUN');return 0;}
   try{
     const request=argv.length===1&&argv[0]==='--stdin'?readStdin():
       argv.length===2&&argv[0]==='--inspect-receipt'?{operation:'inspect-receipt',receiptName:argv[1]}:null;
     if(!request)fail('EVALUATION_HOST_REQUEST_INVALID');
-    console.log(JSON.stringify(prepareLocalEvaluation(request)));return 0;
+    const options=argv[0]==='--stdin'?{docker:pinnedMetadataDocker()}:{};
+    console.log(JSON.stringify(prepareLocalEvaluation(request,options)));return 0;
   }catch(e){
     const reason=/^[A-Z_]{3,90}$/.test(e?.message??'')?e.message:'EVALUATION_HOST_BLOCKED';
     console.log(JSON.stringify({status:'BLOCKED',reason,executionEnabled:false,runtimeQualified:false,

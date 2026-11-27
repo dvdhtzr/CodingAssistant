@@ -417,7 +417,7 @@ test('admission never substitutes a fixed calculator contract for unrelated or u
   assert.throws(()=>prepareEvaluationAdmission({...inputs,reviewedContract:{...contract,planSha256:'0'.repeat(64)}}));
 });
 
-import {prepareLocalEvaluation,readLocalImage} from '../tools/m4/static_web_evaluation_host_bridge.mjs';
+import {prepareLocalEvaluation,readLocalImage,pinnedMetadataDocker} from '../tools/m4/static_web_evaluation_host_bridge.mjs';
 function planningBridgeFixture(){
   const inputs=admissionFixture(),calls=[];
   const name='windows-static-web-012345abcdef.json';
@@ -462,4 +462,13 @@ test('host bridge rejects arbitrary paths, forged metadata, remote endpoints and
 test('host bridge CLI without explicit input is inert',()=>{
   const result=spawnSync(process.execPath,['tools/m4/static_web_evaluation_host_bridge.mjs'],{encoding:'utf8',timeout:5000});
   assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/NOT_RUN/);
+});
+
+test('stdin metadata Docker requires an explicit local executable and digest',()=>{
+  for(const env of [{},{CA_EVALUATION_DOCKER_EXE:'docker.exe',CA_EVALUATION_DOCKER_SHA256:'a'.repeat(64)},
+    {CA_EVALUATION_DOCKER_EXE:'C:/Docker/docker.exe',CA_EVALUATION_DOCKER_SHA256:'bad'},
+    {CA_EVALUATION_DOCKER_EXE:'C:/Docker/other.exe',CA_EVALUATION_DOCKER_SHA256:'a'.repeat(64)}])
+    assert.throws(()=>pinnedMetadataDocker(env,'win32'),/EVALUATION_DOCKER_PROVENANCE_REQUIRED/);
+  assert.throws(()=>pinnedMetadataDocker({CA_EVALUATION_DOCKER_EXE:'C:/Docker/docker.exe',
+    CA_EVALUATION_DOCKER_SHA256:'a'.repeat(64)},'linux'),/EVALUATION_DOCKER_PROVENANCE_REQUIRED/);
 });
