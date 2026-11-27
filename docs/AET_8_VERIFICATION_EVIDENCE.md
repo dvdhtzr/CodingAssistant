@@ -127,3 +127,27 @@ still the trusted binder/host integration's responsibility. No executable
 authorization, worker dispatch, candidate-runtime or container cleanup
 lifecycle is implemented by this storage increment. Model-free smoke tests
 use synthetic preview descriptors, not real runtime evidence.
+
+## Host-only planning bridge
+
+The C# `EvaluationPlanBinder` captures current task inputs, sends a bounded
+JSON request over stdin to the fixed Node `static_web_evaluation_host_bridge.mjs`,
+and stages only the returned non-executable descriptor after rechecking the
+current SQLite bindings. Node reads only the named qualification receipt in
+the owner-local qualification directory; callers cannot provide arbitrary
+paths, Docker metadata, a receipt body or a command. Only local Windows
+Docker Desktop metadata queries are allowed. The bridge never launches a
+container or generated source, grants execution, or establishes trusted host
+provenance from a file alone. No HTTP route is added. The owner can inspect
+the existing receipt without repeating the fixture run:
+
+~~~powershell
+node tools/m4/static_web_evaluation_host_bridge.mjs --inspect-receipt windows-static-web-653ce5730b28.json
+~~~
+
+This checks current image, evaluator, driver, seccomp and fixture binding.
+It remains an inspection, not qualification of the execution adapter.
+Model-free tests use injected metadata and receipt input, not actual host
+qualification. Node process launch/timeout and actual C# integration require
+local validation; executable admission and cancellation/cleanup are still
+separate future gates.

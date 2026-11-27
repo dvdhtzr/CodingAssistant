@@ -416,3 +416,50 @@ test('admission never substitutes a fixed calculator contract for unrelated or u
     assert.throws(()=>prepareEvaluationAdmission({...inputs,reviewedContract:{...contract,mappings}}));
   assert.throws(()=>prepareEvaluationAdmission({...inputs,reviewedContract:{...contract,planSha256:'0'.repeat(64)}}));
 });
+
+import {prepareLocalEvaluation,readLocalImage} from '../tools/m4/static_web_evaluation_host_bridge.mjs';
+function planningBridgeFixture(){
+  const inputs=admissionFixture(),calls=[];
+  const name='windows-static-web-012345abcdef.json';
+  const request={operation:'prepare-admission',receiptName:name,currentScope:inputs.currentScope,
+    archiveBase64:inputs.archive.toString('base64'),criteria:inputs.criteria,reviewedContract:inputs.reviewedContract};
+  const options={platform:'win32',env:{},readReceipt(receipt){assert.equal(receipt,name);return inputs.qualificationReport;},
+    docker(args){calls.push(args);
+      if(args[0]==='context'&&args[1]==='show')return {status:0,stdout:'desktop-linux'};
+      if(args[0]==='context')return {status:0,stdout:JSON.stringify({Endpoints:{docker:{Host:'npipe:////./pipe/dockerDesktopLinuxEngine'}}})};
+      if(args[0]==='info')return {status:0,stdout:JSON.stringify({OSType:'linux',OperatingSystem:'Docker Desktop',PidsLimit:true,MemoryLimit:true})};
+      if(args[0]==='image')return {status:0,stdout:JSON.stringify(inputs.currentImageMetadata)};
+      throw Error('Unexpected Docker command');
+    }};
+  return {inputs,request,options,calls,name};
+}
+test('local host bridge reads qualification and metadata without launching a container or candidate',()=>{
+  const f=planningBridgeFixture();
+  const preview=prepareLocalEvaluation(f.request,f.options);
+  assert.equal(preview.admissionSha256,prepareEvaluationAdmission(f.inputs).admissionSha256);
+  assert.equal(preview.executionEnabled,false);
+  assert.equal(preview.qualification.hostProvenanceEstablished,false);
+  assert.deepEqual(f.calls.map(a=>a.slice(0,2)),[['context','show'],['context','inspect'],['info','--format'],['image','inspect']]);
+  const inspected=prepareLocalEvaluation({operation:'inspect-receipt',receiptName:f.name},f.options);
+  assert.equal(inspected.status,'TRUSTED_FIXTURE_BINDING_INSPECTED');
+  assert.equal(inspected.runtimeQualified,false);
+});
+test('host bridge rejects arbitrary paths, forged metadata, remote endpoints and extra operations',()=>{
+  const f=planningBridgeFixture();
+  for(const request of [{...f.request,receiptName:'../secret.json'},{...f.request,qualificationReport:f.inputs.qualificationReport},
+    {...f.request,currentImageMetadata:f.inputs.currentImageMetadata},{...f.request,operation:'execute'},
+    {...f.request,archiveBase64:'invalid!!'}])
+    assert.throws(()=>prepareLocalEvaluation(request,f.options));
+  assert.equal(f.calls.length,0);
+  assert.throws(()=>readLocalImage({...f.options,env:{DOCKER_HOST:'tcp://remote'}}));
+  const remote={...f.options,docker(args){
+    if(args[0]==='context'&&args[1]==='inspect')return {status:0,stdout:JSON.stringify({Endpoints:{docker:{Host:'tcp://remote'}}})};
+    return f.options.docker(args);
+  }};
+  assert.throws(()=>readLocalImage(remote),/EVALUATION_DOCKER_BINDING_INVALID/);
+  assert.ok(!f.calls.some(a=>a[0]==='run'||a[0]==='pull'));
+});
+test('host bridge CLI without explicit input is inert',()=>{
+  const result=spawnSync(process.execPath,['tools/m4/static_web_evaluation_host_bridge.mjs'],{encoding:'utf8',timeout:5000});
+  assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/NOT_RUN/);
+});
