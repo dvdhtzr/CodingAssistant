@@ -24,10 +24,11 @@ public sealed record CollaborationInput(string Objective,CollaborationRun Job,
 public sealed record CollaborationAdmission(string JobId,int Sequence);
 public sealed record RoutineRepairCandidate(string RunId,string SourceSha256,IReadOnlyList<string> Paths);
 public sealed record CollaborationLinkedRepair(string CycleId,string State,string? ErrorCode);
+public sealed record CollaborationReviewFailure(string Role,string ReviewId,string Model,string State,string? ErrorCode);
 public sealed record CollaborationPreview(string? PlanSha256,DelegationPolicy? Policy,
     CollaborationSnapshot? Snapshot,StartCollaborationRequest? Candidate,bool CanStart,bool CanResume,
     string Reason,InferenceCapacity Capacity,RoutineRepairCandidate? RoutineRepairCandidate=null,
-    CollaborationLinkedRepair? LinkedRepair=null);
+    CollaborationLinkedRepair? LinkedRepair=null,CollaborationReviewFailure? ReviewFailure=null);
 
 public interface ICollaborationLead
 {
@@ -251,8 +252,9 @@ public sealed class CollaborationStore(TaskStore tasks)
         {
             start=false;resume=false;reason="LINKED_REPAIR_PENDING";
         }
+        var reviewFailure=snapshot is null?null:ReadReviewFailure(db,tx,snapshot);
         tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,
-            LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair);
+            LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair,reviewFailure);
     }
 
     public CollaborationSnapshot? Latest(string taskId)
@@ -437,6 +439,53 @@ public sealed class CollaborationStore(TaskStore tasks)
         var cycle=ContinuationCycle(db,tx,taskId,id);tx.Commit();return cycle;
     }
 
+    // Read only the actual review receipt linked to this stopped session,
+    // never the latest unrelated owner QA or a model-generated explanation.
+    private static CollaborationReviewFailure? ReadReviewFailure(SqliteConnection db,SqliteTransaction tx,CollaborationSnapshot snapshot)
+    {
+        var job=snapshot.Job;
+        if(job.State!="Failed"||job.Reason!="INDEPENDENT_REVIEW_STOPPED")return null;
+        var step=snapshot.Steps.LastOrDefault();
+        if(step?.ReferenceId is null||step.Action is not ("ReviewCode" or "ReviewAcceptance"))return null;
+        var lead=step.Action=="ReviewCode";
+        var table=lead?"lead_reviews":"qa_reviews";
+        using var cmd=TaskStore.Command(db,tx,"SELECT model,state,error_code FROM "+table+
+            " WHERE id=@id AND task_id=@task AND engineering_run_id=@run AND source_sha256=@source AND plan_sha256=@plan",
+            ("@id",step.ReferenceId),("@task",job.TaskId),("@run",job.RunId),("@source",job.SourceSha256),("@plan",job.PlanSha256));
+        using var reader=cmd.ExecuteReader();
+        return reader.Read() && reader.GetString(1) is ("Failed" or "Interrupted")
+            ?new(lead?"LeadSoftwareEngineer":"QaEngineer",step.ReferenceId,reader.GetString(0),reader.GetString(1),
+                reader.IsDBNull(2)?null:reader.GetString(2)):null;
+    }
+
+    // A fresh owner-admitted session may retry a failed linked review on
+    // the identical initial source and delegation. No automatic retry loop,
+    // no reuse of failed evidence, and no bypass of a repair continuation.
+    private static bool RetryFailedReview(SqliteConnection db,SqliteTransaction tx,CollaborationRun job,string action,string? state)
+    {
+        if(state is not ("Failed" or "Interrupted"))return false;
+        var table=action=="ReviewCode"?"lead_reviews":"qa_reviews";
+        var review=TaskStore.Scalar(db,tx,"SELECT id FROM "+table+
+            " WHERE task_id=@task AND engineering_run_id=@run AND source_sha256=@source AND plan_sha256=@plan ORDER BY created_utc DESC,id DESC LIMIT 1",
+            ("@task",job.TaskId),("@run",job.RunId),("@source",job.SourceSha256),("@plan",job.PlanSha256));
+        if(review is null)return false;
+        return TaskStore.Scalar(db,tx,"""
+            SELECT 1 FROM engineering_collaborations c
+            JOIN engineering_collaboration_steps s ON s.collaboration_id=c.id
+            WHERE c.task_id=@task AND c.run_id=@run AND c.source_sha256=@source
+            AND c.plan_sha256=@plan AND c.policy_revision=@revision AND c.policy_sha256=@policy
+            AND c.id<>@job AND c.state='Failed' AND c.reason='INDEPENDENT_REVIEW_STOPPED'
+            AND s.action=@action AND s.reference_id=@review
+            AND NOT EXISTS(SELECT 1 FROM engineering_collaboration_repairs l WHERE l.child_id=c.id)
+            AND NOT EXISTS(SELECT 1 FROM engineering_collaboration_repairs l JOIN repair_cycles rc ON rc.id=l.cycle_id
+                WHERE l.task_id=@task AND rc.engineering_run_id=@run)
+            AND NOT EXISTS(SELECT 1 FROM engineering_collaboration_steps current
+                WHERE current.collaboration_id=@job AND current.action=@action AND current.reference_id IS NOT NULL)
+            """,("@task",job.TaskId),("@run",job.RunId),("@source",job.SourceSha256),
+            ("@plan",job.PlanSha256),("@revision",job.PolicyRevision),("@policy",job.PolicySha256),
+            ("@job",job.Id),("@action",action),("@review",review)) is not null;
+    }
+
     private static bool RetryInterrupted(SqliteConnection db,SqliteTransaction tx,CollaborationRun job,string action,string? state)
     {
         if(state!="Interrupted")return false;
@@ -470,7 +519,8 @@ public sealed class CollaborationStore(TaskStore tasks)
         var latestIssues=issues.Where(i=>i.LatestReview).ToArray();
         var scope=EngineeringDelegationStore.Latest(db,tx,job.TaskId)?.RoutineRepair;
         var progress=RepairProgressStore.Read(db,tx,job.TaskId,job.RunId,scope);
-        if(lead is null || RetryInterrupted(db,tx,job,"ReviewCode",lead))actions.Add("ReviewCode");
+        if(lead is null || RetryInterrupted(db,tx,job,"ReviewCode",lead) ||
+            RetryFailedReview(db,tx,job,"ReviewCode",lead))actions.Add("ReviewCode");
         else if(lead=="Reviewed")
         {
             if(latestIssues.Any(i=>i.State is "NeedsTriage" or "Challenged" or "TriageConflict"))
@@ -491,7 +541,8 @@ public sealed class CollaborationStore(TaskStore tasks)
                 """,("@task",job.TaskId),("@run",job.RunId)) is not null;
             if(!leadConcern && !leadUncertain)
             {
-                if(qa is null || RetryInterrupted(db,tx,job,"ReviewAcceptance",qa))actions.Add("ReviewAcceptance");
+                if(qa is null || RetryInterrupted(db,tx,job,"ReviewAcceptance",qa) ||
+                    RetryFailedReview(db,tx,job,"ReviewAcceptance",qa))actions.Add("ReviewAcceptance");
                 else if(qa=="Reviewed" && !latestIssues.Any(i=>i.State is
                     "NeedsTriage" or "Challenged" or "TriageConflict" or "ConfirmedDefect"))
                     actions.Add("AwaitQualifiedVerification");

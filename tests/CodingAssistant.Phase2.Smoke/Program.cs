@@ -4746,6 +4746,23 @@ try
     using(var aetDeniedCollab=await Post(aetAnonymousCollab,aetCollabPath,aetCollabRequest))
         Check(aetDeniedCollab.StatusCode==HttpStatusCode.Unauthorized,"collaboration admission remains owner-private");
     var aetCollabStore=new CollaborationStore(tasks);
+    // The original stopped review remains linked and inspectable, even if
+    // older independent QA exists. Explicit retry must gather new evidence.
+    var stoppedReviewSession=aetCollabStore.Start(taskBound.Id,aetCollabRequest,"qwen3.5:4b");
+    var stoppedReviewStep=aetCollabStore.Record(taskBound.Id,stoppedReviewSession.Id,
+        new CollaborationDecision("ReviewCode","Gather exact source review before simulated model rejection."));
+    var stoppedLeadStore=new LeadReviewStore(tasks);
+    var stoppedLeadReview=stoppedLeadStore.Start(taskBound.Id,aetChildDone!,approvedEngineerPlan,
+        "qwen3.5:4b",new CollaborationAdmission(stoppedReviewSession.Id,stoppedReviewStep.Sequence));
+    stoppedLeadStore.Finish(taskBound.Id,stoppedLeadReview.Id,"Failed","MODEL_OUTPUT_REJECTED");
+    Check(!aetCollabStore.Prepare(taskBound.Id,stoppedReviewSession.Id).AllowedActions.Contains("ReviewCode"),
+        "failed review cannot cause an automatic repeat within the same session");
+    aetCollabStore.Finish(taskBound.Id,stoppedReviewSession.Id,"Failed","INDEPENDENT_REVIEW_STOPPED");
+    var stoppedReviewPreview=aetCollabStore.Preview(taskBound.Id);
+    Check(stoppedReviewPreview.CanStart && stoppedReviewPreview.ReviewFailure is
+        {Role:"LeadSoftwareEngineer",Model:"qwen3.5:4b",State:"Failed",ErrorCode:"MODEL_OUTPUT_REJECTED"} receipt &&
+        receipt.ReviewId==stoppedLeadReview.Id && stoppedReviewPreview.Policy?.Status=="Approved",
+        "stopped collaboration exposes the exact linked reviewer failure and preserves approval");
     // Crash after persisting an intent but before any independent review is
     // admitted. Its unlinked intent must survive, not be treated as work done.
     var aetInterruptedCollab=aetCollabStore.Start(taskBound.Id,aetCollabRequest,"qwen3.5:4b");

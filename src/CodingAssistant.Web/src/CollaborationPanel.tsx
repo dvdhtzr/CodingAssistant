@@ -17,6 +17,7 @@ interface Preview { planSha256: string | null; policy: Policy | null;
   canStart: boolean; canResume: boolean; reason: string;
   routineRepairCandidate?: {runId:string;sourceSha256:string;paths:string[]}|null;
   linkedRepair?: {cycleId:string;state:string;errorCode:string|null}|null;
+  reviewFailure?: {role:string;reviewId:string;model:string;state:string;errorCode:string|null}|null;
   capacity: { capacity: number; active: number; waiting: number } }
 const operations=['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','SendMessage'];
 const actionLabel: Record<string,string>={
@@ -252,6 +253,16 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
     {job?.state==='Escalated'&&job.reason==='LEAD_ESCALATION'&&<p role="status">
       The Technical Lead stopped: {preview.snapshot?.steps.slice().reverse().find(step=>step.action==='Escalate')?.rationale??'No explanation was recorded.'}
       {' '}Your existing delegation is unchanged. Retrying opens a new session on the saved source; it does not regenerate it.</p>}
+    {job?.reason==='INDEPENDENT_REVIEW_STOPPED'&&<div role="status">
+      {preview.reviewFailure?<><p><strong>{preview.reviewFailure.role==='LeadSoftwareEngineer'?'Lead Software Engineer':'QA Engineer'} review stopped</strong>
+        {' · '+preview.reviewFailure.model+' · '+preview.reviewFailure.state}</p>
+        <p>Recorded reason: <code>{preview.reviewFailure.errorCode??'NOT_RECORDED'}</code></p>
+        <p>{preview.reviewFailure.errorCode==='MODEL_OUTPUT_REJECTED'?
+          'The reviewer returned an unusable response. Check the assigned reviewer model before retrying.':
+          'Inspect the recorded reviewer failure before retrying.'} Your saved source and delegation are unchanged.</p>
+        <details><summary>Exact review receipt</summary><code>{preview.reviewFailure.reviewId}</code></details>
+      </>:<p>The independent review stopped without a matching saved failure receipt. No successful review is implied.</p>}
+    </div>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('start')}>{job?.state==='Escalated'||job?.state==='Failed'?'Retry team coordination':'Start team coordination'}</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
@@ -267,7 +278,7 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         disabled={busy||loadError||preview.candidate?.sourceSha256!==job.sourceSha256||preview.candidate?.policySha256!==job.policySha256}
         onSaved={()=>setVersion(v=>v+1)} />}
     {dispatching&&<p>The team is dispatching a repair within your existing approval. No confirmation is needed.</p>}
-    {!linkedRepair&&!dispatching&&job?.reason&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
+    {!linkedRepair&&!dispatching&&job?.reason&&job.reason!=='INDEPENDENT_REVIEW_STOPPED'&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {!job&&!preview.canStart&&approved&&<p>{preview.reason==='BUILD_NOT_COMPLETE'?
       'Complete approved source generation before coordinating independent reviews.':preview.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {preview.snapshot?.steps.length ? <details>

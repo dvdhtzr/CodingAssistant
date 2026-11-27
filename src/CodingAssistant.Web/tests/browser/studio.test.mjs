@@ -1019,3 +1019,40 @@ test('guided lead escalation explains the actual saved decision and offers a cle
     assert.deepEqual(writes,[]);
   }finally{await page.close();}
 });
+
+
+test('guided review failure identifies exact reviewer and saved reason before retry',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256};
+  const reviewId='9'.repeat(32);
+  const snapshot={job:{...candidate,id:'2'.repeat(32),taskId:id,model:'qwen3.5:4b',
+    state:'Failed',reason:'INDEPENDENT_REVIEW_STOPPED'},steps:[{sequence:1,action:'ReviewCode',
+    issueId:null,referenceId:reviewId,rationale:'Host-required independent code review of the exact saved source.',createdUtc:time}]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:true,canResume:false,reason:'READY',
+    reviewFailure:{role:'LeadSoftwareEngineer',reviewId,model:'qwen3-coder:30b',state:'Failed',errorCode:'MODEL_OUTPUT_REJECTED'},
+    policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:6}},
+    capacity:{capacity:1,active:0,waiting:0}};
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      if(path.endsWith('/collaboration/preview'))return done(route,preview);
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByText('Lead Software Engineer review stopped',{exact:true}).waitFor();
+    await guided.getByText('MODEL_OUTPUT_REJECTED',{exact:true}).waitFor();
+    await guided.getByText(/qwen3-coder:30b · Failed/).waitFor();
+    await guided.getByRole('button',{name:'Retry team coordination'}).waitFor();
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
