@@ -32,7 +32,8 @@ public sealed record CollaborationPreview(string? PlanSha256,DelegationPolicy? P
     CollaborationSnapshot? Snapshot,StartCollaborationRequest? Candidate,bool CanStart,bool CanResume,
     string Reason,InferenceCapacity Capacity,RoutineRepairCandidate? RoutineRepairCandidate=null,
     CollaborationLinkedRepair? LinkedRepair=null,CollaborationReviewFailure? ReviewFailure=null,
-    CollaborationStallEvidence? StallEvidence=null);
+    CollaborationStallEvidence? StallEvidence=null,RootCauseReceipt? RootCauseInvestigation=null,
+    bool CanInvestigateStall=false);
 
 public interface ICollaborationLead
 {
@@ -157,11 +158,13 @@ public sealed class CollaborationStore(TaskStore tasks)
                 PRIMARY KEY(task_id,cycle_id)
             );
             """);
+        RootCauseInvestigationStore.Initialize(db);
     }
     public void Recover()=>RecoverCore();
     private void RecoverCore()
     {
         using var db=tasks.Open();
+        RootCauseInvestigationStore.Recover(db);
         TaskStore.Execute(db,null,"UPDATE engineering_collaborations SET state='Interrupted',reason='PROCESS_INTERRUPTED',updated_utc=@utc WHERE state='Running'",
             ("@utc",DateTimeOffset.UtcNow.ToString("O")));
         // A crashed dispatch is a stopped checkpoint, never a new owner
@@ -220,6 +223,7 @@ public sealed class CollaborationStore(TaskStore tasks)
         RoutineRepairCandidate? routineCandidate=null;
         var reason="PLAN_NOT_APPROVED";var start=false;var resume=false;
         CollaborationStallEvidence? stallEvidence=null;
+        RootCauseReceipt? investigation=null;var canInvestigate=false;
         try
         {
             var plan=ImplementationPlanStore.RequireCurrentApproved(db,tx,taskId);
@@ -256,17 +260,20 @@ public sealed class CollaborationStore(TaskStore tasks)
             // failure. Only suppress an identical retry if the current host
             // evidence still establishes that same stop.
             if(same && snapshot!.Job.State=="Escalated" && snapshot.Job.Reason is
-                ("RECURRING_UNRESOLVED_FINDING" or "REPEATED_SOURCE_SNAPSHOT" or "POTENTIAL_CANDIDATE_REGRESSION"))
+                ("RECURRING_UNRESOLVED_FINDING" or "REPEATED_SOURCE_SNAPSHOT" or "POTENTIAL_CANDIDATE_REGRESSION" or "ROOT_CAUSE_INVESTIGATION_COMPLETE"))
             {
                 var progress=RepairProgressStore.Read(db,tx,taskId,run.Id,policy.RoutineRepair);
-                if(progress.StrategyChangeRequired && progress.Reason==snapshot.Job.Reason)
+                if(progress.StrategyChangeRequired && (progress.Reason==snapshot.Job.Reason ||
+                    snapshot.Job.Reason=="ROOT_CAUSE_INVESTIGATION_COMPLETE"))
                 {
                     var ids=progress.StalledIssueIds.Concat(progress.PotentialRegressionIssueIds??[]).ToHashSet(StringComparer.Ordinal);
                     var findings=EngineeringIssueStore.Read(db,tx,taskId,run.Id).Issues
                         .Where(i=>ids.Contains(i.Id)).Select(i=>new CollaborationStallFinding(
                             i.Id,i.Origin,i.Path,i.Requirement,i.Evidence,i.Recommendation)).ToArray();
                     stallEvidence=new(progress.Reason,progress.Attempts.Count,progress.Attempts.TakeLast(2).ToArray(),findings);
-                    start=false;reason=progress.Reason;
+                    investigation=RootCauseInvestigationStore.Read(db,tx,taskId,run.Id,fingerprint,plan.PlanSha256);
+                    canInvestigate=RootCauseInvestigationStore.Eligible(db,tx,snapshot.Job,progress,policy.RoutineRepair);
+                    start=canInvestigate;reason=progress.Reason;
                 }
             }
         }catch(StoreFailure e){reason=e.Code;}
@@ -274,9 +281,15 @@ public sealed class CollaborationStore(TaskStore tasks)
         {
             start=false;resume=false;reason="LINKED_REPAIR_PENDING";
         }
+        if(candidate is not null)
+            investigation??=RootCauseInvestigationStore.Read(db,tx,taskId,candidate.RunId,candidate.SourceSha256,candidate.PlanSha256);
+        if(investigation is not null && snapshot?.Job.State is ("Failed" or "Interrupted") &&
+            snapshot.Job.RunId==investigation.RunId && snapshot.Steps.Any(step=>step.Action=="InvestigateStall"))
+        {start=false;resume=false;canInvestigate=false;}
         var reviewFailure=snapshot is null?null:ReadReviewFailure(db,tx,snapshot);
         tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,
-            LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair,reviewFailure,stallEvidence);
+            LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair,reviewFailure,stallEvidence,
+            investigation,canInvestigate);
     }
 
     public CollaborationSnapshot? Latest(string taskId)
@@ -604,6 +617,11 @@ public sealed class CollaborationStore(TaskStore tasks)
         // then stop and preserve the candidate and its predecessor for review.
         if(progress.PotentialRegressionIssueIds is { Count: > 0 } && recheckCandidates.Count==0)
             actions.Clear();
+        if(lead=="Reviewed" && recheckCandidates.Count==0 &&
+            RootCauseInvestigationStore.Eligible(db,tx,job,progress,scope))
+        {
+            actions.Clear();actions.Add("InvestigateStall");
+        }
         actions.Add("Escalate");
         var task=TaskStore.FindTask(db,tx,job.TaskId)??throw new StoreFailure("NOT_FOUND");
         return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress,recheckCandidates);
@@ -618,6 +636,8 @@ public sealed class CollaborationStore(TaskStore tasks)
     internal static CollaborationDecision? MandatoryReview(CollaborationInput input)
     {
         if(input.AllowedActions.Count!=2 || !input.AllowedActions.Contains("Escalate"))return null;
+        if(input.AllowedActions.Contains("InvestigateStall"))
+            return new("InvestigateStall","Host-required cross-file investigation of recurring unresolved findings.");
         if(input.AllowedActions.Contains("ReviewCode"))
             return new("ReviewCode","Host-required independent code review of the exact saved source.");
         if(input.AllowedActions.Contains("ReviewAcceptance"))
@@ -832,6 +852,23 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                             await Task.Delay(250,token);
                         }
                         break;
+                    }
+                    case "InvestigateStall":
+                    {
+                        var investigations=new RootCauseInvestigationStore(tasks);
+                        var (receipt,evidence)=investigations.Admit(job.TaskId,new(job.Id,step.Sequence));
+                        try
+                        {
+                            RootCauseAssessment assessment;
+                            using(EngineeringProviderActivity.Enter(tasks,job.TaskId,"TechnicalLead",receipt,job.SourceSha256))
+                                assessment=await services.GetRequiredService<IRootCauseInvestigator>().InvestigateAsync(evidence,token);
+                            token.ThrowIfCancellationRequested();
+                            investigations.Record(receipt,evidence,assessment);
+                        }
+                        catch(OperationCanceledException){investigations.Stop(job.TaskId,receipt,"OWNER_CANCELLED",true);throw;}
+                        catch(StoreFailure e){investigations.Stop(job.TaskId,receipt,e.Code);throw;}
+                        catch(Exception){investigations.Stop(job.TaskId,receipt,"ROOT_CAUSE_INVESTIGATION_FAILED");throw;}
+                        store.Finish(job.TaskId,job.Id,"Escalated","ROOT_CAUSE_INVESTIGATION_COMPLETE");return;
                     }
                     case "RecheckIssue":
                     {

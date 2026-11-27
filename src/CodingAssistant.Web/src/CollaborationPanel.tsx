@@ -18,6 +18,10 @@ interface Preview { planSha256: string | null; policy: Policy | null;
   routineRepairCandidate?: {runId:string;sourceSha256:string;paths:string[]}|null;
   linkedRepair?: {cycleId:string;state:string;errorCode:string|null}|null;
   reviewFailure?: {role:string;reviewId:string;model:string;state:string;errorCode:string|null}|null;
+  canInvestigateStall?:boolean;
+  rootCauseInvestigation?: {id:string;runId:string;sourceSha256:string;model:string;state:string;errorCode:string|null;
+    assessment:{findings:Array<{issueId:string;outcome:string;causePath:string|null;line:number|null;
+      evidence:string|null;rationale:string;alternativeStrategy:string|null}>}|null}|null;
   stallEvidence?: {reason:string;attemptCount:number;recentAttempts:Array<{cycleId:string;state:string;
     originalSourceSha256:string;candidateSourceSha256:string;origin:string;independentStaticResolution:boolean;recurringExactFinding:boolean}>;
     findings:Array<{id:string;origin:string;path:string;requirement:string;evidence:string;recommendation:string}>}|null;
@@ -27,6 +31,7 @@ const actionLabel: Record<string,string>={
   ReviewCode:'Independent code review',ReviewAcceptance:'Independent QA review',
   ClassifyIssue:'Classify finding',RequestOwnerRepair:'Request scoped repair',
   RecheckIssue:'Independent finding recheck',AwaitQualifiedVerification:'Await qualified verification',
+  InvestigateStall:'Cross-file root cause investigation',
   Escalate:'Escalate',ResumeInterrupted:'Owner resumed checkpoint'
 };
 const stateLabel:Record<string,string>={
@@ -284,10 +289,26 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
           {a.recurringExactFinding?' · Exact finding recurred':''}
         </li>)}</ul>
       </details>
-      <p>Inspect the cited finding and previous repairs in QA &amp; source before authorizing a different strategy. Do not regenerate the project or revoke the policy just to clear the stop.</p>
+      <p>{preview.canInvestigateStall?'The team can investigate the related saved files without changing source.':
+        'The original repair guard remains active until an independently supported alternative is admitted.'}
+        {' '}Do not regenerate the project or revoke the policy just to clear the stop.</p>
     </div>}
+    {preview.rootCauseInvestigation&&<section aria-label="Root cause investigation">
+      <h4>Cross-file investigation · {preview.rootCauseInvestigation.state}</h4>
+      <p>{preview.rootCauseInvestigation.model} · source-only · no repair or resolution granted.</p>
+      {preview.rootCauseInvestigation.errorCode&&<p role="alert">{preview.rootCauseInvestigation.errorCode}</p>}
+      {preview.rootCauseInvestigation.assessment?.findings.map(f=><div key={f.issueId}>
+        <strong>{f.outcome==='CandidateCause'?'Proposed cause':f.outcome==='ContradictedClaim'?'Possibly incorrect original finding':'Insufficient evidence'}</strong>
+        {f.causePath&&<p>{f.causePath}:{f.line} · <code>{f.evidence}</code></p>}
+        <p>{f.rationale}</p>{f.alternativeStrategy&&<p>Alternative strategy: {f.alternativeStrategy}</p>}
+        {f.causePath&&policy?.routineRepair&&!policy.routineRepair.paths.includes(f.causePath)&&
+          <p>Outside approved write scope. No source change authorized.</p>}
+      </div>)}
+      {preview.rootCauseInvestigation.state==='Recorded'&&<p>Independent assessment of these proposals is required before any repair.</p>}
+    </section>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
-      onClick={()=>void act('start')}>{job?.state==='Escalated'||job?.state==='Failed'?'Retry team coordination':'Start team coordination'}</button>}
+      onClick={()=>void act('start')}>{preview.canInvestigateStall?'Investigate recurring findings':
+        job?.state==='Escalated'||job?.state==='Failed'?'Retry team coordination':'Start team coordination'}</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('resume')}>Resume saved coordination</button>}
     {(repairing||job?.state==='Running'||dispatching)&&<button type="button" disabled={busy||loadError} onClick={()=>void act('cancel')}>Stop coordination</button>}

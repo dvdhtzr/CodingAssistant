@@ -57,7 +57,8 @@ public static class ApiHost
         IAtlasCommitArchiveDownloader? atlasArchiveOverride = null,
         ILeadSourceReviewer? leadReviewerOverride = null,
         IEngineeringIssueVerifier? issueVerifierOverride = null,
-        ICollaborationLead? collaborationLeadOverride=null)
+        ICollaborationLead? collaborationLeadOverride=null,
+        IRootCauseInvestigator? rootCauseInvestigatorOverride=null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -241,6 +242,7 @@ public static class ApiHost
         new UpfrontTeamAuthorizationStore(store).Recover();
         builder.Services.AddSingleton(collaborationStore);
         builder.Services.AddSingleton<ICollaborationLead>(collaborationLeadOverride??new MafCollaborationLead());
+        builder.Services.AddSingleton<IRootCauseInvestigator>(rootCauseInvestigatorOverride??new MafRootCauseInvestigator());
         builder.Services.AddSingleton<CollaborationCoordinator>();
         builder.Services.AddHostedService<EngineeringActivityNotifier>();
 

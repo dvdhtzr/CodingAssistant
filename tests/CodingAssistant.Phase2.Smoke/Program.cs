@@ -4757,6 +4757,35 @@ try
     delegationStore.Revoke(taskBound.Id,new ApproveDelegationRequest(aetAdaptivePolicy.Revision,
         aetAdaptivePolicy.PolicySha256,"REVOKE "+aetAdaptivePolicy.PolicySha256));
 
+    // Root-cause output can identify a different existing file, but can
+    // neither invent source evidence nor grant write authority.
+    var rootCauseFixtureFiles=aetChildDone!.Files;
+    var rootCauseFixtureJob=new CollaborationRun("fixture",taskBound.Id,aetChildResumeId,
+        QaReviewStore.Fingerprint(rootCauseFixtureFiles),secondPlanHash,1,new string('a',64),
+        "qwen3.5:4b","Running",null,"","");
+    var rootCauseFixture=new RootCauseInput(rootCauseFixtureJob,"Investigate timer","Approved timer behavior",
+        approvedEngineerPlan,rootCauseFixtureFiles,[new CollaborationStallFinding("fixture-issue","QaEngineer",
+            "index.html","Timer starts","No HTML handler","Change HTML")],[],["index.html"],new string('b',64));
+    var rootCauseTarget=rootCauseFixtureFiles.Single(f=>f.Path=="app.js");
+    var rootCauseLine=rootCauseTarget.Content.Split('\n')[0].Trim();
+    var rootCauseProposal=new RootCauseAssessment([new RootCauseFinding("fixture-issue","CandidateCause",
+        "app.js",1,rootCauseLine[..Math.Min(rootCauseLine.Length,100)],"The behavior belongs in the linked script.",
+        "Investigate the script handler rather than change HTML again.")]);
+    Check(MafRootCauseInvestigator.Parse(JsonSerializer.Serialize(rootCauseProposal),rootCauseFixture)
+        .Findings.Single().CausePath=="app.js" && !rootCauseFixture.ApprovedPaths.Contains("app.js"),
+        "root cause proposal can identify a different file without granting write authority");
+    foreach(var invalidRootCause in new[]{
+        rootCauseProposal with {Findings=[rootCauseProposal.Findings[0] with {Evidence="fabricated source text"}]},
+        rootCauseProposal with {Findings=[rootCauseProposal.Findings[0] with {CausePath="../app.js"}]},
+        rootCauseProposal with {Findings=[rootCauseProposal.Findings[0] with {IssueId="unknown"}]},
+        rootCauseProposal with {Findings=[]}})
+    {
+        try{
+            _=MafRootCauseInvestigator.Parse(JsonSerializer.Serialize(invalidRootCause),rootCauseFixture);
+            Check(false,"invalid root cause accepted");
+        }catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED"){Check(true,"root cause requires exact source and issue coverage");}
+    }
+
     // Recovery is driven by evidence, not a lifetime three-repair cap.
     var aetProgressAttempts=Enumerable.Range(0,5).Select(i=>new RepairProgressAttempt(
         "fixture-"+i,"run-"+i,"run-"+(i+1),"hash-"+i,"hash-"+(i+1),"QaReviewed",
