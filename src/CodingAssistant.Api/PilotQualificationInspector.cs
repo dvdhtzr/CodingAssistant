@@ -233,11 +233,18 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
                 foreach(var property in dispatchAttempts.EnumerateObject())Attempt(property.Value);
             }
             // Recompute the chained native qualification identities from
-            // the exact compact JSON returned by the pinned inspector.
+            // the same ordinal-key canonical JSON as the pinned inspector.
             bool Chain(string prior,string member,string digest)
             {
-                var raw="{\""+prior+"\":"+value.GetProperty(prior).GetRawText()+
-                    ",\""+member+"\":"+value.GetProperty(member).GetRawText()+"}";
+                string Canonical(JsonElement item)=>item.ValueKind switch
+                {
+                    JsonValueKind.Object=>"{"+string.Join(",",item.EnumerateObject().OrderBy(p=>p.Name,StringComparer.Ordinal)
+                        .Select(p=>JsonSerializer.Serialize(p.Name)+":"+Canonical(p.Value)))+"}",
+                    JsonValueKind.Array=>"["+string.Join(",",item.EnumerateArray().Select(Canonical))+"]",
+                    _=>item.GetRawText()
+                };
+                var raw="{"+string.Join(",",new[]{prior,member}.OrderBy(k=>k,StringComparer.Ordinal)
+                    .Select(k=>JsonSerializer.Serialize(k)+":"+Canonical(value.GetProperty(k))))+"}";
                 return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))==
                     value.GetProperty(digest).GetString();
             }
