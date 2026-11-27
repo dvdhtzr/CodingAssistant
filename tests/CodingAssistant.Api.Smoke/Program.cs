@@ -353,15 +353,15 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     var selected=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_PILOT_RECEIPTS");
     if(!string.IsNullOrEmpty(selected))
     {
-        var root=Path.GetFullPath(Directory.GetCurrentDirectory());
+        var pilotRepositoryRoot=Path.GetFullPath(Directory.GetCurrentDirectory());
         var node=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_NODE_EXE")??throw new Exception("Explicit Node test path required");
         var docker=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_DOCKER_EXE")??throw new Exception("Explicit Docker test path required");
         string Hash(string file)=>Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file)));
         // Test-only current checkout hashes, NOT production enrollment or
         // evidence of prior host executable provenance. Nothing is saved.
-        var pins=PilotQualificationInspector.FileNames.ToDictionary(name=>name,name=>Hash(Path.Combine(root,name)),StringComparer.Ordinal);
-        var configuration=new EvaluationPlanningHostConfiguration(root,node,Hash(node),
-            Hash(Path.Combine(root,PilotQualificationInspector.ScriptPath)),pins,docker,Hash(docker));
+        var pins=PilotQualificationInspector.FileNames.ToDictionary(name=>name,name=>Hash(Path.Combine(pilotRepositoryRoot,name)),StringComparer.Ordinal);
+        var configuration=new EvaluationPlanningHostConfiguration(pilotRepositoryRoot,node,Hash(node),
+            Hash(Path.Combine(pilotRepositoryRoot,PilotQualificationInspector.ScriptPath)),pins,docker,Hash(docker));
         var result=await new PilotQualificationInspector(configuration).InspectAsync(selected.Split(';'),CancellationToken.None);
         Check(result.GetProperty("status").GetString()=="PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND"&&
             !result.GetProperty("executionEnabled").GetBoolean(),"real pinned .NET pilot evidence inspection is non-executable");
