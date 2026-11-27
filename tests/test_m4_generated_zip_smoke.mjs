@@ -1142,3 +1142,32 @@ test('pilot evidence inspection CLI is inert and rejects missing receipt selecti
     assert.equal(result.status,args.length===0?0:2,result.stderr);
   }
 });
+
+
+import {fixedBrowserBoundaryBundle,fixedBrowserBoundaryFixture,parseBrowserBoundaryReport}
+  from '../tools/m4/static_web_pilot_browser_boundary.mjs';
+test('browser boundary qualification reuses exact candidate module closure with distinct fixed probe identity',()=>{
+  const original=fixedCandidateBundle(),bundle=fixedBrowserBoundaryBundle();
+  assert.notEqual(bundle.adapterSha256,original.adapterSha256);
+  assert.equal(bundle.evaluatorSha256,original.evaluatorSha256);
+  const fixture=fixedBrowserBoundaryFixture(bundle,'a'.repeat(64),'b'.repeat(32));
+  assert.ok(!fixture.source.includes('__CA_FIXED_CANDIDATE_INPUT__'));
+  const encoded=fixture.source.match(/const INPUT='([^']+)'/)[1];
+  const request=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+  const assets=createCandidateAssets(request.payloadJson,request.binding);
+  assert.equal(assets.assetCount,2);
+  assert.match(assets.resolve('GET','/probe.js').body,/BOUNDARY_CONTROLS_PASS/);
+  assert.equal(assets.resolve('GET','/report.json').status,404);
+});
+test('browser boundary receipt requires exact attempt and all five independent control categories',()=>{
+  const bundle=fixedBrowserBoundaryBundle(),fixture=fixedBrowserBoundaryFixture(bundle,'a'.repeat(64),'b'.repeat(32));
+  const report={schemaVersion:1,...fixture.expected,checks:allCases(
+    ['guest_security','chromium_sandbox','renderer_controls','browser_closed','server_closed'],true)};
+  const parse=x=>parseBrowserBoundaryReport(JSON.stringify(x),fixture.expected);
+  assert.equal(parse(report).status,'FIXED_BROWSER_BOUNDARY_PASS');
+  assert.equal(parse(report).runtimeQualified,false);
+  assert.equal(parse({...report,checks:{...report.checks,renderer_controls:false}}).status,'VERIFICATION_BLOCKED');
+  assert.throws(()=>parse({...report,attemptId:'c'.repeat(32)}),/REPORT_INVALID/);
+  assert.throws(()=>parse({...report,status:'VERIFIED'}),/REPORT_INVALID/);
+  assert.throws(()=>parse({...report,checks:{...report.checks,browser_closed:'true'}}),/REPORT_INVALID/);
+});

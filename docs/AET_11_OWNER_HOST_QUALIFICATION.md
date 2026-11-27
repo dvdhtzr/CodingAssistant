@@ -236,3 +236,10 @@ container and terminates its own qualification child, not the API or
 any unrelated process. Run it without other pilot jobs in progress.
 If either probe fails or cleanup debt is reported, stop and retain
 evidence rather than manually deleting the journal.
+
+
+Owner reported 56/56 regressions, both durable negatives and both real
+interruption controls PASS at `26522c1`. The original five-attempt
+evidence can now be inspected without rerunning those controls.
+The next separate fixed renderer boundary control is documented in
+the AET-8 evidence document. Generated execution remains unauthorized.

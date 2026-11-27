@@ -495,3 +495,37 @@ executables, establish current host attestation, or grant runtime
 qualification. Actual candidate-specific security qualification and
 separate executable authorization remain mandatory. The negative and
 interruption runs are still pending owner evidence.
+
+
+### Owner-reported negative and interruption PASS; renderer boundary control
+
+At `26522c1` the owner reported 56/56 regressions, durable negative
+controls PASS (broken and spoof 0/7, all seven completed, removal true),
+and actual interruption controls PASS (cancel and crash both observed
+running, interrupted, owner exit confirmed, removed, cleanup debt false).
+Private receipts: `windows-static-web-97d0c3738217.json` and
+`windows-static-web-45135b58ac92.json`. No raw receipts independently
+retrieved here. Do not repeat these unchanged runs merely for progress.
+
+The new fixed browser-boundary control reuses the exact previously
+exercised candidate driver, server, security and sandbox module bytes,
+but has a distinct trusted probe entrypoint and adapter digest. It
+checks the guest security/sandbox probes and a frozen page's observable
+access to approved assets, denial of non-manifest and POST routes,
+absence of Node globals and failed fetches to two fixed endpoints.
+Network fetch failure is a sample, not proof of network confinement
+(the actual Docker network policy audit remains mandatory). Its
+trusted page result is read via the existing isolated-world driver.
+It independently requires browser and server closure and uses the
+same durable audited container lifecycle. This is not arbitrary
+generated-source qualification or proof against browser exploits.
+
+~~~powershell
+node tools/m4/windows_pilot_lifecycle_qualification.mjs --run-browser-boundary
+~~~
+
+Expected `AET-8 WINDOWS_PILOT_BROWSER_BOUNDARY_PASS`, all five Boolean
+categories true and confirmed removal. The distinct probe policy digest
+does not replace or alter the original five-attempt evidence binding.
+No generated-source execution grant, registry promotion or public
+dispatch route is introduced.
