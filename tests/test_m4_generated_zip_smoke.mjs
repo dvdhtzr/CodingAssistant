@@ -1382,7 +1382,7 @@ function buildEvidenceFixture(root){
   const policy=preparePilotPolicy(input.imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
   const controls={};
   for(const [i,name] of BUILD_CONTROLS.entries()){
-    const attemptId=String(i+7).padStart(2,'0').repeat(16),fixture=buildQualificationFixture(name,bundle,policy.policySha256,attemptId);
+    const attemptId=(i+7).toString(16).padStart(32,'0'),fixture=buildQualificationFixture(name,bundle,policy.policySha256,attemptId);
     const j=reservePilotAttempt(root,{...policy.identity(attemptId),engineId:input.engineId,
       candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256});
     j.advance('Creating');j.advance('Created',attemptId.repeat(2));j.advance('Audited');j.advance('Starting');
@@ -1407,6 +1407,7 @@ test('build-qualified evidence binds eleven distinct attempts and preserves hist
   assert.equal(upgraded.completeEvidenceSha256,prior.completeEvidenceSha256);
   assert.notEqual(upgraded.buildQualification.policySha256,prior.policySha256);
   assert.equal(Object.keys(upgraded.buildQualification.attempts).length,5);
+  assert.equal(new Set([...Object.values(upgraded.attempts),upgraded.boundary,...Object.values(upgraded.buildQualification.attempts)].map(x=>x.attemptId)).size,11);
   assert.match(upgraded.qualifiedEvidenceSha256,/^[a-f0-9]{64}$/);
   assert.equal(upgraded.executionEnabled,false);assert.equal(upgraded.runtimeQualified,false);
 }));
