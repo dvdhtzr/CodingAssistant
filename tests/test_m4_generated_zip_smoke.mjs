@@ -777,3 +777,128 @@ test('fixed adapter CLI is inert without explicit run and rejects arbitrary sour
     if(args.length===0)assert.match(result.stdout,/NOT_RUN/);
   }
 });
+
+
+import {preparePilotPolicy} from '../tools/m4/static_web_pilot_policy.mjs';
+import {checkedChromiumSeccomp} from '../tools/m4/windows_chromium_sandbox_qualification.mjs';
+function pilotPolicyFixture(){
+  const image={...meta,Config:{Env:['PATH=/usr/local/bin:/usr/bin:/bin'],Volumes:null,ExposedPorts:null}};
+  const policy=preparePilotPolicy(image,'a'.repeat(64),'b'.repeat(64));
+  const attempt='c'.repeat(32),containerId='d'.repeat(64),item=policy.identity(attempt);
+  const seccomp=JSON.parse(fs.readFileSync(checkedChromiumSeccomp().path,'utf8'));
+  const inspect={Id:containerId,Name:'/'+item.name,Image:image.Id,State:{Status:'created',Running:false},
+    Config:{Image:image.Id,Labels:{[item.label]:attempt,'codingassistant.pilot-policy':policy.policySha256},
+      User:'1000:1000',OpenStdin:true,Tty:false,Entrypoint:['node'],Cmd:['--input-type=module','-','--run-fixed-candidate-fixture'],
+      Env:[...image.Config.Env,'HOME=/tmp','XDG_CONFIG_HOME=/tmp/config','XDG_CACHE_HOME=/tmp/cache'],
+      Volumes:null,ExposedPorts:null},
+    HostConfig:{NetworkMode:'none',IpcMode:'private',PidMode:'',UTSMode:'',Privileged:false,ReadonlyRootfs:true,
+      Init:true,AutoRemove:false,Memory:2147483648,MemorySwap:2147483648,NanoCpus:2000000000,PidsLimit:256,
+      ShmSize:268435456,CapDrop:['ALL'],CapAdd:null,Binds:null,Mounts:null,VolumesFrom:null,Devices:[],
+      DeviceRequests:null,DeviceCgroupRules:null,PortBindings:{},PublishAllPorts:false,ExtraHosts:null,Links:null,
+      Dns:[],DnsOptions:[],DnsSearch:[],RestartPolicy:{Name:'no'},Tmpfs:{'/tmp':'rw,nosuid,nodev,mode=1777,size=256m'},
+      SecurityOpt:['no-new-privileges','seccomp='+JSON.stringify(seccomp)]},Mounts:[]};
+  return {image,policy,attempt,containerId,inspect};
+}
+test('separate pilot policy builds fixed create-only arguments and audits exact stopped container configuration',()=>{
+  const {policy,attempt,containerId,inspect}=pilotPolicyFixture();
+  const args=policy.createArgs(attempt);
+  assert.equal(args[0],'create');
+  for(const flag of ['--pull=never','--network=none','--read-only','--cap-drop=all','--memory-swap=2g','--pids-limit=256','--user=1000:1000'])
+    assert.ok(args.includes(flag));
+  for(const flag of ['--rm','--mount','--privileged','--no-sandbox','--pid=host'])assert.ok(!args.includes(flag));
+  assert.equal(policy.audit(attempt,containerId,inspect).status,'CONTAINER_CONFIGURATION_AUDITED');
+  assert.equal(policy.audit(attempt,containerId,inspect).executionEnabled,false);
+  assert.throws(()=>policy.createArgs('../anything'),/ATTEMPT_INVALID/);
+  assert.throws(()=>policy.audit(attempt,'e'.repeat(64),inspect),/IDENTITY_MISMATCH/);
+});
+test('pilot container inspection blocks actual policy drift before any candidate can start',()=>{
+  const {policy,attempt,containerId,inspect}=pilotPolicyFixture();
+  for(const [field,value] of Object.entries({NetworkMode:'bridge',Privileged:true,ReadonlyRootfs:false,
+    Init:false,AutoRemove:true,PidMode:'host',IpcMode:'host',Memory:0,MemorySwap:-1,NanoCpus:0,PidsLimit:257,
+    CapAdd:['SYS_ADMIN'],Binds:['C:/Users:/host'],Devices:[{}],DeviceRequests:[{}],PublishAllPorts:true,
+    PortBindings:{'80/tcp':[{HostPort:'80'}]},RestartPolicy:{Name:'always'},Tmpfs:{'/tmp':'rw'},
+    SecurityOpt:['seccomp=unconfined','no-new-privileges']})){
+    const changed=structuredClone(inspect);changed.HostConfig[field]=value;
+    assert.throws(()=>policy.audit(attempt,containerId,changed),/PILOT_CONTAINER_/,field);
+  }
+  for(const modify of [
+    i=>{i.Config.Env.push('OPENAI_API_KEY=secret');},
+    i=>{i.Config.Cmd=['-e','arbitrary'];},
+    i=>{i.Config.User='0';},
+    i=>{i.State.Running=true;},
+    i=>{i.Mounts.push({Type:'bind',Destination:'/host'});},
+    i=>{i.Config.Labels['codingassistant.pilot-policy']='0'.repeat(64);}]){
+    const changed=structuredClone(inspect);modify(changed);
+    assert.throws(()=>policy.audit(attempt,containerId,changed));
+  }
+});
+test('pilot policy pins image environment and distinct adapter/evaluator identities without executable authorization',()=>{
+  const {image,policy}=pilotPolicyFixture();
+  assert.notEqual(preparePilotPolicy(image,'c'.repeat(64),'b'.repeat(64)).policySha256,policy.policySha256);
+  assert.notEqual(preparePilotPolicy(image,'a'.repeat(64),'c'.repeat(64)).policySha256,policy.policySha256);
+  assert.throws(()=>preparePilotPolicy({...image,Config:{...image.Config,Volumes:{'/host':{}}}},'a'.repeat(64),'b'.repeat(64)),/IMAGE_CONFIG_UNSAFE/);
+  assert.throws(()=>preparePilotPolicy({...image,Config:{...image.Config,Env:['GH_TOKEN=secret']}},'a'.repeat(64),'b'.repeat(64)),/ENVIRONMENT_INVALID/);
+});
+
+
+import {qualifyPilotConfiguration} from '../tools/m4/windows_pilot_configuration_qualification.mjs';
+function pilotConfigurationDocker({drift=false,leftover=false,prior=false,wrongOwner=false,createFailed=false}={}){
+  const {image,attempt,containerId,inspect}=pilotPolicyFixture();
+  const calls=[];let active=false;
+  const docker=args=>{
+    calls.push(args);
+    if(args[0]==='context'&&args[1]==='show')return {status:0,stdout:'desktop-linux'};
+    if(args[0]==='context')return {status:0,stdout:JSON.stringify({Endpoints:{docker:{Host:'npipe:////./pipe/dockerDesktopLinuxEngine'}}})};
+    if(args[0]==='info')return {status:0,stdout:JSON.stringify(info)};
+    if(args[0]==='image')return {status:0,stdout:JSON.stringify(image)};
+    if(args[0]==='ps')return {status:0,stdout:active||prior?containerId:''};
+    if(args[0]==='create'){
+      active=true;
+      const labels=args.flatMap((a,i)=>a==='--label'?[args[i+1]]:[]);
+      inspect.Config.Labels=Object.fromEntries(labels.map(x=>x.split('=')));
+      if(drift)inspect.HostConfig.NetworkMode='bridge';
+      if(wrongOwner)inspect.Config.Labels['codingassistant.pilot-policy']='0'.repeat(64);
+      return createFailed?{status:125,stdout:''}:{status:0,stdout:containerId};
+    }
+    if(args[0]==='container')return {status:0,stdout:JSON.stringify(inspect)};
+    if(args[0]==='rm'){if(!leftover)active=false;return {status:0,stdout:containerId};}
+    throw Error('unexpected Docker command');
+  };
+  return {docker,calls,attempt};
+}
+test('pilot configuration probe creates stopped container, audits actual configuration and removes by exact ID',()=>{
+  const f=pilotConfigurationDocker();
+  const result=qualifyPilotConfiguration({platform:'win32',env:{},docker:f.docker,attemptId:f.attempt});
+  assert.equal(result.status,'PILOT_CONTAINER_CONFIGURATION_PASS',result.reason);
+  assert.equal(result.configurationAudited,true);
+  assert.equal(result.containerRemoved,true);
+  assert.equal(result.guestStarted,false);
+  assert.equal(result.runtimeQualified,false);
+  assert.equal(result.generatedCodeExecutionEnabled,false);
+  assert.ok(f.calls.some(args=>args[0]==='create'));
+  assert.ok(f.calls.some(args=>args[0]==='rm'&&args[1]==='d'.repeat(64)));
+  assert.ok(!f.calls.some(args=>['run','start','exec'].includes(args[0])));
+});
+test('pilot configuration probe refuses drift, previous cleanup debt and wrong ownership without starting a guest',()=>{
+  for(const [scenario,reason,remove] of [
+    [{drift:true},'PILOT_CONTAINER_ISOLATION_MISMATCH',true],
+    [{leftover:true},'PILOT_CONTAINER_CLEANUP_UNCONFIRMED',true],
+    [{prior:true},'PILOT_PRIOR_CLEANUP_REQUIRED',false],
+    [{wrongOwner:true},'PILOT_CONTAINER_CLEANUP_UNCONFIRMED',false],
+    [{createFailed:true},'PILOT_DOCKER_QUERY_FAILED',true]]){
+    const f=pilotConfigurationDocker(scenario);
+    const result=qualifyPilotConfiguration({platform:'win32',env:{},docker:f.docker,attemptId:f.attempt});
+    assert.equal(result.status,'BLOCKED',JSON.stringify(scenario));
+    assert.equal(result.reason,reason);
+    assert.equal(f.calls.some(args=>args[0]==='rm'),remove);
+    assert.ok(!f.calls.some(args=>['run','start','exec'].includes(args[0])));
+  }
+});
+test('pilot configuration CLI is inert without explicit run and rejects source paths',()=>{
+  for(const args of [[],['--run','project.zip']]){
+    const result=spawnSync(process.execPath,['tools/m4/windows_pilot_configuration_qualification.mjs',...args],
+      {encoding:'utf8',timeout:5000});
+    assert.equal(result.status,args.length===0?0:2,result.stderr);
+    if(args.length===0)assert.match(result.stdout,/NOT_RUN/);
+  }
+});

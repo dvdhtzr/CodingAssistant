@@ -188,3 +188,30 @@ for that scope. This is not an authorization to launch generated source.
 Any need for additional privileges or weakened isolation must return
 to the owner. Until approval and required qualification, generated
 execution remains blocked. Source-only development remains permitted.
+
+
+### Owner approval — implementation and qualification only
+
+On November 27, 2026 the owner explicitly approved implementation and
+qualification of the proposed narrowly scoped generated-source evaluation
+adapter, retaining all stated security boundaries, and explicitly
+prohibited activation before required qualification and separate
+executable authorization. This supersedes the pending implementation
+decision above, not the separate runtime qualification or consent gate.
+
+The new pilot policy module constructs a distinct fixed qualification
+profile and audits the actual Docker create-time configuration before
+any future start. It retains the approved isolation options, adds a
+no-swap allowance (memory-swap equals the memory ceiling), and deliberately
+uses explicit create/inspect/cleanup rather than auto-removal. This is
+a stronger resource restriction and a lifecycle design choice, not a
+new permission. Model-free tests cover configuration drift. The module
+does not call Docker or permit execution. Host create/start/cancel/recovery
+integration and real adversarial qualification remain required.
+
+
+The next real host check is the stopped-container configuration probe
+in the AET-8 evidence document. It does not start a browser or repeat
+the trusted candidate fixture run. It blocks if any prior pilot
+qualification container is still present, leaving recovery to an
+explicit reconciler rather than guessing ownership.

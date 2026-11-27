@@ -365,3 +365,36 @@ The prior fixture-only seccomp and PID-256 exception cannot be inherited
 as executable generated-source authority. The current exact execution
 proposal ledger does not grant execution. See the next policy decision
 in `docs/AET_11_OWNER_HOST_QUALIFICATION.md`.
+
+
+### Separate pilot policy construction and pre-start audit
+
+Owner implementation/qualification approval is recorded in the AET-11
+runbook. The separate pilot policy pins adapter, evaluator, exact image
+identity, seccomp, environment hash, contract and resource limits.
+It emits only a fixed create command, and audits the returned immutable
+container ID, ownership labels, stopped state, actual HostConfig,
+entrypoint, user, environment, mount/namespace restrictions, resource
+ceilings and exact seccomp JSON. Unexpected configuration fails closed.
+It deliberately adds no-swap and disables auto-removal to enable exact
+container reconciliation. No runner, host admission, generated execution
+grant or runtime promotion is added. The previously qualified fixture
+adapter and fixture policy are unchanged.
+
+
+The owner-local configuration qualification command creates only a
+stopped container, audits its real configuration, removes it by exact
+immutable ID, and independently confirms absence. It never calls start,
+run or exec. Wrong ownership, drift, prior cleanup debt or uncertain
+removal blocks the probe. It cannot reconcile a previously abandoned
+attempt automatically; this is deliberately deferred to the durable
+recovery lifecycle, and no guest may start through this command.
+
+~~~powershell
+node tools/m4/windows_pilot_configuration_qualification.mjs --run
+~~~
+
+Expected `AET-8 WINDOWS_PILOT_CONTAINER_CONFIGURATION_PASS`, actual
+configuration audited true, container removed true, guest started false.
+This is a distinct real host policy audit, not generated-source
+qualification or consent.
