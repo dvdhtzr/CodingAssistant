@@ -5475,6 +5475,92 @@ try
     executionProposalStore.Revoke(taskBound.Id,secondAdmissionProposal.Id);
     Check(admissionStore.Get(taskBound.Id,secondAdmission.Id) is {State:"Revoked",Current:false},
         "parent proposal revocation atomically revokes prepared admission");
+    // Synthetic consumed rows in the disposable smoke DB ONLY. No
+    // production authorization bypass, no model or guest execution.
+    var resultFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('c',64),admissionReceipts);
+    var resultFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,resultFixtureBinding);
+    var resultFixtureTransport=AdmissionTransport(new string('a',32),new string('5',64));
+    var resultFixtureAdmission=admissionStore.Stage(taskBound.Id,resultFixtureProposal.Id,resultFixtureTransport);
+    JsonElement ResultFixture(string attemptId,string transportHash,bool failed=false,bool missing=false,bool debt=false)
+    {
+        var security=new[]{"nonroot_seccomp_no_caps","no_host_mounts_or_socket","credentials_denied","system_write_denied",
+            "symlink_write_denied","traversal_write_denied","outbound_and_host_service_denied","child_network_denied","child_system_write_denied","git_remote_denied"}
+            .ToDictionary(k=>k,k=>true);
+        var cases=new[]{"mouse_2_plus_3_equals_5","keyboard_12_5_divided_by_2","decimal_0_1_plus_0_2","backspace_and_divide_by_zero",
+            "back_and_history_recall","history_survives_page_reload","history_survives_browser_restart"}
+            .Select((k,i)=>new {k,v=missing?(bool?)null:!(failed&&i==0)}).ToDictionary(x=>x.k,x=>x.v);
+        var status=debt?"VERIFICATION_BLOCKED":missing?"BUILD_FAILED":failed?"TESTS_FAILED":"CHECKS_PASSED_NOT_VERIFIED";
+        var observations=JsonSerializer.SerializeToElement(new {status,passed=missing?0:failed?6:7,completed=missing?0:7,required=7,
+            cases,security,build=new {exact_source_hashes=true,javascript_syntax=true,local_assets_linked=!missing,source_integrity_unchanged=true},
+            infrastructure=new[]{"browser_sandbox_confirmed","independent_driver_confirmed","browser_closed","asset_server_closed"}
+                .ToDictionary(k=>k,k=>missing?(bool?)null:true),executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false});
+        return JsonSerializer.SerializeToElement(new {schemaVersion=1,stage="AET-8-candidate-dispatch-lifecycle",status,
+            attemptId,engineId="structural-fixture",policySha256=admissionPolicyHash,transportSha256=transportHash,
+            configurationAudited=true,attachClosed=!debt,containerRemoved=!debt,cleanupDebt=debt,
+            archiveSha256=debt?null:new string('a',64),observations=debt?(JsonElement?)null:observations,
+            reason=debt?"CANDIDATE_DISPATCH_ATTACH_UNCONFIRMED":null,executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false});
+    }
+    var resultFixtureReceipt=ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256,failed:true);
+    try
+    {
+        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
+        Check(false,"unconsumed admission cannot record results");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_NOT_CONSUMED")
+    {Check(true,"unconsumed admission cannot record results");}
+    Check(PilotExecutionAdmissionStore.ValidateResult(resultFixtureAdmission,resultFixtureTransport,
+        ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256)).Status=="CHECKS_PASSED_NOT_VERIFIED",
+        "complete checks cannot promote generated artifact to VERIFIED");
+    Check(PilotExecutionAdmissionStore.ValidateResult(resultFixtureAdmission,resultFixtureTransport,
+        ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256,missing:true)) is {Status:"BUILD_FAILED",Completed:0,CleanupConfirmed:true},
+        "build failure has no functional observations");
+    Check(PilotExecutionAdmissionStore.ValidateResult(resultFixtureAdmission,resultFixtureTransport,
+        ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256,debt:true)) is {Status:"VERIFICATION_BLOCKED",CleanupConfirmed:false,Passed:null},
+        "uncertain cleanup blocks functional verdict");
+    var forgedResultFixture=System.Text.Json.Nodes.JsonNode.Parse(resultFixtureReceipt.GetRawText())!.AsObject();
+    forgedResultFixture["observations"]!.AsObject()["passed"]=7;
+    try
+    {
+        PilotExecutionAdmissionStore.ValidateResult(resultFixtureAdmission,resultFixtureTransport,
+            JsonSerializer.Deserialize<JsonElement>(forgedResultFixture.ToJsonString()));
+        Check(false,"false counts cannot override Boolean cases");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_INVALID")
+    {Check(true,"result classification recomputes case counts");}
+    using(var fixtureDb=tasks.Open())
+        TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",resultFixtureAdmission.Id));
+    var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
+    Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
+        admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
+        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt)==storedFixtureResult,
+        "consumed attempt records exactly one durable idempotent result");
+    try
+    {
+        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256));
+        Check(false,"recorded test failure cannot be overwritten");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_ALREADY_RECORDED")
+    {Check(true,"result is immutable after recording");}
+    var unfinishedFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('d',64),admissionReceipts);
+    var unfinishedFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,unfinishedFixtureBinding);
+    var unfinishedFixtureAdmission=admissionStore.Stage(taskBound.Id,unfinishedFixtureProposal.Id,AdmissionTransport(new string('b',32),new string('6',64)));
+    using(var fixtureDb=tasks.Open())
+        TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",unfinishedFixtureAdmission.Id));
+    var revokedFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('e',64),admissionReceipts);
+    var revokedFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,revokedFixtureBinding);
+    var revokedFixtureAdmission=admissionStore.Stage(taskBound.Id,revokedFixtureProposal.Id,AdmissionTransport(new string('d',32),new string('7',64)));
+    using(var fixtureDb=tasks.Open())
+        TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",revokedFixtureAdmission.Id));
+    admissionStore.Revoke(taskBound.Id,revokedFixtureAdmission.Id);
+    Check(admissionStore.GetResult(taskBound.Id,revokedFixtureAdmission.Id) is {Status:"VERIFICATION_BLOCKED",Reason:"PILOT_RESULT_REVOKED",CleanupConfirmed:false,Current:false},
+        "revoking consumed attempt prevents late result without claiming cleanup");
+    try
+    {
+        admissionStore.RecordResult(taskBound.Id,revokedFixtureAdmission.Id,ResultFixture(revokedFixtureAdmission.AttemptId,revokedFixtureAdmission.TransportSha256));
+        Check(false,"revoked consumed attempt cannot publish late success");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_ALREADY_RECORDED")
+    {Check(true,"revoked consumed attempt cannot publish late success");}
     var differentPins=PilotProposalBinding.Create(pilotEvidence,new string('b',64),pilotReceipts);
     var differentProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,differentPins);
     Check(differentProposal.AuthorizationSha256!=pilotBoundExecutionProposal.AuthorizationSha256,
@@ -5490,6 +5576,10 @@ try
         executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,differentPins).State=="Revoked",
         "evidence-bound revoked proposal cannot replay");
     executionProposalStore.Recover();
+    Check(admissionStore.GetResult(taskBound.Id,unfinishedFixtureAdmission.Id) is {Status:"VERIFICATION_BLOCKED",Reason:"PILOT_RESULT_INTERRUPTED",CleanupConfirmed:false,Current:false},
+        "startup interruption records missing result without claiming cleanup");
+    Check(admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id) is {Status:"TESTS_FAILED",Current:false},
+        "startup retains completed historical result but retires currentness");
     Check(admissionStore.Get(taskBound.Id,preparedAdmission.Id) is {State:"Interrupted",Current:false},
         "restart interrupts unconsumed admission without replay");
     Check(executionProposalStore.Get(taskBound.Id,pilotBoundExecutionProposal.Id) is {State:"Interrupted",Current:false},

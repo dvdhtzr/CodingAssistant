@@ -12,7 +12,7 @@ internal sealed record PilotExecutionAdmission(string Id,string TaskId,string Pr
     string ConsentSha256,string TransportSha256,string State,bool Current,
     bool ExecutionEnabled=false,bool RuntimeQualified=false);
 
-internal sealed class PilotExecutionAdmissionStore(TaskStore tasks)
+internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
 {
     internal static void Initialize(SqliteConnection db)=>TaskStore.Execute(db,null,"""
         CREATE TABLE IF NOT EXISTS pilot_execution_admissions(
@@ -23,6 +23,11 @@ internal sealed class PilotExecutionAdmissionStore(TaskStore tasks)
             transport_json TEXT NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('Prepared','Authorized','Consumed','Revoked','Interrupted')),
             created_utc TEXT NOT NULL,updated_utc TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pilot_execution_results(
+            admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK(status IN ('BUILD_FAILED','TESTS_FAILED','CHECKS_PASSED_NOT_VERIFIED','VERIFICATION_BLOCKED')),
+            receipt_json TEXT,receipt_sha256 TEXT,reason TEXT,recorded_utc TEXT NOT NULL
         );
         """);
     private const string Columns="""
@@ -180,11 +185,34 @@ internal sealed class PilotExecutionAdmissionStore(TaskStore tasks)
                 ("@id",id),("@now",Now()));
             item=item with {State="Revoked"};
         }
+        else if(item.State=="Consumed")
+        {
+            // Consumption remains terminal; revocation prevents a late
+            // result from replacing the blocked record.
+            TaskStore.Execute(db,tx,"""
+                INSERT OR IGNORE INTO pilot_execution_results(admission_id,status,reason,recorded_utc)
+                VALUES(@id,'VERIFICATION_BLOCKED','PILOT_RESULT_REVOKED',@now)
+                """,("@id",id),("@now",Now()));
+        }
         tx.Commit();return item with {Current=false};
     }
-    internal static void RevokeProposal(SqliteConnection db,SqliteTransaction tx,string proposalId)=>
+    internal static void RevokeProposal(SqliteConnection db,SqliteTransaction tx,string proposalId)
+    {
         TaskStore.Execute(db,tx,"UPDATE pilot_execution_admissions SET state='Revoked',updated_utc=@now WHERE proposal_id=@proposal AND state IN ('Prepared','Authorized')",
             ("@proposal",proposalId),("@now",Now()));
-    internal static void Recover(SqliteConnection db,SqliteTransaction tx)=>
+        TaskStore.Execute(db,tx,"""
+            INSERT OR IGNORE INTO pilot_execution_results(admission_id,status,reason,recorded_utc)
+            SELECT id,'VERIFICATION_BLOCKED','PILOT_RESULT_REVOKED',@now
+            FROM pilot_execution_admissions WHERE proposal_id=@proposal AND state='Consumed'
+            """,("@proposal",proposalId),("@now",Now()));
+    }
+    internal static void Recover(SqliteConnection db,SqliteTransaction tx)
+    {
         TaskStore.Execute(db,tx,"UPDATE pilot_execution_admissions SET state='Interrupted',updated_utc=@now WHERE state IN ('Prepared','Authorized')",("@now",Now()));
+        TaskStore.Execute(db,tx,"""
+            INSERT OR IGNORE INTO pilot_execution_results(admission_id,status,reason,recorded_utc)
+            SELECT id,'VERIFICATION_BLOCKED','PILOT_RESULT_INTERRUPTED',@now
+            FROM pilot_execution_admissions WHERE state='Consumed'
+            """,("@now",Now()));
+    }
 }

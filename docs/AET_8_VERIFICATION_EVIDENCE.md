@@ -843,3 +843,28 @@ Expected AET-8 WINDOWS_PILOT_CANDIDATE_DISPATCH_CONTROLS_PASS:
 working CHECKS_PASSED_NOT_VERIFIED, spoof TESTS_FAILED, missing asset
 BUILD_FAILED, all attach closed and removed, no debt.
 Use the previously selected CA_PILOT_* executable pins.
+
+
+### Shared lifecycle PASS and durable result ledger
+
+At `1fc8488` the owner reported AET-8 WINDOWS_PILOT_CANDIDATE_DISPATCH_CONTROLS_PASS,
+working CHECKS_PASSED_NOT_VERIFIED, spoof TESTS_FAILED, missing asset
+BUILD_FAILED, all attach closed, removed, no cleanup debt. Receipt
+`windows-static-web-3b7cd4d3e0b1.json`.
+
+The private .NET admission ledger now supports exactly one immutable
+result per consumed attempt. It binds the original transport and
+attempt, recomputes the seven-case classification from exact Boolean
+observations, and rejects success without complete security, build,
+browser and cleanup evidence. Exact receipt replay is idempotent;
+changed receipts are rejected. A revoked or interrupted consumed attempt
+without a result receives a terminal blocked record with no fabricated
+guest observations or cleanup claim. Historical results survive recovery
+but cannot be current once their proposal is retired.
+
+These tests use synthetic consumed rows in a disposable smoke database;
+there is no production authorization bypass or public result route.
+The result parser validates structure, not subprocess provenance, and
+does not grant VERIFIED or trigger repairs. Binding the new lifecycle
+receipt and qualifying production Windows process-tree ownership remain
+outstanding. The executable gate is still closed.
