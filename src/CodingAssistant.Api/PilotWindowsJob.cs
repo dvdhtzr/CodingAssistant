@@ -10,7 +10,7 @@ namespace CodingAssistant.Api;
 // via STARTUPINFOEX JOB_LIST, rather than launched then assigned. The
 // handle is non-inheritable, no breakaway flags, and kill-on-close is
 // mandatory. No shell, PATH resolution or user-facing process interface.
-internal sealed class PilotWindowsJob : IDisposable
+internal sealed partial class PilotWindowsJob : IDisposable
 {
     private const uint KillOnClose=0x2000;
     private const uint ExtendedStartup=0x80000;

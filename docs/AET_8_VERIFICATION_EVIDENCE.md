@@ -949,3 +949,36 @@ proposal/transport continues to use the prior seven receipts until the
 new native stdin/stdout dispatch and cancellation path is implemented
 and independently qualified. No executable permission or VERIFIED
 state is introduced. No unchanged Docker qualification rerun required.
+
+
+### Job-owned fixed stdin/stdout transport
+
+At `e2e5329` the owner reported M2 LOCAL_CONTROL_PLANE_SMOKE_PASS
+439 assertions. The summary does not independently establish the
+optional PILOT_JOB_EVIDENCE_INSPECTION_PASS marker.
+
+A new fixed-only native I/O path uses the existing kill-on-close job
+and atomic JOB_LIST assignment with a separate HANDLE_LIST containing
+only the three child pipe ends. Parent ends are non-inheritable.
+Bounded stdin, concurrent bounded output drains, deadline and
+cancellation terminate and confirm the job; a failed I/O path
+cannot publish a result or clear the container journal. Module,
+script and executable pins are checked before and after the run.
+The separate stdin bridge accepts only three frozen control names
+and a fresh exact attempt ID. No candidate input or grant route.
+
+The actual opt-in control exercises rejection, working, spoof,
+missing asset, and pre-cancelled requests. New bridge identity is
+pinned separately from the earlier 43-file historical closure.
+No historical native binary qualification is transferred to the new
+build. The actual running-candidate cancellation and crash recovery
+through redirected I/O still require independent qualification.
+The currently tested cancellation is pre-launch only. No production
+dispatch, executable policy, or VERIFIED promotion is enabled.
+
+~~~powershell
+dotnet run --project tests/CodingAssistant.Api.Smoke/CodingAssistant.Api.Smoke.csproj -- --pilot-job-fixed-io
+~~~
+
+Expected AET-8 WINDOWS_PILOT_JOB_FIXED_IO_PASS, using existing
+CA_PILOT_* and CODINGASSISTANT_TEST_NODE_EXE pins.

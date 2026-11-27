@@ -17,6 +17,11 @@ using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Http.Connections;
 using Microsoft.Data.Sqlite;
 
+if (args.Length == 1 && args[0] == "--pilot-job-fixed-io")
+{
+    Environment.ExitCode=await PilotWindowsIoSmoke.Run();
+    return;
+}
 if (args.Length == 1 && args[0] == "--pilot-job-ownership")
 {
     Environment.ExitCode=await PilotWindowsJobSmoke.Run();

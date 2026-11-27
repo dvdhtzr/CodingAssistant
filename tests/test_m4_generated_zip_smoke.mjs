@@ -1743,3 +1743,21 @@ test('job evidence rejects incomplete ownership, changed receipt bytes and chang
     assert.throws(()=>bindJobOwnershipEvidence(input,pins,{job,normalRaw:Buffer.concat([normalRaw,Buffer.from('\n')]),recoveryRaw}),/RECEIPT_CHANGED/);
   });
 });
+
+
+import {parseFixedIoRequest} from '../tools/m4/windows_job_fixed_io.mjs';
+test('job-owned stdin accepts only exact fixed-control identity',()=>{
+  const valid={operation:'fixed-control',control:'build-working',attemptId:'a'.repeat(32)};
+  assert.deepEqual(parseFixedIoRequest(JSON.stringify(valid)),valid);
+  for(const bad of [{...valid,source:'untrusted'}, {...valid,operation:'generated-source'},
+    {...valid,control:'custom'}, {...valid,attemptId:'../other'},null,[]]){
+    assert.throws(()=>parseFixedIoRequest(JSON.stringify(bad)));
+  }
+  assert.throws(()=>parseFixedIoRequest(' '.repeat(4097)));
+});
+test('job stdin bridge rejects malformed request without starting Docker',()=>{
+  const p=spawnSync(process.execPath,['tools/m4/windows_job_fixed_io.mjs','--stdin-fixed'],
+    {input:JSON.stringify({operation:'generated-source'}),encoding:'utf8',timeout:5000});
+  assert.equal(p.status,2);
+  assert.equal(JSON.parse(p.stdout).reason,'PILOT_JOB_REQUEST_INVALID');
+});
