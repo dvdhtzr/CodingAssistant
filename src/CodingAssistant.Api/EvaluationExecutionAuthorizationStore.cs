@@ -9,7 +9,7 @@ namespace CodingAssistant.Api;
 // host adapter exists, no transition can authorize or consume execution.
 public sealed record EvaluationExecutionProposal(string Id,string TaskId,string PlanReviewId,
     string AuthorizationSha256,string ProfileSha256,string State,bool Current,
-    bool ExecutionEnabled=false,bool RuntimeQualified=false);
+    bool ExecutionEnabled=false,bool RuntimeQualified=false,string? PilotBindingSha256=null);
 
 public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
 {
@@ -22,11 +22,15 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
             created_utc TEXT NOT NULL,updated_utc TEXT NOT NULL,
             UNIQUE(task_id,authorization_sha256)
         );
+        CREATE TABLE IF NOT EXISTS evaluation_execution_pilot_bindings(
+            proposal_id TEXT PRIMARY KEY REFERENCES evaluation_execution_proposals(id) ON DELETE CASCADE,
+            binding_sha256 TEXT NOT NULL,binding_json TEXT NOT NULL
+        );
         """);
     private static string Sha(string value)=>Convert.ToHexStringLower(
         SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static (string Authorization,string Profile) Identity(SqliteConnection db,SqliteTransaction tx,
-        string taskId,string planId)
+        string taskId,string planId,string? pilotBindingSha256=null)
     {
         var (plan,descriptor,contractId)=EvaluationPlanReviewStore.RequireReviewedAdmission(db,tx,taskId,planId);
         var profile=RuntimeProfileRegistry.Find("static-web")??throw new StoreFailure("EVALUATION_RUNTIME_UNQUALIFIED");
@@ -42,18 +46,25 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
             fixtureReceiptSha256=descriptor.GetProperty("qualification").GetProperty("receiptSha256").GetString(),
             profileSha256=profileHash
         }));
+        if(pilotBindingSha256 is not null)
+            authorization=Sha(JsonSerializer.Serialize(new {
+                schemaVersion=2,kind="pilot-evidence-bound-proposal-only",candidateAuthorizationSha256=authorization,
+                pilotBindingSha256
+            }));
         return (authorization,profileHash);
     }
     private const string Columns="""
-        SELECT id,task_id,plan_review_id,authorization_sha256,profile_sha256,state
-        FROM evaluation_execution_proposals
+        SELECT p.id,p.task_id,p.plan_review_id,p.authorization_sha256,p.profile_sha256,p.state,b.binding_sha256
+        FROM evaluation_execution_proposals p
+        LEFT JOIN evaluation_execution_pilot_bindings b ON b.proposal_id=p.id
         """;
     private static EvaluationExecutionProposal Decode(SqliteDataReader row)=>
-        new(row.GetString(0),row.GetString(1),row.GetString(2),row.GetString(3),row.GetString(4),row.GetString(5),false);
+        new(row.GetString(0),row.GetString(1),row.GetString(2),row.GetString(3),row.GetString(4),row.GetString(5),false,
+            PilotBindingSha256:row.IsDBNull(6)?null:row.GetString(6));
     private static EvaluationExecutionProposal Find(SqliteConnection db,SqliteTransaction tx,string taskId,string id)
     {
         ExecutionStore.CheckId(taskId);ExecutionStore.CheckId(id);
-        using var cmd=TaskStore.Command(db,tx,Columns+" WHERE task_id=@task AND id=@id",
+        using var cmd=TaskStore.Command(db,tx,Columns+" WHERE p.task_id=@task AND p.id=@id",
             ("@task",taskId),("@id",id));
         using var row=cmd.ExecuteReader();
         return row.Read()?Decode(row):throw new StoreFailure("NOT_FOUND");
@@ -63,21 +74,50 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
         if(item.State!="Proposed")return false;
         try
         {
-            var identity=Identity(db,tx,item.TaskId,item.PlanReviewId);
+            if(item.PilotBindingSha256 is not null)
+            {
+                var raw=TaskStore.Scalar(db,tx,"SELECT binding_json FROM evaluation_execution_pilot_bindings WHERE proposal_id=@id",("@id",item.Id));
+                if(raw is null||Sha(raw)!=item.PilotBindingSha256)return false;
+                using var json=JsonDocument.Parse(raw);
+                var (_,descriptor,_)=EvaluationPlanReviewStore.RequireReviewedAdmission(db,tx,item.TaskId,item.PlanReviewId);
+                PilotProposalBinding.ValidateAgainstAdmission(json.RootElement,descriptor);
+            }
+            var identity=Identity(db,tx,item.TaskId,item.PlanReviewId,item.PilotBindingSha256);
             return item.AuthorizationSha256==identity.Authorization&&item.ProfileSha256==identity.Profile;
         }
-        catch(StoreFailure){return false;}
+        catch(Exception e)when(e is StoreFailure or JsonException or InvalidOperationException or KeyNotFoundException){return false;}
     }
-    public EvaluationExecutionProposal Propose(string taskId,string planReviewId)
+    public EvaluationExecutionProposal Propose(string taskId,string planReviewId)=>ProposeCore(taskId,planReviewId,null);
+
+    // Host-only path: load owner-private configuration and obtain a fresh
+    // read-only inspection. No arbitrary evidence JSON from a request/model.
+    internal async Task<EvaluationExecutionProposal> ProposeBoundAsync(string taskId,string planReviewId,
+        string ownerDataDirectory,IReadOnlyList<string> receipts,CancellationToken token)
+    {
+        var binding=await PilotProposalBinding.InspectAsync(ownerDataDirectory,receipts,token);
+        token.ThrowIfCancellationRequested();
+        return ProposeCore(taskId,planReviewId,binding);
+    }
+    internal EvaluationExecutionProposal ProposeBound(string taskId,string planReviewId,JsonElement binding)=>
+        ProposeCore(taskId,planReviewId,binding);
+    private EvaluationExecutionProposal ProposeCore(string taskId,string planReviewId,JsonElement? pilotBinding)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
-        var identity=Identity(db,tx,taskId,planReviewId);
-        using(var cmd=TaskStore.Command(db,tx,Columns+" WHERE task_id=@task AND authorization_sha256=@hash",
+        string? raw=null,hash=null;
+        if(pilotBinding is JsonElement evidence)
+        {
+            var (_,descriptor,_)=EvaluationPlanReviewStore.RequireReviewedAdmission(db,tx,taskId,planReviewId);
+            PilotProposalBinding.ValidateAgainstAdmission(evidence,descriptor);
+            raw=evidence.GetRawText();hash=Sha(raw);
+        }
+        var identity=Identity(db,tx,taskId,planReviewId,hash);
+        using(var cmd=TaskStore.Command(db,tx,Columns+" WHERE p.task_id=@task AND p.authorization_sha256=@hash",
             ("@task",taskId),("@hash",identity.Authorization)))
         using(var row=cmd.ExecuteReader())
             if(row.Read())
             {
                 var existing=Decode(row);row.Close();
+                if(existing.PilotBindingSha256!=hash)throw new StoreFailure("IDEMPOTENCY_CONFLICT");
                 var current=Current(db,tx,existing);tx.Commit();
                 return existing with {Current=current};
             }
@@ -88,7 +128,24 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
             VALUES(@id,@task,@plan,@hash,@profile,'Proposed',@now,@now)
             """,("@id",id),("@task",taskId),("@plan",planReviewId),("@hash",identity.Authorization),
             ("@profile",identity.Profile),("@now",now));
-        tx.Commit();return new(id,taskId,planReviewId,identity.Authorization,identity.Profile,"Proposed",true);
+        if(hash is not null)
+            TaskStore.Execute(db,tx,"INSERT INTO evaluation_execution_pilot_bindings(proposal_id,binding_sha256,binding_json) VALUES(@id,@hash,@json)",
+                ("@id",id),("@hash",hash),("@json",raw!));
+        tx.Commit();return new(id,taskId,planReviewId,identity.Authorization,identity.Profile,"Proposed",true,PilotBindingSha256:hash);
+    }
+    // Explicit fresh check: Current on Get is database currentness only.
+    // Reinspect outside the DB lock, then recheck the exact proposal and
+    // source/contract in a transaction. Still not executable consent.
+    internal async Task<EvaluationExecutionProposal> RevalidateBoundAsync(string taskId,string id,
+        string ownerDataDirectory,IReadOnlyList<string> receipts,CancellationToken token)
+    {
+        var binding=await PilotProposalBinding.InspectAsync(ownerDataDirectory,receipts,token);
+        token.ThrowIfCancellationRequested();
+        using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
+        var item=Find(db,tx,taskId,id);
+        if(item.PilotBindingSha256 is null||item.PilotBindingSha256!=Sha(binding.GetRawText())||!Current(db,tx,item))
+            throw new StoreFailure("PILOT_EXECUTION_BINDING_CHANGED");
+        tx.Commit();return item with {Current=true};
     }
     public EvaluationExecutionProposal Get(string taskId,string id)
     {

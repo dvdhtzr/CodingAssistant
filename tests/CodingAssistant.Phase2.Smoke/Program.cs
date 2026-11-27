@@ -5208,7 +5208,9 @@ try
             archiveSha256=archiveHash,model=evaluationInput.Scope.Model,contractId="calculation-journal-v1",
             admissionSha256=admission,candidateSha256=new string('a',64),evaluatorSha256=new string('b',64),
             qualification=new {hostProvenanceEstablished=false,runtimeQualified=false,executionEnabled=false,
-                receiptSha256=new string('c',64),evaluatorSha256=new string('b',64)},
+                receiptSha256=new string('c',64),evaluatorSha256=new string('b',64),
+                imageId="sha256:"+new string('a',64),registryDigest="mcr.microsoft.com/playwright@sha256:"+new string('a',64),
+                seccompSha256=new string('c',64),fixturePidLimit=256},
             mappings=evaluationInput.Criteria.Select(c=>new {criterionId=c.Id,criterionText=c.Text,cases=cases??evaluationCases})
         });
     var behavioralStore=new BehavioralContractReviewStore(tasks);
@@ -5300,7 +5302,73 @@ try
     }
     Check(executionProposalStore.Get(taskBound.Id,executionProposal.Id) is {State:"Proposed",ExecutionEnabled:false},
         "blocked authorization cannot change durable execution state");
+    // Synthetic structural test only: no real calculator, host trust or
+    // generated-source execution. Production path reads private host pins.
+    var pilotPolicyFixture=JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,policyId="static-web-calculation-journal-windows-qualification-v1",
+        contractId="calculation-journal-v1",imageId="sha256:"+new string('a',64),
+        registryDigest="mcr.microsoft.com/playwright@sha256:"+new string('a',64),
+        adapterSha256=new string('d',64),evaluatorSha256=new string('b',64),seccompSha256=new string('c',64),
+        environmentSha256=new string('e',64),pidLimit=256,memoryBytes=2147483648L,nanoCpus=2000000000L,
+        shmBytes=268435456,scratchBytes=268435456,guestDeadlineSeconds=145,hostDeadlineSeconds=180,
+        user="1000:1000",network="none",ipc="private",rootReadOnly=true,capabilities="none",
+        noNewPrivileges=true,init=true,autoRemove=false,hostMounts=0,entrypoint="node",entryFlag="--run-fixed-candidate-fixture"
+    });
+    string PilotHash(string raw)=>Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw)));
+    var pilotPolicyHash=PilotHash(pilotPolicyFixture.GetRawText());
+    var pilotEvidence=JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,status="PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND",engineId="structural-fixture",
+        policySha256=pilotPolicyHash,policy=pilotPolicyFixture,
+        attempts=new[]{"working","broken","spoof","cancel","crash"}.Select((name,i)=>new {name,
+            attempt=new {attemptId=new string((char)('1'+i),32),archiveSha256=new string('a',64),receiptSha256=new string('b',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt),
+        evidenceSha256=new string('c',64),hostProvenanceEstablished=false,runtimeQualified=false,executionEnabled=false,
+        generatedArtifactVerified=false,boundary=new {attemptId=new string('6',32),archiveSha256=new string('d',64),
+            receiptSha256=new string('e',64),policySha256=new string('f',64),adapterSha256=new string('f',64)},
+        completeEvidenceSha256=new string('a',64)
+    });
+    var pilotReceipts=Enumerable.Range(1,4).Select(i=>"windows-static-web-"+new string((char)('0'+i),12)+".json").ToArray();
+    var pilotBinding=PilotProposalBinding.Create(pilotEvidence,new string('a',64),pilotReceipts);
+    var pilotBoundExecutionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,pilotBinding);
+    Check(pilotBoundExecutionProposal is {Current:true,ExecutionEnabled:false,RuntimeQualified:false,PilotBindingSha256:not null}&&
+        pilotBoundExecutionProposal.AuthorizationSha256!=executionProposal.AuthorizationSha256&&
+        executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,pilotBinding).Id==pilotBoundExecutionProposal.Id,
+        "pilot evidence creates a distinct exact non-executable proposal");
+    // Change the structurally valid policy and recompute its own hash:
+    // the candidate admission must still reject the mismatched evaluator.
+    var changedPolicy=System.Text.Json.Nodes.JsonNode.Parse(pilotPolicyFixture.GetRawText())!.AsObject();
+    changedPolicy["evaluatorSha256"]=new string('9',64);
+    var changedEvidence=System.Text.Json.Nodes.JsonNode.Parse(pilotEvidence.GetRawText())!.AsObject();
+    changedEvidence["policy"]=changedPolicy;
+    changedEvidence["policySha256"]=PilotHash(changedPolicy.ToJsonString());
+    using(var changedDocument=JsonDocument.Parse(changedEvidence.ToJsonString()))
+    {
+        var wrongBinding=PilotProposalBinding.Create(changedDocument.RootElement,new string('a',64),pilotReceipts);
+        try
+        {
+            executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,wrongBinding);
+            Check(false,"mismatched evaluator cannot bind pilot proposal");
+        }
+        catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_POLICY_MISMATCH")
+        {Check(true,"pilot evidence must match reviewed evaluator identity");}
+    }
+    var differentPins=PilotProposalBinding.Create(pilotEvidence,new string('b',64),pilotReceipts);
+    var differentProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,differentPins);
+    Check(differentProposal.AuthorizationSha256!=pilotBoundExecutionProposal.AuthorizationSha256,
+        "changed host configuration changes exact authorization identity");
+    try
+    {
+        executionProposalStore.Authorize(taskBound.Id,pilotBoundExecutionProposal.Id,"AUTHORIZE EVALUATION "+pilotBoundExecutionProposal.AuthorizationSha256);
+        Check(false,"historical qualification is not executable authorization");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
+    {Check(true,"bound proposal still fails closed at runtime gate");}
+    Check(executionProposalStore.Revoke(taskBound.Id,differentProposal.Id).State=="Revoked"&&
+        executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,differentPins).State=="Revoked",
+        "evidence-bound revoked proposal cannot replay");
     executionProposalStore.Recover();
+    Check(executionProposalStore.Get(taskBound.Id,pilotBoundExecutionProposal.Id) is {State:"Interrupted",Current:false},
+        "restart interrupts evidence-bound proposal");
     Check(executionProposalStore.Get(taskBound.Id,executionProposal.Id) is {State:"Interrupted",Current:false} &&
         executionProposalStore.Propose(taskBound.Id,evaluationStaged.Id) is {State:"Interrupted",Current:false},
         "restart interrupts exact proposal and replay cannot reactivate");

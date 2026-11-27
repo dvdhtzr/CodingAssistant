@@ -561,3 +561,29 @@ Expected `PILOT_PINNED_HOST_INSPECTION_PASS`.
 Historical evidence remains non-executable; the generated candidate
 transport, actual executable policy qualification and one-use owner
 consent are still outstanding.
+
+
+### Owner-reported control-plane smoke PASS and evidence-bound proposals
+
+At `4a33849`, the owner reported M2 LOCAL_CONTROL_PLANE_SMOKE_PASS
+(439 assertions). This follows the prior 58/58 regression and renderer
+qualification. The smoke summary alone is not a separate attestation of
+the host or historical executable identities.
+
+The execution proposal ledger now supports a distinct host-only
+evidence-bound proposal. It loads the owner-private pilot config, invokes
+the pinned inspector, rechecks configuration, binds the exact six-attempt
+inspection and current configuration hash, and transactionally checks
+contract, evaluator, image, seccomp and PID ceiling against the exact
+reviewed admission. The legacy planning-only proposal cannot stand in
+for this binding. The proposal stores the immutable binding separately,
+includes its digest in the authorization identity, and supports fresh
+read-only reinspection and current-source revalidation. Get.Current
+means database currentness only, not live host trust. Revocation and
+startup interruption remain terminal; the registry and executable gate
+stay disabled. The structural Phase 2 fixture is synthetic, not a
+functional calculator or real executable grant.
+
+No public dispatch or owner-consent bypass is introduced. Next work:
+separate candidate transport/build restrictions and qualified executable
+policy, followed by one-use consent and result persistence.
