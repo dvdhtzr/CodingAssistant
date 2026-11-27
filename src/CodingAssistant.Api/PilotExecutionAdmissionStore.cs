@@ -55,6 +55,9 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             throw new StoreFailure("PILOT_BUILD_EVIDENCE_REQUIRED");
         if(!evidence.TryGetProperty("dispatchQualification",out var dispatch))
             throw new StoreFailure("PILOT_DISPATCH_EVIDENCE_REQUIRED");
+        if(!evidence.TryGetProperty("jobQualification",out var job)||
+            !evidence.TryGetProperty("jobIoQualification",out var io))
+            throw new StoreFailure("PILOT_JOB_IO_EVIDENCE_REQUIRED");
         try
         {
             var attempt=transport.GetProperty("attemptId").GetString()??"";
@@ -62,7 +65,9 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             var used=evidence.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString())
                 .Append(evidence.GetProperty("boundary").GetProperty("attemptId").GetString())
                 .Concat(build.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()))
-                .Concat(dispatch.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()));
+                .Concat(dispatch.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()))
+                .Concat(job.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()))
+                .Concat(io.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()));
             if(used.Contains(attempt,StringComparer.Ordinal))throw new StoreFailure("PILOT_ADMISSION_ATTEMPT_REUSED");
             var selection=JsonSerializer.SerializeToElement(new {
                 attemptId=attempt,admissionSha256=captured.Descriptor.GetProperty("admissionSha256").GetString(),
@@ -75,8 +80,9 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             PilotCandidateTransportPlanner.Validate(transport,selection,captured.Descriptor.GetProperty("evaluatorSha256").GetString()!,
                 evidence.GetProperty("engineId").GetString()!,captured.Input.Scope.SourceFingerprint!,captured.Input.Scope.Files.Count);
             var hash=Sha(transport.GetRawText());
-            return (Sha(JsonSerializer.Serialize(new {schemaVersion=1,kind="single-attempt-pilot-consent",
+            return (Sha(JsonSerializer.Serialize(new {schemaVersion=2,kind="single-attempt-pilot-consent",
                 taskId,proposalId,captured.Proposal.AuthorizationSha256,captured.Proposal.PilotBindingSha256,
+                completeHistoricalEvidenceSha256=evidence.GetProperty("jobIoEvidenceSha256").GetString(),
                 attemptId=attempt,transportDescriptorSha256=hash})),transport.GetProperty("transportSha256").GetString()!,attempt);
         }
         catch(Exception e)when(e is InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)
