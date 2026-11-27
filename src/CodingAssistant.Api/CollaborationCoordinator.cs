@@ -25,10 +25,14 @@ public sealed record CollaborationAdmission(string JobId,int Sequence);
 public sealed record RoutineRepairCandidate(string RunId,string SourceSha256,IReadOnlyList<string> Paths);
 public sealed record CollaborationLinkedRepair(string CycleId,string State,string? ErrorCode);
 public sealed record CollaborationReviewFailure(string Role,string ReviewId,string Model,string State,string? ErrorCode);
+public sealed record CollaborationStallFinding(string Id,string Origin,string Path,string Requirement,string Evidence,string Recommendation);
+public sealed record CollaborationStallEvidence(string Reason,int AttemptCount,
+    IReadOnlyList<RepairProgressAttempt> RecentAttempts,IReadOnlyList<CollaborationStallFinding> Findings);
 public sealed record CollaborationPreview(string? PlanSha256,DelegationPolicy? Policy,
     CollaborationSnapshot? Snapshot,StartCollaborationRequest? Candidate,bool CanStart,bool CanResume,
     string Reason,InferenceCapacity Capacity,RoutineRepairCandidate? RoutineRepairCandidate=null,
-    CollaborationLinkedRepair? LinkedRepair=null,CollaborationReviewFailure? ReviewFailure=null);
+    CollaborationLinkedRepair? LinkedRepair=null,CollaborationReviewFailure? ReviewFailure=null,
+    CollaborationStallEvidence? StallEvidence=null);
 
 public interface ICollaborationLead
 {
@@ -215,6 +219,7 @@ public sealed class CollaborationStore(TaskStore tasks)
         StartCollaborationRequest? candidate=null;
         RoutineRepairCandidate? routineCandidate=null;
         var reason="PLAN_NOT_APPROVED";var start=false;var resume=false;
+        CollaborationStallEvidence? stallEvidence=null;
         try
         {
             var plan=ImplementationPlanStore.RequireCurrentApproved(db,tx,taskId);
@@ -247,6 +252,23 @@ public sealed class CollaborationStore(TaskStore tasks)
             resume=same && snapshot!.Job.State=="Interrupted";
             start=!same || snapshot!.Job.State is ("Failed" or "Escalated");
             reason=resume?"RESUME_AVAILABLE":start?"READY":snapshot!.Job.Reason??snapshot.Job.State;
+            // A recorded deterministic stall is not a transient provider
+            // failure. Only suppress an identical retry if the current host
+            // evidence still establishes that same stop.
+            if(same && snapshot!.Job.State=="Escalated" && snapshot.Job.Reason is
+                ("RECURRING_UNRESOLVED_FINDING" or "REPEATED_SOURCE_SNAPSHOT" or "POTENTIAL_CANDIDATE_REGRESSION"))
+            {
+                var progress=RepairProgressStore.Read(db,tx,taskId,run.Id,policy.RoutineRepair);
+                if(progress.StrategyChangeRequired && progress.Reason==snapshot.Job.Reason)
+                {
+                    var ids=progress.StalledIssueIds.Concat(progress.PotentialRegressionIssueIds??[]).ToHashSet(StringComparer.Ordinal);
+                    var findings=EngineeringIssueStore.Read(db,tx,taskId,run.Id).Issues
+                        .Where(i=>ids.Contains(i.Id)).Select(i=>new CollaborationStallFinding(
+                            i.Id,i.Origin,i.Path,i.Requirement,i.Evidence,i.Recommendation)).ToArray();
+                    stallEvidence=new(progress.Reason,progress.Attempts.Count,progress.Attempts.TakeLast(2).ToArray(),findings);
+                    start=false;reason=progress.Reason;
+                }
+            }
         }catch(StoreFailure e){reason=e.Code;}
         if(linkedRepair?.State is "Running" or "QaRunning" or "Generated")
         {
@@ -254,7 +276,7 @@ public sealed class CollaborationStore(TaskStore tasks)
         }
         var reviewFailure=snapshot is null?null:ReadReviewFailure(db,tx,snapshot);
         tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,
-            LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair,reviewFailure);
+            LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair,reviewFailure,stallEvidence);
     }
 
     public CollaborationSnapshot? Latest(string taskId)

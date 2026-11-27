@@ -18,6 +18,9 @@ interface Preview { planSha256: string | null; policy: Policy | null;
   routineRepairCandidate?: {runId:string;sourceSha256:string;paths:string[]}|null;
   linkedRepair?: {cycleId:string;state:string;errorCode:string|null}|null;
   reviewFailure?: {role:string;reviewId:string;model:string;state:string;errorCode:string|null}|null;
+  stallEvidence?: {reason:string;attemptCount:number;recentAttempts:Array<{cycleId:string;state:string;
+    originalSourceSha256:string;candidateSourceSha256:string;origin:string;independentStaticResolution:boolean;recurringExactFinding:boolean}>;
+    findings:Array<{id:string;origin:string;path:string;requirement:string;evidence:string;recommendation:string}>}|null;
   capacity: { capacity: number; active: number; waiting: number } }
 const operations=['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','SendMessage'];
 const actionLabel: Record<string,string>={
@@ -263,6 +266,26 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         <details><summary>Exact review receipt</summary><code>{preview.reviewFailure.reviewId}</code></details>
       </>:<p>The independent review stopped without a matching saved failure receipt. No successful review is implied.</p>}
     </div>}
+    {preview.stallEvidence&&<div role="status">
+      <p><strong>Different repair strategy needed.</strong> {preview.stallEvidence.reason==='RECURRING_UNRESOLVED_FINDING'?
+        'The same finding recurred after previous repair attempts without independent resolution.':
+        preview.stallEvidence.reason==='REPEATED_SOURCE_SNAPSHOT'?'A previous source fingerprint was repeated.':
+        'The latest candidate has a possible blocking regression.'}
+        {' '}Retrying the unchanged session will not clear this guard. Your source and delegation remain saved.</p>
+      <details open><summary>Evidence for this stop</summary>
+        <p>{preview.stallEvidence.attemptCount} recorded repair attempt(s) in this source history.</p>
+        {preview.stallEvidence.findings.map(f=><div key={f.id}>
+          <strong>{f.path} · {f.origin==='QaEngineer'?'QA':'Lead review'}</strong>
+          <p>{f.requirement}</p><p>{f.evidence}</p><p>Suggested correction: {f.recommendation}</p>
+        </div>)}
+        <ul>{preview.stallEvidence.recentAttempts.map(a=><li key={a.cycleId}>
+          {a.cycleId.slice(0,12)} · {a.state} · {a.originalSourceSha256.slice(0,12)} → {a.candidateSourceSha256.slice(0,12)}
+          {' · '+(a.independentStaticResolution?'Independent static resolution recorded':'No independent static resolution')}
+          {a.recurringExactFinding?' · Exact finding recurred':''}
+        </li>)}</ul>
+      </details>
+      <p>Inspect the cited finding and previous repairs in QA &amp; source before authorizing a different strategy. Do not regenerate the project or revoke the policy just to clear the stop.</p>
+    </div>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('start')}>{job?.state==='Escalated'||job?.state==='Failed'?'Retry team coordination':'Start team coordination'}</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}
@@ -278,7 +301,7 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         disabled={busy||loadError||preview.candidate?.sourceSha256!==job.sourceSha256||preview.candidate?.policySha256!==job.policySha256}
         onSaved={()=>setVersion(v=>v+1)} />}
     {dispatching&&<p>The team is dispatching a repair within your existing approval. No confirmation is needed.</p>}
-    {!linkedRepair&&!dispatching&&job?.reason&&job.reason!=='INDEPENDENT_REVIEW_STOPPED'&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
+    {!linkedRepair&&!dispatching&&!preview.stallEvidence&&job?.reason&&job.reason!=='INDEPENDENT_REVIEW_STOPPED'&&<p>{job.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {!job&&!preview.canStart&&approved&&<p>{preview.reason==='BUILD_NOT_COMPLETE'?
       'Complete approved source generation before coordinating independent reviews.':preview.reason.replaceAll('_',' ').toLowerCase()}</p>}
     {preview.snapshot?.steps.length ? <details>

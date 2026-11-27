@@ -1056,3 +1056,41 @@ test('guided review failure identifies exact reviewer and saved reason before re
     assert.deepEqual(writes,[]);
   }finally{await page.close();}
 });
+
+
+test('guided deterministic stall shows evidence instead of inviting identical retry',async()=>{
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const writes=[];
+  const policySha256='5'.repeat(64);
+  const candidate={runId,sourceSha256:sha,planSha256:sha,policyRevision:1,policySha256};
+  const snapshot={job:{...candidate,id:'2'.repeat(32),taskId:id,model:'qwen3.5:4b',
+    state:'Escalated',reason:'RECURRING_UNRESOLVED_FINDING'},steps:[]};
+  const preview={planSha256:sha,candidate,snapshot,canStart:false,canResume:false,reason:'RECURRING_UNRESOLVED_FINDING',
+    stallEvidence:{reason:'RECURRING_UNRESOLVED_FINDING',attemptCount:2,
+      recentAttempts:[{cycleId:'a'.repeat(32),state:'QaReviewed',originalSourceSha256:sha,candidateSourceSha256:'b'.repeat(64),
+        independentStaticResolution:false,recurringExactFinding:true,origin:'QaEngineer'}],
+      findings:[{id:'finding',origin:'QaEngineer',path:'index.html',requirement:'Persist saved ideas.',
+        evidence:'Saved items disappear after reload.',recommendation:'Restore data during startup.'}]},
+    policy:{revision:1,policySha256,status:'Approved',current:true,
+      operations:['ScheduleWork','ReviewCode','ReviewAcceptance','RequestRepair','WriteSource'],
+      routineRepair:{baselineRunId:runId,baselineSourceSha256:sha,paths:['index.html'],maximumRepairs:6}},
+    capacity:{capacity:1,active:0,waiting:0}};
+  try{
+    await mockApi(page);
+    await page.route('**/api/**',async route=>{
+      const path=new URL(route.request().url()).pathname;
+      if(path.endsWith('/qa-reviews/latest')||path.endsWith('/repair-cycles/latest')||
+         path.endsWith('/lead-reviews/latest'))return done(route,{snapshot:null});
+      if(path.endsWith('/collaboration/latest'))return done(route,{snapshot});
+      if(path.endsWith('/collaboration/preview'))return done(route,preview);
+      if(route.request().method()==='POST'&&!path.startsWith('/api/progress'))writes.push(path);
+      return route.fallback();
+    });
+    await page.goto(baseUrl+'/tests/browser/studio.html');
+    const guided=page.getByRole('main',{name:'Project supervision'});
+    await guided.getByText('Different repair strategy needed.',{exact:true}).waitFor();
+    await guided.getByText('Saved items disappear after reload.',{exact:true}).waitFor();
+    assert.equal(await guided.getByRole('button',{name:'Retry team coordination'}).count(),0);
+    assert.deepEqual(writes,[]);
+  }finally{await page.close();}
+});
