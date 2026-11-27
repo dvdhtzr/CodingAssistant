@@ -72,7 +72,7 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
     private static readonly Regex Digest=new("^[0-9a-f]{64}\\z",RegexOptions.CultureInvariant);
     internal async Task<JsonElement> InspectAsync(IReadOnlyList<string> receipts,CancellationToken token)
     {
-        if(receipts.Count is not (4 or 5 or 7 or 8)||receipts.Distinct(StringComparer.Ordinal).Count()!=receipts.Count||
+        if(receipts.Count is not (4 or 5 or 7 or 8 or 10)||receipts.Distinct(StringComparer.Ordinal).Count()!=receipts.Count||
             receipts.Any(x=>x is null||!x.StartsWith("windows-static-web-",StringComparison.Ordinal)||!Receipt.IsMatch(x)))
             throw new StoreFailure("PILOT_RECEIPT_SELECTION_INVALID");
         if(!OperatingSystem.IsWindows())throw new StoreFailure("PILOT_LOCAL_WINDOWS_ONLY");
@@ -85,6 +85,15 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
         if(!string.Equals(Path.GetFileName(node),"node.exe",StringComparison.OrdinalIgnoreCase)||
             !string.Equals(Path.GetFileName(docker),"docker.exe",StringComparison.OrdinalIgnoreCase))
             throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
+        // Keep the original historical 43-file closure unchanged. The new
+        // bridge is independently bound by both native I/O receipts.
+        var bridge=receipts.Count==10?Path.Combine(root,"tools/m4/windows_job_fixed_io.mjs"):null;
+        string? bridgeHash=null;
+        if(bridge is not null)
+        {
+            bridgeHash=Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(bridge)));
+            EvaluationPlanBinder.RequirePinnedFile(bridge,bridgeHash);
+        }
         var start=new ProcessStartInfo(node){
             WorkingDirectory=Path.GetDirectoryName(script)!,UseShellExecute=false,CreateNoWindow=true,
             RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,
@@ -99,11 +108,18 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
         Validate(value);
         if((receipts.Count>=5)!=value.TryGetProperty("buildQualification",out _)||
             (receipts.Count>=7)!=value.TryGetProperty("dispatchQualification",out var dispatch)||
-            (receipts.Count==8)!=value.TryGetProperty("jobQualification",out _))
+            (receipts.Count>=8)!=value.TryGetProperty("jobQualification",out _)||
+            (receipts.Count==10)!=value.TryGetProperty("jobIoQualification",out var io))
             throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
         if(receipts.Count>=7&&(dispatch.GetProperty("nodeSha256").GetString()!=configuration.NodeSha256||
             dispatch.GetProperty("dockerSha256").GetString()!=configuration.DockerSha256))
             throw new StoreFailure("PILOT_DISPATCH_BINDING_CHANGED");
+        if(receipts.Count==10)
+        {
+            if(io.GetProperty("bridgeSha256").GetString()!=bridgeHash)
+                throw new StoreFailure("PILOT_JOB_IO_BINDING_CHANGED");
+            EvaluationPlanBinder.RequirePinnedFile(bridge!,bridgeHash!);
+        }
         // Recheck every current executable and trusted data input after
         // the read-only operation. This still does not close same-account races.
         RequirePinnedFiles(root,configuration.ModulePins);
@@ -124,14 +140,17 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
             var upgraded=value.TryGetProperty("buildQualification",out var build);
             var pinned=value.TryGetProperty("dispatchQualification",out var dispatch);
             var jobBound=value.TryGetProperty("jobQualification",out var job);
+            var ioBound=value.TryGetProperty("jobIoQualification",out var io);
             var fields=new[]{"schemaVersion","status","engineId","policySha256","policy","attempts","evidenceSha256",
                 "hostProvenanceEstablished","runtimeQualified","executionEnabled","generatedArtifactVerified","boundary","completeEvidenceSha256"};
             if(upgraded)fields=[..fields,"buildQualification","qualifiedEvidenceSha256"];
             if(pinned)fields=[..fields,"dispatchQualification","dispatchEvidenceSha256"];
             if(jobBound)fields=[..fields,"jobQualification","jobEvidenceSha256"];
+            if(ioBound)fields=[..fields,"jobIoQualification","jobIoEvidenceSha256"];
             if(!Exact(value,fields)||
                 value.GetProperty("schemaVersion").GetInt32()!=1||
-                value.GetProperty("status").GetString()!=(jobBound?"PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND":pinned?"PILOT_PINNED_DISPATCH_EVIDENCE_BOUND":upgraded?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")||
+                value.GetProperty("status").GetString()!=(ioBound?"PILOT_JOB_IO_EVIDENCE_BOUND":jobBound?"PILOT_JOB_OWNERSHIP_EVIDENCE_BOUND":pinned?"PILOT_PINNED_DISPATCH_EVIDENCE_BOUND":upgraded?"PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND":"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND")||
+                (ioBound&&(!jobBound||!Hash(value,"jobIoEvidenceSha256")))||
                 (jobBound&&(!pinned||!Hash(value,"jobEvidenceSha256")))||
                 (pinned&&(!upgraded||!Hash(value,"dispatchEvidenceSha256")))||
                 (upgraded&&!Hash(value,"qualifiedEvidenceSha256"))||
@@ -226,6 +245,21 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
                 if(!Exact(jobAttempts,"build-working","build-spoof","build-missing-asset","crash"))
                     throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
                 foreach(var property in jobAttempts.EnumerateObject())Attempt(property.Value);
+            }
+            if(ioBound)
+            {
+                var ioHashes=new[]{"policySha256","adapterSha256","nodeSha256","dockerSha256","bridgeSha256",
+                    "fixedReceiptSha256","interruptionReceiptSha256","modulePinsSha256","historicalInspectorSha256",
+                    "fixedOwnerAssemblySha256","fixedHarnessAssemblySha256","interruptionOwnerAssemblySha256","interruptionHarnessAssemblySha256"};
+                if(!Exact(io,[..ioHashes,"attempts"])||!ioHashes.All(k=>Hash(io,k))||
+                    new[]{"policySha256","adapterSha256","nodeSha256","dockerSha256","modulePinsSha256"}.Any(k=>
+                        io.GetProperty(k).GetString()!=job.GetProperty(k).GetString())||
+                    io.GetProperty("fixedReceiptSha256").GetString()==io.GetProperty("interruptionReceiptSha256").GetString())
+                    throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+                var ioAttempts=io.GetProperty("attempts");
+                if(!Exact(ioAttempts,"build-working","build-spoof","build-missing-asset","cancellation","crash"))
+                    throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+                foreach(var property in ioAttempts.EnumerateObject())Attempt(property.Value);
             }
         }
         catch(Exception e)when(e is InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)
