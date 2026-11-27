@@ -1171,3 +1171,51 @@ test('browser boundary receipt requires exact attempt and all five independent c
   assert.throws(()=>parse({...report,status:'VERIFIED'}),/REPORT_INVALID/);
   assert.throws(()=>parse({...report,checks:{...report.checks,browser_closed:'true'}}),/REPORT_INVALID/);
 });
+
+
+import {bindCompletePilotEvidence} from '../tools/m4/static_web_pilot_evidence.mjs';
+function completePilotEvidenceFixture(root){
+  const input=pilotEvidenceFixture(root);
+  const bundle=fixedBrowserBoundaryBundle(),policy=preparePilotPolicy(input.imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  const attemptId='6'.repeat(32),fixture=fixedBrowserBoundaryFixture(bundle,policy.policySha256,attemptId);
+  const j=reservePilotAttempt(root,{...policy.identity(attemptId),engineId:input.engineId,
+    candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256});
+  j.advance('Creating');j.advance('Created','6'.repeat(64));j.advance('Audited');j.advance('Starting');
+  j.advance('Exited');j.advance('CleanupPending');j.advance('Cleaned');j.archive();
+  const observations=parseBrowserBoundaryReport(JSON.stringify({schemaVersion:1,...fixture.expected,
+    checks:allCases(['guest_security','chromium_sandbox','renderer_controls','browser_closed','server_closed'],true)}),fixture.expected);
+  input.boundary={...input.working,status:'PILOT_BROWSER_BOUNDARY_PASS',attemptId,policySha256:policy.policySha256,observations};
+  return input;
+}
+test('complete historical evidence binds separate browser probe without changing five-attempt digest',()=>withPilotJournal(root=>{
+  const input=completePilotEvidenceFixture(root),prior=bindPilotEvidence(input),complete=bindCompletePilotEvidence(input);
+  assert.equal(complete.status,'PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND');
+  assert.equal(complete.evidenceSha256,prior.evidenceSha256);
+  assert.match(complete.completeEvidenceSha256,/^[a-f0-9]{64}$/);
+  assert.notEqual(complete.boundary.policySha256,complete.policySha256);
+  assert.equal(complete.boundary.attemptId,input.boundary.attemptId);
+  assert.equal(complete.hostProvenanceEstablished,false);
+  assert.equal(complete.executionEnabled,false);
+}));
+test('complete evidence blocks altered browser receipt or reuse of prior attempt',()=>withPilotJournal(root=>{
+  const input=completePilotEvidenceFixture(root);
+  for(const change of [
+    x=>{x.boundary.policySha256=x.working.policySha256;},
+    x=>{x.boundary.attemptId=x.working.attemptId;},
+    x=>{x.boundary.observations.checks.renderer_controls=false;},
+    x=>{x.boundary.containerRemoved=false;},
+    x=>{delete x.boundary;}]){
+    const changed=structuredClone(input);change(changed);assert.throws(()=>bindCompletePilotEvidence(changed));
+  }
+}));
+test('pilot evidence stdin rejects missing pinned Docker identity and extra request fields',()=>{
+  const receiptNames=Array.from({length:4},(_,i)=>'windows-static-web-'+String(i).repeat(12)+'.json');
+  const env={...process.env};delete env.CA_EVALUATION_DOCKER_EXE;delete env.CA_EVALUATION_DOCKER_SHA256;
+  for(const [input,reason] of [
+    [{operation:'inspect-complete-pilot',receiptNames},'EVALUATION_DOCKER_PROVENANCE_REQUIRED'],
+    [{operation:'inspect-complete-pilot',receiptNames,executionEnabled:true},'PILOT_RECEIPT_SELECTION_INVALID']]){
+    const result=spawnSync(process.execPath,['tools/m4/static_web_pilot_evidence.mjs','--stdin'],
+      {env,input:JSON.stringify(input),encoding:'utf8',timeout:5000});
+    assert.equal(result.status,2);assert.equal(JSON.parse(result.stdout).reason,reason);
+  }
+});

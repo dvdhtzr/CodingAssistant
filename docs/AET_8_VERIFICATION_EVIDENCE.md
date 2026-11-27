@@ -529,3 +529,35 @@ categories true and confirmed removal. The distinct probe policy digest
 does not replace or alter the original five-attempt evidence binding.
 No generated-source execution grant, registry promotion or public
 dispatch route is introduced.
+
+
+### Owner-reported renderer boundary PASS and pinned control-plane inspection
+
+At `633e5ea`, the owner reported 58/58 model-free regressions, all five
+prior attempts bound (`b9f908d5fc114a617855f8f5341ca5205eeaf0c088b269eba70666ae8e17d898`),
+and actual browser-boundary PASS with all five categories true, removal
+true, cleanup debt false. Private receipt
+`windows-static-web-17c3034f8bf2.json`; raw receipt not independently
+retrieved. The six completed controls need not be repeated unchanged.
+
+The inspector now optionally binds a fourth receipt and sixth archived
+attempt, retaining the original five-attempt digest and distinct renderer
+probe identity. Its bounded stdin operation uses the existing pinned
+metadata Docker adapter. The new host-only .NET inspector pins all 34
+module/data files plus the entrypoint and explicit Node/Docker executables,
+checks them before and after inspection, and validates the response's
+six distinct identities and non-executable flags. An owner-private
+`evaluation-pilot-host.json` reader uses the existing strict config
+schema but requires the separate exact repository-relative pin closure.
+No automatic production pin enrollment, API route, or executable state.
+
+The opt-in API smoke test hashes the current checked-out test files and
+explicitly selected test executables; these are diagnostic pins only,
+not production enrollment or historical provenance. It invokes the real
+read-only .NET-to-Node inspector. Set CODINGASSISTANT_TEST_NODE_EXE,
+CODINGASSISTANT_TEST_DOCKER_EXE and CODINGASSISTANT_TEST_PILOT_RECEIPTS
+(four receipt basenames separated by semicolons). No container starts.
+Expected `PILOT_PINNED_HOST_INSPECTION_PASS`.
+Historical evidence remains non-executable; the generated candidate
+transport, actual executable policy qualification and one-use owner
+consent are still outstanding.

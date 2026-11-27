@@ -2,10 +2,12 @@
 // Historical evidence binding only. No container creation, execution,
 // cleanup, approval, registry promotion, or assertion of host attestation.
 import path from 'node:path';
+import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {readLocalReceipt,readLocalImage} from './static_web_evaluation_host_bridge.mjs';
+import {readLocalReceipt,readLocalImage,pinnedMetadataDocker} from './static_web_evaluation_host_bridge.mjs';
 import {fixedCandidateBundle,fixedCandidateFixture} from './windows_candidate_fixture_qualification.mjs';
+import {fixedBrowserBoundaryBundle,fixedBrowserBoundaryFixture,parseBrowserBoundaryReport} from './static_web_pilot_browser_boundary.mjs';
 import {preparePilotPolicy} from './static_web_pilot_policy.mjs';
 import {readArchivedPilotAttempt,readPilotAttempt} from './static_web_pilot_attempt_journal.mjs';
 import {parseCandidateObservations} from './static_web_candidate_observations.mjs';
@@ -82,14 +84,41 @@ export function bindPilotEvidence({working,negatives,interruptions,imageMetadata
     hostProvenanceEstablished:false,runtimeQualified:false,executionEnabled:false,generatedArtifactVerified:false});
 }
 
+export function bindCompletePilotEvidence(input){
+  const prior=bindPilotEvidence(input);
+  const {boundary,imageMetadata,engineId,root}=input;
+  const bundle=fixedBrowserBoundaryBundle();
+  const policy=preparePilotPolicy(imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  if(!header(boundary,['attemptId','policySha256','engineId','configurationAudited','observations','containerRemoved','cleanupDebt','reason'],
+    'AET-8-pilot-durable-lifecycle','PILOT_BROWSER_BOUNDARY_PASS')||boundary.policySha256!==policy.policySha256||
+    boundary.engineId!==engineId||boundary.configurationAudited!==true||boundary.containerRemoved!==true||
+    boundary.cleanupDebt!==false||boundary.reason!==null||Object.values(prior.attempts).some(x=>x.attemptId===boundary.attemptId))
+    fail('PILOT_BOUNDARY_RECEIPT_INVALID');
+  const archive=readArchivedPilotAttempt(root,boundary.attemptId);
+  const fixture=fixedBrowserBoundaryFixture(bundle,policy.policySha256,boundary.attemptId);
+  const expected={...policy.identity(boundary.attemptId),engineId,candidateSha256:fixture.expected.candidateSha256,
+    archiveSha256:fixture.expected.archiveSha256};
+  if(json(archive.identity)!==json(expected)||json(archive.events.map(e=>e.stage))!==json(goodStages)||archive.recoveryClaimed)
+    fail('PILOT_BOUNDARY_ARCHIVE_CHANGED');
+  const observations=parseBrowserBoundaryReport(JSON.stringify({schemaVersion:1,...fixture.expected,
+    checks:boundary.observations?.checks}),fixture.expected);
+  if(observations.status!=='FIXED_BROWSER_BOUNDARY_PASS'||json(observations)!==json(boundary.observations))
+    fail('PILOT_BOUNDARY_RECEIPT_INVALID');
+  const boundaryBinding=Object.freeze({attemptId:boundary.attemptId,policySha256:policy.policySha256,
+    adapterSha256:bundle.adapterSha256,archiveSha256:sha(archive),receiptSha256:sha(boundary)});
+  return Object.freeze({...prior,status:'PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND',
+    boundary:boundaryBinding,completeEvidenceSha256:sha({priorEvidenceSha256:prior.evidenceSha256,boundary:boundaryBinding})});
+}
+
 export function inspectPilotEvidence(names,{platform=process.platform,env=process.env,docker=shellDocker}={}){
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT)fail('PILOT_LOCAL_WINDOWS_ONLY');
-  if(!Array.isArray(names)||names.length!==3||new Set(names).size!==3)fail('PILOT_RECEIPT_SELECTION_INVALID');
-  const [working,negatives,interruptions]=names.map(name=>readLocalReceipt(name,env));
+  if(!Array.isArray(names)||![3,4].includes(names.length)||new Set(names).size!==names.length)fail('PILOT_RECEIPT_SELECTION_INVALID');
+  const [working,negatives,interruptions,boundary]=names.map(name=>readLocalReceipt(name,env));
   const root=pilotLocalRoot(env),host=pilotHostTools(docker);
   const engineId=host.engine(),imageMetadata=readLocalImage({platform,env,docker});
   if(host.list('label=codingassistant.static-web-pilot-qualification')!=='')fail('PILOT_PRIOR_CLEANUP_REQUIRED');
-  const bound=bindPilotEvidence({working,negatives,interruptions,imageMetadata,engineId,root});
+  const input={working,negatives,interruptions,boundary,imageMetadata,engineId,root};
+  const bound=names.length===4?bindCompletePilotEvidence(input):bindPilotEvidence(input);
   if(host.engine()!==engineId||host.list('label=codingassistant.static-web-pilot-qualification')!==''||readPilotAttempt(root)!==null)
     fail('PILOT_HOST_CHANGED');
   return bound;
@@ -97,8 +126,18 @@ export function inspectPilotEvidence(names,{platform=process.platform,env=proces
 export function main(argv=process.argv.slice(2)){
   if(argv.length===0){console.log('PILOT_HISTORICAL_EVIDENCE NOT_RUN');return 0;}
   try{
-    if(argv.length!==4||argv[0]!=='--inspect')fail('PILOT_RECEIPT_SELECTION_INVALID');
-    console.log(JSON.stringify(inspectPilotEvidence(argv.slice(1))));return 0;
+    let names,options={};
+    if(argv.length===1&&argv[0]==='--stdin'){
+      const buffer=Buffer.alloc(4097);let size=0;
+      while(size<buffer.length){const count=fs.readSync(0,buffer,size,buffer.length-size,null);if(!count)break;size+=count;}
+      if(size>4096)fail('PILOT_RECEIPT_SELECTION_INVALID');
+      const input=JSON.parse(buffer.subarray(0,size).toString('utf8'));
+      if(!exact(input,['operation','receiptNames'])||input.operation!=='inspect-complete-pilot'||
+        !Array.isArray(input.receiptNames)||input.receiptNames.length!==4)fail('PILOT_RECEIPT_SELECTION_INVALID');
+      names=input.receiptNames;options={docker:pinnedMetadataDocker()};
+    }else if([4,5].includes(argv.length)&&argv[0]==='--inspect')names=argv.slice(1);
+    else fail('PILOT_RECEIPT_SELECTION_INVALID');
+    console.log(JSON.stringify(inspectPilotEvidence(names,options)));return 0;
   }catch(e){
     console.log(JSON.stringify({status:'BLOCKED',reason:/^[A-Z_]{3,90}$/.test(e?.message??'')?e.message:'PILOT_EVIDENCE_BLOCKED',
       hostProvenanceEstablished:false,runtimeQualified:false,executionEnabled:false,generatedArtifactVerified:false}));return 2;

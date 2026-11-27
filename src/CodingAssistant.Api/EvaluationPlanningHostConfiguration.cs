@@ -12,12 +12,20 @@ internal sealed record EvaluationPlanningHostConfiguration(
     string DockerExecutable,string DockerSha256)
 {
     internal const string FileName="evaluation-planning-host.json";
+    internal const string PilotFileName="evaluation-pilot-host.json";
     private const int MaxBytes=16384;
     private static readonly Regex Digest=new("^[a-f0-9]{64}\\z",RegexOptions.CultureInvariant);
     private static readonly string[] Fields=["schemaVersion","repositoryRoot","nodeExecutable",
         "nodeSha256","binderSha256","modulePins","dockerExecutable","dockerSha256"];
 
-    internal static EvaluationPlanningHostConfiguration Load(string ownerDataDirectory)
+    internal static EvaluationPlanningHostConfiguration Load(string ownerDataDirectory)=>
+        LoadCore(ownerDataDirectory,FileName,pins=>EvaluationPlanBinder.HasExactModulePins(pins));
+
+    internal static EvaluationPlanningHostConfiguration LoadPilot(string ownerDataDirectory)=>
+        LoadCore(ownerDataDirectory,PilotFileName,pins=>PilotQualificationInspector.HasExactFilePins(pins));
+
+    private static EvaluationPlanningHostConfiguration LoadCore(string ownerDataDirectory,string fileName,
+        Func<IReadOnlyDictionary<string,string>,bool> hasExactPins)
     {
         if(string.IsNullOrWhiteSpace(ownerDataDirectory)||!Path.IsPathFullyQualified(ownerDataDirectory))
             throw new StoreFailure("EVALUATION_HOST_CONFIGURATION_INVALID");
@@ -29,7 +37,7 @@ internal sealed record EvaluationPlanningHostConfiguration(
                 if((dir.Attributes&FileAttributes.ReparsePoint)!=0)
                     throw new StoreFailure("EVALUATION_HOST_CONFIGURATION_INVALID");
             PrivateDataDirectory.Ensure(root.FullName);
-            var file=Path.Combine(root.FullName,FileName);
+            var file=Path.Combine(root.FullName,fileName);
             if(!File.Exists(file))throw new StoreFailure("EVALUATION_HOST_CONFIGURATION_REQUIRED");
             PrivateDataDirectory.ValidateFile(file);
             using var stream=File.OpenRead(file);
@@ -82,7 +90,7 @@ internal sealed record EvaluationPlanningHostConfiguration(
                     property.Value.GetString() is not string pin||!Digest.IsMatch(pin)||
                     !pins.TryAdd(property.Name,pin))
                     throw new StoreFailure("EVALUATION_HOST_CONFIGURATION_INVALID");
-            if(!EvaluationPlanBinder.HasExactModulePins(pins))
+            if(!hasExactPins(pins))
                 throw new StoreFailure("EVALUATION_HOST_CONFIGURATION_INVALID");
             return new(Absolute("repositoryRoot"),Absolute("nodeExecutable"),Pin("nodeSha256"),
                 Pin("binderSha256"),new ReadOnlyDictionary<string,string>(pins),

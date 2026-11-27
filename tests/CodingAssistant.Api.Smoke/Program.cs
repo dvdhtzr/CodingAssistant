@@ -322,6 +322,53 @@ async Task<HttpClient> Start(ApiSettings settings, Action<WebApplication> saveAp
     }
 }
 
+// Separate pilot inspector pin closure and opt-in actual host evidence read.
+{
+    var folder=Path.Combine(Path.GetTempPath(),"ca-pilot-pins-"+Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(folder);
+    try
+    {
+        var pins=new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach(var name in PilotQualificationInspector.FileNames)
+        {
+            var file=Path.Combine(folder,name);
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file,"fixture");
+            pins.Add(name,Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file))));
+        }
+        PilotQualificationInspector.RequirePinnedFiles(folder,pins);
+        Check(true,"complete pilot input closure is explicitly pinned");
+        var removed=PilotQualificationInspector.FileNames[0];
+        var pin=pins[removed];pins.Remove(removed);
+        try{PilotQualificationInspector.RequirePinnedFiles(folder,pins);Check(false,"missing pilot pin");}
+        catch(StoreFailure e)when(e.Code=="PILOT_HOST_FILE_PINS_REQUIRED"){Check(true,"missing pilot pin rejected");}
+        pins.Add(removed,pin);File.AppendAllText(Path.Combine(folder,removed),"changed");
+        try{PilotQualificationInspector.RequirePinnedFiles(folder,pins);Check(false,"changed pilot input");}
+        catch(StoreFailure e)when(e.Code=="EVALUATION_BINDER_PROVENANCE_INVALID"){Check(true,"changed pilot input rejected");}
+        using var forged=JsonDocument.Parse("{\"status\":\"PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND\",\"executionEnabled\":true}");
+        try{PilotQualificationInspector.Validate(forged.RootElement);Check(false,"forged pilot response");}
+        catch(StoreFailure e)when(e.Code=="PILOT_HOST_RESPONSE_INVALID"){Check(true,"forged pilot response rejected");}
+    }
+    finally{Directory.Delete(folder,true);}
+    var selected=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_PILOT_RECEIPTS");
+    if(!string.IsNullOrEmpty(selected))
+    {
+        var root=Path.GetFullPath(Directory.GetCurrentDirectory());
+        var node=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_NODE_EXE")??throw new Exception("Explicit Node test path required");
+        var docker=Environment.GetEnvironmentVariable("CODINGASSISTANT_TEST_DOCKER_EXE")??throw new Exception("Explicit Docker test path required");
+        string Hash(string file)=>Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(file)));
+        // Test-only current checkout hashes, NOT production enrollment or
+        // evidence of prior host executable provenance. Nothing is saved.
+        var pins=PilotQualificationInspector.FileNames.ToDictionary(name=>name,name=>Hash(Path.Combine(root,name)),StringComparer.Ordinal);
+        var configuration=new EvaluationPlanningHostConfiguration(root,node,Hash(node),
+            Hash(Path.Combine(root,PilotQualificationInspector.ScriptPath)),pins,docker,Hash(docker));
+        var result=await new PilotQualificationInspector(configuration).InspectAsync(selected.Split(';'),CancellationToken.None);
+        Check(result.GetProperty("status").GetString()=="PILOT_COMPLETE_HISTORICAL_EVIDENCE_BOUND"&&
+            !result.GetProperty("executionEnabled").GetBoolean(),"real pinned .NET pilot evidence inspection is non-executable");
+        Console.WriteLine("PILOT_PINNED_HOST_INSPECTION_PASS");
+    }
+}
+
 // Private directory and existing database checks must fail BEFORE SQLite opens.
 {
     var folder = Path.Combine(Path.GetTempPath(), "ca-privacy-" + Guid.NewGuid().ToString("N"));

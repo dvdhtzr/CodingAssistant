@@ -243,3 +243,11 @@ interruption controls PASS at `26522c1`. The original five-attempt
 evidence can now be inspected without rerunning those controls.
 The next separate fixed renderer boundary control is documented in
 the AET-8 evidence document. Generated execution remains unauthorized.
+
+
+The owner reported the renderer boundary PASS and successful historical
+evidence inspection at `633e5ea` (58/58 regressions, private renderer
+receipt `windows-static-web-17c3034f8bf2.json`). The new read-only
+host inspector binds all six archives, with separately pinned .NET
+transport inputs. The opt-in diagnostic is not production enrollment.
+Do not repeat unchanged fixture execution for this check.
