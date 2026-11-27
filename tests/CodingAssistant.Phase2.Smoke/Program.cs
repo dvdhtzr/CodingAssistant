@@ -4786,6 +4786,22 @@ try
         }catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED"){Check(true,"root cause requires exact source and issue coverage");}
     }
 
+    var rootCauseIndependent=new RootCauseReviewAssessment([new RootCauseReviewFinding(
+        "fixture-issue","Supported","app.js",1,rootCauseProposal.Findings[0].Evidence,
+        "The source contains the script responsible for this behavior.")]);
+    Check(MafRootCauseReviewer.Parse(JsonSerializer.Serialize(rootCauseIndependent),rootCauseFixture,rootCauseProposal)
+        .Findings.Single().Outcome=="Supported","independent reviewer supports an exact grounded diagnosis, not repair approval");
+    foreach(var invalidReview in new[]{
+        rootCauseIndependent with {Findings=[rootCauseIndependent.Findings[0] with {Evidence="fabricated evidence"}]},
+        rootCauseIndependent with {Findings=[rootCauseIndependent.Findings[0] with {Path="index.html"}]},
+        rootCauseIndependent with {Findings=[]}})
+    {
+        try{
+            _=MafRootCauseReviewer.Parse(JsonSerializer.Serialize(invalidReview),rootCauseFixture,rootCauseProposal);
+            Check(false,"invalid independent assessment accepted");
+        }catch(StoreFailure e) when(e.Code=="MODEL_OUTPUT_REJECTED"){Check(true,"independent root cause review cannot invent source or omit an issue");}
+    }
+
     // Recovery is driven by evidence, not a lifetime three-repair cap.
     var aetProgressAttempts=Enumerable.Range(0,5).Select(i=>new RepairProgressAttempt(
         "fixture-"+i,"run-"+i,"run-"+(i+1),"hash-"+i,"hash-"+(i+1),"QaReviewed",

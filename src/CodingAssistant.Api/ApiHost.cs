@@ -58,7 +58,8 @@ public static class ApiHost
         ILeadSourceReviewer? leadReviewerOverride = null,
         IEngineeringIssueVerifier? issueVerifierOverride = null,
         ICollaborationLead? collaborationLeadOverride=null,
-        IRootCauseInvestigator? rootCauseInvestigatorOverride=null)
+        IRootCauseInvestigator? rootCauseInvestigatorOverride=null,
+        IRootCauseReviewer? rootCauseReviewerOverride=null)
     {
         settings ??= ApiSettings.FromEnvironment();
         if (!OwnerTokenPattern.IsMatch(settings.OwnerToken))
@@ -243,6 +244,7 @@ public static class ApiHost
         builder.Services.AddSingleton(collaborationStore);
         builder.Services.AddSingleton<ICollaborationLead>(collaborationLeadOverride??new MafCollaborationLead());
         builder.Services.AddSingleton<IRootCauseInvestigator>(rootCauseInvestigatorOverride??new MafRootCauseInvestigator());
+        builder.Services.AddSingleton<IRootCauseReviewer>(rootCauseReviewerOverride??new MafRootCauseReviewer());
         builder.Services.AddSingleton<CollaborationCoordinator>();
         builder.Services.AddHostedService<EngineeringActivityNotifier>();
 

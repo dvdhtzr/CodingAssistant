@@ -21,7 +21,9 @@ interface Preview { planSha256: string | null; policy: Policy | null;
   canInvestigateStall?:boolean;
   rootCauseInvestigation?: {id:string;runId:string;sourceSha256:string;model:string;state:string;errorCode:string|null;
     assessment:{findings:Array<{issueId:string;outcome:string;causePath:string|null;line:number|null;
-      evidence:string|null;rationale:string;alternativeStrategy:string|null}>}|null}|null;
+      evidence:string|null;rationale:string;alternativeStrategy:string|null}>}|null;
+    independentReview?: {model:string;state:string;errorCode:string|null;assessment:{findings:Array<{
+      issueId:string;outcome:string;path:string|null;line:number|null;evidence:string|null;rationale:string}>}|null}|null}|null;
   stallEvidence?: {reason:string;attemptCount:number;recentAttempts:Array<{cycleId:string;state:string;
     originalSourceSha256:string;candidateSourceSha256:string;origin:string;independentStaticResolution:boolean;recurringExactFinding:boolean}>;
     findings:Array<{id:string;origin:string;path:string;requirement:string;evidence:string;recommendation:string}>}|null;
@@ -304,7 +306,18 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         {f.causePath&&policy?.routineRepair&&!policy.routineRepair.paths.includes(f.causePath)&&
           <p>Outside approved write scope. No source change authorized.</p>}
       </div>)}
-      {preview.rootCauseInvestigation.state==='Recorded'&&<p>Independent assessment of these proposals is required before any repair.</p>}
+      {preview.rootCauseInvestigation.independentReview&&<section aria-label="Independent root cause assessment">
+        <h4>Independent assessment · {preview.rootCauseInvestigation.independentReview.state}</h4>
+        <p>{preview.rootCauseInvestigation.independentReview.model}</p>
+        {preview.rootCauseInvestigation.independentReview.errorCode&&<p role="alert">{preview.rootCauseInvestigation.independentReview.errorCode}</p>}
+        {preview.rootCauseInvestigation.independentReview.assessment?.findings.map(f=><div key={f.issueId}>
+          <strong>{f.outcome}</strong>{f.path&&<p>{f.path}:{f.line} · <code>{f.evidence}</code></p>}
+          <p>{f.rationale}</p>
+        </div>)}
+      </section>}
+      {preview.rootCauseInvestigation.state==='Recorded'&&<p>{preview.rootCauseInvestigation.independentReview?.state==='Recorded'?
+        'Investigation and independent assessment saved. No repair has been admitted and the original stall guard is still active.':
+        'Independent assessment of these proposals is required before any repair.'}</p>}
     </section>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('start')}>{preview.canInvestigateStall?'Investigate recurring findings':

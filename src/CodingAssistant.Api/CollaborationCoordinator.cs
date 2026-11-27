@@ -868,6 +868,22 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         catch(OperationCanceledException){investigations.Stop(job.TaskId,receipt,"OWNER_CANCELLED",true);throw;}
                         catch(StoreFailure e){investigations.Stop(job.TaskId,receipt,e.Code);throw;}
                         catch(Exception){investigations.Stop(job.TaskId,receipt,"ROOT_CAUSE_INVESTIGATION_FAILED");throw;}
+                        var reviewerModel=models.Resolve(job.TaskId,"LeadSoftwareEngineer",job.Model);
+                        if(!(await catalog.ListAsync(token)).Contains(reviewerModel,StringComparer.Ordinal))
+                            throw new StoreFailure("MODEL_NOT_INSTALLED");
+                        token.ThrowIfCancellationRequested();
+                        var proposal=investigations.AdmitReview(receipt,evidence,reviewerModel);
+                        try
+                        {
+                            RootCauseReviewAssessment reviewed;
+                            using(EngineeringProviderActivity.Enter(tasks,job.TaskId,"LeadSoftwareEngineer",receipt,job.SourceSha256))
+                                reviewed=await services.GetRequiredService<IRootCauseReviewer>().ReviewAsync(evidence,proposal,reviewerModel,token);
+                            token.ThrowIfCancellationRequested();
+                            investigations.RecordReview(receipt,evidence,reviewerModel,reviewed);
+                        }
+                        catch(OperationCanceledException){investigations.StopReview(job.TaskId,receipt,"OWNER_CANCELLED",true);throw;}
+                        catch(StoreFailure e){investigations.StopReview(job.TaskId,receipt,e.Code);throw;}
+                        catch(Exception){investigations.StopReview(job.TaskId,receipt,"ROOT_CAUSE_REVIEW_FAILED");throw;}
                         store.Finish(job.TaskId,job.Id,"Escalated","ROOT_CAUSE_INVESTIGATION_COMPLETE");return;
                     }
                     case "RecheckIssue":
