@@ -8,7 +8,7 @@ const digest=x=>typeof x==='string'&&x.length===64&&/^[a-f0-9]{64}$/.test(x);
 const fail=()=>{throw Error('CANDIDATE_OBSERVATIONS_INVALID');};
 const BINDINGS=['attemptId','candidateSha256','archiveSha256','evaluatorSha256','adapterSha256','policySha256'];
 const BUILD=['exact_source_hashes','javascript_syntax','local_assets_linked','source_integrity_unchanged'];
-const INFRA=['browser_sandbox_confirmed','independent_driver_confirmed','browser_closed'];
+const INFRA=['browser_sandbox_confirmed','independent_driver_confirmed','browser_closed','asset_server_closed'];
 const reportKeys=['schemaVersion',...BINDINGS,'security','build','infrastructure','cases'];
 const booleans=(x,keys,nullable=false)=>exact(x,keys)&&keys.every(k=>typeof x[k]==='boolean'||(nullable&&x[k]===null));
 const all=(x,keys)=>keys.every(k=>x[k]===true);
@@ -19,7 +19,7 @@ export function parseCandidateObservations(raw,expected){
     !BINDINGS.slice(1).every(k=>digest(expected[k])))fail();
   let result;try{result=JSON.parse(raw);}catch{fail();}
   if(!exact(result,reportKeys)||result.schemaVersion!==1||!BINDINGS.every(k=>result[k]===expected[k])||
-    !booleans(result.security,SECURITY_CASES)||!booleans(result.build,BUILD,true)||
+    !booleans(result.security,SECURITY_CASES,true)||!booleans(result.build,BUILD,true)||
     !booleans(result.infrastructure,INFRA,true)||!booleans(result.cases,CALCULATION_CASES,true))fail();
   const securityOk=all(result.security,SECURITY_CASES);
   const buildOk=all(result.build,BUILD);
@@ -29,10 +29,12 @@ export function parseCandidateObservations(raw,expected){
   // build may not report functional tests. Infrastructure failures may
   // retain partial observations but never become a functional failure.
   if(!securityOk&&[...Object.values(result.build),...Object.values(result.infrastructure),...Object.values(result.cases)].some(v=>v!==null))fail();
-  if(!buildOk&&completed!==0)fail();
+  if(!all(result.build,['exact_source_hashes','javascript_syntax','local_assets_linked'])&&completed!==0)fail();
   const passed=CALCULATION_CASES.filter(k=>result.cases[k]===true).length;
-  const status=!securityOk?'VERIFICATION_BLOCKED':
-    BUILD.some(k=>result.build[k]===false)?'BUILD_FAILED':
+  const integrityOk=all(result.build,['exact_source_hashes','source_integrity_unchanged']);
+  const infraFailed=INFRA.some(k=>result.infrastructure[k]===false);
+  const status=!securityOk||!integrityOk||infraFailed?'VERIFICATION_BLOCKED':
+    ['javascript_syntax','local_assets_linked'].some(k=>result.build[k]===false)?'BUILD_FAILED':
     !buildOk||!infraOk||completed!==CALCULATION_CASES.length?'VERIFICATION_BLOCKED':
     passed===CALCULATION_CASES.length?'CHECKS_PASSED_NOT_VERIFIED':'TESTS_FAILED';
   // This is guest observation classification only. Current host proof,

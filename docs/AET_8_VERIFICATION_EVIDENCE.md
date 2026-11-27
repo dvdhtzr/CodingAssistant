@@ -301,3 +301,24 @@ real candidate driver is not connected to a CLI, host dispatcher or
 authorization grant. The existing trusted fixture driver and policy
 remain unchanged. Isolated-world observation is not proof of renderer
 security, browser sandbox qualification or independent guest integrity.
+
+
+### Composed candidate guest lifecycle (unqualified)
+
+The candidate-specific lifecycle now composes exact in-memory source
+binding, trusted security/build/browser-sandbox probes, a bounded
+loopback asset server, the independent browser driver, and the existing
+seven-case Calculation Journal contract. Missing UI controls can be
+functional failures; transport, launch, navigation and cleanup failures
+block verification. Browser and server teardown are attempted separately.
+Source integrity mismatch is an infrastructure/security blocker, not
+a repairable build failure. The result contract now explicitly requires
+asset server closure and preserves incomplete security observations as
+null rather than fabricating failed checks.
+
+Model-free lifecycle tests inject trusted operations and an inert page
+into the real behavioral contract. The HTTP regression uses only frozen
+test bytes on loopback and does not launch a browser. Real guest security,
+build and sandbox probes still require pinned integration and qualification;
+the composed lifecycle is not called by any host dispatcher or CLI.
+No new policy, execution grant or qualified runtime is established.

@@ -508,7 +508,7 @@ function candidateObservationFixture(){
     evaluatorSha256:'4'.repeat(64),adapterSha256:'5'.repeat(64),policySha256:'6'.repeat(64)};
   const report={schemaVersion:1,...expected,security:allCases(SECURITY_CASES,true),
     build:allCases(['exact_source_hashes','javascript_syntax','local_assets_linked','source_integrity_unchanged'],true),
-    infrastructure:allCases(['browser_sandbox_confirmed','independent_driver_confirmed','browser_closed'],true),
+    infrastructure:allCases(['browser_sandbox_confirmed','independent_driver_confirmed','browser_closed','asset_server_closed'],true),
     cases:allCases(CALCULATION_CASES,true)};
   return {expected,report};
 }
@@ -604,4 +604,101 @@ test('failed candidate browser shutdown prevents restart or fresh case and retai
   await assert.rejects(()=>driver.close(),/DRIVER_BLOCKED/);
   assert.equal(calls.filter(c=>c[0]==='launch').length,1);
   assert.equal(calls.filter(c=>c[0]==='remove').length,0);
+});
+
+import {observeCandidate} from '../tools/m4/static_web_candidate_lifecycle.mjs';
+import {openCandidateAssetServer} from '../tools/m4/static_web_candidate_server.mjs';
+function integratedCandidateFixture(){
+  const input=admissionFixture(),admission=prepareEvaluationAdmission(input);
+  const staged=prepareCandidatePayload(input,admission.admissionSha256);
+  const {expected}=candidateObservationFixture();
+  Object.assign(expected,{candidateSha256:staged.binding.candidateSha256,
+    archiveSha256:staged.binding.archiveSha256,evaluatorSha256:admission.evaluatorSha256});
+  const calls=[];
+  const page={locator(){return {async innerText(){return '0';}};},
+    getByRole(){return {async click(){},locator(){return {async count(){return 0;}};}};},
+    keyboard:{async type(){},async press(){}},async reload(){}};
+  const options={
+    async securityProbe(){calls.push('security');return allCases(SECURITY_CASES,true);},
+    async buildProbe(assets,files){
+      calls.push('build');assert.equal(assets.assetCount,files.length);
+      return {javascript_syntax:true,local_assets_linked:true};
+    },
+    async sandboxProbe(){calls.push('sandbox');return true;},
+    async openServer(){calls.push('server-open');return {origin:'http://127.0.0.1:12345',
+      async close(){calls.push('server-close');}};},
+    async createDriver(){
+      calls.push('driver-open');
+      return {async openFresh(){calls.push('case-open');return {page,async close(){calls.push('case-close');}};},
+        async close(){calls.push('driver-close');}};
+    }
+  };
+  return {request:{payloadJson:staged.payloadJson,binding:staged.binding,expected},options,calls};
+}
+test('candidate lifecycle invokes the actual fixed behavioral contract and closes both resources',async()=>{
+  const {request,options,calls}=integratedCandidateFixture();
+  const result=await observeCandidate(request,options);
+  assert.equal(result.observations.status,'TESTS_FAILED');
+  assert.equal(result.observations.passed,0);
+  assert.equal(result.observations.completed,7);
+  assert.equal(result.observations.generatedArtifactVerified,false);
+  assert.deepEqual(calls.slice(0,5),['security','build','sandbox','server-open','driver-open']);
+  assert.equal(calls.filter(x=>x==='case-open').length,7);
+  assert.equal(calls.filter(x=>x==='case-close').length,7);
+  assert.deepEqual(calls.slice(-2),['driver-close','server-close']);
+  assert.deepEqual(parseCandidateObservations(result.raw,request.expected),result.observations);
+});
+test('candidate lifecycle never opens browser or assets after unsafe or failed build gates',async()=>{
+  for(const mode of ['security','syntax','sandbox']){
+    const {request,options,calls}=integratedCandidateFixture();
+    if(mode==='security')options.securityProbe=async()=>allCases(SECURITY_CASES,false);
+    if(mode==='syntax')options.buildProbe=async()=>({javascript_syntax:false,local_assets_linked:true});
+    if(mode==='sandbox')options.sandboxProbe=async()=>false;
+    const result=await observeCandidate(request,options);
+    assert.equal(result.observations.status,mode==='syntax'?'BUILD_FAILED':'VERIFICATION_BLOCKED');
+    assert.equal(result.observations.completed,0);
+    assert.ok(!calls.includes('server-open')&&!calls.includes('driver-open'));
+  }
+});
+test('candidate lifecycle aborts incomplete driver observations and attempts both cleanups',async()=>{
+  const {request,options,calls}=integratedCandidateFixture();
+  options.createDriver=async()=>({async openFresh(){throw Error('BROWSER_PIPE_CLOSED');},
+    async close(){calls.push('driver-close');throw Error('PRIVATE_DIAGNOSTIC');}});
+  const result=await observeCandidate(request,options);
+  assert.equal(result.observations.status,'VERIFICATION_BLOCKED');
+  assert.equal(result.observations.completed,0);
+  assert.equal(result.observations.infrastructure.browser_closed,false);
+  assert.equal(result.observations.infrastructure.asset_server_closed,true);
+  assert.deepEqual(calls.slice(-2),['driver-close','server-close']);
+  assert.ok(!result.raw.includes('PRIVATE_DIAGNOSTIC'));
+});
+test('source integrity and asset server cleanup failures cannot become repairable test failures',async()=>{
+  const {expected,report}=candidateObservationFixture();
+  assert.equal(parseCandidateObservations(JSON.stringify({...report,
+    build:{...report.build,source_integrity_unchanged:false}}),expected).status,'VERIFICATION_BLOCKED');
+  const {request,options}=integratedCandidateFixture();
+  options.openServer=async()=>({origin:'http://127.0.0.1:12345',async close(){throw Error('CLEANUP');}});
+  const result=await observeCandidate(request,options);
+  assert.equal(result.observations.completed,7);
+  assert.equal(result.observations.infrastructure.asset_server_closed,false);
+  assert.equal(result.observations.status,'VERIFICATION_BLOCKED');
+});
+test('real candidate asset server serves trusted fixture bytes only over loopback',async()=>{
+  const input=admissionFixture(),admission=prepareEvaluationAdmission(input);
+  const staged=prepareCandidatePayload(input,admission.admissionSha256);
+  const assets=createCandidateAssets(staged.payloadJson,staged.binding);
+  const server=await openCandidateAssetServer(assets);
+  try{
+    assert.match(server.origin,/^http:\/\/127\.0\.0\.1:\d+$/);
+    const response=await fetch(server.origin+'/index.html');
+    assert.equal(response.status,200);
+    assert.equal(await response.text(),working[0][1]);
+    assert.equal(response.headers.get('x-content-type-options'),'nosniff');
+    for(const target of ['/','/index.html?extra=1','/missing.js','/report.json']){
+      const denied=await fetch(server.origin+target);assert.equal(denied.status,404);
+      await denied.text();
+    }
+    const denied=await fetch(server.origin+'/index.html',{method:'POST'});
+    assert.equal(denied.status,404);await denied.text();
+  }finally{await server.close();await server.close();}
 });
