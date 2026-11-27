@@ -806,3 +806,40 @@ This does not qualify a generated-source dispatcher or prove orphaned
 host Docker client termination. The next implementation must address
 actual generated dispatch ownership/termination and result persistence
 under exact consumed authorization; the runtime gate remains closed.
+
+
+### Complete pinned evidence PASS and shared candidate dispatch lifecycle
+
+At `c30cce2` the owner reported Phase 2 PASS 725 checks. The documented
+conditional command reached Phase 2 after Node and API smoke. The
+summary does not independently prove the optional inspection marker.
+
+The new static-web candidate dispatcher reconstructs the reviewed
+transport against the exact reserved descriptor and fourteen-attempt
+evidence. Its generated-source entry point remains hard closed. The
+new private shared lifecycle is exercised exclusively by frozen
+qualification controls. It creates and audits a stopped exact-ID
+container, uses an asynchronous pinned Docker attach child with
+bounded output and deadline, observes the actual close event, checks
+engine and container exit, classifies the ordered independent result,
+and exposes observations only after confirmed removal and archive.
+An unconfirmed attach close or unknown create outcome leaves durable
+cleanup debt and no functional verdict. Build failure, test failure,
+and complete checks are distinct; no VERIFIED state is emitted.
+
+The earlier pinned dispatcher and interruption closure are not changed.
+The new lifecycle is not qualified by those receipts alone. The
+current implementation confirms attach close during normal operation
+and requested interruption, but does not yet put the Docker child
+under a Windows kill-on-close job for abrupt owner loss. Production
+cancellation, durable .NET result admission and executable owner
+authorization remain outstanding. No generated dispatch is possible.
+
+~~~powershell
+node tools/m4/static_web_candidate_dispatch.mjs --run-fixed-controls
+~~~
+
+Expected AET-8 WINDOWS_PILOT_CANDIDATE_DISPATCH_CONTROLS_PASS:
+working CHECKS_PASSED_NOT_VERIFIED, spoof TESTS_FAILED, missing asset
+BUILD_FAILED, all attach closed and removed, no debt.
+Use the previously selected CA_PILOT_* executable pins.

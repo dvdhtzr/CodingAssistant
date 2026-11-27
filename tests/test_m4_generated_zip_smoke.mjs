@@ -1575,3 +1575,101 @@ test('transport preparation binds pinned dispatch evidence and excludes all four
   for(const item of Object.values(evidence.dispatchQualification.attempts))
     assert.throws(()=>prepareReviewedCandidateTransport(inputs,input,{...selection,attemptId:item.attemptId},pins),/ATTEMPT_REUSED/);
 }));
+
+
+import {parseCandidateDispatchStream,prepareCandidateDispatch,dispatchReviewedCandidate,qualifyCandidateDispatchControl}
+  from '../tools/m4/static_web_candidate_dispatch.mjs';
+function dispatchStream(report,buildFailed=false){
+  const stages=buildFailed?['START','SECURITY','BUILD','COMPLETE']:['START','SECURITY','BUILD','SANDBOX','COMPLETE'];
+  return [...stages.map(stage=>JSON.stringify({kind:'progress',stage})),JSON.stringify(report)].join('\n')+'\n';
+}
+test('candidate dispatch distinguishes build failure, complete functional failure and blocked evidence',()=>{
+  const {report,expected}=candidateObservationFixture();
+  assert.equal(parseCandidateDispatchStream(dispatchStream(report),expected).status,'CHECKS_PASSED_NOT_VERIFIED');
+  const failed=structuredClone(report);failed.cases[CALCULATION_CASES[0]]=false;
+  assert.equal(parseCandidateDispatchStream(dispatchStream(failed),expected).status,'TESTS_FAILED');
+  const broken=structuredClone(report);broken.build.local_assets_linked=false;
+  broken.infrastructure=allCases(Object.keys(broken.infrastructure),null);broken.cases=allCases(CALCULATION_CASES,null);
+  assert.equal(parseCandidateDispatchStream(dispatchStream(broken,true),expected).status,'BUILD_FAILED');
+  assert.throws(()=>parseCandidateDispatchStream(dispatchStream(broken),expected),/STREAM_INVALID/);
+  failed.infrastructure.browser_closed=false;
+  assert.throws(()=>parseCandidateDispatchStream(dispatchStream(failed),expected),/OBSERVATIONS_BLOCKED/);
+  assert.throws(()=>parseCandidateDispatchStream(dispatchStream(report).replace('"stage":"START"','"stage":"COMPLETE"'),expected),/STREAM_INVALID/);
+});
+test('reviewed dispatch reconstructs exact reserved transport but refuses all generated execution',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'ca-candidate-dispatch-'));
+  try{
+    const {input,pins}=pinnedEvidenceFixture(root),evidence=bindPinnedDispatchEvidence(input,pins);
+    const inputs=admissionFixture(),admission=prepareEvaluationAdmission(inputs),bundle=buildQualifiedCandidateBundle();
+    const selection={attemptId:'e'.repeat(32),admissionSha256:admission.admissionSha256,candidateSha256:admission.candidateSha256,
+      archiveSha256:admission.archiveSha256,completeEvidenceSha256:evidence.dispatchEvidenceSha256,
+      policySha256:evidence.buildQualification.policySha256,adapterSha256:bundle.adapterSha256};
+    const {descriptor}=prepareReviewedCandidateTransport(inputs,input,selection,pins);
+    assert.deepEqual(prepareCandidateDispatch(inputs,input,selection,pins,descriptor),descriptor);
+    assert.throws(()=>prepareCandidateDispatch(inputs,input,selection,pins,{...descriptor,transportSha256:'0'.repeat(64)}),/RESERVATION_CHANGED/);
+    await assert.rejects(dispatchReviewedCandidate(inputs,input,selection,pins,descriptor),/ADAPTER_NOT_QUALIFIED/);
+    assert.equal(readPilotAttempt(root),null);
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+async function withDispatchJournal(callback){
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'ca-dispatch-lifecycle-'));
+  try{return await callback(root);}finally{fs.rmSync(root,{recursive:true,force:true});}
+}
+function asyncDispatchFixture(options={}){
+  const f=durablePilotDocker(options);
+  const attach=async(id,source)=>{
+    const reply=f.docker(['start','-a','-i',id],180000,source);
+    const envelope=JSON.parse(reply.stdout.trim().split('\n').at(-1));
+    if(options.buildFailed){
+      envelope.build.local_assets_linked=false;
+      envelope.infrastructure=allCases(Object.keys(envelope.infrastructure),null);
+      envelope.cases=allCases(CALCULATION_CASES,null);
+    }
+    return {closed:!options.unconfirmed,status:reply.status,interrupted:!!options.interrupted,
+      stdout:dispatchStream(envelope,!!options.buildFailed)};
+  };
+  return {...f,attach};
+}
+test('shared dispatch lifecycle publishes classified observations only after confirmed process close and removal',async()=>{
+  for(const [options,control,status] of [
+    [{},'build-working','CHECKS_PASSED_NOT_VERIFIED'],
+    [{negative:true},'build-spoof','TESTS_FAILED'],
+    [{buildFailed:true},'build-missing-asset','BUILD_FAILED']]){
+    await withDispatchJournal(async root=>{
+      const f=asyncDispatchFixture(options);
+      const result=await qualifyCandidateDispatchControl({platform:'win32',env:{},docker:f.docker,attach:f.attach,
+        root,attemptId:f.attempt,control});
+      assert.equal(result.status,status,result.reason);assert.equal(result.qualificationPassed,true);
+      assert.equal(result.attachClosed,true);assert.equal(result.containerRemoved,true);
+      assert.equal(result.generatedArtifactVerified,false);assert.equal(readPilotAttempt(root),null);
+      assert.match(result.archiveSha256,/^[a-f0-9]{64}$/);
+      const replay=await qualifyCandidateDispatchControl({platform:'win32',env:{},docker:f.docker,attach:f.attach,
+        root,attemptId:f.attempt,control});
+      assert.equal(replay.reason,'PILOT_ATTEMPT_REPLAY');assert.equal(replay.observations,null);
+      assert.equal(f.calls.filter(a=>a[0]==='start').length,1);
+    });
+  }
+});
+test('shared dispatch lifecycle withholds observations and preserves uncertain cleanup debt',async()=>{
+  for(const options of [{unconfirmed:true},{cleanupFails:true},{wrongOwner:true},{interrupted:true}]){
+    await withDispatchJournal(async root=>{
+      const f=asyncDispatchFixture(options);
+      const result=await qualifyCandidateDispatchControl({platform:'win32',env:{},docker:f.docker,attach:f.attach,root,attemptId:f.attempt});
+      assert.equal(result.status,'VERIFICATION_BLOCKED');assert.equal(result.observations,null);
+      assert.equal(result.qualificationPassed,false);
+      assert.equal(result.cleanupDebt,!options.interrupted);
+      if(options.unconfirmed){
+        assert.equal(readPilotAttempt(root).current.stage,'Starting');
+        assert.equal(f.calls.some(a=>a[0]==='rm'),false);
+      }
+      if(options.interrupted){assert.equal(result.containerRemoved,true);assert.equal(readPilotAttempt(root),null);}
+    });
+  }
+});
+test('shared dispatcher has no arbitrary-source CLI',()=>{
+  const script='tools/m4/static_web_candidate_dispatch.mjs';
+  const inert=spawnSync(process.execPath,[script],{encoding:'utf8',timeout:5000});
+  assert.equal(inert.status,0);assert.match(inert.stdout,/NOT_RUN/);
+  const invalid=spawnSync(process.execPath,[script,'--run-fixed-controls','project.zip'],{encoding:'utf8',timeout:5000});
+  assert.equal(invalid.status,2);
+});
