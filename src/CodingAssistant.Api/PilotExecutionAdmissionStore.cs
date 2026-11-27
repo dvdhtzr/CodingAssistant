@@ -24,6 +24,12 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             state TEXT NOT NULL CHECK(state IN ('Prepared','Authorized','Consumed','Revoked','Interrupted')),
             created_utc TEXT NOT NULL,updated_utc TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pilot_execution_transitions(
+            admission_id TEXT NOT NULL REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
+            state TEXT NOT NULL CHECK(state IN ('Authorized','Consumed')),
+            consent_sha256 TEXT NOT NULL,attempt_id TEXT NOT NULL,transport_sha256 TEXT NOT NULL,
+            recorded_utc TEXT NOT NULL,PRIMARY KEY(admission_id,state)
+        );
         CREATE TABLE IF NOT EXISTS pilot_execution_results(
             admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
             status TEXT NOT NULL CHECK(status IN ('BUILD_FAILED','TESTS_FAILED','CHECKS_PASSED_NOT_VERIFIED','VERIFICATION_BLOCKED')),
@@ -162,6 +168,35 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             throw new StoreFailure("EVALUATION_RUNTIME_UNQUALIFIED");
         throw new StoreFailure("EVALUATION_EXECUTION_ADAPTER_NOT_QUALIFIED");
     }
+    // Internal database transition primitive; never a grant or process launch.
+    // Production callers must pass the closed executable policy first.
+    private static void RecordTransition(SqliteConnection db,SqliteTransaction tx,
+        PilotExecutionAdmission item,string next)
+    {
+        var previous=next switch {"Authorized"=>"Prepared","Consumed"=>"Authorized",
+            _=>throw new StoreFailure("PILOT_ADMISSION_TRANSITION_INVALID")};
+        var error=next=="Authorized"?"PILOT_ADMISSION_NOT_CURRENT":"PILOT_ADMISSION_NOT_AUTHORIZED";
+        if(next=="Consumed"&&TaskStore.Scalar(db,tx,"""
+            SELECT admission_id FROM pilot_execution_transitions
+            WHERE admission_id=@id AND state='Authorized' AND consent_sha256=@consent
+                AND attempt_id=@attempt AND transport_sha256=@transport
+            """,("@id",item.Id),("@consent",item.ConsentSha256),("@attempt",item.AttemptId),
+            ("@transport",item.TransportSha256)) is null)
+            throw new StoreFailure(error);
+        var now=Now();
+        if(TaskStore.Execute(db,tx,"""
+            UPDATE pilot_execution_admissions SET state=@next,updated_utc=@now
+            WHERE id=@id AND task_id=@task AND state=@previous AND consent_sha256=@consent
+                AND attempt_id=@attempt AND transport_sha256=@transport
+            """,("@next",next),("@now",now),("@id",item.Id),("@task",item.TaskId),("@previous",previous),
+            ("@consent",item.ConsentSha256),("@attempt",item.AttemptId),("@transport",item.TransportSha256))!=1)
+            throw new StoreFailure(error);
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO pilot_execution_transitions(admission_id,state,consent_sha256,attempt_id,transport_sha256,recorded_utc)
+            VALUES(@id,@next,@consent,@attempt,@transport,@now)
+            """,("@id",item.Id),("@next",next),("@consent",item.ConsentSha256),
+            ("@attempt",item.AttemptId),("@transport",item.TransportSha256),("@now",now));
+    }
     internal PilotExecutionAdmission Authorize(string taskId,string id,string confirmation)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
@@ -170,8 +205,7 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         if(confirmation!="AUTHORIZE PILOT "+item.ConsentSha256)
             throw new StoreFailure("PILOT_ADMISSION_CONFIRMATION_REQUIRED");
         RequireExecutablePolicy();
-        if(TaskStore.Execute(db,tx,"UPDATE pilot_execution_admissions SET state='Authorized',updated_utc=@now WHERE id=@id AND state='Prepared'",
-            ("@id",id),("@now",Now()))!=1)throw new StoreFailure("PILOT_ADMISSION_NOT_CURRENT");
+        RecordTransition(db,tx,item,"Authorized");
         tx.Commit();return item with {State="Authorized",Current=true};
     }
     // Fresh trusted transport preparation must reproduce the entire exact
@@ -186,8 +220,7 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         if(identity.Consent!=item.ConsentSha256||identity.Attempt!=item.AttemptId||identity.Transport!=item.TransportSha256)
             throw new StoreFailure("PILOT_ADMISSION_TRANSPORT_CHANGED");
         RequireExecutablePolicy();
-        if(TaskStore.Execute(db,tx,"UPDATE pilot_execution_admissions SET state='Consumed',updated_utc=@now WHERE id=@id AND state='Authorized'",
-            ("@id",id),("@now",Now()))!=1)throw new StoreFailure("PILOT_ADMISSION_NOT_AUTHORIZED");
+        RecordTransition(db,tx,item,"Consumed");
         tx.Commit();return item with {State="Consumed",Current=false};
     }
     internal PilotExecutionAdmission Revoke(string taskId,string id)
