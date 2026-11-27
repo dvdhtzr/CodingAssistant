@@ -760,9 +760,9 @@ test('fixed adapter qualification requires all three controls and confirmed clea
 });
 test('fixed adapter qualification stops on cleanup failure, unexpected negative or unsupported host',()=>{
   for(const options of [{failCleanup:true},{wrongNegative:true}]){
-    const f=fixedAdapterDocker();let i=0;
+    const f=fixedAdapterDocker(options);let i=0;
     const result=qualifyFixedCandidate({platform:'win32',env:{},docker:f.docker,makeId:()=>String(++i).repeat(32)});
-    assert.equal(result.status,'BLOCKED');
+    assert.equal(result.status,'BLOCKED',JSON.stringify(options));
     assert.equal(result.reason,options.failCleanup?'CONTAINER_CLEANUP_UNCONFIRMED':'FIXTURE_EXPECTATIONS_NOT_MET');
     assert.equal(f.calls.filter(x=>x[0]==='run').length,options.failCleanup?1:2);
   }
