@@ -5646,8 +5646,8 @@ try
             try{FixtureTransition(db,tx,resultFixtureAdmission,"Consumed");tx.Commit();return true;}
             catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED"){return false;}
         });
-        var first=Compete();var second=Compete();startConsumers.Set();
-        var outcomes=await Task.WhenAll(first,second);
+        var firstConsumerTask=Compete();var secondConsumerTask=Compete();startConsumers.Set();
+        var outcomes=await Task.WhenAll(firstConsumerTask,secondConsumerTask);
         Check(outcomes.Count(x=>x)==1,"two independent connections can consume exactly once");
     }
     using(var db=tasks.Open())
