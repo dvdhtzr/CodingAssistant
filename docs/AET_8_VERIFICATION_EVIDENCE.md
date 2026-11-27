@@ -707,3 +707,35 @@ The tests exercise rejection, identity binding, reservation replay,
 revocation and recovery, not successful execution consumption. A future
 qualified dispatcher must reproduce the exact attempt and fresh evidence
 and coordinate cancellation/cleanup before the gate can be opened.
+
+
+### Single-attempt ledger PASS and pinned dispatcher qualification
+
+At `6b8d73d` the owner reported Phase 2 model-free acceptance PASS
+723 checks. The new fixed-only dispatcher qualification requires explicit
+Node and Docker binary SHA-256 pins, verifies those pins before and after
+each Docker subprocess, and limits the subprocess boundary to fixed
+metadata queries, exact audited policy create, exact ID attachment with
+the reconstructed working build-qualified fixture bytes, and exact ID
+removal. It validates the ordered guest stream, independent result,
+durable archive, absence of cleanup debt and rejection of the same
+attempt on replay. No arbitrary source or execution command is accepted.
+
+Owner-local diagnostic pins identify the current binaries, not
+retrospective attestation or production enrollment. The qualification
+still needs actual Windows validation; the original build-qualified
+guest and isolation policy bytes are unchanged. The real generated
+dispatcher and its separately authorized consumption are not yet enabled.
+Existing cancellation/crash receipts belong to the earlier fixed
+adapter; they do not attest to this pinned dispatcher. No runtime
+promotion, owner consent bypass, or changes to main.
+
+Run with explicit local diagnostic binary pins:
+~~~powershell
+$env:CA_PILOT_NODE_SHA256 = (Get-FileHash (Get-Command node.exe).Source -Algorithm SHA256).Hash.ToLowerInvariant()
+$env:CA_PILOT_DOCKER_EXE = (Get-Command docker.exe).Source
+$env:CA_PILOT_DOCKER_SHA256 = (Get-FileHash $env:CA_PILOT_DOCKER_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
+node tools/m4/windows_pinned_dispatch_qualification.mjs --run-fixed-control
+~~~
+Expected AET-8 WINDOWS_PILOT_PINNED_DISPATCH_PASS, audited true,
+removed true, replay blocked true, cleanup debt false.

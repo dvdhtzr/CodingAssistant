@@ -1437,3 +1437,48 @@ test('upgraded transport binds exact new build adapter and rejects old policy or
   assert.throws(()=>prepareReviewedCandidateTransport(inputs,pilot,{...selection,completeEvidenceSha256:evidence.completeEvidenceSha256}),/BINDING_CHANGED/);
   assert.throws(()=>prepareReviewedCandidateTransport(inputs,pilot,{...selection,attemptId:pilot.build.controls['build-working'].attemptId}),/ATTEMPT_REUSED/);
 }));
+
+
+import {qualifyPinnedDispatch,strictDispatchObservations} from '../tools/m4/windows_pinned_dispatch_qualification.mjs';
+function pinnedDispatchFixture(options={}){
+  const f=durablePilotDocker(options);
+  const docker=(args,timeout,source)=>{
+    const reply=f.docker(args,timeout,source);
+    if(args[0]==='start'&&reply.status===0)
+      reply.stdout=['START','SECURITY','BUILD','SANDBOX'].map(stage=>JSON.stringify({kind:'progress',stage})).join('\n')+'\n'+reply.stdout;
+    return reply;
+  };
+  return {...f,docker,env:{CA_PILOT_NODE_SHA256:'a'.repeat(64),CA_PILOT_DOCKER_SHA256:'b'.repeat(64)}};
+}
+test('pinned dispatcher fixed control enforces audited exact input and rejects archived attempt replay',()=>withPilotJournal(root=>{
+  const f=pinnedDispatchFixture();
+  const result=qualifyPinnedDispatch({platform:'win32',env:f.env,docker:f.docker,root,attemptId:f.attempt});
+  assert.equal(result.status,'PILOT_PINNED_DISPATCH_PASS',result.reason);
+  assert.equal(result.replayBlocked,true);assert.equal(result.containerRemoved,true);
+  assert.equal(result.cleanupDebt,false);assert.equal(result.generatedCodeExecutionEnabled,false);
+  assert.equal(f.calls.filter(a=>a[0]==='create').length,1);
+  assert.equal(f.calls.filter(a=>a[0]==='start').length,1);
+}));
+test('pinned dispatch fails closed on incomplete stream, ownership drift or cleanup failure',()=>{
+  for(const options of [{badExit:true},{wrongOwner:true},{cleanupFails:true},{negative:true}]){
+    withPilotJournal(root=>{
+      const f=pinnedDispatchFixture(options);
+      const result=qualifyPinnedDispatch({platform:'win32',env:f.env,docker:f.docker,root,attemptId:f.attempt});
+      assert.equal(result.status,'BLOCKED',JSON.stringify(options));assert.equal(result.replayBlocked,false);
+      if(options.cleanupFails||options.wrongOwner)assert.equal(result.cleanupDebt,true);
+    });
+  }
+  const {report,expected}=candidateObservationFixture();
+  const progress=stage=>JSON.stringify({kind:'progress',stage});
+  const good=['START','SECURITY','BUILD','SANDBOX','COMPLETE'].map(progress);
+  assert.equal(strictDispatchObservations([...good,JSON.stringify(report)].join('\n'),expected).passed,7);
+  for(const lines of [good.slice(1),[...good,progress('COMPLETE')],[good[1],good[0],...good.slice(2)]])
+    assert.throws(()=>strictDispatchObservations([...lines,JSON.stringify(report)].join('\n'),expected),/STREAM_INVALID/);
+});
+test('pinned dispatcher CLI is inert and accepts no project input',()=>{
+  const script='tools/m4/windows_pinned_dispatch_qualification.mjs';
+  const inert=spawnSync(process.execPath,[script],{encoding:'utf8',timeout:5000});
+  assert.equal(inert.status,0);assert.match(inert.stdout,/NOT_RUN/);
+  const invalid=spawnSync(process.execPath,[script,'--run-fixed-control','project.zip'],{encoding:'utf8',timeout:5000});
+  assert.equal(invalid.status,2);
+});
