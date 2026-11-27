@@ -74,7 +74,7 @@ public sealed class MafLeadSoftwareEngineer(IMafChatClientFactory? factory = nul
             new(ChatRole.User,"SOURCE SNAPSHOT STATUS (not executed): "+input.SourceRun.State),
             new(ChatRole.User,"SOURCE MANIFEST (data):\n"+
                 JsonSerializer.Serialize(input.AllFiles.Select(f=>new {f.Path,f.Purpose,f.Sha256}))),
-            new(ChatRole.User,"ASSIGNED FILE: "+input.File.Path+"\nSOURCE (data):\n"+input.File.Content)
+            new(ChatRole.User,SourceForReview(input.File))
         };
         var inspections=0;
         var rejected=0;
@@ -82,6 +82,7 @@ public sealed class MafLeadSoftwareEngineer(IMafChatClientFactory? factory = nul
         {
             cancellation.ThrowIfCancellationRequested();
             var retryableOutput=true;
+            var diagnostic="PROVIDER_RESPONSE";
             try
             {
                 var answer=await agent.RunAsync(messages,cancellationToken:cancellation);
@@ -97,17 +98,18 @@ public sealed class MafLeadSoftwareEngineer(IMafChatClientFactory? factory = nul
                     continue;
                 }
                 retryableOutput=true;
-                return Parse(answer.Text,input.File);
+                return ParseCore(answer.Text,input.File,category=>diagnostic=category);
             }
             catch (StoreFailure e) when (retryableOutput &&
                 e.Code is ("MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or "MODEL_THINKING_ONLY"))
             {
                 rejected++;
                 // Host-owned metadata only; no rejected model text is retained.
-                Console.Error.WriteLine($"Lead source review response rejected (attempt {rejected}/3): {e.Code}");
+                Console.Error.WriteLine($"Lead source review response rejected (attempt {rejected}/3): {e.Code}; category={diagnostic}");
                 if(rejected>=3)throw;
                 messages.Add(new(ChatRole.User,
                     (rejected==2?"Final compact review attempt. ":"Review response rejected. ")+
+                    "Host rejection category: "+diagnostic+". "+
                     "Return one JSON object, exactly disposition, summary, findings. Summary 12-1600 characters. "+
                     "Use at most six grounded findings (prefer only the strongest on the final attempt). "+
                     "Each finding requires severity, category, path, line, evidence, impact, resolution, verification. "+
@@ -120,47 +122,68 @@ public sealed class MafLeadSoftwareEngineer(IMafChatClientFactory? factory = nul
         }
     }
 
-    private static string Bounded(string? value,int min,int max)
+    // Number the actual source rather than requiring the model to count
+    // lines. Keep the complete original source and transport size boundary.
+    private static string SourceForReview(EngineeringSourceFile file)
     {
-        var trimmed=value?.Trim();
-        if (trimmed is null || trimmed.Length<min || trimmed.Length>max ||
-            trimmed.Any(c=>char.IsControl(c) && c is not ('\n' or '\t')))
-            throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-        return trimmed;
+        var header="ASSIGNED FILE: "+file.Path+"\nSOURCE (data):\n";
+        var numbered=header+"Host line labels are not part of source evidence.\n"+
+            string.Join("\n",file.Content.Split('\n').Select((line,i)=>
+                (i+1).ToString(System.Globalization.CultureInfo.InvariantCulture)+" | "+line));
+        return numbered.Length<=18000?numbered:header+file.Content;
     }
 
     public static LeadFileAssessment Parse(string? raw,EngineeringSourceFile file)
+        =>ParseCore(raw,file,null);
+
+    private static LeadFileAssessment ParseCore(string? raw,EngineeringSourceFile file,Action<string>? diagnostic)
     {
+        StoreFailure Reject(string category)
+        {
+            diagnostic?.Invoke(category);
+            return new StoreFailure("MODEL_OUTPUT_REJECTED");
+        }
+        string Bounded(string? value,int min,int max,string category)
+        {
+            var trimmed=value?.Trim();
+            if (trimmed is null || trimmed.Length<min || trimmed.Length>max ||
+                trimmed.Any(c=>char.IsControl(c) && c is not ('\n' or '\t')))
+                throw Reject(category);
+            return trimmed;
+        }
         if (string.IsNullOrWhiteSpace(raw) || raw.Length>18000)
-            throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            throw Reject("REVIEW_SIZE");
         try
         {
             var result=JsonSerializer.Deserialize<LeadFileAssessment>(raw,new JsonSerializerOptions {
                 PropertyNameCaseInsensitive=true,UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow });
-            if (result is null || result.Findings is null || result.Findings.Count>6 ||
-                result.Disposition is not ("Approved" or "ApprovedWithRecommendations" or
+            if (result is null || result.Findings is null || result.Findings.Count>6)
+                throw Reject("REVIEW_FINDINGS_SHAPE");
+            if (result.Disposition is not ("Approved" or "ApprovedWithRecommendations" or
                     "ChangesRequested" or "ClarificationRequested" or "InsufficientEvidence"))
-                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+                throw Reject("REVIEW_DISPOSITION");
             var lines=file.Content.Split('\n');
             var findings=result.Findings.Select(f=>{
                 if (f is null || f.Severity is not ("Critical" or "Major" or "Minor" or "Advisory") ||
-                    f.Category is not ("Architecture" or "Security" or "Correctness" or "Maintainability" or "Performance" or "Testability") ||
-                    f.Path!=file.Path || f.Line<1 || f.Line>lines.Length)
-                    throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-                var evidence=Bounded(f.Evidence,1,500);
+                    f.Category is not ("Architecture" or "Security" or "Correctness" or "Maintainability" or "Performance" or "Testability"))
+                    throw Reject("REVIEW_FINDING_CLASSIFICATION");
+                if(f.Path!=file.Path)throw Reject("REVIEW_PATH");
+                if(f.Line<1 || f.Line>lines.Length)throw Reject("REVIEW_LINE_RANGE");
+                var evidence=Bounded(f.Evidence,1,500,"REVIEW_EVIDENCE_LENGTH");
                 if (!lines[f.Line-1].Contains(evidence,StringComparison.Ordinal))
-                    throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-                return f with {Evidence=evidence,Impact=Bounded(f.Impact,8,500),
-                    Resolution=Bounded(f.Resolution,8,500),Verification=Bounded(f.Verification,8,500)};
+                    throw Reject("REVIEW_EVIDENCE_MISMATCH");
+                return f with {Evidence=evidence,Impact=Bounded(f.Impact,8,500,"REVIEW_IMPACT"),
+                    Resolution=Bounded(f.Resolution,8,500,"REVIEW_RESOLUTION"),
+                    Verification=Bounded(f.Verification,8,500,"REVIEW_VERIFICATION")};
             }).ToArray();
             if ((result.Disposition=="Approved" && findings.Length!=0) ||
                 (result.Disposition=="ApprovedWithRecommendations" && findings.Length==0) ||
                 (result.Disposition=="ChangesRequested" && findings.Length==0) ||
                 (findings.Any(f=>f.Severity is "Critical" or "Major") &&
                     result.Disposition!="ChangesRequested"))
-                throw new StoreFailure("MODEL_OUTPUT_REJECTED");
-            return new(result.Disposition,Bounded(result.Summary,12,1600),findings);
+                throw Reject("REVIEW_DISPOSITION_CONFLICT");
+            return new(result.Disposition,Bounded(result.Summary,12,1600,"REVIEW_SUMMARY"),findings);
         }
-        catch(JsonException) {throw new StoreFailure("MODEL_OUTPUT_REJECTED");}
+        catch(JsonException) {throw Reject("REVIEW_JSON_SCHEMA");}
     }
 }

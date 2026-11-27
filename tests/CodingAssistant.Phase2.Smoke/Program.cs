@@ -1148,8 +1148,20 @@ async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj)
     var leadRecovered=await new MafLeadSoftwareEngineer(leadRetryFactory).ReviewAsync(leadRetryInput,CancellationToken.None);
     Check(leadRetryFactory.ResponseAttempts==3 && leadRecovered.Findings.Count==1 &&
         leadRecovered.Findings[0].Evidence==leadReport.Findings[0].Evidence &&
-        leadRetryFactory.LastUserPrompt?.Contains("Final compact review attempt",StringComparison.Ordinal)==true,
+        leadRetryFactory.LastUserPrompt?.Contains("Final compact review attempt",StringComparison.Ordinal)==true &&
+        leadRetryFactory.LastUserPrompt.Contains("REVIEW_LINE_RANGE",StringComparison.Ordinal),
         "lead review retries transport and invalid grounded response without relaxing evidence");
+    var numberedLeadFactory=new Phase5FakeMafFactory();
+    var numberedLeadFile=file with {Content="<html>\n<body><button>Save</button></body>\n</html>"};
+    numberedLeadFactory.ScriptedReplies.Enqueue(JsonSerializer.Serialize(leadReport with {
+        Findings=[leadReport.Findings[0] with {Line=2}]}));
+    var numberedLeadResult=await new MafLeadSoftwareEngineer(numberedLeadFactory).ReviewAsync(
+        new QaReviewInput("Build notes","Approved offline notes specification",
+            fakePlan,arch,run,numberedLeadFile,[numberedLeadFile]),CancellationToken.None);
+    Check(numberedLeadFactory.LastUserPrompt?.Contains("2 | <body><button>Save</button></body>",StringComparison.Ordinal)==true &&
+        numberedLeadResult.Findings.Single().Line==2 &&
+        numberedLeadResult.Findings.Single().Evidence=="<button>Save</button>",
+        "lead reviewer sees actual numbered source but stores only exact original evidence");
     var leadExhaustedFactory=new Phase5FakeMafFactory();
     foreach(var code in new[]{"MODEL_THINKING_ONLY","MODEL_OUTPUT_TRUNCATED","MODEL_OUTPUT_REJECTED"})
         leadExhaustedFactory.ScriptedFailures.Enqueue(code);
