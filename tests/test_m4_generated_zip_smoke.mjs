@@ -1482,3 +1482,79 @@ test('pinned dispatcher CLI is inert and accepts no project input',()=>{
   const invalid=spawnSync(process.execPath,[script,'--run-fixed-control','project.zip'],{encoding:'utf8',timeout:5000});
   assert.equal(invalid.status,2);
 });
+
+
+import {dispatchClosure,requirePinnedInterruptionIdentity,bindPinnedInterruptedArchive}
+  from '../tools/m4/windows_pilot_interruption_qualification.mjs';
+test('pinned interruption binds exact build-qualified policy, frozen candidate and engine before signaling',()=>withPilotJournal(root=>{
+  const {image}=pilotPolicyFixture(),bundle=buildQualifiedCandidateBundle();
+  const policy=preparePilotPolicy(image,bundle.adapterSha256,bundle.evaluatorSha256),engineId='engine-test';
+  const attemptId='a'.repeat(32),fixture=buildQualificationFixture('build-working',bundle,policy.policySha256,attemptId);
+  const identity={...policy.identity(attemptId),engineId,candidateSha256:fixture.expected.candidateSha256,
+    archiveSha256:fixture.expected.archiveSha256};
+  requirePinnedInterruptionIdentity({identity},policy,bundle,engineId);
+  assert.throws(()=>requirePinnedInterruptionIdentity({identity:{...identity,candidateSha256:'1'.repeat(64)}},policy,bundle,engineId),/POLICY_CHANGED/);
+  assert.throws(()=>requirePinnedInterruptionIdentity({identity},policy,bundle,'different'),/POLICY_CHANGED/);
+  const j=reservePilotAttempt(root,identity);j.advance('Creating');j.advance('Created','b'.repeat(64));
+  j.advance('Audited');j.advance('Starting');j.advance('CleanupPending');j.advance('Cleaned');j.archive();
+  assert.match(bindPinnedInterruptedArchive(root,attemptId,'cancel',policy,bundle,engineId),/^[a-f0-9]{64}$/);
+  assert.throws(()=>bindPinnedInterruptedArchive(root,attemptId,'crash',policy,bundle,engineId),/ARCHIVE_INVALID/);
+}));
+test('pinned dispatcher closure includes exact current supervisor and dispatcher bytes',()=>{
+  const closure=dispatchClosure();
+  for(const name of ['windows_pilot_interruption_qualification.mjs','windows_pinned_dispatch_qualification.mjs',
+    'static_web_candidate_build.mjs','static_web_pilot_policy.mjs','static_web_pilot_attempt_journal.mjs']){
+    const relative='tools/m4/'+name;
+    assert.equal(closure.pins[relative],createHash('sha256').update(fs.readFileSync(relative)).digest('hex'));
+  }
+  assert.equal(closure.sha256,dispatchClosure().sha256);
+  assert.equal(new Set(Object.keys(closure.pins)).size,Object.keys(closure.pins).length);
+});
+
+
+import {bindPinnedDispatchEvidence} from '../tools/m4/static_web_pilot_evidence.mjs';
+function pinnedEvidenceFixture(root){
+  const input=buildEvidenceFixture(root),f=pinnedDispatchFixture();
+  input.dispatch=qualifyPinnedDispatch({platform:'win32',env:f.env,docker:f.docker,root,attemptId:f.attempt});
+  assert.equal(input.dispatch.status,'PILOT_PINNED_DISPATCH_PASS',input.dispatch.reason);
+  const {imageMetadata,engineId}=input,bundle=buildQualifiedCandidateBundle();
+  const policy=preparePilotPolicy(imageMetadata,bundle.adapterSha256,bundle.evaluatorSha256);
+  const controls={};
+  for(const [i,mode] of ['cancel','crash'].entries()){
+    const attemptId=(i+100).toString(16).padStart(32,'0');
+    const fixture=buildQualificationFixture('build-working',bundle,policy.policySha256,attemptId);
+    let j=reservePilotAttempt(root,{...policy.identity(attemptId),engineId,
+      candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256});
+    j.advance('Creating');j.advance('Created',attemptId.repeat(2));j.advance('Audited');j.advance('Starting');
+    if(mode==='crash')j=recoverPilotAttempt(root,{isAlive:()=>false});
+    j.advance('CleanupPending');j.advance('Cleaned');j.archive();
+    controls[mode]={mode,attemptId,observedRunning:true,interruptionRequested:true,childExitConfirmed:true,
+      containerRemoved:true,cleanupDebt:false,reason:null,archiveSha256:bindPinnedInterruptedArchive(root,attemptId,mode,policy,bundle,engineId)};
+  }
+  const {nodeSha256,dockerSha256}=input.dispatch;
+  input.pinnedInterruptions={schemaVersion:1,stage:'AET-8-pinned-dispatch-interruption-controls',
+    status:'PILOT_PINNED_INTERRUPTION_CONTROLS_PASS',recordedAtUtc:'2026-11-27T12:00:00Z',engineId,
+    policySha256:policy.policySha256,adapterSha256:bundle.adapterSha256,nodeSha256,dockerSha256,
+    moduleClosureSha256:dispatchClosure().sha256,controls,generatedSourceExecuted:false,
+    generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false,reason:null};
+  return {input,pins:{nodeSha256,dockerSha256}};
+}
+test('pinned dispatch evidence joins fourteen attempts without changing build qualification or granting execution',()=>withPilotJournal(root=>{
+  const {input,pins}=pinnedEvidenceFixture(root),prior=bindBuildQualifiedPilotEvidence(input),bound=bindPinnedDispatchEvidence(input,pins);
+  assert.equal(bound.status,'PILOT_PINNED_DISPATCH_EVIDENCE_BOUND');
+  assert.equal(bound.qualifiedEvidenceSha256,prior.qualifiedEvidenceSha256);
+  assert.equal(Object.keys(bound.dispatchQualification.attempts).length,3);
+  assert.equal(bound.hostProvenanceEstablished,false);assert.equal(bound.runtimeQualified,false);assert.equal(bound.executionEnabled,false);
+}));
+test('pinned dispatch evidence blocks changed module, executable, transport and interrupted archive identities',()=>withPilotJournal(root=>{
+  const {input,pins}=pinnedEvidenceFixture(root);
+  for(const mutate of [
+    x=>{x.dispatch.replayBlocked=false;},
+    x=>{x.dispatch.transportSha256='0'.repeat(64);},
+    x=>{x.pinnedInterruptions.moduleClosureSha256='0'.repeat(64);},
+    x=>{x.pinnedInterruptions.controls.cancel.attemptId=x.dispatch.attemptId;},
+    x=>{x.pinnedInterruptions.controls.crash.archiveSha256='0'.repeat(64);}]){
+    const changed=structuredClone(input);mutate(changed);assert.throws(()=>bindPinnedDispatchEvidence(changed,pins));
+  }
+  assert.throws(()=>bindPinnedDispatchEvidence(input,{...pins,nodeSha256:'0'.repeat(64)}),/BINDING_CHANGED/);
+}));

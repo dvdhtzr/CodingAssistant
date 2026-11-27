@@ -6,7 +6,12 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {shellDocker,writePrivateEvidence} from './windows_docker_qualification.mjs';
-import {readPilotAttempt} from './static_web_pilot_attempt_journal.mjs';
+import {readPilotAttempt,readArchivedPilotAttempt} from './static_web_pilot_attempt_journal.mjs';
+import {pinnedDispatchDocker} from './windows_pinned_dispatch_qualification.mjs';
+import {readLocalImage} from './static_web_evaluation_host_bridge.mjs';
+import {buildQualifiedCandidateBundle,buildQualificationFixture} from './static_web_build_qualification.mjs';
+import {preparePilotPolicy} from './static_web_pilot_policy.mjs';
+import {createHash} from 'node:crypto';
 import {pilotHostTools,assertPilotContainerOwned,pilotLocalRoot,reconcilePilotLifecycle}
   from './windows_pilot_lifecycle_qualification.mjs';
 
@@ -14,6 +19,44 @@ const fail=code=>{throw Error(code);};
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const safeError=e=>/^[A-Z_]{3,90}$/.test(e?.message??'')?e.message:'PILOT_INTERRUPTION_BLOCKED';
 const script=fileURLToPath(new URL('./windows_pilot_lifecycle_qualification.mjs',import.meta.url));
+const pinnedScript=fileURLToPath(new URL('./windows_pinned_dispatch_qualification.mjs',import.meta.url));
+const sha=x=>createHash('sha256').update(x).digest('hex');
+const stages=['Reserved','Creating','Created','Audited','Starting','CleanupPending','Cleaned'];
+// Record the actual current dispatcher/lifecycle closure, not the
+// historical bytes of previously reported control runs. The list is
+// a subset of the owner-local .NET pin closure, excluding unrelated
+// planning and evidence inspection entrypoints.
+const pinPaths=Object.freeze(["src/CodingAssistant.Web/tests/browser/fixtures/calculation-journal/broken.html","src/CodingAssistant.Web/tests/browser/fixtures/calculation-journal/broken.js","src/CodingAssistant.Web/tests/browser/fixtures/calculation-journal/working.html","src/CodingAssistant.Web/tests/browser/fixtures/calculation-journal/working.js","tools/m4/calculation_journal_contract.mjs","tools/m4/generated_zip_smoke_guest.mjs","tools/m4/profiles/m47-fixed-chromium-chroot-seccomp.json","tools/m4/profiles/playwright-chromium-seccomp.json","tools/m4/smoke_generated_zip.mjs","tools/m4/static_web_build_qualification.mjs","tools/m4/static_web_candidate_assets.mjs","tools/m4/static_web_candidate_build.mjs","tools/m4/static_web_candidate_driver.mjs","tools/m4/static_web_candidate_lifecycle.mjs","tools/m4/static_web_candidate_observations.mjs","tools/m4/static_web_candidate_server.mjs","tools/m4/static_web_evaluation_admission.mjs","tools/m4/static_web_evaluation_candidate.mjs","tools/m4/static_web_evaluation_host_bridge.mjs","tools/m4/static_web_pilot_attempt_journal.mjs","tools/m4/static_web_pilot_browser_boundary.mjs","tools/m4/static_web_pilot_policy.mjs","tools/m4/windows_aet8_pipe_driver.mjs","tools/m4/windows_aet8_trusted_guest.mjs","tools/m4/windows_aet8_trusted_qualification.mjs","tools/m4/windows_calculator_evaluator_guest.mjs","tools/m4/windows_calculator_evaluator_qualification.mjs","tools/m4/windows_calculator_harness.js","tools/m4/windows_candidate_fixture_guest.mjs","tools/m4/windows_candidate_fixture_qualification.mjs","tools/m4/windows_chromium_sandbox_guest.mjs","tools/m4/windows_chromium_sandbox_qualification.mjs","tools/m4/windows_docker_guest.mjs","tools/m4/windows_docker_qualification.mjs","tools/m4/windows_pilot_browser_boundary_guest.mjs","tools/m4/windows_pilot_interruption_qualification.mjs","tools/m4/windows_pilot_lifecycle_qualification.mjs","tools/m4/windows_pinned_dispatch_qualification.mjs"]);
+export function dispatchClosure(){
+  const root=fileURLToPath(new URL('../../',import.meta.url));
+  const pins={};
+  for(const relative of pinPaths){
+    const file=path.join(root,relative);
+    const st=fs.lstatSync(file);
+    if(!st.isFile()||st.isSymbolicLink()||st.size>1024*1024||
+      fs.realpathSync(file).toLowerCase()!==path.resolve(file).toLowerCase())
+      fail('PILOT_DISPATCH_MODULE_INVALID');
+    pins[relative]=sha(fs.readFileSync(file));
+  }
+  return Object.freeze({pins:Object.freeze(pins),sha256:sha(JSON.stringify(pins))});
+}
+export function requirePinnedInterruptionIdentity(item,policy,bundle,engineId){
+  if(!item||item.identity.engineId!==engineId||item.identity.policySha256!==policy.policySha256)
+    fail('PILOT_INTERRUPTION_POLICY_CHANGED');
+  const fixture=buildQualificationFixture('build-working',bundle,policy.policySha256,item.identity.attemptId);
+  const expected={...policy.identity(item.identity.attemptId),engineId,
+    candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256};
+  if(JSON.stringify(item.identity)!==JSON.stringify(expected))
+    fail('PILOT_INTERRUPTION_POLICY_CHANGED');
+}
+export function bindPinnedInterruptedArchive(root,attemptId,mode,policy,bundle,engineId){
+  if(!['cancel','crash'].includes(mode))fail('PILOT_INTERRUPTION_MODE_INVALID');
+  const archive=readArchivedPilotAttempt(root,attemptId);
+  requirePinnedInterruptionIdentity(archive,policy,bundle,engineId);
+  if(JSON.stringify(archive.events.map(x=>x.stage))!==JSON.stringify(stages)||
+    archive.recoveryClaimed!==(mode==='crash'))fail('PILOT_INTERRUPTION_ARCHIVE_INVALID');
+  return sha(JSON.stringify(archive));
+}
 function readArchive(root,id){
   const file=path.join(root,'attempt-'+id,'events.jsonl');
   const stat=fs.lstatSync(file);
@@ -57,14 +100,15 @@ function confirmAbsent(item,host,root){
     readArchive(root,item.identity.attemptId)!==item.current.containerId)
     fail('PILOT_INTERRUPTION_CLEANUP_UNCONFIRMED');
 }
-async function supervise(mode,{root,host,docker,env}){
+async function supervise(mode,{root,host,docker,env,pinned=null}){
   const report={mode,attemptId:null,observedRunning:false,interruptionRequested:false,
     childExitConfirmed:false,containerRemoved:false,cleanupDebt:false,reason:null};
   let child,item,exit,spawnError=false,initialOwner=false;
   try{
     if(readPilotAttempt(root)||host.list('label=codingassistant.static-web-pilot-qualification')!=='')
       fail('PILOT_PRIOR_CLEANUP_REQUIRED');
-    child=spawn(process.execPath,[script,'--run'],{env,stdio:'ignore',windowsHide:true,shell:false});
+    child=spawn(process.execPath,pinned?[pinnedScript,'--run-fixed-control']:[script,'--run'],
+      {env,stdio:'ignore',windowsHide:true,shell:false});
     child.once('error',()=>{spawnError=true;});
     child.once('exit',(code,signal)=>{exit={code,signal};});
     const deadline=Date.now()+60000;
@@ -90,6 +134,7 @@ async function supervise(mode,{root,host,docker,env}){
       await sleep(150);
     }
     if(!item||exit||spawnError)fail('PILOT_RUNNING_CONTROL_NOT_OBSERVED');
+    if(pinned)requirePinnedInterruptionIdentity(item,pinned.policy,pinned.bundle,pinned.engineId);
     report.attemptId=item.identity.attemptId;report.observedRunning=true;
     if(mode==='cancel')cancelObservedPilot(item,host);
     else if(mode==='crash'){
@@ -111,7 +156,9 @@ async function supervise(mode,{root,host,docker,env}){
       if(recovered.status!=='PILOT_INTERRUPTED_ATTEMPT_RECONCILED'||!recovered.containerRemoved)
         fail(recovered.reason??'PILOT_RECOVERY_FAILED');
     }
-    confirmAbsent(item,host,root);report.containerRemoved=true;
+    confirmAbsent(item,host,root);
+    if(pinned)report.archiveSha256=bindPinnedInterruptedArchive(root,item.identity.attemptId,mode,pinned.policy,pinned.bundle,pinned.engineId);
+    report.containerRemoved=true;
   }catch(e){report.reason=safeError(e);}
   finally{
     // On a diagnostic failure, stop our own still-active child, but do
@@ -156,12 +203,45 @@ export async function qualifyPilotInterruptions({platform=process.platform,env=p
   }catch(e){result.reason=safeError(e);}
   return result;
 }
+export async function qualifyPinnedInterruptions({env=process.env}={}){
+  const result={schemaVersion:1,stage:'AET-8-pinned-dispatch-interruption-controls',status:'BLOCKED',
+    recordedAtUtc:new Date().toISOString(),engineId:null,policySha256:null,adapterSha256:null,
+    nodeSha256:env.CA_PILOT_NODE_SHA256??null,dockerSha256:env.CA_PILOT_DOCKER_SHA256??null,
+    moduleClosureSha256:null,controls:{},generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,
+    runtimeQualified:false,generatedArtifactVerified:false,reason:null};
+  if(process.platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT){result.reason='PILOT_LOCAL_WINDOWS_ONLY';return result;}
+  try{
+    // Refuse injected Node preload/loader options in the diagnostic
+    // child. Current binary pins are rechecked on every Docker command.
+    if(Object.keys(env).some(k=>/^NODE_|^OPENSSL_(CONF|MODULES)$/i.test(k)&&env[k]))
+      fail('PILOT_DISPATCH_ENVIRONMENT_OVERRIDE');
+    const docker=pinnedDispatchDocker(env),host=pilotHostTools(docker),root=pilotLocalRoot(env);
+    const closure=dispatchClosure(),engineId=host.engine(),image=readLocalImage({env,docker});
+    const bundle=buildQualifiedCandidateBundle(),policy=preparePilotPolicy(image,bundle.adapterSha256,bundle.evaluatorSha256);
+    Object.assign(result,{engineId,policySha256:policy.policySha256,adapterSha256:bundle.adapterSha256,moduleClosureSha256:closure.sha256});
+    for(const mode of ['cancel','crash']){
+      if(dispatchClosure().sha256!==closure.sha256||host.engine()!==engineId)fail('PILOT_DISPATCH_HOST_CHANGED');
+      const report=await supervise(mode,{root,host,docker,env,pinned:{bundle,policy,engineId}});
+      result.controls[mode]=report;
+      if(report.reason||!report.observedRunning||!report.interruptionRequested||
+        !report.childExitConfirmed||!report.containerRemoved||report.cleanupDebt||
+        !/^[a-f0-9]{64}$/.test(report.archiveSha256??''))
+        fail(report.reason??'PILOT_INTERRUPTION_CHECKS_INCOMPLETE');
+    }
+    if(result.controls.cancel.attemptId===result.controls.crash.attemptId||
+      dispatchClosure().sha256!==closure.sha256||host.engine()!==engineId||
+      readPilotAttempt(root)!==null||host.list('label=codingassistant.static-web-pilot-qualification')!=='')
+      fail('PILOT_DISPATCH_HOST_CHANGED');
+    result.status='PILOT_PINNED_INTERRUPTION_CONTROLS_PASS';
+  }catch(e){result.reason=safeError(e);}
+  return result;
+}
 export async function main(argv=process.argv.slice(2)){
   if(argv.length===0){console.log('AET-8 PILOT_REAL_INTERRUPTION_CONTROLS: NOT_RUN');return 0;}
-  if(argv.length!==1||argv[0]!=='--run'){
-    console.error('Only --run for fixed-source cancellation and crash controls supported');return 2;
+  if(argv.length!==1||!['--run','--run-pinned'].includes(argv[0])){
+    console.error('Only --run or --run-pinned for fixed-source cancellation and crash controls supported');return 2;
   }
-  const report=await qualifyPilotInterruptions();
+  const report=argv[0]==='--run-pinned'?await qualifyPinnedInterruptions():await qualifyPilotInterruptions();
   for(const [name,c] of Object.entries(report.controls))
     console.log('  '+name+': running observed: '+c.observedRunning+'; interrupted: '+c.interruptionRequested+
       '; owner exit confirmed: '+c.childExitConfirmed+'; removed: '+c.containerRemoved+'; cleanup debt: '+c.cleanupDebt);
@@ -169,7 +249,7 @@ export async function main(argv=process.argv.slice(2)){
   if(report.reason)console.log('  blocker: '+report.reason);
   console.log('  generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED');
   console.log('Evidence: '+writePrivateEvidence(report));
-  return report.status==='PILOT_REAL_INTERRUPTION_CONTROLS_PASS'?0:2;
+  return ['PILOT_REAL_INTERRUPTION_CONTROLS_PASS','PILOT_PINNED_INTERRUPTION_CONTROLS_PASS'].includes(report.status)?0:2;
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))
   process.exitCode=await main();

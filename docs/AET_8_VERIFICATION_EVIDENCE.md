@@ -739,3 +739,45 @@ node tools/m4/windows_pinned_dispatch_qualification.mjs --run-fixed-control
 ~~~
 Expected AET-8 WINDOWS_PILOT_PINNED_DISPATCH_PASS, audited true,
 removed true, replay blocked true, cleanup debt false.
+
+
+### Owner-reported pinned dispatch PASS and actual pinned interruption controls
+
+At `e71ba97` the owner reported AET-8 WINDOWS_PILOT_PINNED_DISPATCH_PASS,
+audited/removal/replay true, no cleanup debt, private receipt
+`windows-static-web-559e3505e708.json`. This is reported evidence,
+not retrospective executable or module attestation.
+
+The separate `--run-pinned` interruption mode supervises the exact
+pinned fixed dispatcher with the build-qualified adapter. It verifies
+the current repository module closure before and after each control,
+requires the exact frozen fixture identity, policy and engine before
+signaling, and binds the complete archived interruption sequence and
+recovery claim. Both owner and Docker executable pins remain explicit.
+The previous fixed controls and guest templates are unchanged.
+Only a frozen reference is launched. Crash recovery confirms owner exit
+and container removal, not Windows orphan Docker client process exit;
+same-account races and production admission integration remain outside
+this qualification. No execution gate is opened.
+
+~~~powershell
+node tools/m4/windows_pilot_interruption_qualification.mjs --run-pinned
+~~~
+
+Expected AET-8 WINDOWS_PILOT_PINNED_INTERRUPTION_CONTROLS_PASS, both
+controls running observed/interrupted/owner exit/removal true, no debt.
+Use the same CA_PILOT_NODE_SHA256, CA_PILOT_DOCKER_EXE and
+CA_PILOT_DOCKER_SHA256 values as the pinned dispatcher control.
+
+
+The separate read-only `--inspect-pinned-dispatch` command accepts
+exactly seven receipt names in order (working, negatives, original
+interruptions, renderer boundary, build, pinned dispatcher, pinned
+interruptions). It validates all fourteen distinct archives and current
+binary/module identities and recomputes the positive observation and
+transport hashes. It preserves earlier evidence digests. This command
+is diagnostic only; the .NET proposal inspector still accepts four or
+five receipt names. No historical module provenance is inferred for
+the earlier positive dispatcher run. The new closure excludes planning
+and evidence-only entrypoints so their changes do not invalidate the
+pinned interruption control.
