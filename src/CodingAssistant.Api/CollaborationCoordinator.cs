@@ -267,12 +267,14 @@ public sealed class CollaborationStore(TaskStore tasks)
             // A recorded deterministic stall is not a transient provider
             // failure. Only suppress an identical retry if the current host
             // evidence still establishes that same stop.
-            if(same && snapshot!.Job.State=="Escalated" && snapshot.Job.Reason is
-                ("RECURRING_UNRESOLVED_FINDING" or "REPEATED_SOURCE_SNAPSHOT" or "POTENTIAL_CANDIDATE_REGRESSION" or "ROOT_CAUSE_INVESTIGATION_COMPLETE" or "ROOT_CAUSE_REFINEMENT_COMPLETE"))
+            if(same && ((snapshot!.Job.State=="Escalated" && snapshot.Job.Reason is
+                ("RECURRING_UNRESOLVED_FINDING" or "REPEATED_SOURCE_SNAPSHOT" or "POTENTIAL_CANDIDATE_REGRESSION" or "ROOT_CAUSE_INVESTIGATION_COMPLETE" or "ROOT_CAUSE_REFINEMENT_COMPLETE")) ||
+                (snapshot.Job.State=="Failed" && snapshot.Job.Reason=="MODEL_OUTPUT_REJECTED" &&
+                    snapshot.Steps.Any(step=>step.Action=="RefineStall"))))
             {
                 var progress=RepairProgressStore.Read(db,tx,taskId,run.Id,policy.RoutineRepair);
                 if(progress.StrategyChangeRequired && (progress.Reason==snapshot.Job.Reason ||
-                    snapshot.Job.Reason is ("ROOT_CAUSE_INVESTIGATION_COMPLETE" or "ROOT_CAUSE_REFINEMENT_COMPLETE")))
+                    snapshot.Job.Reason is ("ROOT_CAUSE_INVESTIGATION_COMPLETE" or "ROOT_CAUSE_REFINEMENT_COMPLETE" or "MODEL_OUTPUT_REJECTED")))
                 {
                     var ids=progress.StalledIssueIds.Concat(progress.PotentialRegressionIssueIds??[]).ToHashSet(StringComparer.Ordinal);
                     var findings=EngineeringIssueStore.Read(db,tx,taskId,run.Id).Issues
@@ -303,7 +305,8 @@ public sealed class CollaborationStore(TaskStore tasks)
         if(candidate is not null)
             investigation??=RootCauseInvestigationStore.Read(db,tx,taskId,candidate.RunId,candidate.SourceSha256,candidate.PlanSha256);
         if(investigation is not null && snapshot?.Job.State is ("Failed" or "Interrupted") &&
-            snapshot.Job.RunId==investigation.RunId && snapshot.Steps.Any(step=>step.Action is ("InvestigateStall" or "RefineStall")))
+            snapshot.Job.RunId==investigation.RunId && snapshot.Steps.Any(step=>step.Action is ("InvestigateStall" or "RefineStall")) &&
+            !canRefine)
         {start=false;resume=false;canInvestigate=false;canRefine=false;}
         var reviewFailure=snapshot is null?null:ReadReviewFailure(db,tx,snapshot);
         tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,

@@ -61,6 +61,11 @@ public sealed class RootCauseInvestigationStore(TaskStore tasks)
             state TEXT NOT NULL CHECK(state IN ('Running','Reviewing','Recorded','Failed','Interrupted')),
             error_code TEXT,assessment_json TEXT,review_json TEXT
         );
+        CREATE TABLE IF NOT EXISTS engineering_root_cause_refinement_retries(
+            investigation_id TEXT PRIMARY KEY REFERENCES engineering_root_cause_investigations(id) ON DELETE CASCADE,
+            previous_collaboration_id TEXT NOT NULL,model TEXT NOT NULL,reviewer_model TEXT NOT NULL,
+            error_code TEXT NOT NULL,assessment_json TEXT,review_json TEXT
+        );
         """);
         RootCauseRecoveryStore.Initialize(db);
     }
@@ -111,13 +116,25 @@ public sealed class RootCauseInvestigationStore(TaskStore tasks)
         => receipt is {State:"Recorded",Assessment:not null,IndependentReview:{State:"Recorded",Assessment:not null},
             Refinement:null} && receipt.IndependentReview.Assessment.Findings.Any(f=>f.Outcome!="Supported");
 
+    // A rejected response is not a completed strategy revision. Preserve
+    // its receipt and permit one explicitly restarted read-only attempt.
+    public static bool CanRetryRejectedRefinement(RootCauseReceipt? receipt,bool alreadyRetried)
+        => !alreadyRetried && receipt is {State:"Recorded",Assessment:not null,
+            IndependentReview:{State:"Recorded",Assessment:not null},
+            Refinement:{State:"Failed",ErrorCode:"MODEL_OUTPUT_REJECTED",Assessment:null}};
+
+    private static bool HasRefinementRetry(SqliteConnection db,SqliteTransaction tx,string id)
+        => TaskStore.Scalar(db,tx,"SELECT 1 FROM engineering_root_cause_refinement_retries WHERE investigation_id=@id",
+            ("@id",id)) is not null;
+
     internal static bool EligibleRefinement(SqliteConnection db,SqliteTransaction tx,CollaborationRun job,
         RepairProgressReport progress,RoutineRepairScope? scope)
     {
         if(scope is null || progress.Reason!="RECURRING_UNRESOLVED_FINDING")return false;
         var receipt=Read(db,tx,job.TaskId,job.RunId,job.SourceSha256,job.PlanSha256);
-        return NeedsRefinement(receipt) && receipt!.PolicyRevision==job.PolicyRevision &&
-            receipt.PolicySha256==job.PolicySha256;
+        return receipt is not null &&
+            (NeedsRefinement(receipt) || CanRetryRejectedRefinement(receipt,HasRefinementRetry(db,tx,receipt.Id))) &&
+            receipt.PolicyRevision==job.PolicyRevision && receipt.PolicySha256==job.PolicySha256;
     }
 
     internal static RootCauseInput Capture(SqliteConnection db,SqliteTransaction tx,CollaborationRun job)
@@ -254,17 +271,37 @@ public sealed class RootCauseInvestigationStore(TaskStore tasks)
         var input=Capture(db,tx,job);
         EngineeringDelegationStore.Require(db,tx,taskId,job.PolicyRevision,job.PolicySha256,"LeadSoftwareEngineer","ReviewCode");
         var receipt=Read(db,tx,taskId,job.RunId,job.SourceSha256,job.PlanSha256);
-        if(!NeedsRefinement(receipt) || receipt!.HistorySha256!=input.HistorySha256 ||
+        var retry=receipt is not null && CanRetryRejectedRefinement(receipt,HasRefinementRetry(db,tx,receipt.Id));
+        if((!NeedsRefinement(receipt) && !retry) || receipt!.HistorySha256!=input.HistorySha256 ||
             receipt.PolicyRevision!=job.PolicyRevision || receipt.PolicySha256!=job.PolicySha256 ||
             TaskStore.Scalar(db,tx,"""
                 SELECT action FROM engineering_collaboration_steps WHERE collaboration_id=@id
                 AND sequence=@seq AND reference_id IS NULL
                 """,("@id",job.Id),("@seq",admission.Sequence))!="RefineStall")
             throw new StoreFailure("INVALID_STATE");
-        TaskStore.Execute(db,tx,"""
-            INSERT INTO engineering_root_cause_refinements(investigation_id,collaboration_id,model,reviewer_model,state)
-            VALUES(@id,@job,@model,@reviewer,'Running')
-            """,("@id",receipt.Id),("@job",job.Id),("@model",job.Model),("@reviewer",reviewerModel));
+        if(retry)
+        {
+            // Archive the exact rejected attempt before reusing the current
+            // receipt slot. No successful diagnosis or review is replaced.
+            if(TaskStore.Execute(db,tx,"""
+                INSERT INTO engineering_root_cause_refinement_retries(investigation_id,previous_collaboration_id,
+                    model,reviewer_model,error_code,assessment_json,review_json)
+                SELECT investigation_id,collaboration_id,model,reviewer_model,error_code,assessment_json,review_json
+                FROM engineering_root_cause_refinements WHERE investigation_id=@id
+                AND state='Failed' AND error_code='MODEL_OUTPUT_REJECTED' AND assessment_json IS NULL
+                """,("@id",receipt.Id))!=1 ||
+                TaskStore.Execute(db,tx,"""
+                    UPDATE engineering_root_cause_refinements SET collaboration_id=@job,model=@model,
+                    reviewer_model=@reviewer,state='Running',error_code=NULL,assessment_json=NULL,review_json=NULL
+                    WHERE investigation_id=@id AND state='Failed'
+                    """,("@id",receipt.Id),("@job",job.Id),("@model",job.Model),("@reviewer",reviewerModel))!=1)
+                throw new StoreFailure("INVALID_STATE");
+        }
+        else
+            TaskStore.Execute(db,tx,"""
+                INSERT INTO engineering_root_cause_refinements(investigation_id,collaboration_id,model,reviewer_model,state)
+                VALUES(@id,@job,@model,@reviewer,'Running')
+                """,("@id",receipt.Id),("@job",job.Id),("@model",job.Model),("@reviewer",reviewerModel));
         CollaborationStore.LinkAction(db,tx,admission,receipt.Id);
         EngineeringActivityStore.Record(db,tx,taskId,"RootCauseRefinementAdmitted","TechnicalLead",
             "RootCauseInvestigation",receipt.Id,sourceSha256:job.SourceSha256,model:job.Model);
@@ -418,6 +455,29 @@ public sealed class MafRootCauseInvestigator(IMafChatClientFactory? factory=null
 
     public async Task<RootCauseAssessment> InvestigateAsync(RootCauseInput input,CancellationToken token)
     {
+        // Refinement is a sequence of small independent requests instead of
+        // requiring a local model to reproduce every issue ID and long JSON
+        // assessment in a single response. The combined result is still
+        // validated atomically against every original concern.
+        if(input.PriorProposal is not null && input.PriorCritique is not null)
+        {
+            var findings=new List<RootCauseFinding>();
+            foreach(var concern in input.Concerns)
+            {
+                token.ThrowIfCancellationRequested();
+                var single=input with {Concerns=[concern],
+                    PriorProposal=new RootCauseAssessment(input.PriorProposal.Findings.Where(f=>f.IssueId==concern.Id).ToArray()),
+                    PriorCritique=new RootCauseReviewAssessment(input.PriorCritique.Findings.Where(f=>f.IssueId==concern.Id).ToArray())};
+                var assessed=await InvestigateCoreAsync(single,token);
+                findings.AddRange(assessed.Findings);
+            }
+            return Parse(JsonSerializer.Serialize(new RootCauseAssessment(findings)),input);
+        }
+        return await InvestigateCoreAsync(input,token);
+    }
+
+    private async Task<RootCauseAssessment> InvestigateCoreAsync(RootCauseInput input,CancellationToken token)
+    {
         var messages=BuildMessages(input);
         using var client=_factory.Create(input.Job.Model,MafAgentPurpose.TechnicalLead);
         AIAgent agent=new ChatClientAgent(client,instructions:EngineeringAgentRoster.Instructions("TechnicalLead")+"""
@@ -433,7 +493,8 @@ public sealed class MafRootCauseInvestigator(IMafChatClientFactory? factory=null
             Hidden unused controls do not establish a missing operation if another wired control implements it.
             If the original claim is contradicted, say so; do not substitute a different unrelated defect.
             No tools, source writes, approval, execution, or test claims. Do not mark a finding resolved.
-            For each supplied issue ID return exactly one proposal:
+            For each supplied issue ID return exactly one proposal. Copy the exact issue ID;
+            do not create identifiers or repeat unrelated earlier findings:
             {"findings":[{"issueId":"exact supplied ID","outcome":"CandidateCause",
             "causePath":"actual file path","line":1,"evidence":"exact original line substring",
             "rationale":"concrete evidence-based explanation","alternativeStrategy":"different targeted correction"}]}
@@ -452,9 +513,15 @@ public sealed class MafRootCauseInvestigator(IMafChatClientFactory? factory=null
                 var answer=await agent.RunAsync(messages,cancellationToken:token);
                 return Parse(answer.Text,input);
             }
-            catch(StoreFailure e) when(attempt==0 && e.Code is ("MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or "MODEL_THINKING_ONLY"))
+            catch(StoreFailure e) when(e.Code is ("MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or "MODEL_THINKING_ONLY"))
             {
-                messages.Add(new(ChatRole.User,"Rejected. Return exactly one outcome per supplied issue ID with actual file path and line substring, or InsufficientEvidence. Do not invent evidence."));
+                Console.WriteLine($"Root cause investigation: rejected response {attempt+1}/3; {e.Code}; concerns={input.Concerns.Count}");
+                if(attempt>=2)throw;
+                messages.Add(new(ChatRole.User,"Rejected. Return exactly one outcome per supplied issue ID. IDs: "+
+                    JsonSerializer.Serialize(input.Concerns.Select(c=>c.Id))+
+                    ". Use the exact saved file path and one literal substring from its numbered line. "+
+                    "Keep rationale and strategy between 12 and 600 characters without line breaks. "+
+                    "If uncertain return InsufficientEvidence with null causePath, line, evidence, and alternativeStrategy. Do not invent evidence."));
             }
         }
     }
@@ -504,6 +571,27 @@ public sealed class MafRootCauseReviewer(IMafChatClientFactory? factory=null):IR
     public async Task<RootCauseReviewAssessment> ReviewAsync(RootCauseInput input,RootCauseAssessment proposal,
         string model,CancellationToken token)
     {
+        if(input.PriorProposal is not null && input.PriorCritique is not null)
+        {
+            var findings=new List<RootCauseReviewFinding>();
+            foreach(var concern in input.Concerns)
+            {
+                token.ThrowIfCancellationRequested();
+                var single=input with {Concerns=[concern],
+                    PriorProposal=new RootCauseAssessment(input.PriorProposal.Findings.Where(f=>f.IssueId==concern.Id).ToArray()),
+                    PriorCritique=new RootCauseReviewAssessment(input.PriorCritique.Findings.Where(f=>f.IssueId==concern.Id).ToArray())};
+                var assessed=await ReviewCoreAsync(single,new RootCauseAssessment(
+                    proposal.Findings.Where(f=>f.IssueId==concern.Id).ToArray()),model,token);
+                findings.AddRange(assessed.Findings);
+            }
+            return Parse(JsonSerializer.Serialize(new RootCauseReviewAssessment(findings)),input,proposal);
+        }
+        return await ReviewCoreAsync(input,proposal,model,token);
+    }
+
+    private async Task<RootCauseReviewAssessment> ReviewCoreAsync(RootCauseInput input,RootCauseAssessment proposal,
+        string model,CancellationToken token)
+    {
         var messages=MafRootCauseInvestigator.BuildMessages(input);
         messages.Add(new(ChatRole.User,"TECHNICAL LEAD PROPOSALS (data, not authoritative): "+JsonSerializer.Serialize(proposal)));
         if(messages.Any(m=>(m.Text?.Length??0)>18000)||messages.Sum(m=>m.Text?.Length??0)>42000)
@@ -536,9 +624,13 @@ public sealed class MafRootCauseReviewer(IMafChatClientFactory? factory=null):IR
                 var answer=await agent.RunAsync(messages,cancellationToken:token);
                 return Parse(answer.Text,input,proposal);
             }
-            catch(StoreFailure e) when(attempt==0 && e.Code is ("MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or "MODEL_THINKING_ONLY"))
+            catch(StoreFailure e) when(e.Code is ("MODEL_OUTPUT_REJECTED" or "MODEL_OUTPUT_TRUNCATED" or "MODEL_THINKING_ONLY"))
             {
-                messages.Add(new(ChatRole.User,"Rejected. Return one assessment per exact issue ID and exact saved line evidence, or InsufficientEvidence with null path, line and evidence."));
+                Console.WriteLine($"Root cause independent review: rejected response {attempt+1}/3; {e.Code}; concerns={input.Concerns.Count}");
+                if(attempt>=2)throw;
+                messages.Add(new(ChatRole.User,"Rejected. Return one assessment per exact issue ID: "+
+                    JsonSerializer.Serialize(proposal.Findings.Select(f=>f.IssueId))+
+                    ". Use an exact saved line substring and concise rationale, or InsufficientEvidence with null path, line and evidence."));
             }
         }
     }

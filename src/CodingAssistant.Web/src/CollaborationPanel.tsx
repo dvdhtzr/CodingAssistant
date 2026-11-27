@@ -344,7 +344,7 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
       {' '}{preview.recoveryTarget.strategy} · existing source-only approval and budget apply.</p>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
       onClick={()=>void act('start')}>{preview.recoveryTarget?'Continue with alternative repair':
-        preview.canRefineStall?'Reassess disputed findings':
+        preview.canRefineStall?(preview.rootCauseInvestigation?.refinement?.state==='Failed'?'Retry rejected diagnosis':'Reassess disputed findings'):
         preview.canInvestigateStall?'Investigate recurring findings':
         job?.state==='Escalated'||job?.state==='Failed'?'Retry team coordination':'Start team coordination'}</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}

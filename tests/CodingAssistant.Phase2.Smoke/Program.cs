@@ -4846,6 +4846,18 @@ try
         [rootCauseReceiptFixture,groundedRecoveryInput with {HistorySha256=new string('c',64)}])!).Count==0,
         "changed repair history invalidates recovery evidence");
 
+    var rejectedRootRevision=rootCauseDisputedFixture with {
+        Refinement=new RootCauseRefinementReceipt("qwen3.5:4b","qwen3.5:4b","Failed","MODEL_OUTPUT_REJECTED",null,null)};
+    Check(RootCauseInvestigationStore.CanRetryRejectedRefinement(rejectedRootRevision,false) &&
+        !RootCauseInvestigationStore.CanRetryRejectedRefinement(rejectedRootRevision,true),
+        "one explicit retry of rejected diagnosis preserves bounded strategy attempts");
+    Check(!RootCauseInvestigationStore.CanRetryRejectedRefinement(rejectedRootRevision with {
+        Refinement=rejectedRootRevision.Refinement! with {Assessment=rootCauseProposal}},false),
+        "a saved revised diagnosis cannot be replaced by rejected-response retry");
+    Check(!RootCauseInvestigationStore.CanRetryRejectedRefinement(rejectedRootRevision with {
+        Refinement=rejectedRootRevision.Refinement! with {State="Interrupted",ErrorCode="OWNER_CANCELLED"}},false),
+        "owner cancellation is not a malformed-response retry");
+
     // Recovery is driven by evidence, not a lifetime three-repair cap.
     var aetProgressAttempts=Enumerable.Range(0,5).Select(i=>new RepairProgressAttempt(
         "fixture-"+i,"run-"+i,"run-"+(i+1),"hash-"+i,"hash-"+(i+1),"QaReviewed",
