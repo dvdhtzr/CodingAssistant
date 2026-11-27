@@ -685,3 +685,25 @@ The real report is historical evidence, not runtime promotion,
 retrospective host attestation or executable consent. Actual one-use
 admission, pinned execution ownership and a distinct owner authorization
 remain outstanding.
+
+
+### Durable single-attempt admission
+
+The owner reported M2 LOCAL_CONTROL_PLANE_SMOKE_PASS (439 assertions)
+after the synthetic attempt-ID correction at `eb0d43a`. The preceding
+conditional test gate reached the API smoke; the summary alone does
+not identify the selected receipt count.
+
+A separate SQLite admission row reserves one exact attempt per evidence-bound
+proposal and makes attempt IDs unique across proposals. Consent identity
+includes the entire transport descriptor, proposal and pilot binding.
+Preparation/retrieval recheck current reviewed source, contract and
+build-qualified evidence. Parent revocation and startup recovery
+transactionally retire unconsumed admissions. Atomic conditional
+Prepared -> Authorized -> Consumed transitions are implemented but remain
+unreachable in production because the executable policy gate is closed.
+No synthetic bypass, executable permission, public endpoint or dispatch.
+The tests exercise rejection, identity binding, reservation replay,
+revocation and recovery, not successful execution consumption. A future
+qualified dispatcher must reproduce the exact attempt and fresh evidence
+and coordinate cancellation/cleanup before the gate can be opened.

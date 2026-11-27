@@ -12,9 +12,20 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
     internal const string ScriptPath="tools/m4/static_web_candidate_transport_bridge.mjs";
     private static readonly Regex Receipt=new("^windows-static-web-[0-9a-f]{12}\\.json\\z",RegexOptions.CultureInvariant);
     private static readonly Regex Digest=new("^[0-9a-f]{64}\\z",RegexOptions.CultureInvariant);
-    internal async Task<JsonElement> PrepareAsync(string taskId,string proposalId,string ownerDataDirectory,
+    internal async Task<PilotExecutionAdmission> StageAsync(string taskId,string proposalId,string ownerDataDirectory,
         string trustedReceiptName,CancellationToken token)
     {
+        var admissions=new PilotExecutionAdmissionStore(tasks);
+        var prior=admissions.FindForProposal(taskId,proposalId);
+        if(prior is not null&&!prior.Current)throw new StoreFailure("PILOT_ADMISSION_NOT_CURRENT");
+        var descriptor=await PrepareAsync(taskId,proposalId,ownerDataDirectory,trustedReceiptName,token,prior?.AttemptId);
+        token.ThrowIfCancellationRequested();
+        return admissions.Stage(taskId,proposalId,descriptor);
+    }
+    internal async Task<JsonElement> PrepareAsync(string taskId,string proposalId,string ownerDataDirectory,
+        string trustedReceiptName,CancellationToken token,string? attemptId=null)
+    {
+        if(attemptId is not null)ExecutionStore.CheckId(attemptId);
         if(!Receipt.IsMatch(trustedReceiptName))throw new StoreFailure("EVALUATION_RECEIPT_NAME_INVALID");
         if(!OperatingSystem.IsWindows())throw new StoreFailure("PILOT_LOCAL_WINDOWS_ONLY");
         token.ThrowIfCancellationRequested();
@@ -31,7 +42,7 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
         if(!evidence.TryGetProperty("buildQualification",out var build))
             throw new StoreFailure("PILOT_BUILD_EVIDENCE_REQUIRED");
         var selection=JsonSerializer.SerializeToElement(new {
-            attemptId=Guid.NewGuid().ToString("N"),
+            attemptId=attemptId??Guid.NewGuid().ToString("N"),
             admissionSha256=captured.Descriptor.GetProperty("admissionSha256").GetString(),
             candidateSha256=captured.Descriptor.GetProperty("candidateSha256").GetString(),
             archiveSha256=captured.Input.ArchiveSha256,

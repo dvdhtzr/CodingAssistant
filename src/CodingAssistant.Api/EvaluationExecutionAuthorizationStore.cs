@@ -13,7 +13,9 @@ public sealed record EvaluationExecutionProposal(string Id,string TaskId,string 
 
 public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
 {
-    internal static void Initialize(SqliteConnection db)=>TaskStore.Execute(db,null,"""
+    internal static void Initialize(SqliteConnection db)
+    {
+        TaskStore.Execute(db,null,"""
         CREATE TABLE IF NOT EXISTS evaluation_execution_proposals(
             id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             plan_review_id TEXT NOT NULL REFERENCES engineering_evaluation_plan_reviews(id) ON DELETE CASCADE,
@@ -27,6 +29,8 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
             binding_sha256 TEXT NOT NULL,binding_json TEXT NOT NULL
         );
         """);
+        PilotExecutionAdmissionStore.Initialize(db);
+    }
     private static string Sha(string value)=>Convert.ToHexStringLower(
         SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     private static (string Authorization,string Profile) Identity(SqliteConnection db,SqliteTransaction tx,
@@ -153,6 +157,12 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
         JsonElement Contract,JsonElement Binding) CaptureBoundTransport(string taskId,string id)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
+        var result=CaptureBoundTransport(db,tx,taskId,id);
+        tx.Commit();return result;
+    }
+    internal static (EvaluationExecutionProposal Proposal,EvaluationPlanningInput Input,JsonElement Descriptor,
+        JsonElement Contract,JsonElement Binding) CaptureBoundTransport(SqliteConnection db,SqliteTransaction tx,string taskId,string id)
+    {
         var item=Find(db,tx,taskId,id);
         if(item.PilotBindingSha256 is null||!Current(db,tx,item))
             throw new StoreFailure("PILOT_EXECUTION_BINDING_CHANGED");
@@ -163,7 +173,7 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
             ??throw new StoreFailure("PILOT_EXECUTION_BINDING_CHANGED");
         if(Sha(raw)!=item.PilotBindingSha256)throw new StoreFailure("PILOT_EXECUTION_BINDING_CHANGED");
         using var binding=JsonDocument.Parse(raw);
-        tx.Commit();return (item with {Current=true},input,descriptor,contract,binding.RootElement.Clone());
+        return (item with {Current=true},input,descriptor,contract,binding.RootElement.Clone());
     }
     public EvaluationExecutionProposal Get(string taskId,string id)
     {
@@ -181,6 +191,7 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
                 ("@now",DateTimeOffset.UtcNow.ToString("O")),("@id",id));
             item=item with {State="Revoked"};
         }
+        PilotExecutionAdmissionStore.RevokeProposal(db,tx,id);
         tx.Commit();return item with {Current=false};
     }
     // No owner prompt or worker dispatch calls this seam today. Even an exact
@@ -205,6 +216,7 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
         using var db=tasks.Open();using var tx=db.BeginTransaction();
         TaskStore.Execute(db,tx,"UPDATE evaluation_execution_proposals SET state='Interrupted',updated_utc=@now WHERE state='Proposed'",
             ("@now",DateTimeOffset.UtcNow.ToString("O")));
+        PilotExecutionAdmissionStore.Recover(db,tx);
         tx.Commit();
     }
 }

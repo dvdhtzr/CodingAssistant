@@ -5364,6 +5364,90 @@ try
         catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_POLICY_MISMATCH")
         {Check(true,"pilot evidence must match reviewed evaluator identity");}
     }
+    // Eleven-attempt structural fixture. Still no runtime grant.
+    var admissionPolicy=System.Text.Json.Nodes.JsonNode.Parse(pilotPolicyFixture.GetRawText())!.AsObject();
+    admissionPolicy["adapterSha256"]=new string('9',64);
+    var admissionPolicyHash=PilotHash(admissionPolicy.ToJsonString());
+    var admissionEvidence=System.Text.Json.Nodes.JsonNode.Parse(pilotEvidence.GetRawText())!.AsObject();
+    admissionEvidence["status"]="PILOT_BUILD_QUALIFIED_HISTORICAL_EVIDENCE_BOUND";
+    admissionEvidence["qualifiedEvidenceSha256"]=new string('8',64);
+    var admissionBuildFixture=JsonSerializer.SerializeToElement(new {
+        policySha256=admissionPolicyHash,policy=JsonSerializer.Deserialize<JsonElement>(admissionPolicy.ToJsonString()),
+        buildSha256=new string('7',64),receiptSha256=new string('6',64),
+        attempts=new[]{"build-working","build-broken","build-spoof","build-missing-asset","build-invalid-syntax"}
+            .Select((name,i)=>new {name,attempt=new {attemptId=(i+7).ToString("x32"),archiveSha256=new string('1',64),receiptSha256=new string('2',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt)
+    });
+    admissionEvidence["buildQualification"]=System.Text.Json.Nodes.JsonNode.Parse(admissionBuildFixture.GetRawText());
+    var admissionReceipts=pilotReceipts.Append("windows-static-web-555555555555.json").ToArray();
+    var admissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),admissionReceipts);
+    var admissionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,admissionBinding);
+    JsonElement AdmissionTransport(string attemptId,string transportHash)=>JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,status="CANDIDATE_TRANSPORT_PREPARED_ONLY",attemptId,candidateSha256=new string('a',64),
+        archiveSha256=evaluationInput.ArchiveSha256,evaluatorSha256=new string('b',64),adapterSha256=new string('9',64),
+        policySha256=admissionPolicyHash,admissionSha256=evaluationHash,completeEvidenceSha256=new string('8',64),
+        engineId="structural-fixture",sourceFingerprint=evaluationInput.Scope.SourceFingerprint,
+        assetCount=evaluationInput.Scope.Files.Count,payloadSha256=new string('3',64),transportSha256=transportHash,
+        transportBytes=2000,executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false
+    });
+    var admissionStore=new PilotExecutionAdmissionStore(tasks);
+    var admissionTransport=AdmissionTransport(new string('e',32),new string('4',64));
+    var preparedAdmission=admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport);
+    Check(preparedAdmission is {State:"Prepared",Current:true,ExecutionEnabled:false}&&
+        admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport).Id==preparedAdmission.Id,
+        "single attempt preparation is durable and idempotent");
+    Check(admissionStore.FindForProposal(taskBound.Id,admissionProposal.Id)?.AttemptId==preparedAdmission.AttemptId,
+        "transport preparation retry must reuse the original attempt");
+    try
+    {
+        admissionStore.Stage(taskBound.Id,admissionProposal.Id,AdmissionTransport(preparedAdmission.AttemptId,new string('9',64)));
+        Check(false,"changed transport cannot replace reserved attempt");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ALREADY_RESERVED")
+    {Check(true,"transport digest immutable across reservation retries");}
+    try
+    {
+        admissionStore.Stage(taskBound.Id,admissionProposal.Id,AdmissionTransport(new string('f',32),new string('5',64)));
+        Check(false,"second attempt cannot reserve same proposal");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ALREADY_RESERVED")
+    {Check(true,"single proposal cannot reserve second attempt");}
+    try
+    {
+        admissionStore.Authorize(taskBound.Id,preparedAdmission.Id,"AUTHORIZE EVALUATION "+admissionProposal.AuthorizationSha256);
+        Check(false,"proposal acknowledgement is not attempt consent");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_CONFIRMATION_REQUIRED")
+    {Check(true,"exact attempt consent challenge required");}
+    try
+    {
+        admissionStore.Authorize(taskBound.Id,preparedAdmission.Id,"AUTHORIZE PILOT "+preparedAdmission.ConsentSha256);
+        Check(false,"unqualified runtime must not authorize");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
+    {Check(true,"exact attempt consent still cannot bypass runtime gate");}
+    try
+    {
+        admissionStore.Consume(taskBound.Id,preparedAdmission.Id,admissionTransport);
+        Check(false,"prepared attempt cannot consume execution");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED")
+    {Check(true,"prepared attempt cannot consume execution");}
+    Check(admissionStore.Get(taskBound.Id,preparedAdmission.Id) is {State:"Prepared",Current:true,ExecutionEnabled:false},
+        "blocked authorization and consumption leave preparation unchanged");
+    var secondAdmissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('b',64),admissionReceipts);
+    var secondAdmissionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,secondAdmissionBinding);
+    try
+    {
+        admissionStore.Stage(taskBound.Id,secondAdmissionProposal.Id,admissionTransport);
+        Check(false,"attempt cannot be reused across proposals");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ATTEMPT_REUSED")
+    {Check(true,"attempt globally unique across proposals");}
+    var secondAdmission=admissionStore.Stage(taskBound.Id,secondAdmissionProposal.Id,AdmissionTransport(new string('f',32),new string('5',64)));
+    executionProposalStore.Revoke(taskBound.Id,secondAdmissionProposal.Id);
+    Check(admissionStore.Get(taskBound.Id,secondAdmission.Id) is {State:"Revoked",Current:false},
+        "parent proposal revocation atomically revokes prepared admission");
     var differentPins=PilotProposalBinding.Create(pilotEvidence,new string('b',64),pilotReceipts);
     var differentProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,differentPins);
     Check(differentProposal.AuthorizationSha256!=pilotBoundExecutionProposal.AuthorizationSha256,
@@ -5379,6 +5463,8 @@ try
         executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,differentPins).State=="Revoked",
         "evidence-bound revoked proposal cannot replay");
     executionProposalStore.Recover();
+    Check(admissionStore.Get(taskBound.Id,preparedAdmission.Id) is {State:"Interrupted",Current:false},
+        "restart interrupts unconsumed admission without replay");
     Check(executionProposalStore.Get(taskBound.Id,pilotBoundExecutionProposal.Id) is {State:"Interrupted",Current:false},
         "restart interrupts evidence-bound proposal");
     try
