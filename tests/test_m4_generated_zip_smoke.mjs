@@ -702,3 +702,78 @@ test('real candidate asset server serves trusted fixture bytes only over loopbac
     assert.equal(denied.status,404);await denied.text();
   }finally{await server.close();await server.close();}
 });
+
+import {fixedCandidateBundle,fixedCandidateFixture,parseFixedCandidateStream,qualifyFixedCandidate}
+  from '../tools/m4/windows_candidate_fixture_qualification.mjs';
+test('fixed candidate qualification bundles only reviewed modules and frozen fixture inputs',()=>{
+  const bundle=fixedCandidateBundle();
+  assert.equal(Object.keys(bundle.hashes).length,10);
+  for(const name of ['working','broken','spoof']){
+    const f=fixedCandidateFixture(name,bundle,'a'.repeat(64),'b'.repeat(32));
+    assert.match(f.source,/data:text\/javascript;base64,/);
+    assert.ok(!f.source.includes('__CA_FIXED_CANDIDATE_INPUT__'));
+    assert.equal(f.expected.adapterSha256,bundle.adapterSha256);
+    const encoded=f.source.match(/const INPUT='([^']+)'/)[1];
+    const request=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));
+    assert.equal(createCandidateAssets(request.payloadJson,request.binding).entryPath,'/index.html');
+    assert.deepEqual(request.expected,f.expected);
+  }
+  assert.throws(()=>fixedCandidateFixture('project.zip',bundle,'a'.repeat(64),'b'.repeat(32)),/SELECTION_INVALID/);
+});
+function fixedAdapterDocker({failCleanup=false,wrongNegative=false}={}){
+  const calls=[];let id=0,active=null;
+  const docker=(args,timeout,source)=>{
+    calls.push(args);
+    if(args[0]==='context'&&args[1]==='show')return {status:0,stdout:'desktop-linux'};
+    if(args[0]==='context')return {status:0,stdout:JSON.stringify({Endpoints:{docker:{Host:'npipe:////./pipe/dockerDesktopLinuxEngine'}}})};
+    if(args[0]==='info')return {status:0,stdout:JSON.stringify(info)};
+    if(args[0]==='image')return {status:0,stdout:JSON.stringify(meta)};
+    if(args[0]==='ps')return {status:0,stdout:active?'leftover':''};
+    if(args[0]==='run'){
+      const request=JSON.parse(Buffer.from(source.match(/const INPUT='([^']+)'/)[1],'base64').toString('utf8'));
+      const {report}=candidateObservationFixture();
+      Object.assign(report,request.expected);
+      report.cases=allCases(CALCULATION_CASES,id++===0||wrongNegative);
+      active=args[args.indexOf('--name')+1];
+      return {status:0,stdout:JSON.stringify({kind:'progress',stage:'COMPLETE'})+'\n'+JSON.stringify(report)};
+    }
+    if(args[0]==='container')return {status:0,stdout:JSON.stringify({'codingassistant.aet8':active})};
+    if(args[0]==='rm'){if(!failCleanup)active=null;return {status:0,stdout:''};}
+    throw Error('unexpected Docker command');
+  };
+  return {docker,calls};
+}
+test('fixed adapter qualification requires all three controls and confirmed cleanup without granting execution',()=>{
+  const f=fixedAdapterDocker();let i=0;
+  const result=qualifyFixedCandidate({platform:'win32',env:{},docker:f.docker,makeId:()=>String(++i).repeat(32)});
+  assert.equal(result.status,'FIXED_CANDIDATE_ADAPTER_PASS',result.reason);
+  assert.deepEqual(Object.values(result.fixtures).map(x=>x.observations.passed),[7,0,0]);
+  assert.ok(Object.values(result.fixtures).every(x=>x.containerRemoved));
+  assert.equal(result.runtimeQualified,false);
+  assert.equal(result.generatedSourceExecuted,false);
+  for(const args of f.calls.filter(x=>x[0]==='run')){
+    for(const required of ['--network=none','--read-only','--cap-drop=all','--pull=never','--user=1000:1000'])
+      assert.ok(args.includes(required));
+    assert.ok(!args.includes('--mount')&&!args.includes('--privileged')&&!args.includes('--no-sandbox'));
+    assert.equal(args.at(-1),'--run-fixed-candidate-fixture');
+  }
+});
+test('fixed adapter qualification stops on cleanup failure, unexpected negative or unsupported host',()=>{
+  for(const options of [{failCleanup:true},{wrongNegative:true}]){
+    const f=fixedAdapterDocker();let i=0;
+    const result=qualifyFixedCandidate({platform:'win32',env:{},docker:f.docker,makeId:()=>String(++i).repeat(32)});
+    assert.equal(result.status,'BLOCKED');
+    assert.equal(result.reason,options.failCleanup?'CONTAINER_CLEANUP_UNCONFIRMED':'FIXTURE_EXPECTATIONS_NOT_MET');
+    assert.equal(f.calls.filter(x=>x[0]==='run').length,options.failCleanup?1:2);
+  }
+  const f=fixedAdapterDocker();
+  assert.equal(qualifyFixedCandidate({platform:'linux',env:{},docker:f.docker}).status,'BLOCKED');
+  assert.equal(f.calls.length,0);
+});
+test('fixed adapter CLI is inert without explicit run and rejects arbitrary source arguments',()=>{
+  for(const args of [[],['--run','project.zip'],['--zip','project.zip']]){
+    const result=spawnSync(process.execPath,['tools/m4/windows_candidate_fixture_qualification.mjs',...args],{encoding:'utf8',timeout:5000});
+    assert.equal(result.status,args.length===0?0:2);
+    if(args.length===0)assert.match(result.stdout,/NOT_RUN/);
+  }
+});

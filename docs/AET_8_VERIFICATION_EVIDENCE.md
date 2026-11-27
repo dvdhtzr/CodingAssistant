@@ -322,3 +322,28 @@ test bytes on loopback and does not launch a browser. Real guest security,
 build and sandbox probes still require pinned integration and qualification;
 the composed lifecycle is not called by any host dispatcher or CLI.
 No new policy, execution grant or qualified runtime is established.
+
+
+### Fixed candidate-shaped adapter qualification (owner-local)
+
+The new fixed qualification command exercises the composed candidate
+adapter in separate disposable containers with the already-reviewed
+working calculator, inert broken HTML, and a frozen spoofing control
+(including a page-level DOM method override). The guest bundle includes
+only the explicit trusted module closure, uses the unchanged fixture-only
+Docker isolation options with a separate fixed guest entry flag, and reports exact adapter/evaluator/policy identities.
+Its synthetic fixture identities are not project approvals or ZIP
+admissions. The runner refuses arbitrary source input, remote Docker
+contexts, missing observations, unexpected negatives and uncertain
+cleanup. The previous qualified fixture files and runner are unchanged.
+
+After model-free tests pass, the owner may run:
+
+~~~powershell
+node tools/m4/windows_candidate_fixture_qualification.mjs --run
+~~~
+
+Expected FIXED_CANDIDATE_ADAPTER_PASS, working 7/7, broken and spoof 0/7
+(all cases completed), every container removed. This is a new trusted
+fixture compatibility check, NOT qualification for generated source.
+No policy expansion, executable grant, or runtime registry promotion.
