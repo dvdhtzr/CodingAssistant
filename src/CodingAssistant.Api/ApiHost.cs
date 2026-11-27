@@ -81,6 +81,7 @@ public static class ApiHost
         new InferenceLeaseStore(store).Recover();
         new SourceSmokeEvidenceStore(store).Recover();
         new EvaluationPlanReviewStore(store).Recover();
+        new BehavioralContractReviewStore(store).Recover();
         var roleModels = new AgentRoleModelSettings(store);
         roleModels.Initialize();
         var runs = new RunStore(store);

@@ -5211,8 +5211,34 @@ try
                 receiptSha256=new string('c',64),evaluatorSha256=new string('b',64)},
             mappings=evaluationInput.Criteria.Select(c=>new {criterionId=c.Id,criterionText=c.Text,cases=cases??evaluationCases})
         });
+    var behavioralStore=new BehavioralContractReviewStore(tasks);
+    var behavioralSelection=JsonSerializer.SerializeToElement(new {
+        contractId="calculation-journal-v1",planSha256=evaluationInput.Scope.PlanSha256,
+        specificationSha256=evaluationInput.Scope.SpecificationSha256,architectureSha256=evaluationInput.Scope.ArchitectureSha256,
+        mappings=evaluationInput.Criteria.Select(c=>new {criterionId=c.Id,criterionText=c.Text,cases=evaluationCases})
+    });
+    var behavioral=behavioralStore.Propose(taskBound.Id,aetSmokeRun.Id,behavioralSelection,new string('b',64));
+    Check(behavioral is {State:"Proposed",ExecutionEnabled:false} &&
+        behavioralStore.Propose(taskBound.Id,aetSmokeRun.Id,behavioralSelection,new string('b',64)).Id==behavioral.Id,
+        "semantic contract proposal is durable and idempotent");
+    try
+    {
+        behavioralStore.Review(taskBound.Id,aetSmokeRun.Id,behavioral.Id,"EXECUTE "+behavioral.ContractSha256);
+        Check(false,"semantic review is not execution authorization");
+    }
+    catch(StoreFailure ex)when(ex.Code=="BEHAVIORAL_CONTRACT_CONFIRMATION_REQUIRED")
+    {Check(true,"semantic review requires exact separate acknowledgement");}
     var evaluationHash=new string('d',64);
     var evaluationPreview=EvaluationPreview(evaluationHash,evaluationInput.ArchiveSha256);
+    try
+    {
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id);
+        Check(false,"unreviewed contract must not stage admission");
+    }
+    catch(StoreFailure ex)when(ex.Code=="BEHAVIORAL_CONTRACT_REVIEW_REQUIRED")
+    {Check(true,"unreviewed contract cannot stage admission");}
+    Check(behavioralStore.Review(taskBound.Id,aetSmokeRun.Id,behavioral.Id,"REVIEW BEHAVIOR "+behavioral.ContractSha256)
+        is {State:"Reviewed",ExecutionEnabled:false},"exact semantic review remains non-executable");
     foreach(var invalid in new[]{
         (Cases:new[]{"fixture-only"},Code:"EVALUATION_CONTRACT_COVERAGE_INVALID"),
         (Cases:evaluationCases.Take(6).ToArray(),Code:"EVALUATION_MANDATORY_CASE_MISSING"),
@@ -5222,15 +5248,15 @@ try
         try
         {
             evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,
-                EvaluationPreview(new string('f',64),evaluationInput.ArchiveSha256,invalid.Cases));
+                EvaluationPreview(new string('f',64),evaluationInput.ArchiveSha256,invalid.Cases),behavioral.Id);
             Check(false,"invalid evaluation coverage cannot be persisted");
         }
         catch(StoreFailure ex)when(ex.Code==invalid.Code)
         {Check(true,"planning ledger rejects "+invalid.Code);}
     }
-    var evaluationStaged=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview);
+    var evaluationStaged=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id);
     Check(evaluationStaged is {State:"Previewed",Current:true,ExecutionEnabled:false,Verified:false} &&
-        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview).Id==evaluationStaged.Id,
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id).Id==evaluationStaged.Id,
         "exact planning preview is durable and idempotent without execution authority");
     try
     {
@@ -5249,19 +5275,29 @@ try
     }
     catch(StoreFailure ex){Check(ex.Code=="EVALUATION_PLAN_CONFIRMATION_REQUIRED","review is single-use");}
     Check(evaluationReviewStore.Cancel(taskBound.Id,evaluationStaged.Id).State=="Cancelled" &&
-        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview).State=="Cancelled",
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id).State=="Cancelled",
         "cancelled exact descriptor cannot be restaged by replay");
     try
     {
-        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,EvaluationPreview(new string('e',64),new string('0',64)));
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,EvaluationPreview(new string('e',64),new string('0',64)),behavioral.Id);
         Check(false,"stale archive must be rejected");
     }
     catch(StoreFailure ex){Check(ex.Code=="EVALUATION_DESCRIPTOR_NOT_CURRENT","planning stage rejects changed archive identity");}
     var pendingEvaluation=evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,
-        EvaluationPreview(new string('e',64),evaluationInput.ArchiveSha256));
+        EvaluationPreview(new string('e',64),evaluationInput.ArchiveSha256),behavioral.Id);
     evaluationReviewStore.Recover();
     Check(evaluationReviewStore.Get(taskBound.Id,pendingEvaluation.Id).State=="Interrupted",
         "startup interrupts unreviewed evaluation planning receipt without replay");
+    Check(behavioralStore.Revoke(taskBound.Id,behavioral.Id).State=="Revoked" &&
+        !evaluationReviewStore.Get(taskBound.Id,evaluationStaged.Id).Current,
+        "revoking semantic review invalidates linked admission");
+    try
+    {
+        evaluationReviewStore.Stage(taskBound.Id,aetSmokeRun.Id,evaluationPreview,behavioral.Id);
+        Check(false,"revoked contract cannot stage admission");
+    }
+    catch(StoreFailure ex)when(ex.Code=="BEHAVIORAL_CONTRACT_REVIEW_REQUIRED")
+    {Check(true,"revoked contract cannot be reused by replay");}
 
     using(var aetNoConsent=await Post(client,aetScopeRoot+"/source-smoke",new StartSourceSmokeRequest(aetSmokeScope,false)))
         Check(aetNoConsent.StatusCode==HttpStatusCode.Conflict && aetSmokeRunner.Calls==0,

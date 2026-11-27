@@ -55,7 +55,7 @@ public sealed class EvaluationPlanReviewStore(TaskStore tasks)
         return buffer.ToArray();
     }
 
-    private static EvaluationPlanningInput Capture(SqliteConnection db,SqliteTransaction tx,string taskId,string runId)
+    internal static EvaluationPlanningInput Capture(SqliteConnection db,SqliteTransaction tx,string taskId,string runId)
     {
         ExecutionStore.CheckId(taskId);ExecutionStore.CheckId(runId);
         var run=EngineeringRunStore.Find(db,tx,runId);
@@ -159,17 +159,22 @@ public sealed class EvaluationPlanReviewStore(TaskStore tasks)
         try
         {
             var input=Capture(db,tx,item.TaskId,item.RunId);
+            var contractId=TaskStore.Scalar(db,tx,"SELECT contract_review_id FROM evaluation_plan_contract_links WHERE plan_review_id=@id",
+                ("@id",item.Id));
+            if(contractId is null)return false;
+            _=BehavioralContractReviewStore.RequireReviewed(db,tx,input,contractId);
             return input.Scope.SourceFingerprint==item.SourceSha256 && input.Scope.ScopeSha256==item.ScopeSha256 &&
                 input.ArchiveSha256==item.ArchiveSha256;
         }
         catch(StoreFailure){return false;}
     }
 
-    public EvaluationPlanReview Stage(string taskId,string runId,JsonElement hostPreview)
+    public EvaluationPlanReview Stage(string taskId,string runId,JsonElement hostPreview,string contractReviewId)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
         var input=Capture(db,tx,taskId,runId);
         var admission=ValidateDescriptor(hostPreview,input);
+        BehavioralContractReviewStore.RequireDescriptor(db,tx,input,contractReviewId,hostPreview);
         var raw=hostPreview.GetRawText();var descriptorHash=Sha(raw);
         using(var cmd=TaskStore.Command(db,tx,Columns+" WHERE task_id=@task AND run_id=@run AND admission_sha256=@sha",
             ("@task",taskId),("@run",runId),("@sha",admission)))
@@ -177,7 +182,10 @@ public sealed class EvaluationPlanReviewStore(TaskStore tasks)
             if(row.Read())
             {
                 var existing=Decode(row);row.Close();
-                if(existing.DescriptorSha256!=descriptorHash)throw new StoreFailure("IDEMPOTENCY_CONFLICT");
+                if(existing.DescriptorSha256!=descriptorHash||
+                    TaskStore.Scalar(db,tx,"SELECT contract_review_id FROM evaluation_plan_contract_links WHERE plan_review_id=@id",
+                        ("@id",existing.Id))!=contractReviewId)
+                    throw new StoreFailure("IDEMPOTENCY_CONFLICT");
                 tx.Commit();return existing with {Current=true};
             }
         var now=DateTimeOffset.UtcNow.ToString("O");
@@ -190,6 +198,8 @@ public sealed class EvaluationPlanReviewStore(TaskStore tasks)
             """,("@id",item.Id),("@task",taskId),("@run",runId),("@source",item.SourceSha256),
             ("@scope",item.ScopeSha256),("@archive",item.ArchiveSha256),("@admission",admission),
             ("@descriptor",descriptorHash),("@json",raw),("@now",now));
+        TaskStore.Execute(db,tx,"INSERT INTO evaluation_plan_contract_links(plan_review_id,contract_review_id) VALUES(@plan,@contract)",
+            ("@plan",item.Id),("@contract",contractReviewId));
         tx.Commit();return item;
     }
 
@@ -205,7 +215,11 @@ public sealed class EvaluationPlanReviewStore(TaskStore tasks)
             ??throw new StoreFailure("NOT_FOUND");
         if(Sha(raw)!=item.DescriptorSha256 || !Current(db,tx,item))throw new StoreFailure("SOURCE_SCOPE_CHANGED");
         using var descriptor=JsonDocument.Parse(raw);
-        if(ValidateDescriptor(descriptor.RootElement,Capture(db,tx,taskId,item.RunId))!=admissionSha256)
+        var input=Capture(db,tx,taskId,item.RunId);
+        var contractId=TaskStore.Scalar(db,tx,"SELECT contract_review_id FROM evaluation_plan_contract_links WHERE plan_review_id=@id",
+            ("@id",id))??throw new StoreFailure("BEHAVIORAL_CONTRACT_REVIEW_REQUIRED");
+        BehavioralContractReviewStore.RequireDescriptor(db,tx,input,contractId,descriptor.RootElement);
+        if(ValidateDescriptor(descriptor.RootElement,input)!=admissionSha256)
             throw new StoreFailure("EVALUATION_DESCRIPTOR_NOT_CURRENT");
         var now=DateTimeOffset.UtcNow.ToString("O");
         if(TaskStore.Execute(db,tx,"""

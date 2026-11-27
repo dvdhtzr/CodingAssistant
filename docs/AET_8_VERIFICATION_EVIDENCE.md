@@ -229,3 +229,19 @@ coverage fixture is not a reviewed semantic mapping for the timer task.
 The seven existing Calculation Journal cases are unchanged, and there is
 no default contract for unrelated projects. Human semantic review and
 owner-local admission remain necessary; no execution authority is added.
+
+### Durable project behavioral review
+
+The internal review ledger records an exact semantic mapping bound to the
+task, approved plan/specification/architecture, evaluator SHA-256 and
+normalized mandatory-case coverage. An explicit `REVIEW BEHAVIOR <digest>`
+acknowledgement is separate from exact candidate planning acknowledgement
+and never grants execution. The binder retrieves the persisted reviewed
+mapping rather than accepting a raw contract from its caller. Candidate
+admission staging rechecks the review and evaluator digest transactionally,
+links the two records, and rejects revocation and replay. Prior planning
+records without a link remain historical. The review can be reused across
+source-only repairs with unchanged approved requirements and evaluator;
+changed requirements require a new review. Interrupted and revoked exact
+reviews cannot silently reactivate. No HTTP/model route or automatic
+semantic approval is added. Tests use synthetic coverage only.

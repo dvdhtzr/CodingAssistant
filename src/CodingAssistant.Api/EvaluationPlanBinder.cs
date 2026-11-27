@@ -116,13 +116,12 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
     }
 
     public async Task<EvaluationPlanReview> StageAsync(string taskId,string runId,
-        string receiptName,JsonElement reviewedContract,CancellationToken token)
+        string receiptName,string contractReviewId,CancellationToken token)
     {
         if(receiptName is null||!Receipt.IsMatch(receiptName))
             throw new StoreFailure("EVALUATION_RECEIPT_NAME_INVALID");
         if(!OperatingSystem.IsWindows())throw new StoreFailure("EVALUATION_LOCAL_WINDOWS_ONLY");
-        if(reviewedContract.ValueKind!=JsonValueKind.Object||reviewedContract.GetRawText().Length>160000)
-            throw new StoreFailure("EVALUATION_CONTRACT_NOT_CURRENT");
+        var reviewedContract=new BehavioralContractReviewStore(tasks).ReadReviewed(taskId,runId,contractReviewId);
         var store=new EvaluationPlanReviewStore(tasks);
         var input=store.Capture(taskId,runId);
         var expectedCoverage=EvaluationContractCoverage.ValidateSelection(reviewedContract,input);
@@ -161,7 +160,7 @@ public sealed class EvaluationPlanBinder(TaskStore tasks,string? repositoryRoot=
             throw new StoreFailure("EVALUATION_CONTRACT_MAPPING_CHANGED");
         // Stage re-captures source/plan/criteria/archive inside its own
         // transaction. A changed snapshot while Node ran is rejected.
-        return store.Stage(taskId,runId,descriptor);
+        return store.Stage(taskId,runId,descriptor,contractReviewId);
     }
 
     // Host-only subprocess transport. Production constructs the start info

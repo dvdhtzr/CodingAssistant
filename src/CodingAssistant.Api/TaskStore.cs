@@ -161,6 +161,7 @@ public sealed class TaskStore
         InferenceLeaseStore.Initialize(connection);
         SourceSmokeEvidenceStore.Initialize(connection);
         EvaluationPlanReviewStore.Initialize(connection);
+        BehavioralContractReviewStore.Initialize(connection);
         ValidateDatabasePaths();
     }
 
