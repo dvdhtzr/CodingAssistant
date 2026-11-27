@@ -24,11 +24,11 @@ public sealed class RepairCycleCoordinator(
         => StartCore(taskId,request,engineerModel,qaModel,false);
 
     internal RepairCycle StartRoutine(string taskId,StartRepairCycleRequest request,
-        string engineerModel,string qaModel)
-        => StartCore(taskId,request,engineerModel,qaModel,true);
+        string engineerModel,string qaModel,RootCauseRepairTarget? recovery=null)
+        => StartCore(taskId,request,engineerModel,qaModel,true,recovery);
 
     private RepairCycle StartCore(string taskId,StartRepairCycleRequest request,
-        string? engineerModel,string? qaModel,bool routine)
+        string? engineerModel,string? qaModel,bool routine,RootCauseRepairTarget? recovery=null)
     {
         var plan = plans.Read(taskId).Plan;
         if (plan is null || !plan.Current || plan.Status != "Approved")
@@ -44,7 +44,7 @@ public sealed class RepairCycleCoordinator(
             throw new StoreFailure("ARCHITECTURE_CONFLICT");
 
         var admitted = routine ? cycles.StartRoutine(taskId,request,plan,
-            engineerModel ?? throw new StoreFailure("INVALID_MODEL")) :
+            engineerModel ?? throw new StoreFailure("INVALID_MODEL"),recovery) :
             cycles.Start(taskId, request, plan, engineerModel);
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(
             lifetime.ApplicationStopping);
@@ -68,8 +68,13 @@ public sealed class RepairCycleCoordinator(
             var workItemId = cycles.WorkItemId(taskId, cycle.Id);
             var item = plan.Outline.Tasks.Single(x => x.Id == workItemId);
             var files = engineering.Get(taskId, runId).Files;
-            var allowed = cycle.Findings.Select(f => f.Path)
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var recovery=RootCauseRecoveryStore.ForCandidate(tasks,taskId,runId);
+            var allowed = recovery is null?cycle.Findings.Select(f => f.Path)
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[recovery.TargetPath];
+            var assignedFindings=recovery is null?cycle.Findings:cycle.Findings.Select(f=>f with {
+                Path=recovery.TargetPath,Evidence=recovery.Evidence,
+                Recommendation=recovery.Strategy
+            }).ToArray();
             token.ThrowIfCancellationRequested();
             engineering.StartTask(taskId, runId, workItemId);
             using var providerScope = EngineeringProviderActivity.Enter(tasks,taskId,
@@ -78,7 +83,7 @@ public sealed class RepairCycleCoordinator(
                 new EngineeringTaskInput(objective, specification, plan,
                     architecture, item, files,
                     new RepairTaskContext(cycle.ProposalId, cycle.BaseSourceSha256,
-                        cycle.Findings, allowed),
+                        assignedFindings, allowed),
                     observation => engineering.RecordAtlasInspection(
                         taskId, runId, workItemId, observation),
                     rejection => engineering.RecordOutputRejection(

@@ -37,7 +37,9 @@ public interface IRootCauseInvestigator
 // resolution receipts, repair authorizations, or functional test results.
 public sealed class RootCauseInvestigationStore(TaskStore tasks)
 {
-    internal static void Initialize(SqliteConnection db)=>TaskStore.Execute(db,null,"""
+    internal static void Initialize(SqliteConnection db)
+    {
+        TaskStore.Execute(db,null,"""
         CREATE TABLE IF NOT EXISTS engineering_root_cause_investigations(
             id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             collaboration_id TEXT NOT NULL REFERENCES engineering_collaborations(id),
@@ -60,6 +62,8 @@ public sealed class RootCauseInvestigationStore(TaskStore tasks)
             error_code TEXT,assessment_json TEXT,review_json TEXT
         );
         """);
+        RootCauseRecoveryStore.Initialize(db);
+    }
 
     internal static void Recover(SqliteConnection db)
     {
@@ -116,7 +120,7 @@ public sealed class RootCauseInvestigationStore(TaskStore tasks)
             receipt.PolicySha256==job.PolicySha256;
     }
 
-    private static RootCauseInput Capture(SqliteConnection db,SqliteTransaction tx,CollaborationRun job)
+    internal static RootCauseInput Capture(SqliteConnection db,SqliteTransaction tx,CollaborationRun job)
     {
         CollaborationStore.RequireCurrent(db,tx,job);
         EngineeringDelegationStore.Require(db,tx,job.TaskId,job.PolicyRevision,job.PolicySha256,

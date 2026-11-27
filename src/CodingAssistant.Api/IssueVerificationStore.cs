@@ -18,7 +18,8 @@ public sealed record IssueVerification(string Id,string IssueId,string OriginalR
 public sealed record IssueVerificationInput(VerifyEngineeringIssueRequest Request,
     EngineeringIssue Issue,EngineeringRun Candidate,EngineeringSourceFile Before,
     EngineeringSourceFile After,ImplementationPlan Plan,DraftArchitectureContract Architecture,
-    string Objective,string Specification,string? ChallengeMessageId);
+    string Objective,string Specification,string? ChallengeMessageId,
+    RootCauseRepairTarget? RecoveryTarget=null,IReadOnlyList<EngineeringSourceFile>? CandidateFiles=null);
 
 /// <summary>Explicit independent static recheck of one finding. This is not
 /// a functional test, a repair grant, or a generic completion certificate.</summary>
@@ -114,11 +115,33 @@ public sealed class IssueVerificationStore(TaskStore tasks)
             """,("@id",issue.RepairCycleId),("@task",taskId),("@base",request.OriginalRunId),
             ("@candidate",candidate.Id),("@lead",admission is not null && issue.Origin=="LeadSoftwareEngineer"?1:0)) is null)
             throw new StoreFailure("INVALID_STATE");
-        var before=File(db,tx,request.OriginalRunId,issue.Path);
-        var after=File(db,tx,candidate.Id,issue.Path);
-        if(!issue.References.Any(x=>x.FileSha256==before.Sha256) ||
-            (candidate.Id!=request.OriginalRunId && before.Sha256==after.Sha256))
+        var originalFile=File(db,tx,request.OriginalRunId,issue.Path);
+        if(!issue.References.Any(x=>x.FileSha256==originalFile.Sha256))
             throw new StoreFailure("SOURCE_CHANGED");
+        var recovery=RootCauseRecoveryStore.ForCandidate(db,tx,taskId,candidate.Id);
+        if(recovery is not null && (recovery.IssueId!=issue.Id || recovery.ObservedPath!=issue.Path ||
+            recovery.Origin!=issue.Origin || !issue.References.Any(x=>x.ReviewId==recovery.ReviewId &&
+                x.FindingIndex==recovery.FindingIndex)))
+            throw new StoreFailure("SOURCE_CHANGED");
+        var targetPath=recovery?.TargetPath??issue.Path;
+        var before=File(db,tx,request.OriginalRunId,targetPath);
+        var after=File(db,tx,candidate.Id,targetPath);
+        if(candidate.Id!=request.OriginalRunId && before.Sha256==after.Sha256)
+            throw new StoreFailure("SOURCE_CHANGED");
+        List<EngineeringSourceFile>? companions=null;
+        if(recovery is not null)
+        {
+            companions=[];
+            using var cmd=TaskStore.Command(db,tx,"""
+                SELECT path,purpose,content,sha256,work_item_id,updated_utc
+                FROM engineering_run_files WHERE run_id=@run ORDER BY path
+                """,("@run",candidate.Id));
+            using var rows=cmd.ExecuteReader();
+            while(rows.Read())companions.Add(new(rows.GetString(0),rows.GetString(1),rows.GetString(2),
+                rows.GetString(3),rows.GetString(4),rows.GetString(5)));
+            if(QaReviewStore.Fingerprint(companions)!=request.CandidateSourceSha256)
+                throw new StoreFailure("SOURCE_CHANGED");
+        }
         var plan=ImplementationPlanStore.RequireCurrentApproved(db,tx,taskId);
         var architecture=DraftArchitecturePolicy.Capture(db,tx,taskId,candidate.SpecificationVersion,
             candidate.SpecificationSha256)??throw new StoreFailure("ARCHITECTURE_CONFLICT");
@@ -127,7 +150,7 @@ public sealed class IssueVerificationStore(TaskStore tasks)
                 AND sha256=@sha AND status='Approved'
             """,("@task",taskId),("@version",candidate.SpecificationVersion),("@sha",candidate.SpecificationSha256))
             ??throw new StoreFailure("SPECIFICATION_CONFLICT");
-        return new(request,issue,candidate,before,after,plan,architecture,task.Objective,spec,challenge?.MessageId);
+        return new(request,issue,candidate,before,after,plan,architecture,task.Objective,spec,challenge?.MessageId,recovery,companions);
     }
 
     public static IssueVerificationAssessment Parse(string? raw,IssueVerificationInput input)
@@ -180,7 +203,7 @@ public sealed class IssueVerificationStore(TaskStore tasks)
         if(fresh.Issue.Id!=input.Issue.Id || fresh.Issue.Origin!=agentId ||
             fresh.After.Sha256!=input.After.Sha256 || fresh.Before.Sha256!=input.Before.Sha256 ||
             fresh.ChallengeMessageId!=input.ChallengeMessageId ||
-            Binding(fresh.Issue)!=Binding(input.Issue))
+            Binding(fresh.Issue)!=Binding(input.Issue) || fresh.RecoveryTarget!=input.RecoveryTarget)
             throw new StoreFailure("SOURCE_CHANGED");
         var valid=Parse(JsonSerializer.Serialize(assessment),fresh);
         var result=new IssueVerification(Guid.NewGuid().ToString("N"),fresh.Issue.Id,
@@ -276,6 +299,23 @@ public sealed class MafEngineeringIssueVerifier(IMafChatClientFactory? factory=n
             new(ChatRole.User,"ORIGINAL FILE (data):\n"+input.Before.Content),
             new(ChatRole.User,"CANDIDATE FILE (data):\n"+input.After.Content)
         };
+        if(input.RecoveryTarget is not null)
+        {
+            // Original finding remains the QA question. Evidence line is
+            // checked against the actual changed causal file.
+            messages.Add(new(ChatRole.User,"ROOT CAUSE REPAIR (data): "+JsonSerializer.Serialize(input.RecoveryTarget)+
+                "\nIndependently recheck the original acceptance concern across the complete candidate, "+
+                "not just the correction or old report. Cite an actual line of the changed causal file. "+
+                "Do not assume the original claim or new diagnosis was correct."));
+            foreach(var file in input.CandidateFiles??[])
+            {
+                var numbered=string.Join("\n",file.Content.Split('\n').Select((line,i)=>
+                    (i+1).ToString(System.Globalization.CultureInfo.InvariantCulture)+" | "+line));
+                messages.Add(new(ChatRole.User,"CANDIDATE "+file.Path+" (data, labels excluded from evidence):\n"+numbered));
+            }
+            if(messages.Any(m=>(m.Text?.Length??0)>18000)||messages.Sum(m=>m.Text?.Length??0)>24000)
+                throw new StoreFailure("ROOT_CAUSE_CONTEXT_TOO_LARGE");
+        }
         for(var attempt=0;;attempt++)
         {
             token.ThrowIfCancellationRequested();

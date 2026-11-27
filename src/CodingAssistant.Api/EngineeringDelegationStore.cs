@@ -384,8 +384,14 @@ public sealed class EngineeringDelegationStore(TaskStore tasks)
         if (parent.RunId != scope.BaselineRunId)
         {
             var progress = RepairProgressStore.Read(db,tx,taskId,parent.RunId,scope);
-            if (progress.StrategyChangeRequired ||
-                progress.Attempts.LastOrDefault() is not { IndependentStaticResolution:true })
+            // Only a freshly bound alternative receipt may address this
+            // particular recurring-finding stall. Never exempt regressions,
+            // repeated snapshots, ancestry, budget, or revocation.
+            var recovery=RootCauseRecoveryStore.ForCandidate(db,tx,taskId,candidateRunId);
+            var changedStrategy=recovery is not null && recovery.TargetPath==path &&
+                progress.Reason=="RECURRING_UNRESOLVED_FINDING";
+            if (!changedStrategy && (progress.StrategyChangeRequired ||
+                progress.Attempts.LastOrDefault() is not { IndependentStaticResolution:true }))
                 throw new StoreFailure("ROUTINE_REPAIR_RECHECK_REQUIRED");
         }
         TaskStore.Execute(db,tx,"""

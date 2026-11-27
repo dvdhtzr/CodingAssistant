@@ -19,6 +19,7 @@ interface Preview { planSha256: string | null; policy: Policy | null;
   linkedRepair?: {cycleId:string;state:string;errorCode:string|null}|null;
   reviewFailure?: {role:string;reviewId:string;model:string;state:string;errorCode:string|null}|null;
   canInvestigateStall?:boolean;canRefineStall?:boolean;
+  recoveryTarget?:{issueId:string;observedPath:string;targetPath:string;strategy:string;requirement:string}|null;
   rootCauseInvestigation?: {id:string;runId:string;sourceSha256:string;model:string;state:string;errorCode:string|null;
     assessment:{findings:Array<{issueId:string;outcome:string;causePath:string|null;line:number|null;
       evidence:string|null;rationale:string;alternativeStrategy:string|null}>}|null;
@@ -38,7 +39,7 @@ const actionLabel: Record<string,string>={
   ReviewCode:'Independent code review',ReviewAcceptance:'Independent QA review',
   ClassifyIssue:'Classify finding',RequestOwnerRepair:'Request scoped repair',
   RecheckIssue:'Independent finding recheck',AwaitQualifiedVerification:'Await qualified verification',
-  InvestigateStall:'Cross-file root cause investigation',RefineStall:'Respond to independent critique',
+  InvestigateStall:'Cross-file root cause investigation',RefineStall:'Respond to independent critique',RequestRecoveryRepair:'Admit alternative repair',
   Escalate:'Escalate',ResumeInterrupted:'Owner resumed checkpoint'
 };
 const stateLabel:Record<string,string>={
@@ -338,8 +339,11 @@ export function CollaborationPanel({token,taskId,guided=false}:{token:string;tas
         'Investigation and independent assessment saved. No repair has been admitted and the original stall guard is still active.':
         'Independent assessment of these proposals is required before any repair.'}</p>}
     </section>}
+    {preview.recoveryTarget&&<p role="status">Independently supported alternative: {preview.recoveryTarget.observedPath} → {preview.recoveryTarget.targetPath}.
+      {' '}{preview.recoveryTarget.strategy} · existing source-only approval and budget apply.</p>}
     {preview.canStart&&<button type="button" className="primary" disabled={busy||loadError}
-      onClick={()=>void act('start')}>{preview.canRefineStall?'Reassess disputed findings':
+      onClick={()=>void act('start')}>{preview.recoveryTarget?'Continue with alternative repair':
+        preview.canRefineStall?'Reassess disputed findings':
         preview.canInvestigateStall?'Investigate recurring findings':
         job?.state==='Escalated'||job?.state==='Failed'?'Retry team coordination':'Start team coordination'}</button>}
     {preview.canResume&&<button type="button" className="primary" disabled={busy||loadError}

@@ -20,7 +20,7 @@ public sealed record CollaborationDecision(string Action,string Rationale,string
 public sealed record CollaborationInput(string Objective,CollaborationRun Job,
     IReadOnlyList<string> AllowedActions,IReadOnlyList<EngineeringIssue> Issues,
     IReadOnlyList<CollaborationStep> Steps,RepairProgressReport? RepairProgress=null,
-    IReadOnlyList<EngineeringIssue>? RecheckCandidates=null);
+    IReadOnlyList<EngineeringIssue>? RecheckCandidates=null,RootCauseRepairTarget? RecoveryTarget=null);
 public sealed record CollaborationAdmission(string JobId,int Sequence);
 public sealed record RoutineRepairCandidate(string RunId,string SourceSha256,IReadOnlyList<string> Paths);
 public sealed record CollaborationLinkedRepair(string CycleId,string State,string? ErrorCode);
@@ -33,7 +33,7 @@ public sealed record CollaborationPreview(string? PlanSha256,DelegationPolicy? P
     string Reason,InferenceCapacity Capacity,RoutineRepairCandidate? RoutineRepairCandidate=null,
     CollaborationLinkedRepair? LinkedRepair=null,CollaborationReviewFailure? ReviewFailure=null,
     CollaborationStallEvidence? StallEvidence=null,RootCauseReceipt? RootCauseInvestigation=null,
-    bool CanInvestigateStall=false,bool CanRefineStall=false);
+    bool CanInvestigateStall=false,bool CanRefineStall=false,RootCauseRepairTarget? RecoveryTarget=null);
 
 public interface ICollaborationLead
 {
@@ -70,6 +70,12 @@ public sealed class MafCollaborationLead(IMafChatClientFactory? factory=null):IC
                         throw new StoreFailure("MODEL_OUTPUT_REJECTED");
                 }
                 else if(result.Classification is not null || issue.State!="ConfirmedDefect")
+                    throw new StoreFailure("MODEL_OUTPUT_REJECTED");
+            }
+            else if(result.Action=="RequestRecoveryRepair")
+            {
+                if(result.Classification is not null || input.RecoveryTarget is null ||
+                    result.IssueId!=input.RecoveryTarget.IssueId)
                     throw new StoreFailure("MODEL_OUTPUT_REJECTED");
             }
             else if(result.Action=="RecheckIssue")
@@ -224,6 +230,7 @@ public sealed class CollaborationStore(TaskStore tasks)
         var reason="PLAN_NOT_APPROVED";var start=false;var resume=false;
         CollaborationStallEvidence? stallEvidence=null;
         RootCauseReceipt? investigation=null;var canInvestigate=false;var canRefine=false;
+        RootCauseRepairTarget? recoveryTarget=null;
         try
         {
             var plan=ImplementationPlanStore.RequireCurrentApproved(db,tx,taskId);
@@ -274,13 +281,15 @@ public sealed class CollaborationStore(TaskStore tasks)
                     investigation=RootCauseInvestigationStore.Read(db,tx,taskId,run.Id,fingerprint,plan.PlanSha256);
                     canInvestigate=RootCauseInvestigationStore.Eligible(db,tx,snapshot.Job,progress,policy.RoutineRepair);
                     canRefine=RootCauseInvestigationStore.EligibleRefinement(db,tx,snapshot.Job,progress,policy.RoutineRepair);
-                    start=canInvestigate||canRefine;reason=progress.Reason;
+                    if(!canInvestigate&&!canRefine)
+                        recoveryTarget=RootCauseRecoveryStore.Select(db,tx,snapshot.Job,progress,policy.RoutineRepair);
+                    start=canInvestigate||canRefine||recoveryTarget is not null;reason=progress.Reason;
                 }
             }
         }catch(StoreFailure e){reason=e.Code;}
         if(linkedRepair?.State is "Running" or "QaRunning" or "Generated")
         {
-            start=false;resume=false;canInvestigate=false;canRefine=false;reason="LINKED_REPAIR_PENDING";
+            start=false;resume=false;canInvestigate=false;canRefine=false;recoveryTarget=null;reason="LINKED_REPAIR_PENDING";
         }
         if(candidate is not null)
             investigation??=RootCauseInvestigationStore.Read(db,tx,taskId,candidate.RunId,candidate.SourceSha256,candidate.PlanSha256);
@@ -290,7 +299,7 @@ public sealed class CollaborationStore(TaskStore tasks)
         var reviewFailure=snapshot is null?null:ReadReviewFailure(db,tx,snapshot);
         tx.Commit();return new(planSha,policy,snapshot,candidate,start,resume,reason,
             LocalInferenceScheduler.Shared.Snapshot(),routineCandidate,linkedRepair,reviewFailure,stallEvidence,
-            investigation,canInvestigate,canRefine);
+            investigation,canInvestigate,canRefine,recoveryTarget);
     }
 
     public CollaborationSnapshot? Latest(string taskId)
@@ -339,7 +348,7 @@ public sealed class CollaborationStore(TaskStore tasks)
     // transaction. A policy approval alone is not a source repair grant.
     internal static void BindRepair(SqliteConnection db,SqliteTransaction tx,string taskId,
         string parentId,string cycleId,RepairProposal proposal,IReadOnlyList<RepairFindingReference> selected,
-        string? routineCandidateRunId=null)
+        string? routineCandidateRunId=null,RootCauseRepairTarget? recovery=null)
     {
         var parent=Find(db,tx,taskId,parentId);
         var expectedReason=routineCandidateRunId is null?"EXACT_REPAIR_APPROVAL_REQUIRED":"ROUTINE_REPAIR_DISPATCH_PENDING";
@@ -352,6 +361,17 @@ public sealed class CollaborationStore(TaskStore tasks)
         EngineeringDelegationStore.Require(db,tx,taskId,parent.PolicyRevision,parent.PolicySha256,"LeadSoftwareEngineer","ReviewCode");
         EngineeringDelegationStore.Require(db,tx,taskId,parent.PolicyRevision,parent.PolicySha256,"QaEngineer","ReviewAcceptance");
         var step=Steps(db,tx,parentId).LastOrDefault();
+        if(recovery is not null)
+        {
+            if(routineCandidateRunId is null || step?.Action!="RequestRecoveryRepair" ||
+                step.ReferenceId!=proposal.Id || step.IssueId!=recovery.IssueId)
+                throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+            RootCauseRecoveryStore.Bind(db,tx,parent,proposal,selected,recovery,cycleId,routineCandidateRunId);
+            EngineeringDelegationStore.AdmitRoutineRepair(db,tx,parent,proposal,recovery.TargetPath,cycleId,routineCandidateRunId);
+            TaskStore.Execute(db,tx,"INSERT INTO engineering_collaboration_repairs(task_id,parent_id,cycle_id) VALUES(@task,@parent,@cycle)",
+                ("@task",taskId),("@parent",parentId),("@cycle",cycleId));
+            return;
+        }
         if(step?.Action!="RequestOwnerRepair" || step.ReferenceId!=proposal.Id || step.IssueId is null)
             throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
         var issue=EngineeringIssueStore.Read(db,tx,taskId,parent.RunId).Issues.SingleOrDefault(i=>i.Id==step.IssueId);
@@ -628,9 +648,18 @@ public sealed class CollaborationStore(TaskStore tasks)
         {
             actions.Clear();actions.Add("RefineStall");
         }
+        RootCauseRepairTarget? recoveryTarget=null;
+        if(lead=="Reviewed" && recheckCandidates.Count==0 &&
+            progress.Reason=="RECURRING_UNRESOLVED_FINDING" &&
+            !actions.Contains("InvestigateStall")&&!actions.Contains("RefineStall"))
+        {
+            recoveryTarget=RootCauseRecoveryStore.Select(db,tx,job,progress,scope);
+            actions.Clear();
+            if(recoveryTarget is not null)actions.Add("RequestRecoveryRepair");
+        }
         actions.Add("Escalate");
         var task=TaskStore.FindTask(db,tx,job.TaskId)??throw new StoreFailure("NOT_FOUND");
-        return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress,recheckCandidates);
+        return new(task.Objective,job,actions,latestIssues,Steps(db,tx,job.Id),progress,recheckCandidates,recoveryTarget);
     }
     public CollaborationInput Prepare(string taskId,string id)
     {
@@ -642,6 +671,8 @@ public sealed class CollaborationStore(TaskStore tasks)
     internal static CollaborationDecision? MandatoryReview(CollaborationInput input)
     {
         if(input.AllowedActions.Count!=2 || !input.AllowedActions.Contains("Escalate"))return null;
+        if(input.AllowedActions.Contains("RequestRecoveryRepair") && input.RecoveryTarget is not null)
+            return new("RequestRecoveryRepair","Host-selected independently supported alternative source repair within the existing delegation.",input.RecoveryTarget.IssueId);
         if(input.AllowedActions.Contains("RefineStall"))
             return new("RefineStall","Host-required bounded revision responding to independent root cause critique.");
         if(input.AllowedActions.Contains("InvestigateStall"))
@@ -892,7 +923,7 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         catch(OperationCanceledException){investigations.StopReview(job.TaskId,receipt,"OWNER_CANCELLED",true);throw;}
                         catch(StoreFailure e){investigations.StopReview(job.TaskId,receipt,e.Code);throw;}
                         catch(Exception){investigations.StopReview(job.TaskId,receipt,"ROOT_CAUSE_REVIEW_FAILED");throw;}
-                        if(store.Prepare(job.TaskId,job.Id).AllowedActions.Contains("RefineStall"))break;
+                        if(store.Prepare(job.TaskId,job.Id).AllowedActions.Any(a=>a is "RefineStall" or "RequestRecoveryRepair"))break;
                         store.Finish(job.TaskId,job.Id,"Escalated","ROOT_CAUSE_INVESTIGATION_COMPLETE");return;
                     }
                     case "RefineStall":
@@ -918,6 +949,7 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                         catch(OperationCanceledException){investigations.StopRefinement(job.TaskId,receipt,"OWNER_CANCELLED",true);throw;}
                         catch(StoreFailure e){investigations.StopRefinement(job.TaskId,receipt,e.Code);throw;}
                         catch(Exception){investigations.StopRefinement(job.TaskId,receipt,"ROOT_CAUSE_REFINEMENT_FAILED");throw;}
+                        if(store.Prepare(job.TaskId,job.Id).AllowedActions.Contains("RequestRecoveryRepair"))break;
                         store.Finish(job.TaskId,job.Id,"Escalated","ROOT_CAUSE_REFINEMENT_COMPLETE");return;
                     }
                     case "RecheckIssue":
@@ -947,6 +979,33 @@ public sealed class CollaborationCoordinator(TaskStore tasks,CollaborationStore 
                                 decision.Classification!,step.Rationale,issue.Challenges.LastOrDefault()?.MessageId),
                             new CollaborationAdmission(job.Id,step.Sequence));
                         break;
+                    }
+                    case "RequestRecoveryRepair":
+                    {
+                        var target=input.RecoveryTarget??throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+                        // The actual original independent QA report remains
+                        // the proposal identity, not a fabricated review.
+                        var proposal=proposals.Propose(job.TaskId,new(target.ReviewId));
+                        store.LinkDecision(job.TaskId,job.Id,step.Sequence,proposal.Id);
+                        store.Finish(job.TaskId,job.Id,"AwaitingOwner","ROUTINE_REPAIR_DISPATCH_PENDING");
+                        try
+                        {
+                            var engineerModel=models.Resolve(job.TaskId,"SoftwareEngineer",job.Model);
+                            var qaModel=models.Resolve(job.TaskId,"QaEngineer",job.Model);
+                            var installed=await catalog.ListAsync(token);
+                            if(!installed.Contains(engineerModel,StringComparer.Ordinal) ||
+                                !installed.Contains(qaModel,StringComparer.Ordinal))
+                                throw new StoreFailure("MODEL_NOT_INSTALLED");
+                            token.ThrowIfCancellationRequested();
+                            services.GetRequiredService<RepairCycleCoordinator>().StartRoutine(job.TaskId,
+                                new StartRepairCycleRequest(proposal.Id,null,
+                                    [new RepairSelection(target.ObservedPath,target.FindingIndex)],job.Id),
+                                engineerModel,qaModel,target);
+                        }
+                        catch(StoreFailure error){store.EscalateRoutineCheckpoint(job.TaskId,job.Id,error.Code);}
+                        catch(OperationCanceledException){store.EscalateRoutineCheckpoint(job.TaskId,job.Id,"OWNER_CANCELLED");}
+                        catch(Exception){store.EscalateRoutineCheckpoint(job.TaskId,job.Id,"ROUTINE_REPAIR_DISPATCH_FAILED");}
+                        return;
                     }
                     case "RequestOwnerRepair":
                     {

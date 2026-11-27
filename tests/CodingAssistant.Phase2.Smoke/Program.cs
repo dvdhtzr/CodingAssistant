@@ -4817,6 +4817,24 @@ try
         Refinement=new RootCauseRefinementReceipt("qwen3.5:4b","qwen3.5:4b","Failed","MODEL_OUTPUT_REJECTED",null,null)}),
         "failed revision does not silently replay on the same snapshot");
 
+    // Alternative target eligibility is deliberately separate from a
+    // model's claim of support. No synthetic findings or path expansion.
+    var recoverySelectionType=typeof(RootCauseInvestigationStore).Assembly
+        .GetType("CodingAssistant.Api.RootCauseRecoveryStore")!;
+    var supportedAlternatives=recoverySelectionType.GetMethod("SupportedAlternatives",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)!;
+    var groundedRecoveryInput=rootCauseFixture with {ApprovedPaths=["index.html","app.js"]};
+    var eligibleRecovery=(IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseReceiptFixture,groundedRecoveryInput])!;
+    Check(eligibleRecovery.Count==1 && eligibleRecovery[0].CausePath=="app.js",
+        "supported alternative retains the original finding but identifies a different approved file");
+    Check(((IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseReceiptFixture,rootCauseFixture])!).Count==0,
+        "independent support cannot expand approved write paths");
+    Check(((IReadOnlyList<RootCauseFinding>)supportedAlternatives.Invoke(null,
+        [rootCauseDisputedFixture,groundedRecoveryInput])!).Count==0,
+        "disputed proposals require refinement before repair admission");
+
     // Recovery is driven by evidence, not a lifetime three-repair cap.
     var aetProgressAttempts=Enumerable.Range(0,5).Select(i=>new RepairProgressAttempt(
         "fixture-"+i,"run-"+i,"run-"+(i+1),"hash-"+i,"hash-"+(i+1),"QaReviewed",

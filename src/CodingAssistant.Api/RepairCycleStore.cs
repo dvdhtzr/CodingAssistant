@@ -233,11 +233,11 @@ public sealed class RepairCycleStore(
 
     // This method is application-internal, never an HTTP request flag.
     internal RepairCycle StartRoutine(string taskId, StartRepairCycleRequest request,
-        ImplementationPlan plan,string agentModel)
-        => StartCore(taskId,request,plan,agentModel,true);
+        ImplementationPlan plan,string agentModel,RootCauseRepairTarget? recovery=null)
+        => StartCore(taskId,request,plan,agentModel,true,recovery);
 
     private RepairCycle StartCore(string taskId,StartRepairCycleRequest request,
-        ImplementationPlan plan,string? agentModel,bool routine)
+        ImplementationPlan plan,string? agentModel,bool routine,RootCauseRepairTarget? recovery=null)
     {
         CheckId(taskId);
         CheckId(request.ProposalId);
@@ -265,8 +265,11 @@ public sealed class RepairCycleStore(
             if (finding is null) throw new StoreFailure("INVALID_INPUT");
             selected.Add(finding);
         }
-        var allowedPaths = selected.Select(f => f.Path)
-            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var allowedPaths = recovery is null?selected.Select(f => f.Path)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[recovery.TargetPath];
+        if(recovery is not null && (!routine || selected.Count!=1 ||
+            selected[0].Path!=recovery.ObservedPath || selected[0].Index!=recovery.FindingIndex))
+            throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
         // One focused source file per cycle, and all its findings together.
         // More files can be addressed in later, independently reviewed cycles.
         if (allowedPaths.Length != 1)
@@ -375,6 +378,15 @@ public sealed class RepairCycleStore(
             if(issue is null || issue.State is "WithdrawnByReviewer" or "StaticResolutionRecorded")
                 throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
             var decision=issue.Decisions.LastOrDefault();
+            // Root cause authorization is a separate host-internal gate,
+            // checked with the original review and fresh receipt in BindRepair.
+            if(recovery is not null)
+            {
+                if(!issue.CurrentSource || !issue.LatestReview || issue.Id!=recovery.IssueId ||
+                    issue.RepairCycleId is not null || issue.Challenges.Count>0)
+                    throw new StoreFailure("REPAIR_NOT_AUTHORIZED");
+                continue;
+            }
             if(routine)
             {
                 var file=files.Single(f=>f.Path==finding.Path);
@@ -414,7 +426,7 @@ public sealed class RepairCycleStore(
         {
             if(request.ContinueCollaborationId is not null)
                 CollaborationStore.BindRepair(db,tx,taskId,request.ContinueCollaborationId,cycleId,proposal,selected,
-                    routine ? runId : null);
+                    routine ? runId : null,recovery);
             TaskStore.Execute(db, tx, """
                 INSERT INTO engineering_runs (
                     id,task_id,plan_revision,plan_sha256,spec_version,spec_sha256,
