@@ -94,8 +94,13 @@ export interface RunResultResponse {
 }
 
 export class ApiError extends Error {
-  constructor(public readonly status: number, public readonly code: string) {
-    super(`HTTP ${status}: ${code}`);
+  constructor(public readonly status: number, public readonly code: string,
+    public readonly missingRoles: readonly string[] = []) {
+    super(code === 'MODEL_NOT_INSTALLED' && missingRoles.length
+      ? 'Select an installed local model for: ' + missingRoles.map(role =>
+        role === 'QaEngineer' ? 'QA Engineer' : role.replace(/([a-z])([A-Z])/g, '$1 $2')).join(', ') +
+        '. No team approval or generation was started.'
+      : `HTTP ${status}: ${code}`);
   }
 }
 
@@ -123,7 +128,11 @@ export async function api<T>(
     const code = typeof data === 'object' && data !== null && 'error' in data &&
       typeof data.error === 'string' && /^[A-Z_]{2,60}$/.test(data.error)
       ? data.error : 'REQUEST_REJECTED';
-    throw new ApiError(response.status, code);
+    const supportedRoles = ['SoftwareEngineer', 'TechnicalLead', 'LeadSoftwareEngineer', 'QaEngineer'];
+    const reportedRoles = code === 'MODEL_NOT_INSTALLED' && typeof data === 'object' &&
+      data !== null && 'missingRoles' in data && Array.isArray(data.missingRoles)
+      ? data.missingRoles : [];
+    throw new ApiError(response.status, code, supportedRoles.filter(role => reportedRoles.includes(role)));
   }
   return response.json() as Promise<T>;
 }

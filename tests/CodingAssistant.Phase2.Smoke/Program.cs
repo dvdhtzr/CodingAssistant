@@ -5279,6 +5279,32 @@ try
             "qwen3.5:4b",approvedEngineerPlan.Outline);
         return (fixtureTask.Id,fixtureProposed);
     }
+    // A missing independent reviewer must not leave a partially admitted
+    // plan, source run or future repair authorization.
+    var (missingReviewerTask,missingReviewerPlan)=await PrepareUpfrontProject("Missing reviewer preflight fixture");
+    var missingReviewerPath="/api/tasks/"+missingReviewerTask;
+    using(var resetReviewer=await Post(client,missingReviewerPath+"/agent-models/LeadSoftwareEngineer",
+        new SetAgentRoleModelRequest(null)))
+        Check(resetReviewer.StatusCode==HttpStatusCode.OK,"reset reviewer to uninstalled default");
+    var missingReviewerRequest=new ApproveImplementationPlanRequest(1,missingReviewerPlan.Revision,
+        missingReviewerPlan.PlanSha256,"APPROVE "+missingReviewerPlan.PlanSha256,
+        new UpfrontRepairAuthorization(["app.js"],4));
+    using(var rejected=await Post(client,missingReviewerPath+"/implementation-plan/approve",missingReviewerRequest))
+    using(var rejection=await Body(rejected))
+    {
+        Check(rejected.StatusCode==HttpStatusCode.ServiceUnavailable &&
+            rejection.RootElement.GetProperty("error").GetString()=="MODEL_NOT_INSTALLED" &&
+            rejection.RootElement.GetProperty("missingRoles").EnumerateArray().Select(x=>x.GetString())
+                .SequenceEqual(new[]{"LeadSoftwareEngineer"}),
+            "combined approval preflight reports exact missing reviewer role");
+    }
+    Check(new ImplementationPlanStore(tasks,interviews).Read(missingReviewerTask).Plan?.Status=="Proposed" &&
+        engineeringStore.Latest(missingReviewerTask) is null &&
+        new UpfrontTeamAuthorizationStore(tasks).Read(missingReviewerTask) is null,
+        "missing reviewer cannot admit combined approval or launch source generation");
+    using(var ordinary=await Post(client,missingReviewerPath+"/implementation-plan/approve",
+        missingReviewerRequest with {TeamRepair=null}))
+        Check(ordinary.StatusCode==HttpStatusCode.OK,"ordinary plan-only approval does not require reviewer models");
     softwareModel.RoutineMode=true;
     softwareModel.RoutineInitialSource=true;
     softwareModel.RoutineGate=null;

@@ -745,9 +745,17 @@ public static class ApiHost
                 SafeAsync(async ()=>{
                     if(input.TeamRepair is null)return Results.Ok(db.Approve(id,input));
                     var inherited=db.Read(id).Plan?.Model??LocalInterviewModel.DefaultModel;
-                    var model=roleModels.Resolve(id,"SoftwareEngineer",inherited);
-                    if(!(await catalog.ListAsync(cancellation)).Contains(model,StringComparer.Ordinal))
-                        throw new StoreFailure("MODEL_NOT_INSTALLED");
+                    // Check all participants before recording combined approval or
+                    // launching generation. Runtime admission still rechecks models.
+                    var selected=new[]{"SoftwareEngineer","TechnicalLead","LeadSoftwareEngineer","QaEngineer"}
+                        .Select(role=>new {Role=role,Model=roleModels.Resolve(id,role,inherited)}).ToArray();
+                    var installed=await catalog.ListAsync(cancellation);
+                    var missing=selected.Where(role=>!installed.Contains(role.Model,StringComparer.Ordinal))
+                        .Select(role=>role.Role).ToArray();
+                    if(missing.Length!=0)
+                        return Results.Json(new {error="MODEL_NOT_INSTALLED",missingRoles=missing},
+                            statusCode:StatusCodes.Status503ServiceUnavailable);
+                    var model=selected[0].Model;
                     var plan=db.Approve(id,input);
                     coordinator.Start(id,new StartEngineeringRunRequest(plan.Revision,plan.PlanSha256,
                         UseApprovedTeamAuthorization:true),model);
