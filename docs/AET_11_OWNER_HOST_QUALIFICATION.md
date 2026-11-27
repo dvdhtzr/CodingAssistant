@@ -226,3 +226,13 @@ recovery is available for an interrupted, exact owned attempt; it
 does not restart the guest. A live owner or ambiguous create outcome
 blocks recovery. No generated execution or runtime registry promotion
 follows from these checks.
+
+
+The owner reported durable working control PASS at `92a37db` (private
+receipt `windows-static-web-0fc9617b83a5.json`). Next run the new durable
+negative-only and real interruption commands in the AET-8 evidence
+document. The interruption probe deliberately cancels its own fixed
+container and terminates its own qualification child, not the API or
+any unrelated process. Run it without other pilot jobs in progress.
+If either probe fails or cleanup debt is reported, stop and retain
+evidence rather than manually deleting the journal.

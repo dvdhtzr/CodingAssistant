@@ -437,3 +437,39 @@ cancellation/crash adversarial runs, full negative control matrix,
 pinned control-plane integration and executable authorization remain
 required. Do not run recovery against an active owner process or
 manually delete unresolved journals.
+
+
+### Owner-reported durable fixed-control PASS and negative/interruption controls
+
+At `92a37db` the owner reported
+`AET-8 WINDOWS_PILOT_DURABLE_FIXED_CONTROL_PASS`, configuration audited
+true, working 7/7 (all completed), container removed true, cleanup debt
+false. Private receipt `windows-static-web-0fc9617b83a5.json`; raw
+receipt not independently retrieved.
+
+The same durable runner now accepts only the frozen working, broken and
+spoof controls internally; the negative-only command requires both
+negatives to complete all seven cases with zero passes, same engine and
+policy identities, and confirmed cleanup. The separate interruption
+supervisor launches the existing fixed working command as its own
+child, observes the exact child-owned durable Starting journal and an
+actual running Docker container, then exercises two distinct actions:
+Docker cancellation by immutable container ID, and abrupt termination
+of its own qualification owner process followed by explicit recovery.
+Neither scenario is allowed to pass on successful guest exit, missing
+running observation, missing archived cleanup, another owner's attempt,
+or any unresolved cleanup debt. It uses only fixed trusted source;
+no user-supplied archive, source path or program is accepted.
+
+~~~powershell
+node tools/m4/windows_pilot_lifecycle_qualification.mjs --run-negative-controls
+node tools/m4/windows_pilot_interruption_qualification.mjs --run
+~~~
+
+The latter is a diagnostic supervisor, not production cancellation:
+it confirms the owner process exit and container removal, not every
+possible orphan host-side Docker client process. It does not qualify
+arbitrary generated-source renderer isolation, establish host
+attestation, grant execution or promote the runtime. Exact policy
+and host evidence binding and remaining candidate security controls
+are still required.

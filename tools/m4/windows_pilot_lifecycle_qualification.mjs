@@ -18,7 +18,7 @@ const reportBase=()=>({schemaVersion:1,stage:'AET-8-pilot-durable-lifecycle',sta
   configurationAudited:false,observations:null,containerRemoved:false,cleanupDebt:false,
   generatedSourceExecuted:false,generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false,reason:null});
 const errorCode=e=>/^[A-Z_]{3,90}$/.test(e?.message??'')?e.message:'PILOT_LIFECYCLE_BLOCKED';
-function tools(docker){
+export function pilotHostTools(docker){
   const query=(args,timeout=10000)=>{
     const r=docker(args,timeout);
     if(r?.status!==0||r.timedOut||typeof r.stdout!=='string'||r.stdout.length>65536)fail('PILOT_DOCKER_QUERY_FAILED');
@@ -40,7 +40,7 @@ function tools(docker){
   const inspect=id=>json(['container','inspect',id,'--format','{{json .}}']);
   return {query,engine,list,inspect};
 }
-function assertOwned(identity,id,actual){
+export function assertPilotContainerOwned(identity,id,actual){
   if(!digest(id)||actual?.Id!==id||actual.Name!=='/'+identity.name||
     actual.Image!==identity.imageId||actual.Config?.Labels?.[identity.label]!==identity.attemptId||
     actual.Config?.Labels?.['codingassistant.pilot-policy']!==identity.policySha256)
@@ -54,7 +54,7 @@ function cleanup(journal,host,{ambiguousCreate=false}={}){
   let id=initial.containerId;
   if(found!==''){
     if(!digest(found)||id!==null&&id!==found)fail('PILOT_CONTAINER_OWNERSHIP_MISMATCH');
-    const actual=host.inspect(found);assertOwned(identity,found,actual);id=found;
+    const actual=host.inspect(found);assertPilotContainerOwned(identity,found,actual);id=found;
   }
   // A create request can outlive a killed client. Do not infer absence is
   // conclusive if the create never returned a durable exact container ID.
@@ -67,28 +67,29 @@ function cleanup(journal,host,{ambiguousCreate=false}={}){
   journal.advance('CleanupPending',id);
   if(found!==''){
     if(host.engine()!==identity.engineId)fail('PILOT_ENGINE_CHANGED');
-    assertOwned(identity,id,host.inspect(id));
+    assertPilotContainerOwned(identity,id,host.inspect(id));
     host.query(['rm','-f',id],15000);
   }
   if(host.list('name=^/'+identity.name+'$')!==''||
     id!==null&&host.list('id='+id)!=='')fail('PILOT_CLEANUP_UNCONFIRMED');
   journal.advance('Cleaned',id);journal.archive();
 }
-function localRoot(env){
+export function pilotLocalRoot(env){
   if(!env.LOCALAPPDATA||!path.isAbsolute(env.LOCALAPPDATA))fail('PILOT_JOURNAL_PATH_INVALID');
   return path.join(env.LOCALAPPDATA,'CodingAssistant','pilot-attempts');
 }
 export function qualifyPilotLifecycle({platform=process.platform,env=process.env,docker=shellDocker,
-  root,attemptId=randomBytes(16).toString('hex')}={}){
+  root,attemptId=randomBytes(16).toString('hex'),control='working'}={}){
   const report=reportBase();
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT){report.reason='PILOT_LOCAL_WINDOWS_ONLY';return report;}
+  if(!['working','broken','spoof'].includes(control)){report.reason='PILOT_FIXED_CONTROL_REQUIRED';return report;}
   let journal,host,ambiguousCreate=false;
   try{
-    root??=localRoot(env);host=tools(docker);
+    root??=pilotLocalRoot(env);host=pilotHostTools(docker);
     if(readPilotAttempt(root))fail('PILOT_PRIOR_CLEANUP_REQUIRED');
     const engineId=host.engine(),image=readLocalImage({platform,env,docker});
     const bundle=fixedCandidateBundle(),policy=preparePilotPolicy(image,bundle.adapterSha256,bundle.evaluatorSha256);
-    const fixture=fixedCandidateFixture('working',bundle,policy.policySha256,attemptId);
+    const fixture=fixedCandidateFixture(control,bundle,policy.policySha256,attemptId);
     const identity={...policy.identity(attemptId),engineId,
       candidateSha256:fixture.expected.candidateSha256,archiveSha256:fixture.expected.archiveSha256};
     Object.assign(report,{attemptId,policySha256:policy.policySha256,engineId});
@@ -104,17 +105,18 @@ export function qualifyPilotLifecycle({platform=process.platform,env=process.env
     if(host.engine()!==engineId)fail('PILOT_ENGINE_CHANGED');
     policy.audit(attemptId,id,host.inspect(id));
     journal.advance('Starting');
-    // Fixed bundle and fixed working control only. Explicit attach to the
+    // Fixed bundle and one of three frozen controls only. Explicit attach to the
     // already audited ID. No arbitrary input or CLI execution path.
     const result=docker(['start','-a','-i',id],180000,fixture.source);
-    const actual=host.inspect(id);assertOwned(identity,id,actual);
+    const actual=host.inspect(id);assertPilotContainerOwned(identity,id,actual);
     if(actual.State?.Running!==false||actual.State?.Status!=='exited'||actual.State?.ExitCode!==0||
       result?.status!==0||result.timedOut)fail('PILOT_GUEST_EXIT_UNCONFIRMED');
     journal.advance('Exited');
     const parsed=parseFixedCandidateStream(result.stdout??'',fixture.expected);
     report.observations=parsed.observations;
-    if(parsed.observations?.status!=='CHECKS_PASSED_NOT_VERIFIED'||parsed.observations.completed!==7||
-      parsed.observations.passed!==7)fail('PILOT_FIXED_CONTROL_FAILED');
+    if(parsed.observations?.status!==(control==='working'?'CHECKS_PASSED_NOT_VERIFIED':'TESTS_FAILED')||
+      parsed.observations.completed!==7||parsed.observations.passed!==(control==='working'?7:0))
+      fail('PILOT_FIXED_CONTROL_FAILED');
   }catch(e){report.reason=errorCode(e);}
   finally{
     if(journal){
@@ -139,10 +141,10 @@ export function reconcilePilotLifecycle({platform=process.platform,env=process.e
   const report=reportBase();
   if(platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT){report.reason='PILOT_LOCAL_WINDOWS_ONLY';return report;}
   try{
-    root??=localRoot(env);
+    root??=pilotLocalRoot(env);
     const pending=readPilotAttempt(root);
     if(!pending)fail('PILOT_NO_PENDING_ATTEMPT');
-    const host=tools(docker);
+    const host=pilotHostTools(docker);
     if(host.engine()!==pending.identity.engineId)fail('PILOT_ENGINE_CHANGED');
     const journal=recoverPilotAttempt(root,{...(isAlive?{isAlive}:{})});
     Object.assign(report,{attemptId:journal.identity.attemptId,policySha256:journal.identity.policySha256,engineId:journal.identity.engineId});
@@ -155,8 +157,27 @@ export function reconcilePilotLifecycle({platform=process.platform,env=process.e
 }
 export function main(argv=process.argv.slice(2)){
   if(argv.length===0){console.log('AET-8 PILOT_DURABLE_LIFECYCLE: NOT_RUN');return 0;}
-  if(argv.length!==1||!['--run','--recover'].includes(argv[0])){
-    console.error('Only --run fixed working control or --recover interrupted attempt supported');return 2;
+  if(argv.length!==1||!['--run','--run-negative-controls','--recover'].includes(argv[0])){
+    console.error('Only --run, --run-negative-controls or --recover supported');return 2;
+  }
+  if(argv[0]==='--run-negative-controls'){
+    const negative={schemaVersion:1,stage:'AET-8-pilot-negative-controls',status:'BLOCKED',
+      recordedAtUtc:new Date().toISOString(),controls:{},generatedSourceExecuted:false,
+      generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false};
+    for(const control of ['broken','spoof']){
+      const result=qualifyPilotLifecycle({control});negative.controls[control]=result;
+      console.log('  '+control+': '+(result.observations?result.observations.passed+'/'+result.observations.required+
+        ' ('+result.observations.completed+' completed)':'NOT_COMPLETE')+'; removed: '+result.containerRemoved);
+      if(result.status!=='PILOT_DURABLE_FIXED_CONTROL_PASS'){console.log('  blocker: '+result.reason);break;}
+    }
+    const values=Object.values(negative.controls);
+    if(values.length===2&&values.every(v=>v.status==='PILOT_DURABLE_FIXED_CONTROL_PASS'&&v.containerRemoved&&
+      v.policySha256===values[0].policySha256&&v.engineId===values[0].engineId))
+      negative.status='PILOT_DURABLE_NEGATIVE_CONTROLS_PASS';
+    console.log('AET-8 WINDOWS_'+negative.status);
+    console.log('  generated source: NOT_AUTHORIZED; Static Web runtime: UNQUALIFIED');
+    console.log('Evidence: '+writePrivateEvidence(negative));
+    return negative.status==='PILOT_DURABLE_NEGATIVE_CONTROLS_PASS'?0:2;
   }
   const report=argv[0]==='--run'?qualifyPilotLifecycle():reconcilePilotLifecycle();
   console.log('AET-8 WINDOWS_'+report.status);

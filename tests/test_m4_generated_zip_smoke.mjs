@@ -938,7 +938,7 @@ test('pilot attempt recovery claims interrupted journal once and never grants a 
   recovered.advance('CleanupPending');recovered.advance('Cleaned');recovered.archive();
   assert.equal(readPilotAttempt(root),null);
 }));
-function durablePilotDocker({badExit=false,cleanupFails=false,wrongOwner=false}={}){
+function durablePilotDocker({badExit=false,cleanupFails=false,wrongOwner=false,negative=false}={}){
   const {image,attempt,containerId,inspect}=pilotPolicyFixture();
   const calls=[];let active=false;
   const docker=(args,timeout,source)=>{
@@ -958,6 +958,7 @@ function durablePilotDocker({badExit=false,cleanupFails=false,wrongOwner=false}=
       inspect.State={Status:'exited',Running:false,ExitCode:badExit?2:0};
       const request=JSON.parse(Buffer.from(source.match(/const INPUT='([^']+)'/)[1],'base64').toString('utf8'));
       const {report}=candidateObservationFixture();Object.assign(report,request.expected);
+      if(negative)report.cases=allCases(CALCULATION_CASES,false);
       return {status:badExit?2:0,stdout:JSON.stringify({kind:'progress',stage:'COMPLETE'})+'\n'+JSON.stringify(report)};
     }
     if(args[0]==='rm'){if(!cleanupFails)active=false;return {status:0,stdout:containerId};}
@@ -1021,3 +1022,51 @@ test('truncated active journal blocks all new work and recovery without deleting
   assert.throws(()=>reservePilotAttempt(root,{...journalIdentity(),attemptId:'e'.repeat(32),name:'ca-win-pilot-'+'e'.repeat(32)}),/PRIOR_CLEANUP_REQUIRED/);
   assert.ok(fs.readFileSync(file,'utf8').endsWith('{"sequence":2'));
 }));
+
+
+import {observeRunningPilot,cancelObservedPilot} from '../tools/m4/windows_pilot_interruption_qualification.mjs';
+test('durable negative controls require all seven observed failures and reject unrelated input',()=>{
+  for(const control of ['broken','spoof'])withPilotJournal(root=>{
+    const f=durablePilotDocker({negative:true});
+    const result=qualifyPilotLifecycle({platform:'win32',env:{},docker:f.docker,attemptId:f.attempt,root,control});
+    assert.equal(result.status,'PILOT_DURABLE_FIXED_CONTROL_PASS',result.reason);
+    assert.equal(result.observations.completed,7);assert.equal(result.observations.passed,0);
+    assert.equal(result.containerRemoved,true);
+  });
+  withPilotJournal(root=>{
+    const f=durablePilotDocker();
+    const result=qualifyPilotLifecycle({platform:'win32',env:{},docker:f.docker,attemptId:f.attempt,root,control:'broken'});
+    assert.equal(result.reason,'PILOT_FIXED_CONTROL_FAILED');assert.equal(result.containerRemoved,true);
+    const blocked=qualifyPilotLifecycle({platform:'win32',env:{},docker:f.docker,root,control:'project.zip'});
+    assert.equal(blocked.reason,'PILOT_FIXED_CONTROL_REQUIRED');
+  });
+});
+test('interruption requires exact owner, running state, engine, and container identity before signaling',()=>withPilotJournal(root=>{
+  const identity=journalIdentity(),j=reservePilotAttempt(root,identity);
+  const {inspect,containerId}=pilotPolicyFixture();
+  const calls=[];let engine='engine-test';
+  const host={engine:()=>engine,inspect:()=>inspect,query:args=>{calls.push(args);return containerId;}};
+  assert.equal(observeRunningPilot(root,process.pid,host),null);
+  j.advance('Creating');j.advance('Created',containerId);j.advance('Audited');j.advance('Starting');
+  assert.throws(()=>observeRunningPilot(root,process.pid+1,host),/OWNER_MISMATCH/);
+  assert.equal(observeRunningPilot(root,process.pid,host),null);
+  inspect.State={Status:'running',Running:true};
+  const item=observeRunningPilot(root,process.pid,host);
+  engine='other';assert.throws(()=>cancelObservedPilot(item,host),/NOT_CURRENT/);
+  engine='engine-test';inspect.Config.Labels[identity.label]='0'.repeat(32);
+  assert.throws(()=>cancelObservedPilot(item,host),/OWNERSHIP_MISMATCH/);
+  inspect.Config.Labels[identity.label]=identity.attemptId;
+  cancelObservedPilot(item,host);
+  assert.deepEqual(calls,[['kill','--signal=KILL',containerId]]);
+  inspect.State={Status:'exited',Running:false};
+  assert.throws(()=>cancelObservedPilot(item,host),/NOT_CURRENT/);
+  assert.equal(calls.length,1);
+}));
+test('real interruption qualification CLI is inert without explicit run and rejects project input',()=>{
+  for(const args of [[],['--run','project.zip']]){
+    const result=spawnSync(process.execPath,['tools/m4/windows_pilot_interruption_qualification.mjs',...args],
+      {encoding:'utf8',timeout:5000});
+    assert.equal(result.status,args.length===0?0:2,result.stderr);
+    if(args.length===0)assert.match(result.stdout,/NOT_RUN/);
+  }
+});
