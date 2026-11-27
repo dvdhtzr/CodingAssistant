@@ -54,7 +54,7 @@ function main(args){
   if(!args.length){console.log('PILOT_JOB_FIXED_RECOVERY NOT_RUN');return 0;}
   if(args.length===1&&args[0]==='--observe-fixed'){
     try{console.log(JSON.stringify(observeFixedJobControl()));return 0;}
-    catch{console.log(JSON.stringify({running:false}));return 0;}
+    catch(e){console.log(JSON.stringify({running:false,reason:/^[A-Z_]{3,90}$/.test(e?.message??'')?e.message:'PILOT_JOB_OBSERVATION_BLOCKED'}));return 0;}
   }
   if(args.length!==1||args[0]!=='--recover-fixed')return 2;
   const report=recoverFixedJobControl();

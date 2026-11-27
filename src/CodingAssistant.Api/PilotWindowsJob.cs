@@ -57,6 +57,14 @@ internal sealed class PilotWindowsJob : IDisposable
         using var h=OpenJobObjectW(JobQuery,false,name);
         return !h.IsInvalid&&IsProcessInJobRaw(process.Handle,h,out var member)&&member;
     }
+    internal static bool Exists(string name)
+    {
+        CheckName(name);
+        using var h=OpenJobObjectW(JobQuery,false,name);
+        if(!h.IsInvalid)return true;
+        if(Marshal.GetLastWin32Error()!=2)throw new StoreFailure("PILOT_JOB_QUERY_FAILED");
+        return false;
+    }
     internal int[] Members()=>ReadMembers(handle);
     private static int[] ReadMembers(SafeFileHandle h)
     {
@@ -81,7 +89,7 @@ internal sealed class PilotWindowsJob : IDisposable
         script=EvaluationPlanBinder.RequirePinnedFile(script,scriptHash);
         var file=Path.GetFileName(script);
         if(!string.Equals(Path.GetFileName(node),"node.exe",StringComparison.OrdinalIgnoreCase)||
-            !((file=="static_web_candidate_dispatch.mjs"&&argument=="--run-fixed-controls")||
+            !((file=="static_web_candidate_dispatch.mjs"&&(argument is "--run-fixed-controls" or "--run-job-crash-control"))||
               (file=="windows_job_recovery_control.mjs"&&argument=="--recover-fixed"))||
             node.Contains('"')||script.Contains('"'))
             throw new StoreFailure("PILOT_JOB_FIXED_CONTROL_REQUIRED");

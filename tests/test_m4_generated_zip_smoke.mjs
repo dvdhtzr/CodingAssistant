@@ -1673,3 +1673,10 @@ test('shared dispatcher has no arbitrary-source CLI',()=>{
   const invalid=spawnSync(process.execPath,[script,'--run-fixed-controls','project.zip'],{encoding:'utf8',timeout:5000});
   assert.equal(invalid.status,2);
 });
+
+
+test('job crash control accepts no arbitrary arguments or generated input',()=>{
+  const script='tools/m4/static_web_candidate_dispatch.mjs';
+  const invalid=spawnSync(process.execPath,[script,'--run-job-crash-control','project.zip'],{encoding:'utf8',timeout:5000});
+  assert.equal(invalid.status,2);
+});

@@ -78,7 +78,7 @@ internal static class PilotWindowsJobSmoke
     internal static int Owner(string name)
     {
         using var job=PilotWindowsJob.Create(name);
-        Fixed(job,Script("static_web_candidate_dispatch.mjs"),"--run-fixed-controls");
+        Fixed(job,Script("static_web_candidate_dispatch.mjs"),"--run-job-crash-control");
         return 0;
     }
     private static Process StartOwner(string name)
@@ -108,10 +108,13 @@ internal static class PilotWindowsJobSmoke
         try
         {
             var clock=Stopwatch.StartNew();
-            while(clock.Elapsed<TimeSpan.FromSeconds(90)&&!owner.HasExited)
+            var journalSeen=false;var nodeSeen=false;var dockerSeen=false;var runningSeen=false;
+            var lastObservation="NOT_STARTED";
+            while(clock.Elapsed<TimeSpan.FromSeconds(180)&&!owner.HasExited)
             {
                 var pending=Starting();
                 if(pending is null){await Task.Delay(100);continue;}
+                journalSeen=true;
                 int[] members;
                 try{members=PilotWindowsJob.Inspect(crashName);}
                 catch(StoreFailure){await Task.Delay(100);continue;}
@@ -127,13 +130,21 @@ internal static class PilotWindowsJobSmoke
                     var nodePath=Path.GetFullPath(Required("CODINGASSISTANT_TEST_NODE_EXE"));
                     var dockerPath=Path.GetFullPath(Required("CA_PILOT_DOCKER_EXE"));
                     bool Image(Process p,string expected)=>string.Equals(p.MainModule?.FileName,expected,StringComparison.OrdinalIgnoreCase);
-                    if(!batch.Any(p=>p.Id==pending.Value.Owner&&Image(p,nodePath))||
-                        !batch.Any(p=>Image(p,dockerPath))||batch.Any(p=>p.HasExited||!PilotWindowsJob.ConfirmMember(crashName,p)))
-                        continue;
+                    var nodePresent=batch.Any(p=>p.Id==pending.Value.Owner&&Image(p,nodePath));
+                    var dockerPresent=batch.Any(p=>Image(p,dockerPath));
+                    nodeSeen|=nodePresent;dockerSeen|=dockerPresent;
+                    if(!nodePresent||!dockerPresent||batch.Any(p=>p.HasExited||!PilotWindowsJob.ConfirmMember(crashName,p)))
+                    {
+                        await Task.Delay(100);continue;
+                    }
                     var running=await Observe();
+                    runningSeen|=running.GetProperty("running").GetBoolean();
+                    if(running.TryGetProperty("reason",out var blocker))lastObservation=blocker.GetString()??"UNKNOWN";
                     if(!running.GetProperty("running").GetBoolean()||running.GetProperty("attemptId").GetString()!=pending.Value.Attempt||
                         running.GetProperty("ownerPid").GetInt32()!=pending.Value.Owner)
-                        continue;
+                    {
+                        await Task.Delay(100);continue;
+                    }
                     // Recheck the exact journal and member set after opening
                     // handles. Inspect's query handle is already disposed.
                     if(Starting()!=pending||!PilotWindowsJob.Inspect(crashName).Order().SequenceEqual(members.Order()))
@@ -146,6 +157,7 @@ internal static class PilotWindowsJobSmoke
                 finally{foreach(var p in batch)p.Dispose();}
                 await Task.Delay(100);
             }
+            Console.WriteLine($"  crash observation: journal={journalSeen}; node={nodeSeen}; docker={dockerSeen}; running={runningSeen}; last={lastObservation}; owner exited={owner.HasExited}");
             Check(attempt is not null&&observed.Count>=2&&!owner.HasExited,"Actual Node and Docker job members not observed");
             // Do NOT use Kill(entireProcessTree:true). The owner alone
             // dies, and the kernel job must terminate the descendants.
@@ -156,6 +168,7 @@ internal static class PilotWindowsJobSmoke
                 await Task.WhenAll(observed.Select(p=>p.WaitForExitAsync(deadline.Token)));
             }
             Check(owner.ExitCode!=0&&observed.All(p=>p.HasExited),"Job descendant exit unconfirmed");
+            Check(!PilotWindowsJob.Exists(crashName),"Job still exists after last owner exit");
             Console.WriteLine("  crash: owner and "+observed.Count+" observed job processes exited");
             Check(Starting()?.Attempt==attempt,"Interrupted exact attempt not retained");
             var beforeRecovery=Receipts();
@@ -172,7 +185,8 @@ internal static class PilotWindowsJobSmoke
                 Hash(Required("CA_PILOT_DOCKER_EXE"))==Required("CA_PILOT_DOCKER_SHA256"),"Executable pins changed");
             var evidence=new {schemaVersion=1,stage="AET-8-windows-job-ownership",status="PILOT_JOB_OWNERSHIP_PASS",
                 recordedAtUtc=DateTimeOffset.UtcNow.ToString("O"),jobListAtomic=true,killOnClose=true,
-                ownerExitConfirmed=true,observedProcessCount=observed.Count,observedProcessesExited=true,
+                ownerExitConfirmed=true,observedProcessCount=observed.Count,observedProcessesExited=true,jobClosedConfirmed=true,
+                crashControl="fixed-attach-stdin-held-open",
                 runningContainer=live,normalReceiptName=normalReceipt.Name,normalReceiptSha256=normalReceipt.Hash,
                 recoveryReceiptName=recoveryReceipt.Name,recoveryReceiptSha256=recoveryReceipt.Hash,
                 nodeSha256=Required("CA_PILOT_NODE_SHA256"),dockerSha256=Required("CA_PILOT_DOCKER_SHA256"),
@@ -197,6 +211,8 @@ internal static class PilotWindowsJobSmoke
             // Never silently mark a failed qualification as a clean one.
             if(!owner.HasExited){owner.Kill();owner.WaitForExit(15000);}
             foreach(var p in observed)p.Dispose();
+            if(Directory.Exists(Path.Combine(Root(),"active")))
+                Console.Error.WriteLine("  active pilot journal retained; cleanup must be reconciled before another run");
         }
     }
 }

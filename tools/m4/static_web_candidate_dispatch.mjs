@@ -90,7 +90,7 @@ function requireBinary(file,hash,base){
 // and stdio closed), not simply a request to kill it. If close cannot
 // be confirmed the journal remains active; do not remove/replay work
 // while the attach request may still be in flight.
-async function pinnedAttach(id,source,env,signal){
+async function pinnedAttach(id,source,env,signal,{holdInputOpen=false}={}){
   if(process.platform!=='win32'||env.DOCKER_HOST||env.DOCKER_CONTEXT||!digest(id))
     fail('PILOT_LOCAL_WINDOWS_ONLY');
   const check=()=>{
@@ -132,7 +132,11 @@ async function pinnedAttach(id,source,env,signal){
       });
       deadline=setTimeout(stop,180000);
       signal?.addEventListener('abort',stop,{once:true});
-      if(signal?.aborted)stop();else child.stdin.end(source,'utf8');
+      if(signal?.aborted)stop();
+      else if(!holdInputOpen)child.stdin.end(source,'utf8');
+      // Crash-only frozen control: no guest program bytes or EOF. The
+      // exact audited container waits for stdin, keeping the real
+      // Docker attach process observable. Deadline/cleanup still apply.
     }catch{
       // Spawn failed before a child was returned, or stdio setup failed.
       if(!child)finish({closed:true,status:null,stdout:'',interrupted:false});
@@ -249,7 +253,22 @@ export async function qualifyCandidateDispatchControl({platform=process.platform
 }
 export async function main(argv=process.argv.slice(2)){
   if(argv.length===0){console.log('CANDIDATE_DISPATCH_LIFECYCLE NOT_RUN');return 0;}
-  if(argv.length!==1||argv[0]!=='--run-fixed-controls'){console.error('Only --run-fixed-controls is supported');return 2;}
+  if(argv.length!==1||!['--run-fixed-controls','--run-job-crash-control'].includes(argv[0])){
+    console.error('Only fixed qualification controls are supported');return 2;
+  }
+  if(argv[0]==='--run-job-crash-control'){
+    try{
+      if(Object.keys(process.env).some(k=>/^NODE_|^OPENSSL_(CONF|MODULES)$/i.test(k)&&process.env[k]))
+        fail('PILOT_DISPATCH_ENVIRONMENT_OVERRIDE');
+      // The owner must be killed during the actual attach. An ordinary
+      // exit, even with clean removal, is not a crash qualification.
+      const result=await qualifyCandidateDispatchControl({control:'build-working',
+        attach:(id,source,token)=>pinnedAttach(id,source,process.env,token,{holdInputOpen:true})});
+      writePrivateEvidence({...result,stage:'AET-8-job-crash-control-uninterrupted',
+        status:'BLOCKED',reason:result.reason??'PILOT_JOB_OWNER_NOT_INTERRUPTED'});
+    }catch{}
+    return 2;
+  }
   const report={schemaVersion:1,stage:'AET-8-candidate-dispatch-lifecycle-controls',status:'BLOCKED',
     recordedAtUtc:new Date().toISOString(),controls:{},generatedSourceExecuted:false,
     generatedCodeExecutionEnabled:false,runtimeQualified:false,generatedArtifactVerified:false,reason:null};

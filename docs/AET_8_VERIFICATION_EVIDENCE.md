@@ -907,3 +907,23 @@ binding the actual normal and recovery receipt bytes, current executable
 and module hashes, and observed process exit checks. This is sampled
 process-handle evidence plus OS job semantics, not an exhaustive list of
 all historical descendants or a generated execution grant.
+
+### Job ownership observation correction
+
+At `0a21c36` the owner reported the normal job-owned controls passed,
+but the crash observer failed to capture live Node/Docker members.
+This is not a crash qualification PASS. The new crash-only control
+starts the same exact audited frozen working container via the shared
+attach path but deliberately holds stdin open without sending the
+guest program or EOF. It cannot finish successfully and is bounded
+by the existing attach deadline. The observer checks actual live
+members, the running owned container, journal identity, owner and
+sampled descendant exits, and disappearance of the named job. The
+normal three-control run still executes the full guest and is unchanged
+in behavior. Additional observation diagnostics distinguish a missing
+journal, process image, or live container. No generated input accepted.
+
+Before retrying, check for retained active journal/labelled containers
+from the failed observation. Do not remove unrelated containers or
+manually delete the journal. If debt remains, report it before retrying;
+prior unknown process ownership must not be treated as confirmed clean.
