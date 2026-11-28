@@ -5616,10 +5616,19 @@ try
             archiveSha256=debt?null:new string('a',64),observations=debt?(JsonElement?)null:observations,
             reason=debt?"CANDIDATE_DISPATCH_ATTACH_UNCONFIRMED":null,executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false});
     }
+    PilotExecutionResult RecordFixtureResult(string taskId,string admissionId,JsonElement receipt)
+    {
+        var method=typeof(PilotExecutionAdmissionStore).GetMethod("RecordResult",
+            System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)
+            ??throw new Exception("missing private result ledger");
+        try{return (PilotExecutionResult)method.Invoke(admissionStore,[taskId,admissionId,receipt])!;}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
+        {throw failure;}
+    }
     var resultFixtureReceipt=ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256,failed:true);
     try
     {
-        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
+        RecordFixtureResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
         Check(false,"unconsumed admission cannot record results");
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_NOT_CONSUMED")
@@ -5867,14 +5876,14 @@ try
     }
     Check(admissionStore.PendingNativeCleanup().Contains(recoveryIdentity.Obligation),
         "rolled back confirmation retains cleanup debt");
-    var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
+    var storedFixtureResult=RecordFixtureResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
-        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt)==storedFixtureResult,
+        RecordFixtureResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt)==storedFixtureResult,
         "consumed attempt records exactly one durable idempotent result");
     try
     {
-        admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256));
+        RecordFixtureResult(taskBound.Id,resultFixtureAdmission.Id,ResultFixture(resultFixtureAdmission.AttemptId,resultFixtureAdmission.TransportSha256));
         Check(false,"recorded test failure cannot be overwritten");
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_ALREADY_RECORDED")
@@ -5902,7 +5911,7 @@ try
         "revoking consumed attempt prevents late result without claiming cleanup");
     try
     {
-        admissionStore.RecordResult(taskBound.Id,revokedFixtureAdmission.Id,ResultFixture(revokedFixtureAdmission.AttemptId,revokedFixtureAdmission.TransportSha256));
+        RecordFixtureResult(taskBound.Id,revokedFixtureAdmission.Id,ResultFixture(revokedFixtureAdmission.AttemptId,revokedFixtureAdmission.TransportSha256));
         Check(false,"revoked consumed attempt cannot publish late success");
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_ALREADY_RECORDED")
