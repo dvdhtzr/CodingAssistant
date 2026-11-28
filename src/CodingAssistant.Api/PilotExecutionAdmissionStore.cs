@@ -35,6 +35,10 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             attempt_id TEXT NOT NULL UNIQUE,consent_sha256 TEXT NOT NULL,transport_sha256 TEXT NOT NULL,
             job_name TEXT NOT NULL UNIQUE,created_utc TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pilot_native_launch_claims(
+            admission_id TEXT PRIMARY KEY REFERENCES pilot_native_dispatches(admission_id) ON DELETE CASCADE,
+            claimed_utc TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS pilot_execution_results(
             admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
             status TEXT NOT NULL CHECK(status IN ('BUILD_FAILED','TESTS_FAILED','CHECKS_PASSED_NOT_VERIFIED','VERIFICATION_BLOCKED')),
@@ -246,6 +250,44 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             VALUES(@id,@attempt,@consent,@transport,@job,@now)
             """,("@id",item.Id),("@attempt",item.AttemptId),("@consent",item.ConsentSha256),
             ("@transport",item.TransportSha256),("@job",jobName),("@now",Now()));
+    }
+    // Claim once, before attempting to create a job. A claim is never
+    // reusable, including when a process was not created or cleanup failed.
+    // Neither a reservation nor a claim establishes native qualification.
+    private static string ClaimNativeLaunch(SqliteConnection db,SqliteTransaction tx,PilotExecutionAdmission item)
+    {
+        var jobName=@"Local\CodingAssistant-Pilot-"+item.AttemptId;
+        if(TaskStore.Scalar(db,tx,"""
+            SELECT d.job_name FROM pilot_native_dispatches d
+            JOIN pilot_execution_admissions a ON a.id=d.admission_id
+            JOIN pilot_execution_transitions t ON t.admission_id=a.id AND t.state='Consumed'
+            WHERE a.id=@id AND a.task_id=@task AND a.state='Consumed'
+                AND a.attempt_id=@attempt AND a.consent_sha256=@consent AND a.transport_sha256=@transport
+                AND d.attempt_id=a.attempt_id AND d.consent_sha256=a.consent_sha256 AND d.transport_sha256=a.transport_sha256
+                AND t.attempt_id=a.attempt_id AND t.consent_sha256=a.consent_sha256 AND t.transport_sha256=a.transport_sha256
+                AND NOT EXISTS(SELECT 1 FROM pilot_execution_results r WHERE r.admission_id=a.id)
+            """,("@id",item.Id),("@task",item.TaskId),("@attempt",item.AttemptId),
+            ("@consent",item.ConsentSha256),("@transport",item.TransportSha256))!=jobName)
+            throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
+        if(!ResultCurrent(db,tx,item,StoredTransport(db,tx,item)))
+            throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
+        if(TaskStore.Execute(db,tx,"""
+            INSERT OR IGNORE INTO pilot_native_launch_claims(admission_id,claimed_utc) VALUES(@id,@now)
+            """,("@id",item.Id),("@now",Now()))!=1)
+            throw new StoreFailure("PILOT_NATIVE_LAUNCH_ALREADY_CLAIMED");
+        return jobName;
+    }
+    // This host-only seam deliberately cannot reach the native launcher
+    // until executable policy is separately qualified. No caller-provided
+    // callback, command, or script may substitute for that policy.
+    internal string ClaimNativeDispatch(string taskId,string id)
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var item=Find(db,tx,taskId,id);
+        if(item.State!="Consumed")throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
+        RequireExecutablePolicy();
+        var jobName=ClaimNativeLaunch(db,tx,item);
+        tx.Commit();return jobName;
     }
     internal PilotExecutionAdmission Revoke(string taskId,string id)
     {
