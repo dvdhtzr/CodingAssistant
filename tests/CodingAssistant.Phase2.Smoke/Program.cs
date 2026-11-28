@@ -5876,6 +5876,47 @@ try
     }
     Check(admissionStore.PendingNativeCleanup().Contains(recoveryIdentity.Obligation),
         "rolled back confirmation retains cleanup debt");
+    // Structural transaction tests only. No live process or host attestation
+    // is synthesized by production code. A mismatched archived journal
+    // cannot publish a result or discharge cleanup debt.
+    var observedResultMethod=typeof(PilotExecutionAdmissionStore).GetMethod("RecordObservedNativeResult",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing observed native result primitive");
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try
+        {
+            observedResultMethod.Invoke(null,[db,tx,recoveryIdentity,taskBound.Id,resultFixtureReceipt,cleanupResponse]);
+            Check(false,"mismatched result and independently observed journal must fail");
+        }
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure&&
+            failure.Code=="PILOT_NATIVE_RESULT_CLEANUP_MISMATCH")
+        {Check(true,"mismatched result and observation cannot be accepted");}
+        Check(TaskStore.Scalar(db,tx,"SELECT admission_id FROM pilot_execution_results WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"mismatched observed result leaves ledger untouched");
+        tx.Rollback();
+    }
+    var matchingObservation=JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,status="PILOT_EXACT_CLEANUP_OBSERVED",attemptId=recoveryIdentity.Obligation.AttemptId,
+        engineId=recoveryIdentity.EngineId,policySha256=recoveryIdentity.PolicySha256,
+        containerId=new string('f',64),archiveSha256=new string('a',64),containerRemoved=true,
+        executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false
+    });
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        var combined=(PilotExecutionResult)observedResultMethod.Invoke(null,
+            [db,tx,recoveryIdentity,taskBound.Id,resultFixtureReceipt,matchingObservation])!;
+        Check(combined.Status=="TESTS_FAILED"&&!combined.GeneratedArtifactVerified,
+            "combined structural transaction preserves failure and qualification flags");
+        cleanupGate.Invoke(null,new object[]{db,tx});
+        Check(true,"combined transaction records independent cleanup");
+        tx.Rollback();
+    }
+    Check(admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id) is null&&
+        admissionStore.PendingNativeCleanup().Contains(recoveryIdentity.Obligation),
+        "combined transaction rollback retains debt and no result");
     var storedFixtureResult=RecordFixtureResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
