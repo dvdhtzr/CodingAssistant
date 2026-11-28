@@ -5729,6 +5729,9 @@ try
     using(var db=tasks.Open())
         Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
             ("@id",resultFixtureAdmission.Id)) is null,"rolled-back launch claim leaves no claim");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_cleanup_obligations WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"rolled-back launch claim leaves no cleanup obligation");
     using(var startClaimants=new ManualResetEventSlim(false))
     {
         Task<bool> CompeteForClaim()=>Task.Run(()=>{
@@ -5744,6 +5747,14 @@ try
     using(var db=tasks.Open())
         Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
             ("@id",resultFixtureAdmission.Id))==resultFixtureAdmission.Id,"native claim persists across connections");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"""
+            SELECT job_name FROM pilot_native_cleanup_obligations WHERE admission_id=@id AND attempt_id=@attempt
+                AND consent_sha256=@consent AND transport_sha256=@transport
+            """,("@id",resultFixtureAdmission.Id),("@attempt",resultFixtureAdmission.AttemptId),
+            ("@consent",resultFixtureAdmission.ConsentSha256),("@transport",resultFixtureAdmission.TransportSha256))
+            ==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
+            "winning launch claim persists exact cleanup obligation");
     var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
@@ -5803,6 +5814,10 @@ try
         "startup interruption records missing result without claiming cleanup");
     Check(admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id) is {Status:"TESTS_FAILED",Current:false},
         "startup retains completed historical result but retires currentness");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_cleanup_obligations WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id))==resultFixtureAdmission.Id,
+            "startup and historical result do not discharge cleanup obligation");
     Check(admissionStore.Get(taskBound.Id,preparedAdmission.Id) is {State:"Interrupted",Current:false},
         "restart interrupts unconsumed admission without replay");
     Check(executionProposalStore.Get(taskBound.Id,pilotBoundExecutionProposal.Id) is {State:"Interrupted",Current:false},
