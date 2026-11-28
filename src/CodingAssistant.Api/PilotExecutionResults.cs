@@ -133,6 +133,13 @@ internal sealed partial class PilotExecutionAdmissionStore
     private PilotExecutionResult RecordResult(string taskId,string id,JsonElement receipt)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var result=RecordResultInTransaction(db,tx,taskId,id,receipt);
+        tx.Commit();return result;
+    }
+
+    private static PilotExecutionResult RecordResultInTransaction(SqliteConnection db,SqliteTransaction tx,
+        string taskId,string id,JsonElement receipt)
+    {
         var item=Find(db,tx,taskId,id);
         if(item.State!="Consumed")throw new StoreFailure("PILOT_RESULT_NOT_CONSUMED");
         var transport=StoredTransport(db,tx,item);
@@ -141,7 +148,7 @@ internal sealed partial class PilotExecutionAdmissionStore
         if(prior is not null)
         {
             if(prior.ReceiptSha256!=result.ReceiptSha256)throw new StoreFailure("PILOT_RESULT_ALREADY_RECORDED");
-            tx.Commit();return prior;
+            return prior;
         }
         if(!ResultCurrent(db,tx,item,transport))throw new StoreFailure("PILOT_RESULT_BINDING_CHANGED");
         // A consumed row alone is not dispatch provenance. A new result
@@ -163,8 +170,30 @@ internal sealed partial class PilotExecutionAdmissionStore
             VALUES(@id,@status,@json,@hash,@reason,@now)
             """,("@id",id),("@status",result.Status),("@json",receipt.GetRawText()),("@hash",result.ReceiptSha256!),
             ("@reason",(object?)result.Reason??DBNull.Value),("@now",Now()));
-        tx.Commit();return result with {Current=true};
+        return result with {Current=true};
     }
+    // Transaction primitive only: the caller must obtain both receipts from
+    // separately pinned host jobs under the same exclusive owner lease.
+    // A matching structural fixture is not proof of host provenance.
+    private static PilotExecutionResult RecordObservedNativeResult(SqliteConnection db,SqliteTransaction tx,
+        PilotNativeRecoveryIdentity identity,string taskId,JsonElement receipt,JsonElement observation)
+    {
+        var obligation=identity.Obligation;
+        var item=Find(db,tx,taskId,obligation.AdmissionId);
+        if(item.AttemptId!=obligation.AttemptId||item.ConsentSha256!=obligation.ConsentSha256||
+            item.TransportSha256!=obligation.TransportSha256||
+            obligation.JobName!=@"Local\CodingAssistant-Pilot-"+item.AttemptId)
+            throw new StoreFailure("PILOT_NATIVE_CLEANUP_IDENTITY_INVALID");
+        var result=ValidateResult(item,StoredTransport(db,tx,item),receipt);
+        var independentlyObserved=PilotNativeCleanupResponse.Validate(identity,observation);
+        if(result.Status=="VERIFICATION_BLOCKED"||!result.CleanupConfirmed||
+            receipt.GetProperty("archiveSha256").GetString()!=independentlyObserved.JournalSha256)
+            throw new StoreFailure("PILOT_NATIVE_RESULT_CLEANUP_MISMATCH");
+        var persisted=RecordResultInTransaction(db,tx,taskId,item.Id,receipt);
+        RecordNativeCleanupConfirmation(db,tx,identity,observation);
+        return persisted;
+    }
+
     internal PilotExecutionResult? GetResult(string taskId,string id)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
