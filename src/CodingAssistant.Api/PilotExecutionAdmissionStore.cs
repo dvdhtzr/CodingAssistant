@@ -15,6 +15,9 @@ internal sealed record PilotExecutionAdmission(string Id,string TaskId,string Pr
 internal sealed record PilotNativeCleanupObligation(string AdmissionId,string AttemptId,
     string ConsentSha256,string TransportSha256,string JobName);
 
+internal sealed record PilotNativeRecoveryIdentity(PilotNativeCleanupObligation Obligation,
+    string EngineId,string PolicySha256,string ImageId,string CandidateSha256,string ArchiveSha256);
+
 internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
 {
     internal static void Initialize(SqliteConnection db)=>TaskStore.Execute(db,null,"""
@@ -51,6 +54,11 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             transport_sha256 TEXT NOT NULL,
             job_name TEXT NOT NULL UNIQUE,
             created_utc TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pilot_native_recovery_identities(
+            admission_id TEXT PRIMARY KEY REFERENCES pilot_native_cleanup_obligations(admission_id),
+            engine_id TEXT NOT NULL,policy_sha256 TEXT NOT NULL,image_id TEXT NOT NULL,
+            candidate_sha256 TEXT NOT NULL,archive_sha256 TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS pilot_execution_results(
             admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
@@ -299,6 +307,19 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             VALUES(@id,@attempt,@consent,@transport,@job,@now)
             """,("@id",item.Id),("@attempt",item.AttemptId),("@consent",item.ConsentSha256),
             ("@transport",item.TransportSha256),("@job",jobName),("@now",Now()));
+        var captured=EvaluationExecutionAuthorizationStore.CaptureBoundTransport(db,tx,item.TaskId,item.ProposalId);
+        using var evidence=JsonDocument.Parse(captured.Binding.GetProperty("evidenceJson").GetString()!);
+        var transport=StoredTransport(db,tx,item);
+        var recovery=new PilotNativeRecoveryIdentity(new(item.Id,item.AttemptId,item.ConsentSha256,item.TransportSha256,jobName),
+            transport.GetProperty("engineId").GetString()!,transport.GetProperty("policySha256").GetString()!,
+            evidence.RootElement.GetProperty("buildQualification").GetProperty("policy").GetProperty("imageId").GetString()!,
+            transport.GetProperty("candidateSha256").GetString()!,transport.GetProperty("archiveSha256").GetString()!);
+        ValidateRecoveryIdentity(recovery);
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO pilot_native_recovery_identities(admission_id,engine_id,policy_sha256,image_id,candidate_sha256,archive_sha256)
+            VALUES(@id,@engine,@policy,@image,@candidate,@archive)
+            """,("@id",item.Id),("@engine",recovery.EngineId),("@policy",recovery.PolicySha256),
+            ("@image",recovery.ImageId),("@candidate",recovery.CandidateSha256),("@archive",recovery.ArchiveSha256));
         return jobName;
     }
     private static void RequireNoNativeCleanupDebt(SqliteConnection db,SqliteTransaction tx)
@@ -330,6 +351,35 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             pending.Add(item);
         }
         reader.Close();tx.Commit();return pending.AsReadOnly();
+    }
+
+    private static void ValidateRecoveryIdentity(PilotNativeRecoveryIdentity value)
+    {
+        static bool Digest(string text)=>System.Text.RegularExpressions.Regex.IsMatch(text,@"^[a-f0-9]{64}\z");
+        if(!System.Text.RegularExpressions.Regex.IsMatch(value.EngineId,@"^[A-Za-z0-9:_-]{1,128}\z")||
+            !Digest(value.PolicySha256)||!Digest(value.CandidateSha256)||!Digest(value.ArchiveSha256)||
+            !value.ImageId.StartsWith("sha256:",StringComparison.Ordinal)||!Digest(value.ImageId[7..]))
+            throw new StoreFailure("PILOT_NATIVE_CLEANUP_IDENTITY_INVALID");
+    }
+    // Legacy claims without a complete snapshot remain blocked; never
+    // reconstruct cleanup authority from a changed proposal or source.
+    internal PilotNativeRecoveryIdentity GetNativeRecoveryIdentity(PilotNativeCleanupObligation obligation)
+    {
+        if(!PendingNativeCleanup().Contains(obligation))
+            throw new StoreFailure("PILOT_NATIVE_CLEANUP_IDENTITY_INVALID");
+        using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
+        using var cmd=TaskStore.Command(db,tx,"""
+            SELECT i.engine_id,i.policy_sha256,i.image_id,i.candidate_sha256,i.archive_sha256
+            FROM pilot_native_recovery_identities i JOIN pilot_native_cleanup_obligations o ON o.admission_id=i.admission_id
+            WHERE o.admission_id=@id AND o.attempt_id=@attempt AND o.consent_sha256=@consent
+                AND o.transport_sha256=@transport AND o.job_name=@job
+            """,("@id",obligation.AdmissionId),("@attempt",obligation.AttemptId),("@consent",obligation.ConsentSha256),
+            ("@transport",obligation.TransportSha256),("@job",obligation.JobName));
+        using var reader=cmd.ExecuteReader();
+        if(!reader.Read())throw new StoreFailure("PILOT_NATIVE_RECOVERY_IDENTITY_REQUIRED");
+        var identity=new PilotNativeRecoveryIdentity(obligation,reader.GetString(0),reader.GetString(1),
+            reader.GetString(2),reader.GetString(3),reader.GetString(4));
+        ValidateRecoveryIdentity(identity);reader.Close();tx.Commit();return identity;
     }
 
     // Absence of a named Windows job is a necessary observation only.
