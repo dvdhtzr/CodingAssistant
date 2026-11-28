@@ -21,10 +21,10 @@ internal sealed class PilotNativeOwnerLease : IDisposable
                 throw new StoreFailure("PILOT_NATIVE_OWNER_DIRECTORY_INVALID");
         PrivateDataDirectory.Ensure(root.FullName);
         var path=Path.Combine(root.FullName,"pilot-native-owner.lock");
-        PrivateDataDirectory.ValidateFile(path);
         FileStream? opened=null;
         try
         {
+            PrivateDataDirectory.ValidateFile(path);
             opened=new FileStream(path,FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
             // The containing owner-private directory constrains creation.
             // Do not reopen this exclusively held file for ACL inspection.
