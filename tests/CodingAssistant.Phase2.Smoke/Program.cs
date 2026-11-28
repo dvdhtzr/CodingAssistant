@@ -5755,6 +5755,25 @@ try
             ("@consent",resultFixtureAdmission.ConsentSha256),("@transport",resultFixtureAdmission.TransportSha256))
             ==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
             "winning launch claim persists exact cleanup obligation");
+    var cleanupInventory=admissionStore.PendingNativeCleanup();
+    Check(cleanupInventory.Count==1&&cleanupInventory[0].AdmissionId==resultFixtureAdmission.Id&&
+        cleanupInventory[0].AttemptId==resultFixtureAdmission.AttemptId&&
+        cleanupInventory[0].ConsentSha256==resultFixtureAdmission.ConsentSha256&&
+        cleanupInventory[0].TransportSha256==resultFixtureAdmission.TransportSha256&&
+        cleanupInventory[0].JobName==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
+        "host recovery inventory preserves exact outstanding cleanup identity");
+    var cleanupGate=typeof(PilotExecutionAdmissionStore).GetMethod("RequireNoNativeCleanupDebt",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing cleanup debt gate");
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try{cleanupGate.Invoke(null,new object[]{db,tx});Check(false,"outstanding cleanup must block native launch");}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure&&
+            failure.Code=="PILOT_PRIOR_CLEANUP_REQUIRED")
+        {Check(true,"outstanding cleanup blocks fresh native launch");}
+        tx.Rollback();
+    }
     var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
