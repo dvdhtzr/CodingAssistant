@@ -69,6 +69,13 @@ if(OperatingSystem.IsWindows())
         }
         catch(StoreFailure e)when(e.Code=="EVALUATION_HOST_CONFIGURATION_REQUIRED")
         {Check(true,"missing native recovery configuration fails closed");}
+        try
+        {
+            _=EvaluationPlanningHostConfiguration.LoadNativeActiveRecovery(leaseRoot);
+            Check(false,"active cleanup must require separate owner pins");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_HOST_CONFIGURATION_REQUIRED")
+        {Check(true,"missing active recovery configuration fails closed");}
     }
     finally{if(Directory.Exists(leaseRoot))Directory.Delete(leaseRoot,true);}
 }
@@ -5548,9 +5555,23 @@ try
     }
     catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
     {Check(true,"exact attempt consent still cannot bypass runtime gate");}
+    // Exercise the actual private dispatch admission boundary. No test
+    // callback, bypass flag or production executable grant is introduced.
+    void AttemptNativeDispatch(string admissionId,JsonElement transport)
+    {
+        var method=typeof(PilotExecutionAdmissionStore).GetMethod("BeginNativeDispatch",
+            System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)
+            ??throw new Exception("missing private native dispatch boundary");
+        try
+        {
+            using var ownership=(IDisposable?)method.Invoke(admissionStore,[taskBound.Id,admissionId,transport]);
+        }
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
+        {throw failure;}
+    }
     try
     {
-        admissionStore.Consume(taskBound.Id,preparedAdmission.Id,admissionTransport);
+        AttemptNativeDispatch(preparedAdmission.Id,admissionTransport);
         Check(false,"prepared attempt cannot consume execution");
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED")
@@ -5750,11 +5771,11 @@ try
     }
     try
     {
-        admissionStore.ClaimNativeDispatch(taskBound.Id,resultFixtureAdmission.Id);
+        AttemptNativeDispatch(resultFixtureAdmission.Id,admissionTransport);
         Check(false,"consumed fixture is not executable qualification");
     }
-    catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
-    {Check(true,"public host seam remains behind closed runtime gate");}
+    catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED")
+    {Check(true,"consumed fixture cannot replay through private native dispatch boundary");}
     using(var db=tasks.Open())
     using(var tx=db.BeginTransaction())
     {
