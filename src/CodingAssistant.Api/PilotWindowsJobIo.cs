@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -5,9 +6,9 @@ using Microsoft.Win32.SafeHandles;
 
 namespace CodingAssistant.Api;
 
-// Fixed-only qualification of bounded stdin/stdout in the Windows job.
-// This path is not a production grant. In particular, no request can
-// select a script, command, archive, generated source or runtime policy.
+// Bounded native stdin/stdout for frozen controls and read-only candidate
+// reconstruction. Neither mode accepts a caller-selected executable or
+// script, and neither grants generated-source execution.
 internal sealed partial class PilotWindowsJob
 {
     private static readonly IntPtr HandleListAttribute=new(0x00020002);
@@ -32,7 +33,7 @@ internal sealed partial class PilotWindowsJob
         public void Dispose(){Read.Dispose();Write.Dispose();}
     }
     private SafeFileHandle StartRedirected(string node,string script,SafeFileHandle input,
-        SafeFileHandle output,SafeFileHandle error)
+        SafeFileHandle output,SafeFileHandle error,bool preview,IntPtr environment)
     {
         var bytes=IntPtr.Zero;
         _=InitializeProcThreadAttributeList(IntPtr.Zero,2,0,ref bytes);
@@ -56,9 +57,10 @@ internal sealed partial class PilotWindowsJob
                 throw new StoreFailure("PILOT_JOB_ATTRIBUTE_FAILED");
             var startup=new StartupInfoEx{Startup=new StartupInfo{Size=Marshal.SizeOf<StartupInfoEx>(),Flags=UseStdHandles,
                 StdInput=input.DangerousGetHandle(),StdOutput=output.DangerousGetHandle(),StdError=error.DangerousGetHandle()},Attributes=list};
-            var command=new StringBuilder($"\"{node}\" \"{script}\" --stdin-fixed");
-            if(!CreateProcessW(node,command,IntPtr.Zero,IntPtr.Zero,true,ExtendedStartup|CreateNoWindow,
-                IntPtr.Zero,Path.GetDirectoryName(script),ref startup,out var process))
+            var argument=preview?"--stdin":"--stdin-fixed";
+            var command=new StringBuilder($"\"{node}\" \"{script}\" {argument}");
+            if(!CreateProcessW(node,command,IntPtr.Zero,IntPtr.Zero,true,ExtendedStartup|CreateNoWindow|(preview?0x400u:0u),
+                environment,Path.GetDirectoryName(script),ref startup,out var process))
                 throw new StoreFailure("PILOT_JOB_PROCESS_CREATE_FAILED");
             using var thread=new SafeFileHandle(process.Thread,true);
             var child=new SafeFileHandle(process.Process,true);
@@ -92,18 +94,31 @@ internal sealed partial class PilotWindowsJob
             result.Write(buffer,0,n);
         }
     }
-    internal async Task<(int ExitCode,JsonElement Response)> InvokeFixedIoAsync(
+    internal Task<(int ExitCode,JsonElement Response)> InvokeFixedIoAsync(
         EvaluationPlanningHostConfiguration config,string bridgeSha256,string request,
-        TimeSpan deadline,CancellationToken token)
+        TimeSpan deadline,CancellationToken token)=>InvokeBoundedIoAsync(config,bridgeSha256,request,deadline,token,false);
+
+    // Read-only preview of the pinned historical transport bridge, not a
+    // consumed admission or a dispatch. No caller-selected program/flag.
+    internal Task<(int ExitCode,JsonElement Response)> InvokeCandidatePreviewAsync(
+        EvaluationPlanningHostConfiguration config,string request,TimeSpan deadline,CancellationToken token)
+    {
+        if(!config.ModulePins.TryGetValue(PilotCandidateTransportPlanner.ScriptPath,out var hash))
+            throw new StoreFailure("PILOT_HOST_FILE_PINS_REQUIRED");
+        return InvokeBoundedIoAsync(config,hash,request,deadline,token,true);
+    }
+    private async Task<(int ExitCode,JsonElement Response)> InvokeBoundedIoAsync(
+        EvaluationPlanningHostConfiguration config,string bridgeSha256,string request,
+        TimeSpan deadline,CancellationToken token,bool preview)
     {
         if(!OperatingSystem.IsWindows())throw new StoreFailure("PILOT_LOCAL_WINDOWS_ONLY");
         if(deadline<=TimeSpan.Zero||deadline>TimeSpan.FromMinutes(5))
             throw new StoreFailure("PILOT_JOB_DEADLINE_INVALID");
         var payload=new UTF8Encoding(false,true).GetBytes(request);
-        if(payload.Length is <1 or >4096)throw new StoreFailure("PILOT_JOB_REQUEST_LIMIT");
+        if(payload.Length<1||payload.Length>(preview?3*1024*1024:4096))throw new StoreFailure("PILOT_JOB_REQUEST_LIMIT");
         token.ThrowIfCancellationRequested();
         if(Members().Length!=0)throw new StoreFailure("PILOT_JOB_NOT_EMPTY");
-        var script=Path.Combine(config.RepositoryRoot,"tools","m4","windows_job_fixed_io.mjs");
+        var script=Path.Combine(config.RepositoryRoot,preview?PilotCandidateTransportPlanner.ScriptPath:"tools/m4/windows_job_fixed_io.mjs");
         void Pins()
         {
             PilotQualificationInspector.RequirePinnedFiles(config.RepositoryRoot,config.ModulePins);
@@ -116,9 +131,9 @@ internal sealed partial class PilotWindowsJob
         if(!string.Equals(Path.GetFileName(config.NodeExecutable),"node.exe",StringComparison.OrdinalIgnoreCase)||
             !string.Equals(Path.GetFileName(config.DockerExecutable),"docker.exe",StringComparison.OrdinalIgnoreCase)||
             config.NodeExecutable.Contains('"')||script.Contains('"')||
-            Environment.GetEnvironmentVariable("CA_PILOT_NODE_SHA256")!=config.NodeSha256||
+            (!preview&&(Environment.GetEnvironmentVariable("CA_PILOT_NODE_SHA256")!=config.NodeSha256||
             Environment.GetEnvironmentVariable("CA_PILOT_DOCKER_SHA256")!=config.DockerSha256||
-            !string.Equals(Environment.GetEnvironmentVariable("CA_PILOT_DOCKER_EXE"),config.DockerExecutable,StringComparison.OrdinalIgnoreCase)||
+            !string.Equals(Environment.GetEnvironmentVariable("CA_PILOT_DOCKER_EXE"),config.DockerExecutable,StringComparison.OrdinalIgnoreCase)))||
             Environment.GetEnvironmentVariables().Keys.Cast<string>().Any(k=>
                 (k.StartsWith("NODE_",StringComparison.OrdinalIgnoreCase)||
                  k.Equals("OPENSSL_CONF",StringComparison.OrdinalIgnoreCase)||k.Equals("OPENSSL_MODULES",StringComparison.OrdinalIgnoreCase)||
@@ -130,9 +145,23 @@ internal sealed partial class PilotWindowsJob
         timeout.CancelAfter(deadline);
         SafeFileHandle? child=null;
         Task? all=null;
+        var environment=IntPtr.Zero;
         try
         {
-            var started=StartRedirected(config.NodeExecutable,script,input.Read,output.Write,error.Write);
+            if(preview)
+            {
+                // Supply an explicit child environment; never modify the
+                // process-wide environment while another request is active.
+                var start=new ProcessStartInfo(config.NodeExecutable);
+                EvaluationPlanBinder.RemoveNodeEnvironmentOverrides(start);
+                start.Environment["CA_PILOT_NODE_SHA256"]=config.NodeSha256;
+                start.Environment["CA_EVALUATION_DOCKER_EXE"]=config.DockerExecutable;
+                start.Environment["CA_EVALUATION_DOCKER_SHA256"]=config.DockerSha256;
+                var block=string.Join("\0",start.Environment.OrderBy(p=>p.Key,StringComparer.OrdinalIgnoreCase)
+                    .Select(p=>p.Key+"="+p.Value))+"\0\0";
+                environment=Marshal.StringToHGlobalUni(block);
+            }
+            var started=StartRedirected(config.NodeExecutable,script,input.Read,output.Write,error.Write,preview,environment);
             child=started;
             input.Read.Dispose();output.Write.Dispose();error.Write.Dispose();
             var stdout=Task.Run(()=>Drain(output.Read,65536));
@@ -173,7 +202,7 @@ internal sealed partial class PilotWindowsJob
             }
             throw;
         }
-        finally{child?.Dispose();}
+        finally{child?.Dispose();if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);}
     }
 
 #pragma warning disable CS0649
