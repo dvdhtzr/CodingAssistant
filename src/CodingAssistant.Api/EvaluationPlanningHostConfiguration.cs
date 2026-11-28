@@ -24,6 +24,26 @@ internal sealed record EvaluationPlanningHostConfiguration(
     internal static EvaluationPlanningHostConfiguration LoadPilot(string ownerDataDirectory)=>
         LoadCore(ownerDataDirectory,PilotFileName,pins=>PilotQualificationInspector.HasExactFilePins(pins));
 
+    internal const string NativeRecoveryFileName="evaluation-native-recovery-host.json";
+    internal const string CleanupBridgePath="tools/m4/native_cleanup_observation_bridge.mjs";
+    internal const string CleanupAdapterPath="tools/m4/native_exact_cleanup.mjs";
+
+    // Separate explicit owner configuration. Historical evidence keeps
+    // its original exact pin closure; no automatic hashing or trust.
+    internal static (EvaluationPlanningHostConfiguration Config,string BridgeSha256,string AdapterSha256)
+        LoadNativeRecovery(string ownerDataDirectory)
+    {
+        var config=LoadCore(ownerDataDirectory,NativeRecoveryFileName,pins=>
+            pins.Count==PilotQualificationInspector.FileNames.Count+2&&
+            PilotQualificationInspector.FileNames.All(pins.ContainsKey)&&
+            pins.ContainsKey(CleanupBridgePath)&&pins.ContainsKey(CleanupAdapterPath));
+        var bridge=config.ModulePins[CleanupBridgePath];
+        var adapter=config.ModulePins[CleanupAdapterPath];
+        var historical=config.ModulePins.Where(p=>p.Key!=CleanupBridgePath&&p.Key!=CleanupAdapterPath)
+            .ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
+        return (config with {ModulePins=new ReadOnlyDictionary<string,string>(historical)},bridge,adapter);
+    }
+
     private static EvaluationPlanningHostConfiguration LoadCore(string ownerDataDirectory,string fileName,
         Func<IReadOnlyDictionary<string,string>,bool> hasExactPins)
     {
