@@ -1,19 +1,8 @@
 name: Multi-file checkout static acceptance
 
 on:
-  pull_request:
-    paths:
-      - "benchmarks/fixtures/05-multifile-checkout/**"
-      - "tools/mvp/assist.py"
-      - "tests/test_mvp_assist.py"
-      - ".github/workflows/multifile-checkout-acceptance.yml"
   push:
     branches: [main]
-    paths:
-      - "benchmarks/fixtures/05-multifile-checkout/**"
-      - "tools/mvp/assist.py"
-      - "tests/test_mvp_assist.py"
-      - ".github/workflows/multifile-checkout-acceptance.yml"
   workflow_dispatch:
 
 permissions:
