@@ -12,6 +12,9 @@ internal sealed record PilotExecutionAdmission(string Id,string TaskId,string Pr
     string ConsentSha256,string TransportSha256,string State,bool Current,
     bool ExecutionEnabled=false,bool RuntimeQualified=false);
 
+internal sealed record PilotNativeCleanupObligation(string AdmissionId,string AttemptId,
+    string ConsentSha256,string TransportSha256,string JobName);
+
 internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
 {
     internal static void Initialize(SqliteConnection db)=>TaskStore.Execute(db,null,"""
@@ -281,6 +284,12 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
         if(!ResultCurrent(db,tx,item,StoredTransport(db,tx,item)))
             throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
+        // Existing claims retain their replay-specific failure. Different
+        // attempts cannot launch while any earlier cleanup is unresolved.
+        if(TaskStore.Scalar(db,tx,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
+            ("@id",item.Id)) is not null)
+            throw new StoreFailure("PILOT_NATIVE_LAUNCH_ALREADY_CLAIMED");
+        RequireNoNativeCleanupDebt(db,tx);
         if(TaskStore.Execute(db,tx,"""
             INSERT OR IGNORE INTO pilot_native_launch_claims(admission_id,claimed_utc) VALUES(@id,@now)
             """,("@id",item.Id),("@now",Now()))!=1)
@@ -292,6 +301,37 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             ("@transport",item.TransportSha256),("@job",jobName),("@now",Now()));
         return jobName;
     }
+    private static void RequireNoNativeCleanupDebt(SqliteConnection db,SqliteTransaction tx)
+    {
+        if(TaskStore.Scalar(db,tx,"SELECT admission_id FROM pilot_native_cleanup_obligations LIMIT 1") is not null)
+            throw new StoreFailure("PILOT_PRIOR_CLEANUP_REQUIRED");
+    }
+    // Host-private inventory, independent of current projects and results.
+    // These rows identify recovery work; they do not certify resource absence.
+    internal IReadOnlyList<PilotNativeCleanupObligation> PendingNativeCleanup()
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
+        using var cmd=TaskStore.Command(db,tx,"""
+            SELECT admission_id,attempt_id,consent_sha256,transport_sha256,job_name
+            FROM pilot_native_cleanup_obligations ORDER BY admission_id LIMIT 129
+            """);
+        using var reader=cmd.ExecuteReader();
+        var pending=new List<PilotNativeCleanupObligation>();
+        while(reader.Read())
+        {
+            var item=new PilotNativeCleanupObligation(reader.GetString(0),reader.GetString(1),
+                reader.GetString(2),reader.GetString(3),reader.GetString(4));
+            ExecutionStore.CheckId(item.AdmissionId);ExecutionStore.CheckId(item.AttemptId);
+            if(item.JobName!=@"Local\CodingAssistant-Pilot-"+item.AttemptId||
+                !System.Text.RegularExpressions.Regex.IsMatch(item.ConsentSha256,@"^[a-f0-9]{64}\z")||
+                !System.Text.RegularExpressions.Regex.IsMatch(item.TransportSha256,@"^[a-f0-9]{64}\z")||
+                pending.Count>=128)
+                throw new StoreFailure("PILOT_NATIVE_CLEANUP_IDENTITY_INVALID");
+            pending.Add(item);
+        }
+        reader.Close();tx.Commit();return pending.AsReadOnly();
+    }
+
     // This host-only seam deliberately cannot reach the native launcher
     // until executable policy is separately qualified. No caller-provided
     // callback, command, or script may substitute for that policy.
