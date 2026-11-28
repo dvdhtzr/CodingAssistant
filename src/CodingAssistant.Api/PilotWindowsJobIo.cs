@@ -113,9 +113,14 @@ internal sealed partial class PilotWindowsJob
         EvaluationPlanningHostConfiguration config,string bridgeSha256,string adapterSha256,string request,
         TimeSpan deadline,CancellationToken token)=>InvokeBoundedIoAsync(config,bridgeSha256,request,deadline,token,true,adapterSha256);
 
+    // Only the owner recovery orchestrator selects this fixed entrypoint.
+    internal Task<(int ExitCode,JsonElement Response)> InvokeActiveCleanupAsync(
+        EvaluationPlanningHostConfiguration config,string activeBridgeSha256,string adapterSha256,string request,
+        TimeSpan deadline,CancellationToken token)=>InvokeBoundedIoAsync(config,activeBridgeSha256,request,deadline,token,true,adapterSha256,true);
+
     private async Task<(int ExitCode,JsonElement Response)> InvokeBoundedIoAsync(
         EvaluationPlanningHostConfiguration config,string bridgeSha256,string request,
-        TimeSpan deadline,CancellationToken token,bool preview,string? cleanupAdapterSha256=null)
+        TimeSpan deadline,CancellationToken token,bool preview,string? cleanupAdapterSha256=null,bool activeCleanup=false)
     {
         var cleanup=cleanupAdapterSha256 is not null;
         if(!OperatingSystem.IsWindows())throw new StoreFailure("PILOT_LOCAL_WINDOWS_ONLY");
@@ -125,7 +130,8 @@ internal sealed partial class PilotWindowsJob
         if(payload.Length<1||payload.Length>(preview&&!cleanup?3*1024*1024:4096))throw new StoreFailure("PILOT_JOB_REQUEST_LIMIT");
         token.ThrowIfCancellationRequested();
         if(Members().Length!=0)throw new StoreFailure("PILOT_JOB_NOT_EMPTY");
-        var script=Path.Combine(config.RepositoryRoot,cleanup?"tools/m4/native_cleanup_observation_bridge.mjs":
+        var script=Path.Combine(config.RepositoryRoot,cleanup?(activeCleanup?EvaluationPlanningHostConfiguration.ActiveRecoveryBridgePath:
+            EvaluationPlanningHostConfiguration.CleanupBridgePath):
             preview?PilotCandidateTransportPlanner.ScriptPath:"tools/m4/windows_job_fixed_io.mjs");
         void Pins()
         {
