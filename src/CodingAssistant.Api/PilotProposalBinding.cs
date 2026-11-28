@@ -28,9 +28,11 @@ internal static class PilotProposalBinding
     internal static JsonElement Create(JsonElement evidence,string configurationSha256,IReadOnlyList<string> receipts)
     {
         PilotQualificationInspector.Validate(evidence);
-        if(!Digest.IsMatch(configurationSha256)||receipts.Count is not (4 or 5 or 7)||receipts.Distinct(StringComparer.Ordinal).Count()!=receipts.Count||
+        if(!Digest.IsMatch(configurationSha256)||receipts.Count is not (4 or 5 or 7 or 8 or 10)||receipts.Distinct(StringComparer.Ordinal).Count()!=receipts.Count||
             (receipts.Count>=5)!=evidence.TryGetProperty("buildQualification",out _)||
-            (receipts.Count==7)!=evidence.TryGetProperty("dispatchQualification",out _)||
+            (receipts.Count>=7)!=evidence.TryGetProperty("dispatchQualification",out _)||
+            (receipts.Count>=8)!=evidence.TryGetProperty("jobQualification",out _)||
+            (receipts.Count==10)!=evidence.TryGetProperty("jobIoQualification",out _)||
             receipts.Any(x=>x is null||!Receipt.IsMatch(x)))
             throw new StoreFailure("PILOT_EXECUTION_BINDING_INVALID");
         // Preserve exact raw evidence bytes: the inspector checks the

@@ -232,12 +232,29 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
                 if(!Exact(dispatchAttempts,"working","cancel","crash"))throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
                 foreach(var property in dispatchAttempts.EnumerateObject())Attempt(property.Value);
             }
+            // Recompute the chained native qualification identities from
+            // the same ordinal-key canonical JSON as the pinned inspector.
+            bool Chain(string prior,string member,string digest)
+            {
+                string Canonical(JsonElement item)=>item.ValueKind switch
+                {
+                    JsonValueKind.Object=>"{"+string.Join(",",item.EnumerateObject().OrderBy(p=>p.Name,StringComparer.Ordinal)
+                        .Select(p=>JsonSerializer.Serialize(p.Name)+":"+Canonical(p.Value)))+"}",
+                    JsonValueKind.Array=>"["+string.Join(",",item.EnumerateArray().Select(Canonical))+"]",
+                    _=>item.GetRawText()
+                };
+                var raw="{"+string.Join(",",new[]{prior,member}.OrderBy(k=>k,StringComparer.Ordinal)
+                    .Select(k=>JsonSerializer.Serialize(k)+":"+Canonical(value.GetProperty(k))))+"}";
+                return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))==
+                    value.GetProperty(digest).GetString();
+            }
             if(jobBound)
             {
                 var jobHashes=new[]{"policySha256","adapterSha256","nodeSha256","dockerSha256","jobReceiptSha256",
                     "normalReceiptSha256","recoveryReceiptSha256","modulePinsSha256","historicalInspectorSha256",
                     "historicalOwnerAssemblySha256","historicalHarnessAssemblySha256"};
-                if(!Exact(job,[..jobHashes,"attempts"])||!jobHashes.All(k=>Hash(job,k))||
+                if(!Chain("dispatchEvidenceSha256","jobQualification","jobEvidenceSha256")||
+                    !Exact(job,[..jobHashes,"attempts"])||!jobHashes.All(k=>Hash(job,k))||
                     new[]{"policySha256","adapterSha256","nodeSha256","dockerSha256"}.Any(k=>
                         job.GetProperty(k).GetString()!=dispatch.GetProperty(k).GetString()))
                     throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
@@ -251,7 +268,8 @@ internal sealed class PilotQualificationInspector(EvaluationPlanningHostConfigur
                 var ioHashes=new[]{"policySha256","adapterSha256","nodeSha256","dockerSha256","bridgeSha256",
                     "fixedReceiptSha256","interruptionReceiptSha256","modulePinsSha256","historicalInspectorSha256",
                     "fixedOwnerAssemblySha256","fixedHarnessAssemblySha256","interruptionOwnerAssemblySha256","interruptionHarnessAssemblySha256"};
-                if(!Exact(io,[..ioHashes,"attempts"])||!ioHashes.All(k=>Hash(io,k))||
+                if(!Chain("jobEvidenceSha256","jobIoQualification","jobIoEvidenceSha256")||
+                    !Exact(io,[..ioHashes,"attempts"])||!ioHashes.All(k=>Hash(io,k))||
                     new[]{"policySha256","adapterSha256","nodeSha256","dockerSha256","modulePinsSha256"}.Any(k=>
                         io.GetProperty(k).GetString()!=job.GetProperty(k).GetString())||
                     io.GetProperty("fixedReceiptSha256").GetString()==io.GetProperty("interruptionReceiptSha256").GetString())

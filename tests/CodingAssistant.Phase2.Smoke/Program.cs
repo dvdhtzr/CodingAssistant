@@ -5394,7 +5394,49 @@ try
     admissionEvidence["dispatchQualification"]=System.Text.Json.Nodes.JsonNode.Parse(admissionDispatchFixture.GetRawText());
     var admissionReceipts=buildOnlyReceipts.Concat(new[]{"windows-static-web-666666666666.json","windows-static-web-777777777777.json"}).ToArray();
     var admissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),admissionReceipts);
+    var dispatchOnlyProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,admissionBinding);
+    // Complete synthetic native evidence, with the same canonical chain
+    // hashing as the Node inspector. No actual host qualification implied.
+    string CanonicalPilot(JsonElement x)=>x.ValueKind switch
+    {
+        JsonValueKind.Object=>"{"+string.Join(",",x.EnumerateObject().OrderBy(p=>p.Name,StringComparer.Ordinal)
+            .Select(p=>JsonSerializer.Serialize(p.Name)+":"+CanonicalPilot(p.Value)))+"}",
+        JsonValueKind.Array=>"["+string.Join(",",x.EnumerateArray().Select(CanonicalPilot))+"]",
+        _=>x.GetRawText()
+    };
+    string ChainPilot(string prior,string member)=>PilotHash(CanonicalPilot(JsonSerializer.SerializeToElement(
+        new Dictionary<string,System.Text.Json.Nodes.JsonNode?>{
+            [prior]=admissionEvidence[prior]!.DeepClone(),[member]=admissionEvidence[member]!.DeepClone()})));
+    var jobFixture=JsonSerializer.SerializeToElement(new {
+        policySha256=admissionPolicyHash,adapterSha256=new string('9',64),nodeSha256=new string('a',64),
+        dockerSha256=new string('b',64),jobReceiptSha256=new string('c',64),normalReceiptSha256=new string('d',64),
+        recoveryReceiptSha256=new string('e',64),modulePinsSha256=new string('f',64),
+        historicalInspectorSha256=new string('1',64),historicalOwnerAssemblySha256=new string('2',64),
+        historicalHarnessAssemblySha256=new string('3',64),
+        attempts=new[]{"build-working","build-spoof","build-missing-asset","crash"}
+            .Select((name,i)=>new {name,attempt=new {attemptId=(i+15).ToString("x32"),archiveSha256=new string('1',64),receiptSha256=new string('2',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt)
+    });
+    admissionEvidence["jobQualification"]=System.Text.Json.Nodes.JsonNode.Parse(jobFixture.GetRawText());
+    admissionEvidence["jobEvidenceSha256"]=ChainPilot("dispatchEvidenceSha256","jobQualification");
+    var ioFixture=JsonSerializer.SerializeToElement(new {
+        policySha256=admissionPolicyHash,adapterSha256=new string('9',64),nodeSha256=new string('a',64),
+        dockerSha256=new string('b',64),bridgeSha256=new string('c',64),fixedReceiptSha256=new string('d',64),
+        interruptionReceiptSha256=new string('e',64),modulePinsSha256=new string('f',64),
+        historicalInspectorSha256=new string('1',64),fixedOwnerAssemblySha256=new string('2',64),
+        fixedHarnessAssemblySha256=new string('3',64),interruptionOwnerAssemblySha256=new string('4',64),
+        interruptionHarnessAssemblySha256=new string('5',64),
+        attempts=new[]{"build-working","build-spoof","build-missing-asset","cancellation","crash"}
+            .Select((name,i)=>new {name,attempt=new {attemptId=(i+19).ToString("x32"),archiveSha256=new string('1',64),receiptSha256=new string('2',64)}})
+            .ToDictionary(x=>x.name,x=>x.attempt)
+    });
+    admissionEvidence["jobIoQualification"]=System.Text.Json.Nodes.JsonNode.Parse(ioFixture.GetRawText());
+    admissionEvidence["jobIoEvidenceSha256"]=ChainPilot("jobEvidenceSha256","jobIoQualification");
+    admissionEvidence["status"]="PILOT_JOB_IO_EVIDENCE_BOUND";
+    admissionReceipts=admissionReceipts.Concat(new[]{"windows-static-web-888888888888.json","windows-static-web-999999999999.json","windows-static-web-aaaaaaaaaaaa.json"}).ToArray();
+    admissionBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('a',64),admissionReceipts);
     var admissionProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,admissionBinding);
+
     JsonElement AdmissionTransport(string attemptId,string transportHash)=>JsonSerializer.SerializeToElement(new {
         schemaVersion=1,status="CANDIDATE_TRANSPORT_PREPARED_ONLY",attemptId,candidateSha256=new string('a',64),
         archiveSha256=evaluationInput.ArchiveSha256,evaluatorSha256=new string('b',64),adapterSha256=new string('9',64),
@@ -5419,6 +5461,23 @@ try
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ATTEMPT_REUSED")
     {Check(true,"admission excludes pinned qualification attempt IDs");}
+    try
+    {
+        admissionStore.Stage(taskBound.Id,dispatchOnlyProposal.Id,admissionTransport);
+        Check(false,"fourteen-attempt evidence cannot reserve new admission");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_JOB_IO_EVIDENCE_REQUIRED")
+    {Check(true,"complete native I/O evidence required");}
+    foreach(var n in Enumerable.Range(15,9))
+    {
+        try
+        {
+            admissionStore.Stage(taskBound.Id,admissionProposal.Id,AdmissionTransport(n.ToString("x32"),new string('4',64)));
+            Check(false,"native qualification attempt cannot be reused");
+        }
+        catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_ATTEMPT_REUSED")
+        {Check(true,"native historical attempt excluded");}
+    }
     var preparedAdmission=admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport);
     Check(preparedAdmission is {State:"Prepared",Current:true,ExecutionEnabled:false}&&
         admissionStore.Stage(taskBound.Id,admissionProposal.Id,admissionTransport).Id==preparedAdmission.Id,
@@ -5527,8 +5586,164 @@ try
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_INVALID")
     {Check(true,"result classification recomputes case counts");}
-    using(var fixtureDb=tasks.Open())
-        TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",resultFixtureAdmission.Id));
+    // Exercise the private persistence primitive only in this disposable
+    // database. Reflection here cannot grant authority through a production
+    // route, invoke the dispatcher, or qualify an executable.
+    var transitionMethod=typeof(PilotExecutionAdmissionStore).GetMethod("RecordTransition",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing private transition primitive");
+    void FixtureTransition(Microsoft.Data.Sqlite.SqliteConnection db,Microsoft.Data.Sqlite.SqliteTransaction tx,
+        PilotExecutionAdmission admission,string next)
+    {
+        try{transitionMethod.Invoke(null,new object[]{db,tx,admission,next});}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
+        {throw failure;}
+    }
+    var nativeReserveMethod=typeof(PilotExecutionAdmissionStore).GetMethod("ReserveNativeDispatch",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing native reservation primitive");
+    void FixtureReserveNative(Microsoft.Data.Sqlite.SqliteConnection db,Microsoft.Data.Sqlite.SqliteTransaction tx,
+        PilotExecutionAdmission admission)
+    {
+        try{nativeReserveMethod.Invoke(null,new object[]{db,tx,admission});}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
+        {throw failure;}
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try{FixtureReserveNative(db,tx,resultFixtureAdmission);Check(false,"unconsumed native reservation");}
+        catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED")
+        {Check(true,"native reservation requires exact consumption");}
+        tx.Rollback();
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        FixtureTransition(db,tx,resultFixtureAdmission,"Authorized");
+        tx.Rollback();
+    }
+    Check(admissionStore.Get(taskBound.Id,resultFixtureAdmission.Id).State=="Prepared",
+        "rolled-back authorization leaves admission prepared");
+    using(var db=tasks.Open())
+    {
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"rolled-back authorization leaves no durable transition");
+        using var tx=db.BeginTransaction();
+        FixtureTransition(db,tx,resultFixtureAdmission,"Authorized");
+        tx.Commit();
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try
+        {
+            FixtureTransition(db,tx,resultFixtureAdmission with {ConsentSha256=new string('0',64)},"Consumed");
+            Check(false,"changed consent cannot consume");
+        }
+        catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED")
+        {Check(true,"changed consent rejected by exact durable authorization");}
+        tx.Rollback();
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        FixtureTransition(db,tx,resultFixtureAdmission,"Consumed");
+        FixtureReserveNative(db,tx,resultFixtureAdmission);
+        tx.Rollback();
+    }
+    Check(admissionStore.Get(taskBound.Id,resultFixtureAdmission.Id).State=="Authorized",
+        "rolled-back consumption preserves authorization");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id AND state='Consumed'",
+            ("@id",resultFixtureAdmission.Id)) is null,"rolled-back consumption leaves no consumed record");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_dispatches WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"native reservation rolls back with consumption");
+    using(var startConsumers=new ManualResetEventSlim(false))
+    {
+        Task<bool> Compete()=>Task.Run(()=>{
+            startConsumers.Wait();
+            using var db=tasks.Open();using var tx=db.BeginTransaction();
+            try{FixtureTransition(db,tx,resultFixtureAdmission,"Consumed");FixtureReserveNative(db,tx,resultFixtureAdmission);tx.Commit();return true;}
+            catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED"){return false;}
+        });
+        var firstConsumerTask=Compete();var secondConsumerTask=Compete();startConsumers.Set();
+        var outcomes=await Task.WhenAll(firstConsumerTask,secondConsumerTask);
+        Check(outcomes.Count(x=>x)==1,"two independent connections can consume exactly once");
+    }
+    using(var db=tasks.Open())
+    {
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id AND state='Authorized' AND consent_sha256=@consent",
+            ("@id",resultFixtureAdmission.Id),("@consent",resultFixtureAdmission.ConsentSha256))==resultFixtureAdmission.Id,
+            "authorization identity remains durable after consumption");
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id AND state='Consumed' AND consent_sha256=@consent",
+            ("@id",resultFixtureAdmission.Id),("@consent",resultFixtureAdmission.ConsentSha256))==resultFixtureAdmission.Id,
+            "consumed identity is recorded exactly once");
+    }
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"""
+            SELECT job_name FROM pilot_native_dispatches WHERE admission_id=@id AND attempt_id=@attempt
+                AND consent_sha256=@consent AND transport_sha256=@transport
+            """,("@id",resultFixtureAdmission.Id),("@attempt",resultFixtureAdmission.AttemptId),
+            ("@consent",resultFixtureAdmission.ConsentSha256),("@transport",resultFixtureAdmission.TransportSha256))
+            ==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
+            "winning consumption records exact native reservation");
+    // Private persistence controls only; no Windows process is created.
+    var launchClaimMethod=typeof(PilotExecutionAdmissionStore).GetMethod("ClaimNativeLaunch",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing native launch claim primitive");
+    string FixtureClaimNative(Microsoft.Data.Sqlite.SqliteConnection db,Microsoft.Data.Sqlite.SqliteTransaction tx,
+        PilotExecutionAdmission admission)
+    {
+        try{return (string)launchClaimMethod.Invoke(null,new object[]{db,tx,admission})!;}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
+        {throw failure;}
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        foreach(var invalid in new[]{preparedAdmission,resultFixtureAdmission with {ConsentSha256=new string('0',64)},
+            resultFixtureAdmission with {TransportSha256=new string('0',64)}})
+        {
+            try{FixtureClaimNative(db,tx,invalid);Check(false,"invalid native launch identity");}
+            catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_DISPATCH_NOT_CURRENT")
+            {Check(true,"native claim rejects nonconsumed or changed identity");}
+        }
+        tx.Rollback();
+    }
+    try
+    {
+        admissionStore.ClaimNativeDispatch(taskBound.Id,resultFixtureAdmission.Id);
+        Check(false,"consumed fixture is not executable qualification");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
+    {Check(true,"public host seam remains behind closed runtime gate");}
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        Check(FixtureClaimNative(db,tx,resultFixtureAdmission)==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
+            "claim derives exact reserved job name");
+        tx.Rollback();
+    }
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"rolled-back launch claim leaves no claim");
+    using(var startClaimants=new ManualResetEventSlim(false))
+    {
+        Task<bool> CompeteForClaim()=>Task.Run(()=>{
+            startClaimants.Wait();
+            using var db=tasks.Open();using var tx=db.BeginTransaction();
+            try{FixtureClaimNative(db,tx,resultFixtureAdmission);tx.Commit();return true;}
+            catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_LAUNCH_ALREADY_CLAIMED"){return false;}
+        });
+        var firstClaimantTask=CompeteForClaim();var secondClaimantTask=CompeteForClaim();startClaimants.Set();
+        var claimOutcomes=await Task.WhenAll(firstClaimantTask,secondClaimantTask);
+        Check(claimOutcomes.Count(x=>x)==1,"two independent connections can claim launch exactly once");
+    }
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id))==resultFixtureAdmission.Id,"native claim persists across connections");
     var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
@@ -5541,6 +5756,14 @@ try
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_ALREADY_RECORDED")
     {Check(true,"result is immutable after recording");}
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try{FixtureClaimNative(db,tx,resultFixtureAdmission);Check(false,"terminal result cannot launch");}
+        catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_DISPATCH_NOT_CURRENT")
+        {Check(true,"terminal result blocks native launch");}
+        tx.Rollback();
+    }
     var unfinishedFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('d',64),admissionReceipts);
     var unfinishedFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,unfinishedFixtureBinding);
     var unfinishedFixtureAdmission=admissionStore.Stage(taskBound.Id,unfinishedFixtureProposal.Id,AdmissionTransport(new string('b',32),new string('6',64)));

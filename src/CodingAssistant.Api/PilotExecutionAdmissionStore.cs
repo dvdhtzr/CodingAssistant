@@ -24,6 +24,21 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             state TEXT NOT NULL CHECK(state IN ('Prepared','Authorized','Consumed','Revoked','Interrupted')),
             created_utc TEXT NOT NULL,updated_utc TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pilot_execution_transitions(
+            admission_id TEXT NOT NULL REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
+            state TEXT NOT NULL CHECK(state IN ('Authorized','Consumed')),
+            consent_sha256 TEXT NOT NULL,attempt_id TEXT NOT NULL,transport_sha256 TEXT NOT NULL,
+            recorded_utc TEXT NOT NULL,PRIMARY KEY(admission_id,state)
+        );
+        CREATE TABLE IF NOT EXISTS pilot_native_dispatches(
+            admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
+            attempt_id TEXT NOT NULL UNIQUE,consent_sha256 TEXT NOT NULL,transport_sha256 TEXT NOT NULL,
+            job_name TEXT NOT NULL UNIQUE,created_utc TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pilot_native_launch_claims(
+            admission_id TEXT PRIMARY KEY REFERENCES pilot_native_dispatches(admission_id) ON DELETE CASCADE,
+            claimed_utc TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS pilot_execution_results(
             admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
             status TEXT NOT NULL CHECK(status IN ('BUILD_FAILED','TESTS_FAILED','CHECKS_PASSED_NOT_VERIFIED','VERIFICATION_BLOCKED')),
@@ -53,17 +68,16 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         var evidence=historical.RootElement;
         if(!evidence.TryGetProperty("buildQualification",out var build))
             throw new StoreFailure("PILOT_BUILD_EVIDENCE_REQUIRED");
-        if(!evidence.TryGetProperty("dispatchQualification",out var dispatch))
+        if(!evidence.TryGetProperty("dispatchQualification",out _))
             throw new StoreFailure("PILOT_DISPATCH_EVIDENCE_REQUIRED");
+        if(!evidence.TryGetProperty("jobQualification",out _)||
+            !evidence.TryGetProperty("jobIoQualification",out _))
+            throw new StoreFailure("PILOT_JOB_IO_EVIDENCE_REQUIRED");
         try
         {
             var attempt=transport.GetProperty("attemptId").GetString()??"";
             ExecutionStore.CheckId(attempt);
-            var used=evidence.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString())
-                .Append(evidence.GetProperty("boundary").GetProperty("attemptId").GetString())
-                .Concat(build.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()))
-                .Concat(dispatch.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString()));
-            if(used.Contains(attempt,StringComparer.Ordinal))throw new StoreFailure("PILOT_ADMISSION_ATTEMPT_REUSED");
+            RequireFreshHistoricalAttempt(evidence,attempt);
             var selection=JsonSerializer.SerializeToElement(new {
                 attemptId=attempt,admissionSha256=captured.Descriptor.GetProperty("admissionSha256").GetString(),
                 candidateSha256=captured.Descriptor.GetProperty("candidateSha256").GetString(),
@@ -75,12 +89,28 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             PilotCandidateTransportPlanner.Validate(transport,selection,captured.Descriptor.GetProperty("evaluatorSha256").GetString()!,
                 evidence.GetProperty("engineId").GetString()!,captured.Input.Scope.SourceFingerprint!,captured.Input.Scope.Files.Count);
             var hash=Sha(transport.GetRawText());
-            return (Sha(JsonSerializer.Serialize(new {schemaVersion=1,kind="single-attempt-pilot-consent",
+            return (Sha(JsonSerializer.Serialize(new {schemaVersion=2,kind="single-attempt-pilot-consent",
                 taskId,proposalId,captured.Proposal.AuthorizationSha256,captured.Proposal.PilotBindingSha256,
+                completeHistoricalEvidenceSha256=evidence.GetProperty("jobIoEvidenceSha256").GetString(),
                 attemptId=attempt,transportDescriptorSha256=hash})),transport.GetProperty("transportSha256").GetString()!,attempt);
         }
         catch(Exception e)when(e is InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException)
         {throw new StoreFailure("PILOT_TRANSPORT_RESPONSE_INVALID");}
+    }
+    internal static void RequireFreshHistoricalAttempt(JsonElement evidence,string attempt)
+    {
+        ExecutionStore.CheckId(attempt);
+        if(!evidence.TryGetProperty("jobQualification",out _)||
+            !evidence.TryGetProperty("jobIoQualification",out _))
+            throw new StoreFailure("PILOT_JOB_IO_EVIDENCE_REQUIRED");
+        var used=evidence.GetProperty("attempts").EnumerateObject().Select(x=>x.Value.GetProperty("attemptId").GetString())
+            .Append(evidence.GetProperty("boundary").GetProperty("attemptId").GetString())
+            .Concat(new[]{"buildQualification","dispatchQualification","jobQualification","jobIoQualification"}
+                .SelectMany(k=>evidence.GetProperty(k).GetProperty("attempts").EnumerateObject()
+                    .Select(x=>x.Value.GetProperty("attemptId").GetString()))).ToArray();
+        if(used.Length!=23||used.Distinct(StringComparer.Ordinal).Count()!=23)
+            throw new StoreFailure("PILOT_HOST_RESPONSE_INVALID");
+        if(used.Contains(attempt,StringComparer.Ordinal))throw new StoreFailure("PILOT_ADMISSION_ATTEMPT_REUSED");
     }
     internal PilotExecutionAdmission Stage(string taskId,string proposalId,JsonElement transport)
     {
@@ -147,6 +177,35 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             throw new StoreFailure("EVALUATION_RUNTIME_UNQUALIFIED");
         throw new StoreFailure("EVALUATION_EXECUTION_ADAPTER_NOT_QUALIFIED");
     }
+    // Internal database transition primitive; never a grant or process launch.
+    // Production callers must pass the closed executable policy first.
+    private static void RecordTransition(SqliteConnection db,SqliteTransaction tx,
+        PilotExecutionAdmission item,string next)
+    {
+        var previous=next switch {"Authorized"=>"Prepared","Consumed"=>"Authorized",
+            _=>throw new StoreFailure("PILOT_ADMISSION_TRANSITION_INVALID")};
+        var error=next=="Authorized"?"PILOT_ADMISSION_NOT_CURRENT":"PILOT_ADMISSION_NOT_AUTHORIZED";
+        if(next=="Consumed"&&TaskStore.Scalar(db,tx,"""
+            SELECT admission_id FROM pilot_execution_transitions
+            WHERE admission_id=@id AND state='Authorized' AND consent_sha256=@consent
+                AND attempt_id=@attempt AND transport_sha256=@transport
+            """,("@id",item.Id),("@consent",item.ConsentSha256),("@attempt",item.AttemptId),
+            ("@transport",item.TransportSha256)) is null)
+            throw new StoreFailure(error);
+        var now=Now();
+        if(TaskStore.Execute(db,tx,"""
+            UPDATE pilot_execution_admissions SET state=@next,updated_utc=@now
+            WHERE id=@id AND task_id=@task AND state=@previous AND consent_sha256=@consent
+                AND attempt_id=@attempt AND transport_sha256=@transport
+            """,("@next",next),("@now",now),("@id",item.Id),("@task",item.TaskId),("@previous",previous),
+            ("@consent",item.ConsentSha256),("@attempt",item.AttemptId),("@transport",item.TransportSha256))!=1)
+            throw new StoreFailure(error);
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO pilot_execution_transitions(admission_id,state,consent_sha256,attempt_id,transport_sha256,recorded_utc)
+            VALUES(@id,@next,@consent,@attempt,@transport,@now)
+            """,("@id",item.Id),("@next",next),("@consent",item.ConsentSha256),
+            ("@attempt",item.AttemptId),("@transport",item.TransportSha256),("@now",now));
+    }
     internal PilotExecutionAdmission Authorize(string taskId,string id,string confirmation)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
@@ -155,8 +214,7 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         if(confirmation!="AUTHORIZE PILOT "+item.ConsentSha256)
             throw new StoreFailure("PILOT_ADMISSION_CONFIRMATION_REQUIRED");
         RequireExecutablePolicy();
-        if(TaskStore.Execute(db,tx,"UPDATE pilot_execution_admissions SET state='Authorized',updated_utc=@now WHERE id=@id AND state='Prepared'",
-            ("@id",id),("@now",Now()))!=1)throw new StoreFailure("PILOT_ADMISSION_NOT_CURRENT");
+        RecordTransition(db,tx,item,"Authorized");
         tx.Commit();return item with {State="Authorized",Current=true};
     }
     // Fresh trusted transport preparation must reproduce the entire exact
@@ -171,9 +229,65 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         if(identity.Consent!=item.ConsentSha256||identity.Attempt!=item.AttemptId||identity.Transport!=item.TransportSha256)
             throw new StoreFailure("PILOT_ADMISSION_TRANSPORT_CHANGED");
         RequireExecutablePolicy();
-        if(TaskStore.Execute(db,tx,"UPDATE pilot_execution_admissions SET state='Consumed',updated_utc=@now WHERE id=@id AND state='Authorized'",
-            ("@id",id),("@now",Now()))!=1)throw new StoreFailure("PILOT_ADMISSION_NOT_AUTHORIZED");
+        RecordTransition(db,tx,item,"Consumed");
+        ReserveNativeDispatch(db,tx,item);
         tx.Commit();return item with {State="Consumed",Current=false};
+    }
+    // Reservation is a durable identity, not proof of process creation.
+    // Record it in the same transaction as consumption, before any launch.
+    private static void ReserveNativeDispatch(SqliteConnection db,SqliteTransaction tx,PilotExecutionAdmission item)
+    {
+        var jobName=@"Local\CodingAssistant-Pilot-"+item.AttemptId;
+        if(TaskStore.Scalar(db,tx,"""
+            SELECT admission_id FROM pilot_execution_transitions
+            WHERE admission_id=@id AND state='Consumed' AND consent_sha256=@consent
+                AND attempt_id=@attempt AND transport_sha256=@transport
+            """,("@id",item.Id),("@consent",item.ConsentSha256),("@attempt",item.AttemptId),
+            ("@transport",item.TransportSha256)) is null)
+            throw new StoreFailure("PILOT_ADMISSION_NOT_AUTHORIZED");
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO pilot_native_dispatches(admission_id,attempt_id,consent_sha256,transport_sha256,job_name,created_utc)
+            VALUES(@id,@attempt,@consent,@transport,@job,@now)
+            """,("@id",item.Id),("@attempt",item.AttemptId),("@consent",item.ConsentSha256),
+            ("@transport",item.TransportSha256),("@job",jobName),("@now",Now()));
+    }
+    // Claim once, before attempting to create a job. A claim is never
+    // reusable, including when a process was not created or cleanup failed.
+    // Neither a reservation nor a claim establishes native qualification.
+    private static string ClaimNativeLaunch(SqliteConnection db,SqliteTransaction tx,PilotExecutionAdmission item)
+    {
+        var jobName=@"Local\CodingAssistant-Pilot-"+item.AttemptId;
+        if(TaskStore.Scalar(db,tx,"""
+            SELECT d.job_name FROM pilot_native_dispatches d
+            JOIN pilot_execution_admissions a ON a.id=d.admission_id
+            JOIN pilot_execution_transitions t ON t.admission_id=a.id AND t.state='Consumed'
+            WHERE a.id=@id AND a.task_id=@task AND a.state='Consumed'
+                AND a.attempt_id=@attempt AND a.consent_sha256=@consent AND a.transport_sha256=@transport
+                AND d.attempt_id=a.attempt_id AND d.consent_sha256=a.consent_sha256 AND d.transport_sha256=a.transport_sha256
+                AND t.attempt_id=a.attempt_id AND t.consent_sha256=a.consent_sha256 AND t.transport_sha256=a.transport_sha256
+                AND NOT EXISTS(SELECT 1 FROM pilot_execution_results r WHERE r.admission_id=a.id)
+            """,("@id",item.Id),("@task",item.TaskId),("@attempt",item.AttemptId),
+            ("@consent",item.ConsentSha256),("@transport",item.TransportSha256))!=jobName)
+            throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
+        if(!ResultCurrent(db,tx,item,StoredTransport(db,tx,item)))
+            throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
+        if(TaskStore.Execute(db,tx,"""
+            INSERT OR IGNORE INTO pilot_native_launch_claims(admission_id,claimed_utc) VALUES(@id,@now)
+            """,("@id",item.Id),("@now",Now()))!=1)
+            throw new StoreFailure("PILOT_NATIVE_LAUNCH_ALREADY_CLAIMED");
+        return jobName;
+    }
+    // This host-only seam deliberately cannot reach the native launcher
+    // until executable policy is separately qualified. No caller-provided
+    // callback, command, or script may substitute for that policy.
+    internal string ClaimNativeDispatch(string taskId,string id)
+    {
+        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        var item=Find(db,tx,taskId,id);
+        if(item.State!="Consumed")throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
+        RequireExecutablePolicy();
+        var jobName=ClaimNativeLaunch(db,tx,item);
+        tx.Commit();return jobName;
     }
     internal PilotExecutionAdmission Revoke(string taskId,string id)
     {

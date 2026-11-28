@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -37,12 +36,18 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
             throw new StoreFailure("PILOT_HOST_CONFIGURATION_CHANGED");
         using var historical=JsonDocument.Parse(captured.Binding.GetProperty("evidenceJson").GetString()!);
         var evidence=historical.RootElement;
-        // Historical fixture/build-only previews are diagnostic. Reserve
-        // an actual candidate attempt only with pinned dispatch evidence.
+        // Keep the historical seven-receipt transport module unchanged.
+        // Full native I/O evidence is independently revalidated and bound
+        // to the proposal and consent, not passed off as transport trust.
         if(!evidence.TryGetProperty("buildQualification",out var build))
             throw new StoreFailure("PILOT_BUILD_EVIDENCE_REQUIRED");
         if(!evidence.TryGetProperty("dispatchQualification",out var dispatch))
             throw new StoreFailure("PILOT_DISPATCH_EVIDENCE_REQUIRED");
+        if(!evidence.TryGetProperty("jobIoQualification",out _))
+            throw new StoreFailure("PILOT_JOB_IO_EVIDENCE_REQUIRED");
+        var receiptNames=captured.Binding.GetProperty("receiptNames").EnumerateArray().Select(x=>x.GetString()!).ToArray();
+        if(receiptNames.Length!=10)throw new StoreFailure("PILOT_JOB_IO_EVIDENCE_REQUIRED");
+        await store.RevalidateBoundAsync(taskId,proposalId,ownerDataDirectory,receiptNames,token);
         if(dispatch.GetProperty("nodeSha256").GetString()!=config.NodeSha256||
             dispatch.GetProperty("dockerSha256").GetString()!=config.DockerSha256)
             throw new StoreFailure("PILOT_DISPATCH_BINDING_CHANGED");
@@ -57,7 +62,7 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
         });
         var request=JsonSerializer.Serialize(new {
             operation="prepare-candidate-transport",trustedReceiptName,
-            receiptNames=captured.Binding.GetProperty("receiptNames"),currentScope=captured.Input.Scope,
+            receiptNames=receiptNames.Take(7).ToArray(),currentScope=captured.Input.Scope,
             criteria=captured.Input.Criteria,reviewedContract=captured.Contract,
             archiveBase64=Convert.ToBase64String(captured.Input.Archive),selection
         },new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -71,20 +76,11 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
             EvaluationPlanBinder.RequirePinnedFile(config.DockerExecutable,config.DockerSha256);
         }
         CheckFiles();
-        var script=Path.Combine(config.RepositoryRoot,ScriptPath);
-        if(!string.Equals(Path.GetFileName(config.NodeExecutable),"node.exe",StringComparison.OrdinalIgnoreCase)||
-            !string.Equals(Path.GetFileName(config.DockerExecutable),"docker.exe",StringComparison.OrdinalIgnoreCase))
-            throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
-        var start=new ProcessStartInfo(config.NodeExecutable){
-            WorkingDirectory=Path.GetDirectoryName(script)!,UseShellExecute=false,CreateNoWindow=true,
-            RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,
-            StandardInputEncoding=new UTF8Encoding(false),StandardOutputEncoding=Encoding.UTF8};
-        EvaluationPlanBinder.RemoveNodeEnvironmentOverrides(start);
-        start.Environment["CA_PILOT_NODE_SHA256"]=config.NodeSha256;
-        start.Environment["CA_EVALUATION_DOCKER_EXE"]=config.DockerExecutable;
-        start.Environment["CA_EVALUATION_DOCKER_SHA256"]=config.DockerSha256;
-        start.ArgumentList.Add(script);start.ArgumentList.Add("--stdin");
-        var response=await EvaluationPlanBinder.InvokePlanningProcessAsync(start,request,TimeSpan.FromSeconds(60),token);
+        // Preview uses a separate transient job identity: it must never
+        // consume or reuse the durable native dispatch job reservation.
+        using var job=PilotWindowsJob.Create(@"Local\CodingAssistant-Pilot-"+Guid.NewGuid().ToString("N"));
+        var (exitCode,response)=await job.InvokeCandidatePreviewAsync(config,request,TimeSpan.FromSeconds(60),token);
+        if(exitCode!=0)throw new StoreFailure("PILOT_TRANSPORT_PREVIEW_BLOCKED");
         Validate(response,selection,captured.Descriptor.GetProperty("evaluatorSha256").GetString()!,
             evidence.GetProperty("engineId").GetString()!,captured.Input.Scope.SourceFingerprint!,
             captured.Input.Scope.Files.Count);
@@ -92,6 +88,7 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
         if(PilotProposalBinding.ConfigurationSha256(EvaluationPlanningHostConfiguration.LoadPilot(ownerDataDirectory))!=configHash)
             throw new StoreFailure("PILOT_HOST_CONFIGURATION_CHANGED");
         token.ThrowIfCancellationRequested();
+        await store.RevalidateBoundAsync(taskId,proposalId,ownerDataDirectory,receiptNames,token);
         var current=store.CaptureBoundTransport(taskId,proposalId);
         if(current.Proposal.AuthorizationSha256!=captured.Proposal.AuthorizationSha256||
             current.Proposal.PilotBindingSha256!=captured.Proposal.PilotBindingSha256)
