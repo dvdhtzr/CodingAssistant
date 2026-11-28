@@ -47,3 +47,12 @@ test('invalid identities and missing journal never imply cleanup',t=>{
   assert.throws(()=>recoveryIdentity({...value,attemptId:'../bad'}),/PILOT_NATIVE_CLEANUP_IDENTITY_INVALID/);
   assert.throws(()=>inspectExactCleanup(value,{root,host}));
 });
+
+import {parseRecoveryRequest} from '../tools/m4/native_cleanup_observation_bridge.mjs';
+test('observation bridge accepts only bounded exact read-only request',()=>{
+  const request={operation:'inspect-exact-cleanup',identity:value};
+  assert.deepEqual(parseRecoveryRequest(JSON.stringify(request)),value);
+  for(const changed of [{...request,operation:'recover-exact-cleanup'},{...request,command:'rm'},
+    {...request,identity:{...value,source:'anything'}}])assert.throws(()=>parseRecoveryRequest(JSON.stringify(changed)));
+  assert.throws(()=>parseRecoveryRequest(' '.repeat(4097)));
+});
