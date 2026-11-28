@@ -254,9 +254,27 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         public void Dispose()=>lease.Dispose();
     }
 
+    // Check the admission and policy before touching the Windows lease, then
+    // repeat the checks in the exclusive transaction. This preserves the
+    // fail-closed behavior on every platform without acquiring launch authority.
+    private void RequireDispatchAdmission(SqliteConnection db,SqliteTransaction tx,
+        PilotExecutionAdmission item,JsonElement freshTransport)
+    {
+        if(item.State!="Authorized"||!Current(db,tx,item))throw new StoreFailure("PILOT_ADMISSION_NOT_AUTHORIZED");
+        var identity=Identity(db,tx,item.TaskId,item.ProposalId,freshTransport);
+        if(identity.Consent!=item.ConsentSha256||identity.Attempt!=item.AttemptId||identity.Transport!=item.TransportSha256)
+            throw new StoreFailure("PILOT_ADMISSION_TRANSPORT_CHANGED");
+        RequireExecutablePolicy();
+    }
+
     private NativeDispatchOwnership BeginNativeDispatch(string taskId,string id,JsonElement freshTransport)
     {
         using var db=tasks.Open();
+        using(var preflight=db.BeginTransaction(deferred:true))
+        {
+            RequireDispatchAdmission(db,preflight,Find(db,preflight,taskId,id),freshTransport);
+            preflight.Commit();
+        }
         var directory=Path.GetDirectoryName(db.DataSource)
             ??throw new StoreFailure("PILOT_NATIVE_OWNER_DIRECTORY_INVALID");
         var lease=PilotNativeOwnerLease.Acquire(directory);
@@ -264,11 +282,7 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         {
             using var tx=db.BeginTransaction();
             var item=Find(db,tx,taskId,id);
-            if(item.State!="Authorized"||!Current(db,tx,item))throw new StoreFailure("PILOT_ADMISSION_NOT_AUTHORIZED");
-            var identity=Identity(db,tx,taskId,item.ProposalId,freshTransport);
-            if(identity.Consent!=item.ConsentSha256||identity.Attempt!=item.AttemptId||identity.Transport!=item.TransportSha256)
-                throw new StoreFailure("PILOT_ADMISSION_TRANSPORT_CHANGED");
-            RequireExecutablePolicy();
+            RequireDispatchAdmission(db,tx,item,freshTransport);
             RequireNoNativeCleanupDebt(db,tx);
             RecordTransition(db,tx,item,"Consumed");
             ReserveNativeDispatch(db,tx,item);
