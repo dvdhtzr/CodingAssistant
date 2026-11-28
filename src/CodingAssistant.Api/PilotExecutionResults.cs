@@ -141,6 +141,20 @@ internal sealed partial class PilotExecutionAdmissionStore
             tx.Commit();return prior;
         }
         if(!ResultCurrent(db,tx,item,transport))throw new StoreFailure("PILOT_RESULT_BINDING_CHANGED");
+        // A consumed row alone is not dispatch provenance. A new result
+        // must have the matching durable native reservation and launch
+        // claim. This is a necessary identity check, not native attestation.
+        if(TaskStore.Scalar(db,tx,"""
+            SELECT d.admission_id FROM pilot_native_dispatches d
+            JOIN pilot_native_launch_claims l ON l.admission_id=d.admission_id
+            JOIN pilot_execution_transitions t ON t.admission_id=d.admission_id AND t.state='Consumed'
+            WHERE d.admission_id=@id AND d.attempt_id=@attempt AND d.consent_sha256=@consent
+                AND d.transport_sha256=@transport AND d.job_name=@job
+                AND t.attempt_id=d.attempt_id AND t.consent_sha256=d.consent_sha256
+                AND t.transport_sha256=d.transport_sha256
+            """,("@id",item.Id),("@attempt",item.AttemptId),("@consent",item.ConsentSha256),
+            ("@transport",item.TransportSha256),("@job",@"Local\CodingAssistant-Pilot-"+item.AttemptId)) is null)
+            throw new StoreFailure("PILOT_NATIVE_RESULT_UNCLAIMED");
         TaskStore.Execute(db,tx,"""
             INSERT INTO pilot_execution_results(admission_id,status,receipt_json,receipt_sha256,reason,recorded_utc)
             VALUES(@id,@status,@json,@hash,@reason,@now)
