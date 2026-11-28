@@ -5689,6 +5689,61 @@ try
             ("@consent",resultFixtureAdmission.ConsentSha256),("@transport",resultFixtureAdmission.TransportSha256))
             ==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
             "winning consumption records exact native reservation");
+    // Private persistence controls only; no Windows process is created.
+    var launchClaimMethod=typeof(PilotExecutionAdmissionStore).GetMethod("ClaimNativeLaunch",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing native launch claim primitive");
+    string FixtureClaimNative(Microsoft.Data.Sqlite.SqliteConnection db,Microsoft.Data.Sqlite.SqliteTransaction tx,
+        PilotExecutionAdmission admission)
+    {
+        try{return (string)launchClaimMethod.Invoke(null,new object[]{db,tx,admission})!;}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
+        {throw failure;}
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        foreach(var invalid in new[]{preparedAdmission,resultFixtureAdmission with {ConsentSha256=new string('0',64)},
+            resultFixtureAdmission with {TransportSha256=new string('0',64)}})
+        {
+            try{FixtureClaimNative(db,tx,invalid);Check(false,"invalid native launch identity");}
+            catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_DISPATCH_NOT_CURRENT")
+            {Check(true,"native claim rejects nonconsumed or changed identity");}
+        }
+        tx.Rollback();
+    }
+    try
+    {
+        admissionStore.ClaimNativeDispatch(taskBound.Id,resultFixtureAdmission.Id);
+        Check(false,"consumed fixture is not executable qualification");
+    }
+    catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
+    {Check(true,"public host seam remains behind closed runtime gate");}
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        Check(FixtureClaimNative(db,tx,resultFixtureAdmission)==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
+            "claim derives exact reserved job name");
+        tx.Rollback();
+    }
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"rolled-back launch claim leaves no claim");
+    using(var startClaimants=new ManualResetEventSlim(false))
+    {
+        Task<bool> CompeteForClaim()=>Task.Run(()=>{
+            startClaimants.Wait();
+            using var db=tasks.Open();using var tx=db.BeginTransaction();
+            try{FixtureClaimNative(db,tx,resultFixtureAdmission);tx.Commit();return true;}
+            catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_LAUNCH_ALREADY_CLAIMED"){return false;}
+        });
+        var firstClaimantTask=CompeteForClaim();var secondClaimantTask=CompeteForClaim();startClaimants.Set();
+        var claimOutcomes=await Task.WhenAll(firstClaimantTask,secondClaimantTask);
+        Check(claimOutcomes.Count(x=>x)==1,"two independent connections can claim launch exactly once");
+    }
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id))==resultFixtureAdmission.Id,"native claim persists across connections");
     var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
@@ -5701,6 +5756,14 @@ try
     }
     catch(StoreFailure ex)when(ex.Code=="PILOT_RESULT_ALREADY_RECORDED")
     {Check(true,"result is immutable after recording");}
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try{FixtureClaimNative(db,tx,resultFixtureAdmission);Check(false,"terminal result cannot launch");}
+        catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_DISPATCH_NOT_CURRENT")
+        {Check(true,"terminal result blocks native launch");}
+        tx.Rollback();
+    }
     var unfinishedFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('d',64),admissionReceipts);
     var unfinishedFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,unfinishedFixtureBinding);
     var unfinishedFixtureAdmission=admissionStore.Stage(taskBound.Id,unfinishedFixtureProposal.Id,AdmissionTransport(new string('b',32),new string('6',64)));
