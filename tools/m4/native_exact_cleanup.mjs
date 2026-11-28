@@ -42,8 +42,14 @@ export function inspectExactCleanup(value,{root,host}){
 // Host must separately establish exclusive recovery ownership and native
 // job absence before invoking this module. No CLI or API is exposed yet.
 export function recoverExactAttempt(value){
-  const expected=recoveryIdentity(value);
+  recoveryIdentity(value);
   const env=process.env,docker=pinnedDispatchDocker(env),root=pilotLocalRoot(env),host=pilotHostTools(docker);
+  return recoverExactAttemptWithHost(value,{root,host});
+}
+// Internal deterministic test seam; the production entrypoint above still
+// resolves its own pinned host. Never expose these dependencies over IPC.
+export function recoverExactAttemptWithHost(value,{root,host,recover=recoverPilotAttempt}){
+  const expected=recoveryIdentity(value);
   if(host.engine()!==expected.engineId)fail('PILOT_ENGINE_CHANGED');
   const pending=readPilotAttempt(root);
   if(pending){
@@ -55,7 +61,7 @@ export function recoverExactAttempt(value){
     if(found)assertPilotContainerOwned(expected,id,host.inspect(id));
     // Recover the journal under its exclusive recovery lock before
     // making any mutating Docker request. Recheck the complete identity.
-    const journal=recoverPilotAttempt(root);
+    const journal=recover(root);
     match(expected,journal.identity);
     if(journal.current.containerId!==id)fail('PILOT_NATIVE_CLEANUP_IDENTITY_MISMATCH');
     if(host.engine()!==expected.engineId)fail('PILOT_ENGINE_CHANGED');
