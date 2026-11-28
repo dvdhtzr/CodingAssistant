@@ -2,11 +2,7 @@ name: AET-8 real trusted sandbox regression
 
 on:
   push:
-    branches: ["feature/autonomous-engineering-team"]
-    paths:
-      - "tools/m4/**"
-      - "tests/run_aet8_trusted_ci.mjs"
-      - ".github/workflows/aet8-trusted-runtime.yml"
+    branches: [main]
   workflow_dispatch:
 
 permissions:
