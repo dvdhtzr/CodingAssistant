@@ -43,22 +43,26 @@ records timings, revision, cleanliness and outcome. Exit 1 means failure.
 A dirty checkout is not clean-commit evidence. Run on an unchanged checkout.
 The script does not push, modify CI settings or confer execution approval.
 
-## Remote validation during the experiment
+## Local-first development and merge policy
 
-The M0 Model-Free Checks push trigger excludes only
-feature/autonomous-engineering-team. main, other feature branches and
-pull requests into main retain their original behavior. The separate AET-8
-trusted sandbox workflow retains its security-sensitive triggers. Existing
-in-flight checks are not canceled.
+Feature branch pushes and ordinary pull request updates do not automatically
+run hosted CI. Use Quick for routine development and Full for milestone and
+pre-merge validation. Report the exact tested commit and clean working tree.
+Batch implementation commits between meaningful checkpoints. Local Windows
+regressions do not replace Linux-specific acceptance or native execution
+qualification. No security or owner approval boundary changes.
 
-To run the full hosted matrix manually: GitHub Actions > M0 Model-Free Checks
-> Run workflow > feature/autonomous-engineering-team (or
-`gh workflow run m0-tests.yml --ref feature/autonomous-engineering-team`).
-Run it at milestones and before any merge. Required PR checks and Linux
-acceptance are not waived by a local Windows pass. Restore automatic pushes
-by reverting the standalone workflow-trigger commit (do not revert the
-local script), or remove its single negative branch filter.
+Hosted checks run on main pushes; M0 Model-Free Checks also retains its
+merged-PR fallback for GitHub App merges. Manual workflow dispatch remains
+available for exceptional cross-platform and specialized runtime checks.
+The specialized workflows now run on all main pushes rather than filtered
+paths. Branch protection, if it requires pre-merge hosted checks, must be
+reconciled by the repository owner; do not bypass required checks.
 
+Before merging, require explicit owner authorization and successful full
+local validation against the exact candidate commit. If the base changes,
+reconcile and revalidate before merging. Inspect main CI after the merge.
+Include this policy in all future CodingAssistant development handoffs.
 
 ## Optional real planning transport probe
 

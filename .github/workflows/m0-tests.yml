@@ -2,11 +2,10 @@ name: M0 Model-Free Checks
 
 on:
   push:
-    # Temporary local-first experiment; keep manual, PR and main CI intact.
-    branches: [main, "feature/**", "!feature/autonomous-engineering-team"]
+    branches: [main]
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, closed]
+    types: [closed]
   workflow_dispatch:
 
 permissions:
@@ -14,6 +13,7 @@ permissions:
 
 jobs:
   unit-and-syntax:
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     name: Python M0 checks / ${{ matrix.os }}
     strategy:
       fail-fast: false

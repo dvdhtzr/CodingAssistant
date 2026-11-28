@@ -1,19 +1,8 @@
 name: Order pricing static acceptance
 
 on:
-  pull_request:
-    paths:
-      - "benchmarks/fixtures/04-order-pricing/**"
-      - "tools/mvp/assist.py"
-      - "tests/test_mvp_assist.py"
-      - ".github/workflows/order-pricing-acceptance.yml"
   push:
     branches: [main]
-    paths:
-      - "benchmarks/fixtures/04-order-pricing/**"
-      - "tools/mvp/assist.py"
-      - "tests/test_mvp_assist.py"
-      - ".github/workflows/order-pricing-acceptance.yml"
   workflow_dispatch:
 
 permissions:
