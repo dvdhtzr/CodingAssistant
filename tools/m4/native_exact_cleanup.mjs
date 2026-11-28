@@ -1,8 +1,8 @@
 // Cleanup-only exact-attempt adapter. No source, create/start, or execution grant.
 // This module is deliberately outside the historical qualification pin closure.
 import {createHash} from 'node:crypto';
-import {readPilotAttempt,readArchivedPilotAttempt} from './static_web_pilot_attempt_journal.mjs';
-import {pilotHostTools,reconcilePilotLifecycle,assertPilotContainerOwned,pilotLocalRoot} from './windows_pilot_lifecycle_qualification.mjs';
+import {readPilotAttempt,readArchivedPilotAttempt,recoverPilotAttempt} from './static_web_pilot_attempt_journal.mjs';
+import {pilotHostTools,assertPilotContainerOwned,pilotLocalRoot} from './windows_pilot_lifecycle_qualification.mjs';
 import {pinnedDispatchDocker} from './windows_pinned_dispatch_qualification.mjs';
 const fail=code=>{throw Error(code);};
 const label='codingassistant.static-web-pilot-qualification';
@@ -53,36 +53,29 @@ export function recoverExactAttempt(value){
     const found=host.list('name=^/'+expected.name+'$');
     if(found!==''&&found!==id)fail('PILOT_CONTAINER_OWNERSHIP_MISMATCH');
     if(found)assertPilotContainerOwned(expected,id,host.inspect(id));
-    // The historical reconciliation helper reads the active journal again.
-    // Constrain its actual Docker commands to this exact durable ID, even
-    // if the journal changes between the initial check and reconciliation.
-    const guardedDocker=(args,timeout,input)=>{
-      if(input!==undefined||!Array.isArray(args))fail('PILOT_NATIVE_CLEANUP_COMMAND_INVALID');
-      const same=(expectedArgs)=>JSON.stringify(args)===JSON.stringify(expectedArgs);
-      const allowed=same(['context','show'])||
-        (args.length===5&&args[0]==='context'&&args[1]==='inspect'&&
-          /^[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$/.test(args[2])&&args[3]==='--format'&&args[4]==='{{json .}}')||
-        same(['info','--format','{{json .}}'])||
-        same(['container','inspect',id,'--format','{{json .}}'])||
-        ['name=^/'+expected.name+'
-    if(result.status!=='PILOT_INTERRUPTED_ATTEMPT_RECONCILED'||result.attemptId!==expected.attemptId||
-      !result.containerRemoved||result.cleanupDebt)fail('PILOT_CLEANUP_UNCONFIRMED');
-  }
-  return inspectExactCleanup(value,{root,host});
-}
-,'id='+id,'label='+label].some(filter=>
-          same(['ps','-a','--no-trunc','--filter',filter,'--format','{{.ID}}']))||
-        same(['rm','-f',id]);
-      if(!allowed)fail('PILOT_NATIVE_CLEANUP_COMMAND_INVALID');
-      if(args[0]==='rm'){
+    // Recover the journal under its exclusive recovery lock before
+    // making any mutating Docker request. Recheck the complete identity.
+    const journal=recoverPilotAttempt(root);
+    match(expected,journal.identity);
+    if(journal.current.containerId!==id)fail('PILOT_NATIVE_CLEANUP_IDENTITY_MISMATCH');
+    if(host.engine()!==expected.engineId)fail('PILOT_ENGINE_CHANGED');
+    const current=host.list('name=^/'+expected.name+'$');
+    if(current!==''&&current!==id)fail('PILOT_CONTAINER_OWNERSHIP_MISMATCH');
+    if(journal.current.stage==='Cleaned'){
+      if(current!==''||host.list('id='+id)!=='')fail('PILOT_CLEANUP_UNCONFIRMED');
+    }else{
+      if(current)assertPilotContainerOwned(expected,id,host.inspect(id));
+      journal.advance('CleanupPending',id);
+      if(current){
         if(host.engine()!==expected.engineId)fail('PILOT_ENGINE_CHANGED');
         assertPilotContainerOwned(expected,id,host.inspect(id));
+        host.query(['rm','-f',id],15000);
       }
-      return docker(args,timeout);
-    };
-    const result=reconcilePilotLifecycle({root,docker:guardedDocker,env});
-    if(result.status!=='PILOT_INTERRUPTED_ATTEMPT_RECONCILED'||result.attemptId!==expected.attemptId||
-      !result.containerRemoved||result.cleanupDebt)fail('PILOT_CLEANUP_UNCONFIRMED');
+      if(host.list('name=^/'+expected.name+'$')!==''||host.list('id='+id)!==''||
+        host.engine()!==expected.engineId)fail('PILOT_CLEANUP_UNCONFIRMED');
+      journal.advance('Cleaned',id);
+    }
+    journal.archive();
   }
   return inspectExactCleanup(value,{root,host});
 }
