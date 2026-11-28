@@ -53,7 +53,34 @@ export function recoverExactAttempt(value){
     const found=host.list('name=^/'+expected.name+'$');
     if(found!==''&&found!==id)fail('PILOT_CONTAINER_OWNERSHIP_MISMATCH');
     if(found)assertPilotContainerOwned(expected,id,host.inspect(id));
-    const result=reconcilePilotLifecycle({root,docker,env});
+    // The historical reconciliation helper reads the active journal again.
+    // Constrain its actual Docker commands to this exact durable ID, even
+    // if the journal changes between the initial check and reconciliation.
+    const guardedDocker=(args,timeout,input)=>{
+      if(input!==undefined||!Array.isArray(args))fail('PILOT_NATIVE_CLEANUP_COMMAND_INVALID');
+      const same=(expectedArgs)=>JSON.stringify(args)===JSON.stringify(expectedArgs);
+      const allowed=same(['context','show'])||
+        (args.length===5&&args[0]==='context'&&args[1]==='inspect'&&
+          /^[A-Za-z0-9][A-Za-z0-9_.-]{0,70}$/.test(args[2])&&args[3]==='--format'&&args[4]==='{{json .}}')||
+        same(['info','--format','{{json .}}'])||
+        same(['container','inspect',id,'--format','{{json .}}'])||
+        ['name=^/'+expected.name+'
+    if(result.status!=='PILOT_INTERRUPTED_ATTEMPT_RECONCILED'||result.attemptId!==expected.attemptId||
+      !result.containerRemoved||result.cleanupDebt)fail('PILOT_CLEANUP_UNCONFIRMED');
+  }
+  return inspectExactCleanup(value,{root,host});
+}
+,'id='+id,'label='+label].some(filter=>
+          same(['ps','-a','--no-trunc','--filter',filter,'--format','{{.ID}}']))||
+        same(['rm','-f',id]);
+      if(!allowed)fail('PILOT_NATIVE_CLEANUP_COMMAND_INVALID');
+      if(args[0]==='rm'){
+        if(host.engine()!==expected.engineId)fail('PILOT_ENGINE_CHANGED');
+        assertPilotContainerOwned(expected,id,host.inspect(id));
+      }
+      return docker(args,timeout);
+    };
+    const result=reconcilePilotLifecycle({root,docker:guardedDocker,env});
     if(result.status!=='PILOT_INTERRUPTED_ATTEMPT_RECONCILED'||result.attemptId!==expected.attemptId||
       !result.containerRemoved||result.cleanupDebt)fail('PILOT_CLEANUP_UNCONFIRMED');
   }
