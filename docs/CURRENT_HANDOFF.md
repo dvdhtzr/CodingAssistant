@@ -1,5 +1,20 @@
 # CodingAssistant — current project handoff
 
+## AET-8.3 continuation record (November 28, 2026)
+
+Live tracker: [issue #216 — [AET] AET-8.3 Native Dispatch Integration and Qualification](https://github.com/dvdhtzr/CodingAssistant/issues/216). This section is the authoritative continuation state for AET-8.3 and supersedes older notes for that milestone only.
+
+- **Current milestone:** AET-8.3 (E2–E5 integration, then F qualification). Branch `feature/aet8-native-recovery-completion` (ahead of `main` `1ce0ab7`; no PR).
+- **Validated commit:** `e522e1e` (E1). Model-free validated on Linux + .NET 10.0.404: `CodingAssistant.Api` builds clean under warnings-as-errors; Phase 2 smoke **PASS 783** (= 786 on Windows; delta is the platform gate — `Program.cs` byte-identical to `48f2b12`); `node --test tests/test_m4_native_exact_cleanup.mjs` **28/28**.
+- **Completed capabilities (model-free / compile only; NOT native-qualified):** exclusive owner lease + single-use dispatch ownership (`BeginNativeDispatch`, steps 1–3 with preview-before-lease / revalidate-inside ordering); durable reservation + launch claim; independent cleanup observation shared under ownership (`ObserveNativeCleanupUnderLeaseAsync`, E1); transactional result+observation provenance binding (`RecordObservedNativeResult`, requires `archiveSha256==independently-observed JournalSha256`); terminal-failure vs cleanup-debt separation; startup/ revocation interruption without silent replay.
+- **E5 regression added this session:** closed generated-source authorization gate (`RequireExecutablePolicy` fails closed — previously untested) and native provenance rejection (`PILOT_NATIVE_RESULT_UNCLAIMED`). Validation commands: `.\Test-CodingAssistant.ps1 -Full` (authoritative) or `.\Validate-NativeCleanup.ps1` (fast subset).
+- **Key architectural finding:** the *generated-source* product dispatch (lifecycle steps 4–10) is intentionally un-completable now — `RequireExecutablePolicy` is hard-closed and `windows_job_fixed_io.mjs` accepts only frozen controls. The demonstrable E2 native-ownership lifecycle is the **frozen-source qualification** (`PilotWindowsJobSmoke`, step F), which is **Windows-only**. A cloud/Linux session cannot execute or qualify it.
+- **Outstanding work:** E2 remaining = bring the frozen native dispatch lifecycle under the exclusive owner lease on Windows (step F); E3/E4 native behaviors are exercised by F; remaining E5 checks (ownership retention, mismatched journal already covered, cancellation/interruption at native layer) land with F. Then open a PR at the integration boundary (owner merge authorization required).
+- **Known risks/blockers:** native dispatch, Windows Job Object containment and cleanup recovery can only be qualified on the owner's Windows workstation; historical evidence is not current qualification; do not weaken the closed executable-policy gate; do not misrepresent frozen-control dispatch as generated-source qualification.
+- **Exact next implementation task:** run step-F frozen-source native qualification on the Windows host (see issue #216 runbook), capturing current `WINDOWS_PILOT_JOB_OWNERSHIP_PASS` evidence; then run `.\Test-CodingAssistant.ps1 -Full` at the clean integration commit before requesting merge.
+
+---
+
 **Checkpoint: November 19, 2026 (updated after verified Dell M1.12 end-to-end coding PASS).** Read this before doing more work. This file is an operational checkpoint, not a replacement for `docs/IMPLEMENTATION_PLAN.md`, `docs/SECURITY.md`, or detailed append-only M0/M1 evidence records. Check live GitHub `main` and open PRs before relying on the commit information below.
 
 ## Goal and scope
