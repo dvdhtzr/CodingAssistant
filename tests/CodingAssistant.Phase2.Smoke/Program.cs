@@ -5599,6 +5599,24 @@ try
         catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
         {throw failure;}
     }
+    var nativeReserveMethod=typeof(PilotExecutionAdmissionStore).GetMethod("ReserveNativeDispatch",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing native reservation primitive");
+    void FixtureReserveNative(Microsoft.Data.Sqlite.SqliteConnection db,Microsoft.Data.Sqlite.SqliteTransaction tx,
+        PilotExecutionAdmission admission)
+    {
+        try{nativeReserveMethod.Invoke(null,new object[]{db,tx,admission});}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure)
+        {throw failure;}
+    }
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try{FixtureReserveNative(db,tx,resultFixtureAdmission);Check(false,"unconsumed native reservation");}
+        catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED")
+        {Check(true,"native reservation requires exact consumption");}
+        tx.Rollback();
+    }
     using(var db=tasks.Open())
     using(var tx=db.BeginTransaction())
     {
@@ -5631,6 +5649,7 @@ try
     using(var tx=db.BeginTransaction())
     {
         FixtureTransition(db,tx,resultFixtureAdmission,"Consumed");
+        FixtureReserveNative(db,tx,resultFixtureAdmission);
         tx.Rollback();
     }
     Check(admissionStore.Get(taskBound.Id,resultFixtureAdmission.Id).State=="Authorized",
@@ -5638,12 +5657,15 @@ try
     using(var db=tasks.Open())
         Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_execution_transitions WHERE admission_id=@id AND state='Consumed'",
             ("@id",resultFixtureAdmission.Id)) is null,"rolled-back consumption leaves no consumed record");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_dispatches WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"native reservation rolls back with consumption");
     using(var startConsumers=new ManualResetEventSlim(false))
     {
         Task<bool> Compete()=>Task.Run(()=>{
             startConsumers.Wait();
             using var db=tasks.Open();using var tx=db.BeginTransaction();
-            try{FixtureTransition(db,tx,resultFixtureAdmission,"Consumed");tx.Commit();return true;}
+            try{FixtureTransition(db,tx,resultFixtureAdmission,"Consumed");FixtureReserveNative(db,tx,resultFixtureAdmission);tx.Commit();return true;}
             catch(StoreFailure ex)when(ex.Code=="PILOT_ADMISSION_NOT_AUTHORIZED"){return false;}
         });
         var firstConsumerTask=Compete();var secondConsumerTask=Compete();startConsumers.Set();
@@ -5659,6 +5681,14 @@ try
             ("@id",resultFixtureAdmission.Id),("@consent",resultFixtureAdmission.ConsentSha256))==resultFixtureAdmission.Id,
             "consumed identity is recorded exactly once");
     }
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"""
+            SELECT job_name FROM pilot_native_dispatches WHERE admission_id=@id AND attempt_id=@attempt
+                AND consent_sha256=@consent AND transport_sha256=@transport
+            """,("@id",resultFixtureAdmission.Id),("@attempt",resultFixtureAdmission.AttemptId),
+            ("@consent",resultFixtureAdmission.ConsentSha256),("@transport",resultFixtureAdmission.TransportSha256))
+            ==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
+            "winning consumption records exact native reservation");
     var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
