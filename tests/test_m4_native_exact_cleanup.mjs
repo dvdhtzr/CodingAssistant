@@ -180,3 +180,21 @@ test('already cleaned active journal is archived without issuing removal',t=>{
   assert.equal(x.state.queries.length,0);
   assert.equal(readPilotAttempt(root),null);
 });
+
+import {parseRecoveryRequest as parseActiveRecoveryRequest} from '../tools/m4/native_active_recovery_bridge.mjs';
+test('active bridge accepts only the bounded exact cleanup operation',()=>{
+  const request={operation:'recover-exact-cleanup',identity:value};
+  assert.deepEqual(parseActiveRecoveryRequest(JSON.stringify(request)),value);
+  for(const changed of [
+    {...request,operation:'inspect-exact-cleanup'},
+    {...request,operation:'execute'},
+    {...request,command:'rm'},
+    {...request,script:'anything'},
+    {...request,identity:{...value,source:'anything'}},
+    {...request,identity:{...value,containerId:id}},
+    {...request,identity:{...value,attemptId:'../bad'}}
+  ])assert.throws(()=>parseActiveRecoveryRequest(JSON.stringify(changed)));
+  for(const invalid of ['null','[]','{}','not json',' '.repeat(4097)])
+    assert.throws(()=>parseActiveRecoveryRequest(invalid));
+  assert.throws(()=>parseRecoveryRequest(JSON.stringify(request)));
+});
