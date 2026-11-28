@@ -39,6 +39,16 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             admission_id TEXT PRIMARY KEY REFERENCES pilot_native_dispatches(admission_id) ON DELETE CASCADE,
             claimed_utc TEXT NOT NULL
         );
+        -- Independent of task deletion and terminal result persistence.
+        -- A claim is a possible launch, not proof that cleanup occurred.
+        CREATE TABLE IF NOT EXISTS pilot_native_cleanup_obligations(
+            admission_id TEXT PRIMARY KEY,
+            attempt_id TEXT NOT NULL UNIQUE,
+            consent_sha256 TEXT NOT NULL,
+            transport_sha256 TEXT NOT NULL,
+            job_name TEXT NOT NULL UNIQUE,
+            created_utc TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS pilot_execution_results(
             admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
             status TEXT NOT NULL CHECK(status IN ('BUILD_FAILED','TESTS_FAILED','CHECKS_PASSED_NOT_VERIFIED','VERIFICATION_BLOCKED')),
@@ -275,6 +285,11 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             INSERT OR IGNORE INTO pilot_native_launch_claims(admission_id,claimed_utc) VALUES(@id,@now)
             """,("@id",item.Id),("@now",Now()))!=1)
             throw new StoreFailure("PILOT_NATIVE_LAUNCH_ALREADY_CLAIMED");
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO pilot_native_cleanup_obligations(admission_id,attempt_id,consent_sha256,transport_sha256,job_name,created_utc)
+            VALUES(@id,@attempt,@consent,@transport,@job,@now)
+            """,("@id",item.Id),("@attempt",item.AttemptId),("@consent",item.ConsentSha256),
+            ("@transport",item.TransportSha256),("@job",jobName),("@now",Now()));
         return jobName;
     }
     // This host-only seam deliberately cannot reach the native launcher
@@ -322,6 +337,14 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
     }
     internal static void Recover(SqliteConnection db,SqliteTransaction tx)
     {
+        // Conservatively enroll pre-migration claims, including those with
+        // terminal receipts. Receipt shape alone cannot discharge cleanup.
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO pilot_native_cleanup_obligations(admission_id,attempt_id,consent_sha256,transport_sha256,job_name,created_utc)
+            SELECT d.admission_id,d.attempt_id,d.consent_sha256,d.transport_sha256,d.job_name,l.claimed_utc
+            FROM pilot_native_dispatches d JOIN pilot_native_launch_claims l ON l.admission_id=d.admission_id
+            WHERE NOT EXISTS(SELECT 1 FROM pilot_native_cleanup_obligations o WHERE o.admission_id=d.admission_id)
+            """);
         TaskStore.Execute(db,tx,"UPDATE pilot_execution_admissions SET state='Interrupted',updated_utc=@now WHERE state IN ('Prepared','Authorized')",("@now",Now()));
         TaskStore.Execute(db,tx,"""
             INSERT OR IGNORE INTO pilot_execution_results(admission_id,status,reason,recorded_utc)
