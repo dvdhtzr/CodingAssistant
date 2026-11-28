@@ -127,7 +127,10 @@ internal sealed partial class PilotExecutionAdmissionStore
         ResultCheck(result.Status==status&&result.Reason==reason);
         return result with {Current=ResultCurrent(db,tx,item,transport)};
     }
-    internal PilotExecutionResult RecordResult(string taskId,string id,JsonElement receipt)
+    // Durable receipt persistence is not native attestation. Only the private
+    // dispatcher may call this after establishing live host provenance.
+    // Model-free tests exercise the ledger via reflection in a disposable DB.
+    private PilotExecutionResult RecordResult(string taskId,string id,JsonElement receipt)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
         var item=Find(db,tx,taskId,id);
