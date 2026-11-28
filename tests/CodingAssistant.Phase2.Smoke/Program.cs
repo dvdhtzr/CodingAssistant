@@ -42,6 +42,42 @@ async Task<JsonDocument> Body(HttpResponseMessage response) =>
 async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj) =>
     await client.PostAsJsonAsync(path, obj);
 
+// The native recovery lease is owner-private and exclusive. No process,
+ // Docker container or generated source is launched by this control.
+if(OperatingSystem.IsWindows())
+{
+    var leaseRoot=Path.Combine(Path.GetTempPath(),"ca-native-lease-"+Guid.NewGuid().ToString("N"));
+    try
+    {
+        PrivateDataDirectory.Ensure(leaseRoot);
+        using(var held=PilotNativeOwnerLease.Acquire(leaseRoot))
+        {
+            try
+            {
+                using var competing=PilotNativeOwnerLease.Acquire(leaseRoot);
+                Check(false,"second native owner cannot acquire held lease");
+            }
+            catch(StoreFailure e)when(e.Code=="PILOT_NATIVE_OWNER_LEASE_UNAVAILABLE")
+            {Check(true,"exclusive native owner lease rejects concurrent holder");}
+        }
+        using(var reacquired=PilotNativeOwnerLease.Acquire(leaseRoot))
+            Check(File.Exists(Path.Combine(leaseRoot,"pilot-native-owner.lock")),"native owner lease is reusable after release");
+        try
+        {
+            _=EvaluationPlanningHostConfiguration.LoadNativeRecovery(leaseRoot);
+            Check(false,"native cleanup must require separate owner pins");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_HOST_CONFIGURATION_REQUIRED")
+        {Check(true,"missing native recovery configuration fails closed");}
+    }
+    finally{if(Directory.Exists(leaseRoot))Directory.Delete(leaseRoot,true);}
+}
+else
+{
+    try{using var lease=PilotNativeOwnerLease.Acquire(Path.GetTempPath());Check(false,"native owner lease is Windows only");}
+    catch(StoreFailure e)when(e.Code=="PILOT_LOCAL_WINDOWS_ONLY"){Check(true,"non-Windows native ownership blocked");}
+}
+
 // Exercise actual shared-capacity lease semantics without an installed model.
 {
     var scheduler=new LocalInferenceScheduler(1,2,TimeSpan.FromSeconds(3));
