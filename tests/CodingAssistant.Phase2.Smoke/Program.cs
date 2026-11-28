@@ -5786,6 +5786,30 @@ try
         {Check(true,"outstanding cleanup blocks fresh native launch");}
         tx.Rollback();
     }
+    var cleanupResponse=JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,status="PILOT_EXACT_CLEANUP_OBSERVED",attemptId=recoveryIdentity.Obligation.AttemptId,
+        engineId=recoveryIdentity.EngineId,policySha256=recoveryIdentity.PolicySha256,
+        containerId=new string('f',64),archiveSha256=new string('e',64),containerRemoved=true,
+        executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false
+    });
+    Check(PilotNativeCleanupResponse.Validate(recoveryIdentity,cleanupResponse).ContainerId==new string('f',64),
+        "exact cleanup observation response accepted structurally");
+    var confirmMethod=typeof(PilotExecutionAdmissionStore).GetMethod("RecordNativeCleanupConfirmation",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing cleanup confirmation primitive");
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        confirmMethod.Invoke(null,new object[]{db,tx,recoveryIdentity,cleanupResponse});
+        confirmMethod.Invoke(null,new object[]{db,tx,recoveryIdentity,cleanupResponse});
+        Check(TaskStore.Scalar(db,tx,"SELECT container_id FROM pilot_native_cleanup_confirmations WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id))==new string('f',64),"exact confirmation persists idempotently");
+        cleanupGate.Invoke(null,new object[]{db,tx});
+        Check(true,"confirmed cleanup releases debt gate within transaction");
+        tx.Rollback();
+    }
+    Check(admissionStore.PendingNativeCleanup().Contains(recoveryIdentity.Obligation),
+        "rolled back confirmation retains cleanup debt");
     var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
