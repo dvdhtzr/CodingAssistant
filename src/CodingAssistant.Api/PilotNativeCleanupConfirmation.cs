@@ -43,9 +43,7 @@ internal sealed partial class PilotExecutionAdmissionStore
                 current.ActiveBridgeSha256!=pins.ActiveBridgeSha256)
                 throw new StoreFailure("PILOT_HOST_CONFIGURATION_CHANGED");
         }
-        string Request(string operation)=>JsonSerializer.Serialize(new {operation,identity=new {
-            attemptId=obligation.AttemptId,engineId=identity.EngineId,policySha256=identity.PolicySha256,
-            imageId=identity.ImageId,candidateSha256=identity.CandidateSha256,archiveSha256=identity.ArchiveSha256}});
+        string Request(string operation)=>NativeCleanupRequest(identity,operation);
         if(active)
         {
             // Refuse mutation before a terminal result or deleted admission.
@@ -70,20 +68,8 @@ internal sealed partial class PilotExecutionAdmissionStore
             token.ThrowIfCancellationRequested();
             RequireNativeJobAbsent(obligation);
         }
-        var request=Request("inspect-exact-cleanup");
-        JsonElement response;
-        using(var job=PilotWindowsJob.Create(@"Local\CodingAssistant-Pilot-"+Guid.NewGuid().ToString("N")))
-        {
-            var observed=await job.InvokeCleanupObservationAsync(pins.Config,pins.BridgeSha256,pins.AdapterSha256,
-                request,TimeSpan.FromSeconds(90),token);
-            if(observed.ExitCode!=0)throw new StoreFailure("PILOT_NATIVE_CLEANUP_BLOCKED");
-            response=observed.Response;
-            job.ConfirmEmpty();
-        }
-        var validated=PilotNativeCleanupResponse.Validate(identity,response);
-        RequireCurrentPins();
-        token.ThrowIfCancellationRequested();
-        RequireNativeJobAbsent(obligation);
+        var (response,validated)=await ObserveNativeCleanupUnderLeaseAsync(identity,pins.Config,
+            pins.BridgeSha256,pins.AdapterSha256,RequireCurrentPins,token);
         using var tx=connection.BeginTransaction();
         // Do not certify an attempt which has not reached a terminal
         // result (unless the original admission was already deleted).
@@ -92,6 +78,40 @@ internal sealed partial class PilotExecutionAdmissionStore
         token.ThrowIfCancellationRequested();
         tx.Commit();
         return validated;
+    }
+
+    private static string NativeCleanupRequest(PilotNativeRecoveryIdentity identity,string operation)=>
+        JsonSerializer.Serialize(new {operation,identity=new {
+            attemptId=identity.Obligation.AttemptId,engineId=identity.EngineId,policySha256=identity.PolicySha256,
+            imageId=identity.ImageId,candidateSha256=identity.CandidateSha256,archiveSha256=identity.ArchiveSha256}});
+
+    // Only host orchestration already holding the exclusive native owner
+    // lease may call this. Observation neither mutates containers nor
+    // records confirmation; the caller owns the persistence boundary.
+    private async Task<(JsonElement Response,PilotNativeCleanupObservation Observation)>
+        ObserveNativeCleanupUnderLeaseAsync(PilotNativeRecoveryIdentity identity,
+            EvaluationPlanningHostConfiguration config,string bridgeSha256,string adapterSha256,
+            Action requireCurrentPins,CancellationToken token)
+    {
+        var obligation=identity.Obligation;
+        requireCurrentPins();
+        token.ThrowIfCancellationRequested();
+        RequireNativeJobAbsent(obligation);
+        var request=NativeCleanupRequest(identity,"inspect-exact-cleanup");
+        JsonElement response;
+        using(var job=PilotWindowsJob.Create(@"Local\CodingAssistant-Pilot-"+Guid.NewGuid().ToString("N")))
+        {
+            var observed=await job.InvokeCleanupObservationAsync(config,bridgeSha256,adapterSha256,
+                request,TimeSpan.FromSeconds(90),token);
+            if(observed.ExitCode!=0)throw new StoreFailure("PILOT_NATIVE_CLEANUP_BLOCKED");
+            response=observed.Response;
+            job.ConfirmEmpty();
+        }
+        var validated=PilotNativeCleanupResponse.Validate(identity,response);
+        requireCurrentPins();
+        token.ThrowIfCancellationRequested();
+        RequireNativeJobAbsent(obligation);
+        return (response,validated);
     }
 
     private static void RequireTerminalNativeAdmission(SqliteConnection connection,SqliteTransaction tx,
