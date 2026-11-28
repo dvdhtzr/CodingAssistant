@@ -30,6 +30,11 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             consent_sha256 TEXT NOT NULL,attempt_id TEXT NOT NULL,transport_sha256 TEXT NOT NULL,
             recorded_utc TEXT NOT NULL,PRIMARY KEY(admission_id,state)
         );
+        CREATE TABLE IF NOT EXISTS pilot_native_dispatches(
+            admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
+            attempt_id TEXT NOT NULL UNIQUE,consent_sha256 TEXT NOT NULL,transport_sha256 TEXT NOT NULL,
+            job_name TEXT NOT NULL UNIQUE,created_utc TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS pilot_execution_results(
             admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
             status TEXT NOT NULL CHECK(status IN ('BUILD_FAILED','TESTS_FAILED','CHECKS_PASSED_NOT_VERIFIED','VERIFICATION_BLOCKED')),
@@ -221,7 +226,26 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             throw new StoreFailure("PILOT_ADMISSION_TRANSPORT_CHANGED");
         RequireExecutablePolicy();
         RecordTransition(db,tx,item,"Consumed");
+        ReserveNativeDispatch(db,tx,item);
         tx.Commit();return item with {State="Consumed",Current=false};
+    }
+    // Reservation is a durable identity, not proof of process creation.
+    // Record it in the same transaction as consumption, before any launch.
+    private static void ReserveNativeDispatch(SqliteConnection db,SqliteTransaction tx,PilotExecutionAdmission item)
+    {
+        var jobName=@"Local\CodingAssistant-Pilot-"+item.AttemptId;
+        if(TaskStore.Scalar(db,tx,"""
+            SELECT admission_id FROM pilot_execution_transitions
+            WHERE admission_id=@id AND state='Consumed' AND consent_sha256=@consent
+                AND attempt_id=@attempt AND transport_sha256=@transport
+            """,("@id",item.Id),("@consent",item.ConsentSha256),("@attempt",item.AttemptId),
+            ("@transport",item.TransportSha256)) is null)
+            throw new StoreFailure("PILOT_ADMISSION_NOT_AUTHORIZED");
+        TaskStore.Execute(db,tx,"""
+            INSERT INTO pilot_native_dispatches(admission_id,attempt_id,consent_sha256,transport_sha256,job_name,created_utc)
+            VALUES(@id,@attempt,@consent,@transport,@job,@now)
+            """,("@id",item.Id),("@attempt",item.AttemptId),("@consent",item.ConsentSha256),
+            ("@transport",item.TransportSha256),("@job",jobName),("@now",Now()));
     }
     internal PilotExecutionAdmission Revoke(string taskId,string id)
     {
