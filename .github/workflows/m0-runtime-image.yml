@@ -1,51 +1,8 @@
 name: M0.7 Runtime Image Smoke
 
 on:
-  pull_request:
-    paths:
-      - "infra/runtime/**"
-      - "tools/m0/runtime_image_probe.py"
-      - "tools/m0/pinned_openai.py"
-      - "tools/m0/isolated_opencode_models.mjs"
-      - "tests/m0_opencode_discovery_smoke.mjs"
-      - "tests/m0_opencode_inference_smoke.mjs"
-      - "tests/m0_opencode_edit_smoke.mjs"
-      - "tools/m0/pinned_real_edit.py"
-      - "tools/m0/isolated_real_edit.mjs"
-      - "tools/m0/real_opencode_edit_probe.py"
-      - "tests/test_real_opencode_edit.py"
-      - "tests/m0_real_edit_socket_smoke.py"
-      - "tools/m0/qualification_isolation_probe.py"
-      - "tools/m0/qualification_fixture_client.mjs"
-      - "tests/test_qualification_isolation.py"
-      - "tests/m0_qualification_fixture_smoke.py"
-      - "infra/qualification/**"
-      - "tools/m0/qualification_acceptance_client.mjs"
-      - "tools/m0/qualification_acceptance_probe.py"
-      - "tests/m0_qualification_acceptance_smoke.py"
-      - "tools/m0/pinned_qualification.py"
-      - "tools/m0/isolated_qualification_writer.mjs"
-      - "tools/m0/real_qualification.py"
-      - "tests/test_real_qualification.py"
-      - "tests/m0_qualification_native_write_smoke.py"
-      - "tests/m0_qualification_compile_repair_smoke.py"
-      - "docs/M0_COMPILER_FEEDBACK_REPAIR.md"
-      - "docs/M0_REAL_QUALIFICATION.md"
-      - "tools/m0/qualification_acceptance_client.mjs"
-      - "benchmarks/acceptance/**"
-      - "benchmarks/tasks.json"
-      - "benchmarks/fixtures/01-api-feature/**"
-      - "benchmarks/fixtures/03-fullstack-feature/**"
-      - "tools/m0/disposable_workspace_client.mjs"
-      - "tools/m0/disposable_workspace_probe.py"
-      - "tools/m0/workspace_attack_client.mjs"
-      - "tools/m0/workspace_negative_probe.py"
-      - "tools/m0/controlled_repair_pilot.py"
-      - "tools/m0/pinned_repair_proposal.py"
-      - "tools/m0/isolated_repair_proposal.mjs"
-      - "tools/m0/isolated_repair_evaluator.mjs"
-      - "benchmarks/fixtures/02-build-repair/api/**"
-      - ".github/workflows/m0-runtime-image.yml"
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
