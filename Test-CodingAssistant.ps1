@@ -133,7 +133,8 @@ try {
         'tests/test_m4_windows_calculator_evaluator.mjs',
         'tests/test_m4_windows_chromium_sandbox.mjs',
         'tests/test_m4_generated_zip_smoke.mjs',
-        'tests/test_m4_aet8_trusted_qualification.mjs'
+        'tests/test_m4_aet8_trusted_qualification.mjs',
+        'tests/test_m4_native_exact_cleanup.mjs'
             )
             Invoke-Native 'node.exe' (@('--test') + $files)
         }

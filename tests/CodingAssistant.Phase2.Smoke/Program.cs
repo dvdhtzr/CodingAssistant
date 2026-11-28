@@ -42,6 +42,42 @@ async Task<JsonDocument> Body(HttpResponseMessage response) =>
 async Task<HttpResponseMessage> Post(HttpClient client, string path, object obj) =>
     await client.PostAsJsonAsync(path, obj);
 
+// The native recovery lease is owner-private and exclusive. No process,
+ // Docker container or generated source is launched by this control.
+if(OperatingSystem.IsWindows())
+{
+    var leaseRoot=Path.Combine(Path.GetTempPath(),"ca-native-lease-"+Guid.NewGuid().ToString("N"));
+    try
+    {
+        PrivateDataDirectory.Ensure(leaseRoot);
+        using(var held=PilotNativeOwnerLease.Acquire(leaseRoot))
+        {
+            try
+            {
+                using var competing=PilotNativeOwnerLease.Acquire(leaseRoot);
+                Check(false,"second native owner cannot acquire held lease");
+            }
+            catch(StoreFailure e)when(e.Code=="PILOT_NATIVE_OWNER_LEASE_UNAVAILABLE")
+            {Check(true,"exclusive native owner lease rejects concurrent holder");}
+        }
+        using(var reacquired=PilotNativeOwnerLease.Acquire(leaseRoot))
+            Check(File.Exists(Path.Combine(leaseRoot,"pilot-native-owner.lock")),"native owner lease is reusable after release");
+        try
+        {
+            _=EvaluationPlanningHostConfiguration.LoadNativeRecovery(leaseRoot);
+            Check(false,"native cleanup must require separate owner pins");
+        }
+        catch(StoreFailure e)when(e.Code=="EVALUATION_HOST_CONFIGURATION_REQUIRED")
+        {Check(true,"missing native recovery configuration fails closed");}
+    }
+    finally{if(Directory.Exists(leaseRoot))Directory.Delete(leaseRoot,true);}
+}
+else
+{
+    try{using var lease=PilotNativeOwnerLease.Acquire(Path.GetTempPath());Check(false,"native owner lease is Windows only");}
+    catch(StoreFailure e)when(e.Code=="PILOT_LOCAL_WINDOWS_ONLY"){Check(true,"non-Windows native ownership blocked");}
+}
+
 // Exercise actual shared-capacity lease semantics without an installed model.
 {
     var scheduler=new LocalInferenceScheduler(1,2,TimeSpan.FromSeconds(3));
@@ -5729,6 +5765,9 @@ try
     using(var db=tasks.Open())
         Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
             ("@id",resultFixtureAdmission.Id)) is null,"rolled-back launch claim leaves no claim");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_cleanup_obligations WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id)) is null,"rolled-back launch claim leaves no cleanup obligation");
     using(var startClaimants=new ManualResetEventSlim(false))
     {
         Task<bool> CompeteForClaim()=>Task.Run(()=>{
@@ -5744,6 +5783,69 @@ try
     using(var db=tasks.Open())
         Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_launch_claims WHERE admission_id=@id",
             ("@id",resultFixtureAdmission.Id))==resultFixtureAdmission.Id,"native claim persists across connections");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"""
+            SELECT job_name FROM pilot_native_cleanup_obligations WHERE admission_id=@id AND attempt_id=@attempt
+                AND consent_sha256=@consent AND transport_sha256=@transport
+            """,("@id",resultFixtureAdmission.Id),("@attempt",resultFixtureAdmission.AttemptId),
+            ("@consent",resultFixtureAdmission.ConsentSha256),("@transport",resultFixtureAdmission.TransportSha256))
+            ==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
+            "winning launch claim persists exact cleanup obligation");
+    var cleanupInventory=admissionStore.PendingNativeCleanup();
+    Check(cleanupInventory.Count==1&&cleanupInventory[0].AdmissionId==resultFixtureAdmission.Id&&
+        cleanupInventory[0].AttemptId==resultFixtureAdmission.AttemptId&&
+        cleanupInventory[0].ConsentSha256==resultFixtureAdmission.ConsentSha256&&
+        cleanupInventory[0].TransportSha256==resultFixtureAdmission.TransportSha256&&
+        cleanupInventory[0].JobName==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
+        "host recovery inventory preserves exact outstanding cleanup identity");
+    var recoveryIdentity=admissionStore.GetNativeRecoveryIdentity(cleanupInventory[0]);
+    Check(recoveryIdentity.Obligation==cleanupInventory[0]&&recoveryIdentity.EngineId=="structural-fixture"&&
+        recoveryIdentity.PolicySha256==admissionPolicyHash&&recoveryIdentity.ImageId=="sha256:"+new string('a',64)&&
+        recoveryIdentity.CandidateSha256==new string('a',64)&&recoveryIdentity.ArchiveSha256==evaluationInput.ArchiveSha256,
+        "native recovery retains exact engine, image, policy, candidate and archive identity");
+    try
+    {
+        admissionStore.GetNativeRecoveryIdentity(cleanupInventory[0] with {TransportSha256=new string('0',64)});
+        Check(false,"changed recovery transport must be rejected");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_CLEANUP_IDENTITY_INVALID")
+    {Check(true,"changed recovery transport cannot select cleanup identity");}
+    var cleanupGate=typeof(PilotExecutionAdmissionStore).GetMethod("RequireNoNativeCleanupDebt",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing cleanup debt gate");
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        try{cleanupGate.Invoke(null,new object[]{db,tx});Check(false,"outstanding cleanup must block native launch");}
+        catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure&&
+            failure.Code=="PILOT_PRIOR_CLEANUP_REQUIRED")
+        {Check(true,"outstanding cleanup blocks fresh native launch");}
+        tx.Rollback();
+    }
+    var cleanupResponse=JsonSerializer.SerializeToElement(new {
+        schemaVersion=1,status="PILOT_EXACT_CLEANUP_OBSERVED",attemptId=recoveryIdentity.Obligation.AttemptId,
+        engineId=recoveryIdentity.EngineId,policySha256=recoveryIdentity.PolicySha256,
+        containerId=new string('f',64),archiveSha256=new string('e',64),containerRemoved=true,
+        executionEnabled=false,runtimeQualified=false,generatedArtifactVerified=false
+    });
+    Check(PilotNativeCleanupResponse.Validate(recoveryIdentity,cleanupResponse).ContainerId==new string('f',64),
+        "exact cleanup observation response accepted structurally");
+    var confirmMethod=typeof(PilotExecutionAdmissionStore).GetMethod("RecordNativeCleanupConfirmation",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("Missing cleanup confirmation primitive");
+    using(var db=tasks.Open())
+    using(var tx=db.BeginTransaction())
+    {
+        confirmMethod.Invoke(null,new object[]{db,tx,recoveryIdentity,cleanupResponse});
+        confirmMethod.Invoke(null,new object[]{db,tx,recoveryIdentity,cleanupResponse});
+        Check(TaskStore.Scalar(db,tx,"SELECT container_id FROM pilot_native_cleanup_confirmations WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id))==new string('f',64),"exact confirmation persists idempotently");
+        cleanupGate.Invoke(null,new object[]{db,tx});
+        Check(true,"confirmed cleanup releases debt gate within transaction");
+        tx.Rollback();
+    }
+    Check(admissionStore.PendingNativeCleanup().Contains(recoveryIdentity.Obligation),
+        "rolled back confirmation retains cleanup debt");
     var storedFixtureResult=admissionStore.RecordResult(taskBound.Id,resultFixtureAdmission.Id,resultFixtureReceipt);
     Check(storedFixtureResult is {Status:"TESTS_FAILED",Passed:6,Completed:7,CleanupConfirmed:true,Current:true,GeneratedArtifactVerified:false}&&
         admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id)==storedFixtureResult&&
@@ -5803,6 +5905,10 @@ try
         "startup interruption records missing result without claiming cleanup");
     Check(admissionStore.GetResult(taskBound.Id,resultFixtureAdmission.Id) is {Status:"TESTS_FAILED",Current:false},
         "startup retains completed historical result but retires currentness");
+    using(var db=tasks.Open())
+        Check(TaskStore.Scalar(db,null,"SELECT admission_id FROM pilot_native_cleanup_obligations WHERE admission_id=@id",
+            ("@id",resultFixtureAdmission.Id))==resultFixtureAdmission.Id,
+            "startup and historical result do not discharge cleanup obligation");
     Check(admissionStore.Get(taskBound.Id,preparedAdmission.Id) is {State:"Interrupted",Current:false},
         "restart interrupts unconsumed admission without replay");
     Check(executionProposalStore.Get(taskBound.Id,pilotBoundExecutionProposal.Id) is {State:"Interrupted",Current:false},

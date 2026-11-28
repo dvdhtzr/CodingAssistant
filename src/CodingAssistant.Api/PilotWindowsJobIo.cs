@@ -107,23 +107,32 @@ internal sealed partial class PilotWindowsJob
             throw new StoreFailure("PILOT_HOST_FILE_PINS_REQUIRED");
         return InvokeBoundedIoAsync(config,hash,request,deadline,token,true);
     }
+    // Separate owner-pinned recovery closure. Observation only; the bridge
+    // cannot accept arbitrary scripts, commands or generated source.
+    internal Task<(int ExitCode,JsonElement Response)> InvokeCleanupObservationAsync(
+        EvaluationPlanningHostConfiguration config,string bridgeSha256,string adapterSha256,string request,
+        TimeSpan deadline,CancellationToken token)=>InvokeBoundedIoAsync(config,bridgeSha256,request,deadline,token,true,adapterSha256);
+
     private async Task<(int ExitCode,JsonElement Response)> InvokeBoundedIoAsync(
         EvaluationPlanningHostConfiguration config,string bridgeSha256,string request,
-        TimeSpan deadline,CancellationToken token,bool preview)
+        TimeSpan deadline,CancellationToken token,bool preview,string? cleanupAdapterSha256=null)
     {
+        var cleanup=cleanupAdapterSha256 is not null;
         if(!OperatingSystem.IsWindows())throw new StoreFailure("PILOT_LOCAL_WINDOWS_ONLY");
         if(deadline<=TimeSpan.Zero||deadline>TimeSpan.FromMinutes(5))
             throw new StoreFailure("PILOT_JOB_DEADLINE_INVALID");
         var payload=new UTF8Encoding(false,true).GetBytes(request);
-        if(payload.Length<1||payload.Length>(preview?3*1024*1024:4096))throw new StoreFailure("PILOT_JOB_REQUEST_LIMIT");
+        if(payload.Length<1||payload.Length>(preview&&!cleanup?3*1024*1024:4096))throw new StoreFailure("PILOT_JOB_REQUEST_LIMIT");
         token.ThrowIfCancellationRequested();
         if(Members().Length!=0)throw new StoreFailure("PILOT_JOB_NOT_EMPTY");
-        var script=Path.Combine(config.RepositoryRoot,preview?PilotCandidateTransportPlanner.ScriptPath:"tools/m4/windows_job_fixed_io.mjs");
+        var script=Path.Combine(config.RepositoryRoot,cleanup?"tools/m4/native_cleanup_observation_bridge.mjs":
+            preview?PilotCandidateTransportPlanner.ScriptPath:"tools/m4/windows_job_fixed_io.mjs");
         void Pins()
         {
             PilotQualificationInspector.RequirePinnedFiles(config.RepositoryRoot,config.ModulePins);
             EvaluationPlanBinder.RequirePinnedFile(Path.Combine(config.RepositoryRoot,PilotQualificationInspector.ScriptPath),config.BinderSha256);
             EvaluationPlanBinder.RequirePinnedFile(script,bridgeSha256);
+            if(cleanup)EvaluationPlanBinder.RequirePinnedFile(Path.Combine(config.RepositoryRoot,"tools/m4/native_exact_cleanup.mjs"),cleanupAdapterSha256!);
             EvaluationPlanBinder.RequirePinnedFile(config.NodeExecutable,config.NodeSha256);
             EvaluationPlanBinder.RequirePinnedFile(config.DockerExecutable,config.DockerSha256);
         }
@@ -157,6 +166,11 @@ internal sealed partial class PilotWindowsJob
                 start.Environment["CA_PILOT_NODE_SHA256"]=config.NodeSha256;
                 start.Environment["CA_EVALUATION_DOCKER_EXE"]=config.DockerExecutable;
                 start.Environment["CA_EVALUATION_DOCKER_SHA256"]=config.DockerSha256;
+                if(cleanup)
+                {
+                    start.Environment["CA_PILOT_DOCKER_EXE"]=config.DockerExecutable;
+                    start.Environment["CA_PILOT_DOCKER_SHA256"]=config.DockerSha256;
+                }
                 var block=string.Join("\0",start.Environment.OrderBy(p=>p.Key,StringComparer.OrdinalIgnoreCase)
                     .Select(p=>p.Key+"="+p.Value))+"\0\0";
                 environment=Marshal.StringToHGlobalUni(block);
