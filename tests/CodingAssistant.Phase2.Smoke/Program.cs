@@ -5762,6 +5762,18 @@ try
         cleanupInventory[0].TransportSha256==resultFixtureAdmission.TransportSha256&&
         cleanupInventory[0].JobName==@"Local\CodingAssistant-Pilot-"+resultFixtureAdmission.AttemptId,
         "host recovery inventory preserves exact outstanding cleanup identity");
+    var recoveryIdentity=admissionStore.GetNativeRecoveryIdentity(cleanupInventory[0]);
+    Check(recoveryIdentity.Obligation==cleanupInventory[0]&&recoveryIdentity.EngineId=="structural-fixture"&&
+        recoveryIdentity.PolicySha256==admissionPolicyHash&&recoveryIdentity.ImageId=="sha256:"+new string('a',64)&&
+        recoveryIdentity.CandidateSha256==new string('a',64)&&recoveryIdentity.ArchiveSha256==evaluationInput.ArchiveSha256,
+        "native recovery retains exact engine, image, policy, candidate and archive identity");
+    try
+    {
+        admissionStore.GetNativeRecoveryIdentity(cleanupInventory[0] with {TransportSha256=new string('0',64)});
+        Check(false,"changed recovery transport must be rejected");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_CLEANUP_IDENTITY_INVALID")
+    {Check(true,"changed recovery transport cannot select cleanup identity");}
     var cleanupGate=typeof(PilotExecutionAdmissionStore).GetMethod("RequireNoNativeCleanupDebt",
         System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
         ??throw new Exception("Missing cleanup debt gate");
