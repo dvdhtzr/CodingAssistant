@@ -55,6 +55,35 @@ internal static class PilotWindowsIoSmoke
             }
             catch(OperationCanceledException){Check(!Directory.Exists(active),"Pre-cancel left journal");}
         }
+        // Exercise the real, pinned preview entrypoint without providing a
+        // candidate or allowing a generated-source dispatch. Do not change
+        // the historical fixed-control receipt schema.
+        using(var preview=PilotWindowsJob.Create(@"Local\CodingAssistant-Pilot-"+Guid.NewGuid().ToString("N")))
+        {
+            var blocked=await preview.InvokeCandidatePreviewAsync(config,
+                """{"operation":"generated-source"}""",TimeSpan.FromSeconds(30),CancellationToken.None);
+            Check(blocked.ExitCode==2&&blocked.Response.GetProperty("status").GetString()=="BLOCKED"&&
+                !blocked.Response.GetProperty("executionEnabled").GetBoolean()&&
+                !blocked.Response.GetProperty("runtimeQualified").GetBoolean()&&
+                !blocked.Response.GetProperty("generatedArtifactVerified").GetBoolean()&&
+                preview.Members().Length==0&&!Directory.Exists(active),"Preview must reject dispatch and leave no active job");
+            using var cancelled=new CancellationTokenSource();
+            cancelled.Cancel();
+            try
+            {
+                await preview.InvokeCandidatePreviewAsync(config,"{}",TimeSpan.FromSeconds(30),cancelled.Token);
+                throw new Exception("Pre-cancelled preview accepted");
+            }
+            catch(OperationCanceledException){Check(preview.Members().Length==0&&!Directory.Exists(active),"Cancelled preview left active work");}
+            try
+            {
+                await preview.InvokeCandidatePreviewAsync(config,new string('x',3*1024*1024+1),TimeSpan.FromSeconds(30),CancellationToken.None);
+                throw new Exception("Oversized preview accepted");
+            }
+            catch(StoreFailure e)when(e.Message=="PILOT_JOB_REQUEST_LIMIT")
+            {Check(preview.Members().Length==0&&!Directory.Exists(active),"Oversized preview left active work");}
+        }
+        Console.WriteLine("AET-8 WINDOWS_PILOT_PREVIEW_NEGATIVE_PASS");
         var evidence=new {schemaVersion=1,stage="AET-8-windows-job-fixed-io",status="PILOT_JOB_FIXED_IO_PASS",
             recordedAtUtc=DateTimeOffset.UtcNow.ToString("O"),bridgeSha256=bridgeHash,nodeSha256=config.NodeSha256,dockerSha256=config.DockerSha256,
             currentModulePins=pins,inspectorSha256=config.BinderSha256,ownerAssemblySha256=Hash(typeof(PilotWindowsJob).Assembly.Location),
