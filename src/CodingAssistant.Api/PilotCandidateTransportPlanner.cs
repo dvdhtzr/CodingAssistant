@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -77,20 +76,11 @@ internal sealed class PilotCandidateTransportPlanner(TaskStore tasks)
             EvaluationPlanBinder.RequirePinnedFile(config.DockerExecutable,config.DockerSha256);
         }
         CheckFiles();
-        var script=Path.Combine(config.RepositoryRoot,ScriptPath);
-        if(!string.Equals(Path.GetFileName(config.NodeExecutable),"node.exe",StringComparison.OrdinalIgnoreCase)||
-            !string.Equals(Path.GetFileName(config.DockerExecutable),"docker.exe",StringComparison.OrdinalIgnoreCase))
-            throw new StoreFailure("EVALUATION_BINDER_PROVENANCE_INVALID");
-        var start=new ProcessStartInfo(config.NodeExecutable){
-            WorkingDirectory=Path.GetDirectoryName(script)!,UseShellExecute=false,CreateNoWindow=true,
-            RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,
-            StandardInputEncoding=new UTF8Encoding(false),StandardOutputEncoding=Encoding.UTF8};
-        EvaluationPlanBinder.RemoveNodeEnvironmentOverrides(start);
-        start.Environment["CA_PILOT_NODE_SHA256"]=config.NodeSha256;
-        start.Environment["CA_EVALUATION_DOCKER_EXE"]=config.DockerExecutable;
-        start.Environment["CA_EVALUATION_DOCKER_SHA256"]=config.DockerSha256;
-        start.ArgumentList.Add(script);start.ArgumentList.Add("--stdin");
-        var response=await EvaluationPlanBinder.InvokePlanningProcessAsync(start,request,TimeSpan.FromSeconds(60),token);
+        // Preview uses a separate transient job identity: it must never
+        // consume or reuse the durable native dispatch job reservation.
+        using var job=PilotWindowsJob.Create(@"Local\CodingAssistant-Pilot-"+Guid.NewGuid().ToString("N"));
+        var (exitCode,response)=await job.InvokeCandidatePreviewAsync(config,request,TimeSpan.FromSeconds(60),token);
+        if(exitCode!=0)throw new StoreFailure("PILOT_TRANSPORT_PREVIEW_BLOCKED");
         Validate(response,selection,captured.Descriptor.GetProperty("evaluatorSha256").GetString()!,
             evidence.GetProperty("engineId").GetString()!,captured.Input.Scope.SourceFingerprint!,
             captured.Input.Scope.Files.Count);
