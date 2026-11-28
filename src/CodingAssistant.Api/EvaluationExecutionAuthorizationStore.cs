@@ -213,7 +213,15 @@ public sealed class EvaluationExecutionAuthorizationStore(TaskStore tasks)
     }
     public void Recover()
     {
-        using var db=tasks.Open();using var tx=db.BeginTransaction();
+        using var db=tasks.Open();
+        // A second Windows host must not mark live native work interrupted.
+        // Acquire before the transaction, following dispatch lock ordering.
+        // On contention fail closed; do not perform partial reconciliation.
+        using var lease=OperatingSystem.IsWindows()
+            ?PilotNativeOwnerLease.Acquire(Path.GetDirectoryName(db.DataSource)
+                ??throw new StoreFailure("PILOT_NATIVE_OWNER_DIRECTORY_INVALID"))
+            :null;
+        using var tx=db.BeginTransaction();
         TaskStore.Execute(db,tx,"UPDATE evaluation_execution_proposals SET state='Interrupted',updated_utc=@now WHERE state='Proposed'",
             ("@now",DateTimeOffset.UtcNow.ToString("O")));
         PilotExecutionAdmissionStore.Recover(db,tx);
