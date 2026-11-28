@@ -5555,6 +5555,22 @@ try
     }
     catch(StoreFailure ex)when(ex.Code=="EVALUATION_RUNTIME_UNQUALIFIED")
     {Check(true,"exact attempt consent still cannot bypass runtime gate");}
+    // AET-8.3 E5: the executable-authorization gate is the final closed
+    // boundary for generated-source execution. With no qualified runtime
+    // profile it must fail closed; neither historical qualification, exact
+    // consent nor a current admission opens it. This invokes the production
+    // gate directly and introduces no bypass, flag or executable grant.
+    var executablePolicyGate=typeof(PilotExecutionAdmissionStore).GetMethod("RequireExecutablePolicy",
+        System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+        ??throw new Exception("missing closed executable policy gate");
+    try
+    {
+        executablePolicyGate.Invoke(null,null);
+        Check(false,"closed generated-source authorization gate must throw");
+    }
+    catch(System.Reflection.TargetInvocationException ex)when(ex.InnerException is StoreFailure failure&&
+        failure.Code is "EVALUATION_RUNTIME_UNQUALIFIED" or "EVALUATION_EXECUTION_ADAPTER_NOT_QUALIFIED")
+    {Check(true,"generated-source execution stays closed at the executable policy gate");}
     // Exercise the actual private dispatch admission boundary. No test
     // callback, bypass flag or production executable grant is introduced.
     void AttemptNativeDispatch(string admissionId,JsonElement transport)
@@ -5942,6 +5958,18 @@ try
     var unfinishedFixtureAdmission=admissionStore.Stage(taskBound.Id,unfinishedFixtureProposal.Id,AdmissionTransport(new string('b',32),new string('6',64)));
     using(var fixtureDb=tasks.Open())
         TaskStore.Execute(fixtureDb,null,"UPDATE pilot_execution_admissions SET state='Consumed' WHERE id=@id",("@id",unfinishedFixtureAdmission.Id));
+    // AET-8.3 E5: a consumed admission alone is not dispatch provenance. With
+    // no durable native reservation and launch claim, result persistence must
+    // fail closed. This leaves the ledger untouched for the later startup
+    // interruption test and introduces no native attestation.
+    try
+    {
+        RecordFixtureResult(taskBound.Id,unfinishedFixtureAdmission.Id,
+            ResultFixture(unfinishedFixtureAdmission.AttemptId,unfinishedFixtureAdmission.TransportSha256));
+        Check(false,"consumed attempt without native dispatch provenance cannot record a result");
+    }
+    catch(StoreFailure ex)when(ex.Code=="PILOT_NATIVE_RESULT_UNCLAIMED")
+    {Check(true,"result requires matching durable native reservation and launch claim");}
     var revokedFixtureBinding=PilotProposalBinding.Create(JsonSerializer.Deserialize<JsonElement>(admissionEvidence.ToJsonString()),new string('e',64),admissionReceipts);
     var revokedFixtureProposal=executionProposalStore.ProposeBound(taskBound.Id,evaluationStaged.Id,revokedFixtureBinding);
     var revokedFixtureAdmission=admissionStore.Stage(taskBound.Id,revokedFixtureProposal.Id,AdmissionTransport(new string('d',32),new string('7',64)));
