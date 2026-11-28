@@ -243,21 +243,45 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         RecordTransition(db,tx,item,"Authorized");
         tx.Commit();return item with {State="Authorized",Current=true};
     }
-    // Fresh trusted transport preparation must reproduce the entire exact
-    // descriptor, including the original attempt ID. Consumption is atomic
-    // and terminal; future cancellation is separate from replay prevention.
-    internal PilotExecutionAdmission Consume(string taskId,string id,JsonElement freshTransport)
+    // The host owns the lease from before consumption until terminal
+    // evidence and cleanup are handled. No split reservation/claim API.
+    // Disposing this scope is not evidence of cleanup.
+    private sealed class NativeDispatchOwnership(
+        PilotNativeOwnerLease lease,PilotExecutionAdmission admission,string jobName):IDisposable
     {
-        using var db=tasks.Open();using var tx=db.BeginTransaction();
-        var item=Find(db,tx,taskId,id);
-        if(item.State!="Authorized"||!Current(db,tx,item))throw new StoreFailure("PILOT_ADMISSION_NOT_AUTHORIZED");
-        var identity=Identity(db,tx,taskId,item.ProposalId,freshTransport);
-        if(identity.Consent!=item.ConsentSha256||identity.Attempt!=item.AttemptId||identity.Transport!=item.TransportSha256)
-            throw new StoreFailure("PILOT_ADMISSION_TRANSPORT_CHANGED");
-        RequireExecutablePolicy();
-        RecordTransition(db,tx,item,"Consumed");
-        ReserveNativeDispatch(db,tx,item);
-        tx.Commit();return item with {State="Consumed",Current=false};
+        internal PilotExecutionAdmission Admission {get;}=admission;
+        internal string JobName {get;}=jobName;
+        public void Dispose()=>lease.Dispose();
+    }
+
+    private NativeDispatchOwnership BeginNativeDispatch(string taskId,string id,JsonElement freshTransport)
+    {
+        using var db=tasks.Open();
+        var directory=Path.GetDirectoryName(db.DataSource)
+            ??throw new StoreFailure("PILOT_NATIVE_OWNER_DIRECTORY_INVALID");
+        var lease=PilotNativeOwnerLease.Acquire(directory);
+        try
+        {
+            using var tx=db.BeginTransaction();
+            var item=Find(db,tx,taskId,id);
+            if(item.State!="Authorized"||!Current(db,tx,item))throw new StoreFailure("PILOT_ADMISSION_NOT_AUTHORIZED");
+            var identity=Identity(db,tx,taskId,item.ProposalId,freshTransport);
+            if(identity.Consent!=item.ConsentSha256||identity.Attempt!=item.AttemptId||identity.Transport!=item.TransportSha256)
+                throw new StoreFailure("PILOT_ADMISSION_TRANSPORT_CHANGED");
+            RequireExecutablePolicy();
+            RequireNoNativeCleanupDebt(db,tx);
+            RecordTransition(db,tx,item,"Consumed");
+            ReserveNativeDispatch(db,tx,item);
+            var consumed=item with {State="Consumed",Current=false};
+            var jobName=ClaimNativeLaunch(db,tx,consumed);
+            tx.Commit();
+            return new NativeDispatchOwnership(lease,consumed,jobName);
+        }
+        catch
+        {
+            lease.Dispose();
+            throw;
+        }
     }
     // Reservation is a durable identity, not proof of process creation.
     // Record it in the same transaction as consumption, before any launch.
@@ -403,18 +427,6 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         // create or an exact container requiring independent recovery.
     }
 
-    // This host-only seam deliberately cannot reach the native launcher
-    // until executable policy is separately qualified. No caller-provided
-    // callback, command, or script may substitute for that policy.
-    internal string ClaimNativeDispatch(string taskId,string id)
-    {
-        using var db=tasks.Open();using var tx=db.BeginTransaction();
-        var item=Find(db,tx,taskId,id);
-        if(item.State!="Consumed")throw new StoreFailure("PILOT_NATIVE_DISPATCH_NOT_CURRENT");
-        RequireExecutablePolicy();
-        var jobName=ClaimNativeLaunch(db,tx,item);
-        tx.Commit();return jobName;
-    }
     internal PilotExecutionAdmission Revoke(string taskId,string id)
     {
         using var db=tasks.Open();using var tx=db.BeginTransaction();
