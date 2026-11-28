@@ -44,6 +44,28 @@ internal sealed record EvaluationPlanningHostConfiguration(
         return (config with {ModulePins=new ReadOnlyDictionary<string,string>(historical)},bridge,adapter);
     }
 
+    internal const string ActiveRecoveryFileName="evaluation-native-active-recovery-host.json";
+    internal const string ActiveRecoveryBridgePath="tools/m4/native_active_recovery_bridge.mjs";
+
+    // Active cleanup requires a distinct, explicitly provisioned closure.
+    // Observation-only configuration is never sufficient to permit mutation.
+    internal static (EvaluationPlanningHostConfiguration Config,string BridgeSha256,
+        string AdapterSha256,string ActiveBridgeSha256) LoadNativeActiveRecovery(string ownerDataDirectory)
+    {
+        var config=LoadCore(ownerDataDirectory,ActiveRecoveryFileName,pins=>
+            pins.Count==PilotQualificationInspector.FileNames.Count+3&&
+            PilotQualificationInspector.FileNames.All(pins.ContainsKey)&&
+            pins.ContainsKey(CleanupBridgePath)&&pins.ContainsKey(CleanupAdapterPath)&&
+            pins.ContainsKey(ActiveRecoveryBridgePath));
+        var bridge=config.ModulePins[CleanupBridgePath];
+        var adapter=config.ModulePins[CleanupAdapterPath];
+        var active=config.ModulePins[ActiveRecoveryBridgePath];
+        var historical=config.ModulePins.Where(p=>p.Key!=CleanupBridgePath&&
+            p.Key!=CleanupAdapterPath&&p.Key!=ActiveRecoveryBridgePath)
+            .ToDictionary(p=>p.Key,p=>p.Value,StringComparer.Ordinal);
+        return (config with {ModulePins=new ReadOnlyDictionary<string,string>(historical)},bridge,adapter,active);
+    }
+
     private static EvaluationPlanningHostConfiguration LoadCore(string ownerDataDirectory,string fileName,
         Func<IReadOnlyDictionary<string,string>,bool> hasExactPins)
     {
