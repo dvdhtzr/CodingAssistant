@@ -332,6 +332,20 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         reader.Close();tx.Commit();return pending.AsReadOnly();
     }
 
+    // Absence of a named Windows job is a necessary observation only.
+    // Do not terminate a job opened by name: its identity alone does not
+    // establish ownership, and a live owner may still be dispatching.
+    internal void RequireNativeJobAbsent(PilotNativeCleanupObligation obligation)
+    {
+        if(!OperatingSystem.IsWindows())throw new StoreFailure("PILOT_LOCAL_WINDOWS_ONLY");
+        if(!PendingNativeCleanup().Contains(obligation))
+            throw new StoreFailure("PILOT_NATIVE_CLEANUP_IDENTITY_INVALID");
+        if(PilotWindowsJob.Exists(obligation.JobName))
+            throw new StoreFailure("PILOT_NATIVE_JOB_STILL_ACTIVE");
+        // Deliberately no discharge: Docker may still have an in-flight
+        // create or an exact container requiring independent recovery.
+    }
+
     // This host-only seam deliberately cannot reach the native launcher
     // until executable policy is separately qualified. No caller-provided
     // callback, command, or script may substitute for that policy.
