@@ -60,6 +60,11 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
             engine_id TEXT NOT NULL,policy_sha256 TEXT NOT NULL,image_id TEXT NOT NULL,
             candidate_sha256 TEXT NOT NULL,archive_sha256 TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS pilot_native_cleanup_confirmations(
+            admission_id TEXT PRIMARY KEY REFERENCES pilot_native_recovery_identities(admission_id),
+            container_id TEXT NOT NULL,journal_sha256 TEXT NOT NULL,
+            observation_sha256 TEXT NOT NULL,recorded_utc TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS pilot_execution_results(
             admission_id TEXT PRIMARY KEY REFERENCES pilot_execution_admissions(id) ON DELETE CASCADE,
             status TEXT NOT NULL CHECK(status IN ('BUILD_FAILED','TESTS_FAILED','CHECKS_PASSED_NOT_VERIFIED','VERIFICATION_BLOCKED')),
@@ -324,7 +329,7 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
     }
     private static void RequireNoNativeCleanupDebt(SqliteConnection db,SqliteTransaction tx)
     {
-        if(TaskStore.Scalar(db,tx,"SELECT admission_id FROM pilot_native_cleanup_obligations LIMIT 1") is not null)
+        if(TaskStore.Scalar(db,tx,"SELECT o.admission_id FROM pilot_native_cleanup_obligations o WHERE NOT EXISTS(SELECT 1 FROM pilot_native_cleanup_confirmations c WHERE c.admission_id=o.admission_id) LIMIT 1") is not null)
             throw new StoreFailure("PILOT_PRIOR_CLEANUP_REQUIRED");
     }
     // Host-private inventory, independent of current projects and results.
@@ -334,7 +339,9 @@ internal sealed partial class PilotExecutionAdmissionStore(TaskStore tasks)
         using var db=tasks.Open();using var tx=db.BeginTransaction(deferred:true);
         using var cmd=TaskStore.Command(db,tx,"""
             SELECT admission_id,attempt_id,consent_sha256,transport_sha256,job_name
-            FROM pilot_native_cleanup_obligations ORDER BY admission_id LIMIT 129
+            FROM pilot_native_cleanup_obligations o
+            WHERE NOT EXISTS(SELECT 1 FROM pilot_native_cleanup_confirmations c WHERE c.admission_id=o.admission_id)
+            ORDER BY admission_id LIMIT 129
             """);
         using var reader=cmd.ExecuteReader();
         var pending=new List<PilotNativeCleanupObligation>();
